@@ -51,6 +51,10 @@ fn capture_epoch_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn session_start_millis_jit_constants(node: &SessionStartMillis) -> Vec<u64> {
+    vec![node.start]
+}
+
 /// Session start time in epoch milliseconds, frozen at construction.
 ///
 /// Signature: `() -> (u64)`. Deterministic within a session.
@@ -61,6 +65,7 @@ fn capture_epoch_millis() -> u64 {
 #[crate::polydat_node(
     category = Context,
     purity = Nondeterministic("session start time captured from system clock"),
+    jit_constants = session_start_millis_jit_constants,
 )]
 fn session_start_millis(
     #[poly_const(capture_epoch_millis, from = ())]
@@ -69,12 +74,17 @@ fn session_start_millis(
     *start
 }
 
+fn elapsed_millis_jit_constants(node: &ElapsedMillis) -> Vec<u64> {
+    vec![node.start]
+}
+
 /// Elapsed milliseconds since session start.
 ///
 /// Signature: `() -> (u64)`. Non-deterministic, grows monotonically.
 #[crate::polydat_node(
     category = Context,
     purity = Nondeterministic("monotonic elapsed time from system clock"),
+    jit_constants = elapsed_millis_jit_constants,
 )]
 fn elapsed_millis(
     #[poly_const(capture_epoch_millis, from = ())]

@@ -75,16 +75,18 @@ fn combinations(
     #[poly_const(ParsedCombinations::from_pattern, from = pattern)]
     parsed: &ParsedCombinations,
 ) -> String {
-    let mut remainder = input % parsed.modulus;
-    let mut result = String::with_capacity(parsed.segments.len());
+    let mut remainder = if parsed.modulus > 0 { input % parsed.modulus } else { input };
+    let mut result = String::with_capacity(parsed.segments.len() * 2);
     for seg in &parsed.segments {
         match seg {
             Segment::Literal(s) => result.push_str(s),
             Segment::Charset(chars) => {
                 let radix = chars.len() as u64;
-                let idx = (remainder % radix) as usize;
-                result.push(chars[idx]);
-                remainder /= radix;
+                if radix > 0 {
+                    let idx = (remainder % radix) as usize;
+                    result.push(chars[idx]);
+                    remainder /= radix;
+                }
             }
         }
     }
@@ -132,15 +134,7 @@ fn parse_charset(spec: &str) -> Vec<char> {
 /// produces "one thousand". Supports the full u64 range up through
 /// quintillions.
 ///
-/// Use for generating human-readable text fields from numeric keys,
-/// creating natural-language test data, or populating string columns
-/// with deterministic variable-length content. Commonly chained after
-/// `hash_range` to produce bounded vocabulary:
-/// `number_to_words(hash_range(h, 1000))`.
-///
 /// JIT level: P1 (String output; no compiled_u64 path).
-/// Spell a u64 input as English words. Migrated to
-/// `#[polydat_node]` per SRD-80 PR B.4.
 #[crate::polydat_node(category = String)]
 fn number_to_words(input: u64) -> String {
     u64_to_words(input)
@@ -167,51 +161,64 @@ fn u64_to_words(n: u64) -> String {
         return ONES[n as usize].to_string();
     }
 
-    let mut parts: Vec<String> = Vec::new();
+    let mut buf = String::with_capacity(64);
+    let mut chunks = [0u32; 7];
+    let mut num_chunks = 0;
     let mut remaining = n;
-    let mut scale_idx = 0;
 
     while remaining > 0 {
-        let chunk = (remaining % 1000) as u32;
-        if chunk > 0 {
-            let chunk_words = chunk_to_words(chunk);
-            if scale_idx > 0 && scale_idx < SCALES.len() {
-                parts.push(format!("{} {}", chunk_words, SCALES[scale_idx]));
-            } else {
-                parts.push(chunk_words);
-            }
-        }
+        chunks[num_chunks] = (remaining % 1000) as u32;
+        num_chunks += 1;
         remaining /= 1000;
-        scale_idx += 1;
     }
 
-    parts.reverse();
-    parts.join(" ")
+    let mut first = true;
+    for i in (0..num_chunks).rev() {
+        let chunk = chunks[i];
+        if chunk > 0 {
+            if !first {
+                buf.push(' ');
+            }
+            first = false;
+            append_chunk_to_words(&mut buf, chunk);
+            if i > 0 && i < SCALES.len() {
+                buf.push(' ');
+                buf.push_str(SCALES[i]);
+            }
+        }
+    }
+
+    buf
 }
 
-fn chunk_to_words(n: u32) -> String {
-    let mut parts = Vec::new();
-
+fn append_chunk_to_words(buf: &mut String, n: u32) {
     let hundreds = n / 100;
     let remainder = n % 100;
 
+    let mut has_hundreds = false;
     if hundreds > 0 {
-        parts.push(format!("{} hundred", ONES[hundreds as usize]));
+        buf.push_str(ONES[hundreds as usize]);
+        buf.push_str(" hundred");
+        has_hundreds = true;
     }
 
     if remainder >= 20 {
+        if has_hundreds {
+            buf.push(' ');
+        }
         let tens = remainder / 10;
         let ones = remainder % 10;
+        buf.push_str(TENS[tens as usize]);
         if ones > 0 {
-            parts.push(format!("{}-{}", TENS[tens as usize], ONES[ones as usize]));
-        } else {
-            parts.push(TENS[tens as usize].to_string());
+            buf.push('-');
+            buf.push_str(ONES[ones as usize]);
         }
     } else if remainder > 0 {
-        parts.push(ONES[remainder as usize].to_string());
+        if has_hundreds {
+            buf.push(' ');
+        }
+        buf.push_str(ONES[remainder as usize]);
     }
-
-    parts.join(" ")
 }
 
 // ---------------------------------------------------------------------------

@@ -153,7 +153,7 @@ impl PolydatSetup for CycleWalkState {}
 ///
 /// Panics if `range` is 0 — preserves the construction-time
 /// validation contract from the pre-Phase-E hand-written form.
-fn build_cycle_walk_state(range: u64, seed: u64, stream: u64) -> CycleWalkState {
+pub(crate) fn build_cycle_walk_state(range: u64, seed: u64, stream: u64) -> CycleWalkState {
     assert!(range > 0, "CycleWalk range must be > 0");
     let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
 
@@ -192,9 +192,6 @@ fn cycle_walk_jit(node: &CycleWalk) -> CompiledU64Op {
     })
 }
 
-/// `jit_constants` override — publishes `[range, seed, inc]` in
-/// the order the Phase-3 classifier expects. `inc` comes from the
-/// cached state (derived from `stream` at construction).
 fn cycle_walk_jit_constants(node: &CycleWalk) -> Vec<u64> {
     vec![node.range, node.seed, node.state.inc]
 }
@@ -285,7 +282,7 @@ fn feistel_encrypt(
 /// to terminate because the Feistel permutation's cycle through that
 /// value must re-enter `[0, range)`.
 #[inline]
-fn cycle_walk_inner(
+pub(crate) fn cycle_walk_inner(
     mut value: u64,
     range: u64,
     half_bits: u32,

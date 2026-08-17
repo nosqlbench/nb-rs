@@ -27,7 +27,7 @@
 /// on this and return `0.0` otherwise, so `x <= 0`, `NaN`, and `±inf` all
 /// fold to the zero magnitude without special-casing each node.
 #[inline]
-fn positive_finite(x: f64) -> bool {
+pub(crate) fn positive_finite(x: f64) -> bool {
     x.is_finite() && x > 0.0
 }
 
@@ -60,7 +60,7 @@ pub fn floor_pow10(x: f64) -> f64 {
 ///
 /// Same `powi` + one-step-correction scheme as [`floor_pow10`].
 #[inline]
-fn floor_pow2(x: f64) -> f64 {
+pub(crate) fn floor_pow2(x: f64) -> f64 {
     let mut e = x.log2().floor() as i32;
     let mut p = 2f64.powi(e);
     if p > x {
@@ -76,7 +76,7 @@ fn floor_pow2(x: f64) -> f64 {
 /// Pick whichever of `lo` / `hi` is nearer to `x` by absolute distance.
 /// Ties resolve to `lo` (the floor), per the `closest_*` contract.
 #[inline]
-fn pick_closest(x: f64, lo: f64, hi: f64) -> f64 {
+pub(crate) fn pick_closest(x: f64, lo: f64, hi: f64) -> f64 {
     if (hi - x).abs() < (x - lo).abs() {
         hi
     } else {
@@ -86,7 +86,7 @@ fn pick_closest(x: f64, lo: f64, hi: f64) -> f64 {
 
 /// Largest Fibonacci number (`1, 2, 3, 5, 8, …`) that is `<= x`, or `0.0`
 /// when `x < 1` (nothing in the sequence is that small). Assumes finite `x`.
-fn floor_fibonacci_val(x: f64) -> f64 {
+pub(crate) fn floor_fibonacci_val(x: f64) -> f64 {
     if x < 1.0 {
         return 0.0;
     }
@@ -104,7 +104,7 @@ fn floor_fibonacci_val(x: f64) -> f64 {
 
 /// Smallest Fibonacci number (`1, 2, 3, 5, 8, …`) that is `>= x`; `1.0` for
 /// `x <= 1`. Assumes `positive_finite(x)`.
-fn ceiling_fibonacci_val(x: f64) -> f64 {
+pub(crate) fn ceiling_fibonacci_val(x: f64) -> f64 {
     let (mut a, mut b) = (1.0f64, 2.0f64);
     if x <= a {
         return a;
@@ -128,7 +128,7 @@ fn ceiling_fibonacci_val(x: f64) -> f64 {
 
 /// Largest power of ten `<= x`: `10^floor(log10(x))`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn floor_base10(x: f64) -> f64 {
+pub(crate) fn floor_base10(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -137,7 +137,7 @@ fn floor_base10(x: f64) -> f64 {
 
 /// Smallest power of ten `>= x`: `10^ceil(log10(x))`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn ceiling_base10(x: f64) -> f64 {
+pub(crate) fn ceiling_base10(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -148,7 +148,7 @@ fn ceiling_base10(x: f64) -> f64 {
 /// Power of ten nearest to `x` by absolute distance (ties → floor).
 /// `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn closest_base10(x: f64) -> f64 {
+pub(crate) fn closest_base10(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -164,7 +164,7 @@ fn closest_base10(x: f64) -> f64 {
 /// Round `x` down to a multiple of its base-ten magnitude:
 /// `floor(x/base)*base`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn floor_decade(x: f64) -> f64 {
+pub(crate) fn floor_decade(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -175,7 +175,7 @@ fn floor_decade(x: f64) -> f64 {
 /// Round `x` up to a multiple of its base-ten magnitude:
 /// `ceil(x/base)*base`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn ceiling_decade(x: f64) -> f64 {
+pub(crate) fn ceiling_decade(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -186,7 +186,7 @@ fn ceiling_decade(x: f64) -> f64 {
 /// Round `x` to the nearest multiple of its base-ten magnitude:
 /// `round(x/base)*base`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn closest_decade(x: f64) -> f64 {
+pub(crate) fn closest_decade(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -200,7 +200,7 @@ fn closest_decade(x: f64) -> f64 {
 
 /// Largest Fibonacci number `<= x`. `x < 1` (incl. `x <= 0`) → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn floor_fibonacci(x: f64) -> f64 {
+pub(crate) fn floor_fibonacci(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -209,7 +209,7 @@ fn floor_fibonacci(x: f64) -> f64 {
 
 /// Smallest Fibonacci number `>= x`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn ceiling_fibonacci(x: f64) -> f64 {
+pub(crate) fn ceiling_fibonacci(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -219,7 +219,7 @@ fn ceiling_fibonacci(x: f64) -> f64 {
 /// Fibonacci number nearest to `x` by absolute distance (ties → floor).
 /// `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn closest_fibonacci(x: f64) -> f64 {
+pub(crate) fn closest_fibonacci(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -232,7 +232,7 @@ fn closest_fibonacci(x: f64) -> f64 {
 
 /// Largest power of two `<= x`: `2^floor(log2(x))`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn floor_binomial(x: f64) -> f64 {
+pub(crate) fn floor_binomial(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -241,7 +241,7 @@ fn floor_binomial(x: f64) -> f64 {
 
 /// Smallest power of two `>= x`: `2^ceil(log2(x))`. `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn ceiling_binomial(x: f64) -> f64 {
+pub(crate) fn ceiling_binomial(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -252,7 +252,7 @@ fn ceiling_binomial(x: f64) -> f64 {
 /// Power of two nearest to `x` by absolute distance (ties → floor).
 /// `x <= 0` → `0.0`.
 #[crate::polydat_node(category = Math)]
-fn closest_binomial(x: f64) -> f64 {
+pub(crate) fn closest_binomial(x: f64) -> f64 {
     if !positive_finite(x) {
         return 0.0;
     }
@@ -268,7 +268,7 @@ fn closest_binomial(x: f64) -> f64 {
 /// Round `x` down to a multiple of `interval`: `floor(x/interval)*interval`.
 /// `interval <= 0` or non-finite → returns `x` unchanged (identity).
 #[crate::polydat_node(category = Math)]
-fn round_floor(x: f64, interval: f64) -> f64 {
+pub(crate) fn round_floor(x: f64, interval: f64) -> f64 {
     if !(interval.is_finite() && interval > 0.0) {
         return x;
     }
@@ -278,7 +278,7 @@ fn round_floor(x: f64, interval: f64) -> f64 {
 /// Round `x` up to a multiple of `interval`: `ceil(x/interval)*interval`.
 /// `interval <= 0` or non-finite → returns `x` unchanged (identity).
 #[crate::polydat_node(category = Math)]
-fn round_ceiling(x: f64, interval: f64) -> f64 {
+pub(crate) fn round_ceiling(x: f64, interval: f64) -> f64 {
     if !(interval.is_finite() && interval > 0.0) {
         return x;
     }
@@ -288,7 +288,7 @@ fn round_ceiling(x: f64, interval: f64) -> f64 {
 /// Round `x` to the nearest multiple of `interval`: `round(x/interval)*interval`.
 /// `interval <= 0` or non-finite → returns `x` unchanged (identity).
 #[crate::polydat_node(category = Math)]
-fn round_nearest(x: f64, interval: f64) -> f64 {
+pub(crate) fn round_nearest(x: f64, interval: f64) -> f64 {
     if !(interval.is_finite() && interval > 0.0) {
         return x;
     }

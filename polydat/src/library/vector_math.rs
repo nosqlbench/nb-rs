@@ -203,22 +203,35 @@ fn lid_mle(distances: &[f32], k: f64) -> f64 {
 }
 
 /// `hash_vec(seed, dim)` — deterministic synthetic f32 vector:
-/// element `i` is the xxh3 hash of `(seed, i)` mapped into
+/// element `i` is the SplitMix64 hash of `(seed, i)` mapped into
 /// `[-1, 1)`. The canonical generator for synthetic embeddings —
 /// equal seeds always produce the identical vector, so dataset-
 /// free vector workloads stay replayable. Pairs with `vec_norm`
 /// for unit vectors.
 #[crate::polydat_node(category = Hashing)]
 fn hash_vec(seed: u64, dim: u64) -> Vec<f32> {
-    (0..dim)
-        .map(|i| {
-            let mut key = [0u8; 16];
-            key[..8].copy_from_slice(&seed.to_le_bytes());
-            key[8..].copy_from_slice(&i.to_le_bytes());
-            let h = xxhash_rust::xxh3::xxh3_64(&key);
-            (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
-        })
-        .collect()
+    let dim = dim as usize;
+    let mut out = Vec::with_capacity(dim);
+    for i in 0..dim {
+        let h = crate::library::hash::splitmix64_u64(seed.wrapping_add((i as u64).wrapping_mul(0x9e3779b97f4a7c15)));
+        out.push((h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32);
+    }
+    out
+}
+
+/// `xxhash3_vec(seed, dim)` — deterministic synthetic f32 vector using xxHash3.
+#[crate::polydat_node(category = Hashing)]
+fn xxhash3_vec(seed: u64, dim: u64) -> Vec<f32> {
+    let dim = dim as usize;
+    let mut out = Vec::with_capacity(dim);
+    for i in 0..dim {
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(&seed.to_le_bytes());
+        key[8..].copy_from_slice(&(i as u64).to_le_bytes());
+        let h = xxhash_rust::xxh3::xxh3_64(&key);
+        out.push((h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32);
+    }
+    out
 }
 
 #[cfg(test)]

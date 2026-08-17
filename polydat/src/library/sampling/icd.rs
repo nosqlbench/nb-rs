@@ -472,11 +472,16 @@ fn build_normal_lut(mean: f64, stddev: f64) -> LutF64 {
 /// Sample from a normal distribution `N(mean, stddev)`.
 ///
 /// Signature: `dist_normal(input: f64, mean: f64, stddev: f64) -> f64`
+fn dist_normal_jit_constants(node: &DistNormal) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
+/// Sample from a standard normal distribution `N(mean, stddev)`.
 ///
 /// `input` is a uniform value in `[0, 1)` (typically from
 /// `unit_interval(hash(cycle))`). The LUT is precomputed at
 /// construction; the per-cycle cost is one LUT sample.
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = dist_normal_jit_constants)]
 fn dist_normal(
     input: f64,
     mean: Const<f64>,
@@ -489,10 +494,14 @@ fn dist_normal(
     lut.sample(input)
 }
 
+fn icd_normal_jit_constants(node: &IcdNormal) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
 /// Alias of [`dist_normal`]. Preserved because workload examples
 /// and the host's distribution binding both surface
 /// `icd_normal` as the public DSL name.
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = icd_normal_jit_constants)]
 fn icd_normal(
     input: f64,
     mean: Const<f64>,
@@ -509,8 +518,12 @@ fn build_exponential_lut(rate: f64) -> LutF64 {
     dist_exponential_lut(rate, DEFAULT_RESOLUTION)
 }
 
+fn dist_exponential_jit_constants(node: &DistExponential) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
 /// Sample from an exponential distribution `Exp(rate)`.
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = dist_exponential_jit_constants)]
 fn dist_exponential(
     input: f64,
     rate: Const<f64>,
@@ -521,8 +534,12 @@ fn dist_exponential(
     lut.sample(input)
 }
 
+fn icd_exponential_jit_constants(node: &IcdExponential) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
 /// Alias of [`dist_exponential`].
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = icd_exponential_jit_constants)]
 fn icd_exponential(
     input: f64,
     rate: Const<f64>,
@@ -537,8 +554,12 @@ fn build_uniform_lut(min: f64, max: f64) -> LutF64 {
     dist_uniform_lut(min, max, DEFAULT_RESOLUTION)
 }
 
+fn dist_uniform_jit_constants(node: &DistUniform) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
 /// Sample from a continuous uniform distribution `U(min, max)`.
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = dist_uniform_jit_constants)]
 fn dist_uniform(
     input: f64,
     min: Const<f64>,
@@ -555,8 +576,12 @@ fn build_pareto_lut(scale: f64, shape: f64) -> LutF64 {
     dist_pareto_lut(scale, shape, DEFAULT_RESOLUTION)
 }
 
+fn dist_pareto_jit_constants(node: &DistPareto) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
 /// Sample from a Pareto distribution `Pareto(scale, shape)`.
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = dist_pareto_jit_constants)]
 fn dist_pareto(
     input: f64,
     scale: Const<f64>,
@@ -573,8 +598,12 @@ fn build_zipf_lut(n: u64, exponent: f64) -> LutF64 {
     dist_zipf_lut(n, exponent, DEFAULT_RESOLUTION)
 }
 
+fn dist_zipf_jit_constants(node: &DistZipf) -> Vec<u64> {
+    vec![node.lut.as_ptr() as u64, node.lut.len() as u64]
+}
+
 /// Sample from a Zipf distribution `Zipf(n, exponent)`.
-#[crate::polydat_node(category = Distributions)]
+#[crate::polydat_node(category = Distributions, jit_constants = dist_zipf_jit_constants)]
 fn dist_zipf(
     input: f64,
     n: Const<u64>,

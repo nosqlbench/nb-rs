@@ -25,12 +25,12 @@
 /// A permutation table for noise functions. Built from a seed at init
 /// time, immutable thereafter. The table is doubled (512 entries) to
 /// avoid modular indexing.
-struct PermTable {
-    perm: [u8; 512],
+pub(crate) struct PermTable {
+    pub(crate) perm: [u8; 512],
 }
 
 impl PermTable {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         use xxhash_rust::xxh3::xxh3_64;
         let mut p: Vec<u8> = (0..=255).collect();
         // Fisher-Yates shuffle seeded by hash chain
@@ -48,7 +48,7 @@ impl PermTable {
     }
 
     #[inline]
-    fn hash(&self, i: i32) -> u8 {
+    pub(crate) fn hash(&self, i: i32) -> u8 {
         self.perm[(i & 255) as usize]
     }
 }
@@ -84,7 +84,7 @@ fn grad2d(hash: u8, x: f64, y: f64) -> f64 {
 }
 
 /// Evaluate 1D Perlin noise at a given point.
-fn perlin_1d_algo(perm: &PermTable, x: f64) -> f64 {
+pub(crate) fn perlin_1d_algo(perm: &PermTable, x: f64) -> f64 {
     let xi = x.floor() as i32;
     let xf = x - x.floor();
     let u = fade(xf);
@@ -96,7 +96,7 @@ fn perlin_1d_algo(perm: &PermTable, x: f64) -> f64 {
 }
 
 /// Evaluate 2D Perlin noise at a given point.
-fn perlin_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
+pub(crate) fn perlin_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
     let xi = x.floor() as i32;
     let yi = y.floor() as i32;
     let xf = x - x.floor();
@@ -123,7 +123,7 @@ fn perlin_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
 const F2: f64 = 0.3660254037844386; // (sqrt(3) - 1) / 2
 const G2: f64 = 0.21132486540518713; // (3 - sqrt(3)) / 6
 
-fn simplex_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
+pub(crate) fn simplex_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
     let s = (x + y) * F2;
     let i = (x + s).floor() as i32;
     let j = (y + s).floor() as i32;
@@ -172,6 +172,16 @@ fn simplex_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
 // Polydat Nodes
 // =================================================================
 
+fn perlin_1d_jit_constants(node: &Perlin1d) -> Vec<u64> {
+    vec![node.perm.perm.as_ptr() as u64, node.frequency.to_bits()]
+}
+fn perlin_2d_jit_constants(node: &Perlin2d) -> Vec<u64> {
+    vec![node.perm.perm.as_ptr() as u64, node.frequency.to_bits()]
+}
+fn simplex_2d_jit_constants(node: &Simplex2d) -> Vec<u64> {
+    vec![node.perm.perm.as_ptr() as u64, node.frequency.to_bits()]
+}
+
 /// 1D Perlin noise.
 ///
 /// Signature: `(input: u64) -> (f64)`
@@ -184,7 +194,7 @@ fn simplex_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
 // `Perlin2d`, `Simplex2d` (snake_case → PascalCase).
 impl crate::derive_support::PolydatSetup for PermTable {}
 
-#[crate::polydat_node(category = Noise)]
+#[crate::polydat_node(category = Noise, jit_constants = perlin_1d_jit_constants)]
 fn perlin_1d(
     input: u64,
     seed: crate::derive_support::Const<u64>,
@@ -195,7 +205,7 @@ fn perlin_1d(
     perlin_1d_algo(perm, input as f64 * *frequency)
 }
 
-#[crate::polydat_node(category = Noise)]
+#[crate::polydat_node(category = Noise, jit_constants = perlin_2d_jit_constants)]
 fn perlin_2d(
     x: u64,
     y: u64,
@@ -207,7 +217,7 @@ fn perlin_2d(
     perlin_2d_algo(perm, x as f64 * *frequency, y as f64 * *frequency)
 }
 
-#[crate::polydat_node(category = Noise)]
+#[crate::polydat_node(category = Noise, jit_constants = simplex_2d_jit_constants)]
 fn simplex_2d(
     x: u64,
     y: u64,
@@ -228,7 +238,7 @@ const FBM_LACUNARITY: f64 = 2.0;
 /// FBM persistence (amplitude multiplier per octave). Standard value.
 const FBM_PERSISTENCE: f64 = 0.5;
 
-fn fbm_1d(perm: &PermTable, base_x: f64, frequency: f64, octaves: u32) -> f64 {
+pub(crate) fn fbm_1d(perm: &PermTable, base_x: f64, frequency: f64, octaves: u32) -> f64 {
     let mut total = 0.0;
     let mut freq = frequency;
     let mut amp = 1.0;
@@ -245,7 +255,7 @@ fn fbm_1d(perm: &PermTable, base_x: f64, frequency: f64, octaves: u32) -> f64 {
     total / max_amp
 }
 
-fn fbm_2d(perm: &PermTable, base_x: f64, base_y: f64, frequency: f64, octaves: u32) -> f64 {
+pub(crate) fn fbm_2d(perm: &PermTable, base_x: f64, base_y: f64, frequency: f64, octaves: u32) -> f64 {
     let mut total = 0.0;
     let mut freq = frequency;
     let mut amp = 1.0;
@@ -261,19 +271,18 @@ fn fbm_2d(perm: &PermTable, base_x: f64, base_y: f64, frequency: f64, octaves: u
     total / max_amp
 }
 
+fn fractal_noise_1d_jit_constants(node: &FractalNoise1d) -> Vec<u64> {
+    vec![node.perm.perm.as_ptr() as u64, node.frequency.to_bits(), node.octaves]
+}
+fn fractal_noise_2d_jit_constants(node: &FractalNoise2d) -> Vec<u64> {
+    vec![node.perm.perm.as_ptr() as u64, node.frequency.to_bits(), node.octaves]
+}
+
 /// 1D fractal Brownian motion: layered Perlin noise with decreasing
 /// amplitude at each octave. Produces rich, natural-looking signals.
 /// Output is f64, roughly in [-1, 1]. Lacunarity is fixed at 2.0 and
 /// persistence at 0.5 (standard FBM parameters).
-///
-/// Signature: `(input: u64) -> (f64)`
-///
-/// SRD-80b Phase E — migrated from hand-written `impl PolydatNode`
-/// to `#[polydat_node]` with `PermTable` as a setup-derived field.
-/// Macro emits struct `FractalNoise1d`. Lacunarity / persistence
-/// remain fixed at the prior `with_params` defaults (2.0 / 0.5);
-/// the DSL never exposed them as parameters.
-#[crate::polydat_node(category = Noise)]
+#[crate::polydat_node(category = Noise, jit_constants = fractal_noise_1d_jit_constants)]
 fn fractal_noise_1d(
     input: u64,
     seed: crate::derive_support::Const<u64>,
@@ -288,9 +297,7 @@ fn fractal_noise_1d(
 /// 2D fractal Brownian motion: layered Perlin noise in 2D. Produces
 /// terrain-like spatial variation. Lacunarity is fixed at 2.0 and
 /// persistence at 0.5 (standard FBM parameters).
-///
-/// Signature: `(x: u64, y: u64) -> (f64)`
-#[crate::polydat_node(category = Noise)]
+#[crate::polydat_node(category = Noise, jit_constants = fractal_noise_2d_jit_constants)]
 fn fractal_noise_2d(
     x: u64,
     y: u64,

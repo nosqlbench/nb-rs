@@ -125,7 +125,7 @@ fn random_in(partition: Ext<Partition>, seed: u64) -> u64 {
     if card == 0 {
         partition.start_ord
     } else {
-        partition.start_ord + xxhash_rust::xxh3::xxh3_64(&seed.to_le_bytes()) % card
+        partition.start_ord + crate::library::hash::splitmix64_u64(seed) % card
     }
 }
 

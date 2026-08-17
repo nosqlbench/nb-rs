@@ -28,7 +28,6 @@ use crate::ast::Value;
 #[cfg(test)]
 use crate::ast::{PolydatNode, PortType};
 use crate::derive_support::{Const, PolydatSetup};
-use xxhash_rust::xxh3::xxh3_64;
 
 /// Convert a u64 hash to a value in the unit interval [0.0, 1.0).
 ///
@@ -56,8 +55,8 @@ fn hash_to_unit(v: u64) -> f64 {
 /// scalar `u64 -> u64` body.
 #[crate::polydat_node(category = Probability)]
 fn fair_coin(input: u64) -> u64 {
-    let h = xxh3_64(&input.to_le_bytes());
-    h % 2
+    let h = crate::library::hash::splitmix64_u64(input);
+    h & 1
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +91,7 @@ fn unfair_coin(input: u64, p: Const<f64>) -> u64 {
     if !(0.0..=1.0).contains(&*p) {
         panic!("unfair_coin probability p must be in [0.0, 1.0], got {}", *p);
     }
-    let h = xxh3_64(&input.to_le_bytes());
+    let h = crate::library::hash::splitmix64_u64(input);
     let unit = hash_to_unit(h);
     if unit < *p { 1 } else { 0 }
 }
@@ -148,7 +147,7 @@ fn chance(input: u64, p: Const<f64>) -> u64 {
     if !(0.0..=1.0).contains(&*p) {
         panic!("chance probability p must be in [0.0, 1.0], got {}", *p);
     }
-    let h = xxh3_64(&input.to_le_bytes());
+    let h = crate::library::hash::splitmix64_u64(input);
     let unit = hash_to_unit(h);
     let result: f64 = if unit < *p { 1.0 } else { 0.0 };
     result.to_bits()
@@ -208,15 +207,15 @@ fn n_of(input: u64, n: Const<u64>, m: Const<u64>) -> u64 {
 fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
     let window = input / m;
     let pos = input % m;
-    // Hash this position within the window
-    let my_hash = xxh3_64(&[window.to_le_bytes(), pos.to_le_bytes()].concat());
+    // Hash this position within the window using fast register mix
+    let my_hash = crate::library::hash::splitmix64_u64(window.wrapping_mul(0x517cc1b727220a95) ^ pos.wrapping_mul(0x9e3779b97f4a7c15));
     // Count how many positions in the same window hash lower
     let mut rank: u64 = 0;
     for i in 0..m {
         if i == pos {
             continue;
         }
-        let other_hash = xxh3_64(&[window.to_le_bytes(), i.to_le_bytes()].concat());
+        let other_hash = crate::library::hash::splitmix64_u64(window.wrapping_mul(0x517cc1b727220a95) ^ i.wrapping_mul(0x9e3779b97f4a7c15));
         if other_hash < my_hash || (other_hash == my_hash && i < pos) {
             rank += 1;
         }
@@ -257,7 +256,7 @@ fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
 #[crate::polydat_node(category = Probability)]
 fn one_of(input: u64, values: Const<Vec<String>>) -> String {
     assert!(!values.is_empty(), "one_of: values must be non-empty");
-    let h = xxh3_64(&input.to_le_bytes());
+    let h = crate::library::hash::splitmix64_u64(input);
     let idx = (h % values.len() as u64) as usize;
     values[idx].clone()
 }
@@ -354,7 +353,7 @@ fn one_of_weighted(
     #[poly_const(WeightedTable::parse, from = spec)] table: &WeightedTable,
 ) -> String {
     let _ = spec;
-    let h = xxh3_64(&input.to_le_bytes());
+    let h = crate::library::hash::splitmix64_u64(input);
     let unit = hash_to_unit(h);
     // Binary search: find the first cumulative entry >= unit.
     let idx = match table.cumulative.binary_search_by(|c| {

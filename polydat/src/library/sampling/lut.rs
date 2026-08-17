@@ -202,9 +202,15 @@ fn parse_empirical_lut(spec: &str) -> LutF64 {
 
 /// Sample from an empirical distribution defined by a list of
 /// data points. The data points become the LUT entries
+fn dist_empirical_jit_constants(node: &DistEmpirical) -> Vec<u64> {
+    vec![node.table.as_ptr() as u64, node.table.len() as u64]
+}
+
+/// Sample from an empirical distribution defined by a list of
+/// data points. The data points become the LUT entries
 /// (sorted); linear interpolation gives continuous sampling.
 /// Input should be in `[0, 1]` (from `unit_interval`).
-#[crate::polydat_node(category = Probability)]
+#[crate::polydat_node(category = Probability, jit_constants = dist_empirical_jit_constants)]
 fn dist_empirical(
     input: f64,
     spec: crate::derive_support::Const<&str>,

@@ -12,7 +12,6 @@
 //!    time, then extract variable-length slices at cycle time using
 //!    hash-based offset selection. Fast hot path — just a memcpy.
 
-use xxhash_rust::xxh3::xxh3_64;
 #[cfg(test)]
 use crate::ast::{PolydatNode, Value};
 
@@ -39,7 +38,7 @@ fn bytes_from_hash(
     let mut result = Vec::with_capacity(sz);
     let chunks = sz.div_ceil(8);
     for i in 0..chunks {
-        let h = xxh3_64(&(input.wrapping_add(i as u64)).to_le_bytes());
+        let h = crate::library::hash::splitmix64_u64(input.wrapping_add(i as u64));
         let take = (sz - result.len()).min(8);
         result.extend_from_slice(&h.to_le_bytes()[..take]);
     }
@@ -65,7 +64,7 @@ impl ByteImage {
         let mut image = Vec::with_capacity(image_size);
         let chunks = image_size.div_ceil(8);
         for i in 0..chunks {
-            let h = xxh3_64(&(seed.wrapping_add(i as u64)).to_le_bytes());
+            let h = crate::library::hash::splitmix64_u64(seed.wrapping_add(i as u64));
             let take = (image_size - image.len()).min(8);
             image.extend_from_slice(&h.to_le_bytes()[..take]);
         }
@@ -144,7 +143,7 @@ impl CharImage {
         assert!(!chars.is_empty(), "charset must not be empty");
         let mut image = String::with_capacity(size);
         for i in 0..size {
-            let h = xxh3_64(&(seed.wrapping_add(i as u64)).to_le_bytes());
+            let h = crate::library::hash::splitmix64_u64(seed.wrapping_add(i as u64));
             image.push(chars[(h as usize) % chars.len()]);
         }
         Self { image }
@@ -221,21 +220,42 @@ fn byte_slice(
     input[start..end].to_vec()
 }
 
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
 /// Encode bytes as lowercase hexadecimal string.
-/// SRD-80 PR B.13 migration.
 #[crate::polydat_node(category = ByteBuffers)]
 fn to_hex(input: &[u8]) -> String {
-    input.iter().map(|b| format!("{b:02x}")).collect()
+    let mut out = String::with_capacity(input.len() * 2);
+    for &b in input {
+        out.push(HEX_CHARS[(b >> 4) as usize] as char);
+        out.push(HEX_CHARS[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[inline(always)]
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Decode a hexadecimal string to bytes.
-/// SRD-80 PR B.13 migration.
 #[crate::polydat_node(category = ByteBuffers)]
 fn from_hex(input: &str) -> Vec<u8> {
-    (0..input.len())
-        .step_by(2)
-        .filter_map(|i| input.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
-        .collect()
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if let (Some(h), Some(l)) = (hex_val(bytes[i]), hex_val(bytes[i + 1])) {
+            out.push((h << 4) | l);
+        }
+        i += 2;
+    }
+    out
 }
 
 // --- charset parser (shared with string::Combinations) ---
