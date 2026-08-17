@@ -73,6 +73,7 @@ fn mock_const_args(name: &str, slot_type: &SlotType) -> ConstArg {
     }
 }
 
+#[ignore = "Multi-concurrency benchmark suite over all 680+ functions; run explicitly via `cargo test --test tier_concurrency_bench -- --ignored --nocapture`"]
 #[test]
 fn run_all_functions_concurrency_benchmarks() {
     let reg = registry();
