@@ -609,7 +609,7 @@ fn macro_handle_passthrough_with_downcast() {
 #[test]
 fn macro_wrapper_types_disable_jit() {
     use polydat::ast::PolydatNode;
-    assert!(MacroPilotBytesPassthrough::default().compiled_u64().is_none());
+    // Json and Handle types are not JIT-eligible (SRD-111 supports String and Bytes via arena handles)
     assert!(MacroPilotJsonToString::default().compiled_u64().is_none());
     assert!(MacroPilotHandlePassthrough::default().compiled_u64().is_none());
 }
@@ -1065,13 +1065,12 @@ fn macro_jit_f64_return_writes_bit_pattern_to_u64_buffer() {
 }
 
 #[test]
-fn macro_jit_ineligible_string_arg_node_skips_compiled_u64() {
+fn macro_jit_string_arg_node_emits_compiled_u64_via_arena() {
     use polydat::ast::PolydatNode;
     let node = MacroPilotStringPassthrough::default();
-    assert!(node.compiled_u64().is_none(),
-        "String arg makes node JIT-ineligible; compiled_u64 must NOT be emitted");
-    assert_eq!(node.jit_constants(), Vec::<u64>::new(),
-        "JIT-ineligible node returns empty jit_constants");
+    // Under SRD-111, String wire arguments emit Phase-2 compiled_u64 via CycleArena
+    assert!(node.compiled_u64().is_some(),
+        "String arg is JIT-eligible under SRD-111 via CycleArena");
 }
 
 #[test]
