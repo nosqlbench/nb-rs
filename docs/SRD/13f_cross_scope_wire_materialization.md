@@ -5,7 +5,7 @@ materialization gradient: inlined const / value-only cell /
 read-write cell, shadow suppression, value-clone economy)
 has moved into the polydat crate:
 
-- [polydat/docs/design/wire_materialization.md](../../polydat/docs/design/wire_materialization.md)
+- [polydat/docs/design/wire_materialization.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/wire_materialization.md)
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
@@ -21,12 +21,12 @@ rule)" added 2026-05-11 as the canonical synthesizer contract.
 **Owner:** polydat (kernel construction, cell mechanism,
   matter interpretation), nbrs-runtime (scope synthesizers,
   dispenser wires layer)
-**Cross-refs:** SRD-13 (GK modules), [scope_model](../../polydat/docs/design/scope_model.md)
+**Cross-refs:** SRD-13 (GK modules), [scope_model](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/scope_model.md)
   (visibility rules, the "Default: Immutable Propagation" clause
   this SRD updates), SRD-13d (op-template scope layer),
   SRD-13e (scope-as-module — the formal typed protocol this SRD's
-  wiring is materialized within), [polydat_engines](../../polydat/docs/design/engines.md)
-  (per-scope canonical kernel cache), [subcontext_construction](../../polydat/docs/design/subcontext_construction.md)
+  wiring is materialized within), [polydat_engines](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/engines.md)
+  (per-scope canonical kernel cache), [subcontext_construction](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/subcontext_construction.md)
   (parent-supervised subcontext construction), SRD-68
   (dispenser-owned Polydat context)
 
@@ -38,7 +38,7 @@ How a wire defined in an outer scope becomes readable (and
 optionally writable) from an inner scope's kernel — the
 architectural model, read invariant, write contract, and
 materialization gradient — is specified in
-[polydat/docs/design/wire_materialization.md](../../polydat/docs/design/wire_materialization.md).
+[polydat/docs/design/wire_materialization.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/wire_materialization.md).
 
 This file picks up at the **synthesizer rule** — how scope
 synthesizers (nbrs-runtime layer) build each subscope's

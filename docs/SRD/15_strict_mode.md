@@ -293,7 +293,7 @@ skips the check.
 Constructors stay infallible. The validator is the
 authoritative check; a node that forgets to declare a constraint
 is the bug surface, and the
-[fuzz test](../../polydat/tests/fuzz_type_adapters.rs) exists
+[fuzz test](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/tests/fuzz_type_adapters.rs) exists
 to find those gaps. When a random DAG triggers a constructor
 panic, the fix is adding the missing check, not making the
 constructor fallible.
@@ -424,7 +424,7 @@ parent/child relationship: workload → phase → `for_each`
 iteration. Each compose step is its own [`PragmaSet`], its own
 `PolydatProgram`, its own state.
 
-[`PragmaSet`]: ../../polydat/src/dsl/pragmas.rs
+[`PragmaSet`]: https://github.com/nosqlbench/polydat/blob/main/crates/polydat/src/dsl/pragmas.rs
 
 If you're confused about which combinator is at play, SRD 13b is
 the reference. Pragma scope rules apply only to the scope-

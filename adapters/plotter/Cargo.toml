@@ -12,7 +12,7 @@ homepage.workspace = true
 [dependencies]
 nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1" }
 nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
-polydat = { path = "../../polydat", version = "0.1.0" }
+polydat = "0.2"
 # Portable terminal-size + is-tty detection (Unix ioctl + Windows
 # console API behind one API), consistent with the rest of the
 # terminal stack and the shadow-terminal test harness.

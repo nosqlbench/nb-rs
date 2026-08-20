@@ -5,7 +5,7 @@ as part of the import-first reorganization (see
 [docs/polydat_srd_audit.md](../polydat_srd_audit.md)).
 
 **New location:**
-[polydat/docs/design/none_semantics.md](../../polydat/docs/design/none_semantics.md)
+[polydat/docs/design/none_semantics.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/none_semantics.md)
 
 The three orthogonal None-propagation rules (kernel
 input None-pass-through, string-interpolation None

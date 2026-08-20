@@ -3570,14 +3570,15 @@ dependencies = [
 
 [[package]]
 name = "polydat"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fa11bf2a6b4f4e62e93eb58b8544ac29825d2386d3a26dd42e97da0f34b8d5"
 dependencies = [
  "base64",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",
  "cranelift-module",
- "criterion",
  "data-encoding",
  "half",
  "indexmap",
@@ -3587,7 +3588,6 @@ dependencies = [
  "paste",
  "petgraph",
  "polydat-derive",
- "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -3601,7 +3601,9 @@ dependencies = [
 
 [[package]]
 name = "polydat-derive"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b002709082d6376272dbea1bb66e88297d93960183555c7a0c5784c1c5a39a9f"
 dependencies = [
  "proc-macro2",
  "quote",

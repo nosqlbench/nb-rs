@@ -6,14 +6,12 @@
 //! edges) of the Subsystem Treatment Standard
 //! (`docs/SRD/00b_subsystem_standard.md`) made machine-checkable.
 //!
-//! - **D1** — polydat is standalone: its only internal dependency
-//!   is `polydat-derive` (it stays independently extractable).
 //! - **D2** — no upward edges: every `[dependencies]` edge points to
 //!   a strictly lower layer (subsumes "foundation crates never depend
 //!   on the integration / presentation tier", i.e. D3).
 //! - **D4** — adapters don't depend on adapters, except the
 //!   allowlisted `testkit → stdout`.
-//! - **D6** — no non-polydat crate reaches past polydat's public
+//! - **D6** — no workspace crate reaches past polydat's public
 //!   surface into a deep internal path.
 //! - **D5** — consumers honor each crate's declared public surface.
 //!   Staged `#[ignore]` until `nbrs-runtime`'s ~50-module surface is
@@ -34,26 +32,29 @@ fn layer(crate_name: &str) -> Option<u32> {
         // L0 — leaf substrates (zero internal deps). cassandra-cpp is
         // a vendored fork; it has no internal deps, so L0 keeps the
         // cql→cassandra edge valid without special-casing.
-        "polydat-derive" | "nbrs-errorhandler" | "cassandra-cpp" => 0,
+        "nbrs-errorhandler" | "cassandra-cpp" => 0,
         // SRD-86 §"The metric-reader surface" — metricsql is the query
         // language ATOP nbrs-metrics' data-access library: it evaluates
         // over the metrics `queryapi` (Vector shape + MetricAccess), so
-        // it sits above metrics (L2) and polydat (L1). No longer a
+        // it sits above metrics (L1). No longer a
         // standalone L0 leaf, by design.
-        "nbrs-metricsql" => 3,
+        "nbrs-metricsql" => 2,
         // SRD-86 — the optimizer algorithms are an inventory PLUGIN: they
         // register against the core contract (defined in nbrs-runtime) and
         // are discovered via inventory, so the crate depends on the core and
         // sits ABOVE it, exactly like an adapter. The core never names it.
-        "nbrs-optimizers" => 5,
-        "polydat" => 1,
-        "nbrs-metrics" | "nbrs-workload" => 2,
-        "nbrs-rate" | "nbrs-adapter-openapi" => 3,
-        "nbrs-runtime" => 4,
-        "nbrs-adapter-stdout" | "nbrs-adapter-http" | "nbrs-adapter-plotter"
-        | "nbrs-adapter-cql" | "nbrs-tui" | "nbrs-web" => 5,
-        "nbrs-adapter-testkit" => 6,
-        "nbrs" => 7,
+        "nbrs-optimizers" => 4,
+        "nbrs-metrics" | "nbrs-workload" => 1,
+        "nbrs-rate" | "nbrs-adapter-openapi" => 2,
+        "nbrs-runtime" => 3,
+        "nbrs-adapter-stdout"
+        | "nbrs-adapter-http"
+        | "nbrs-adapter-plotter"
+        | "nbrs-adapter-cql"
+        | "nbrs-tui"
+        | "nbrs-web" => 4,
+        "nbrs-adapter-testkit" => 5,
+        "nbrs" => 6,
         _ => return None,
     })
 }
@@ -93,9 +94,10 @@ fn workspace_members(root: &Path) -> Vec<PathBuf> {
                 break;
             }
             if let Some(start) = t.find('"')
-                && let Some(end) = t[start + 1..].find('"') {
-                    out.push(root.join(&t[start + 1..start + 1 + end]));
-                }
+                && let Some(end) = t[start + 1..].find('"')
+            {
+                out.push(root.join(&t[start + 1..start + 1 + end]));
+            }
         }
     }
     out
@@ -156,9 +158,10 @@ fn parse_manifest(dir: &Path) -> Manifest {
             Sec::Package => {
                 if let Some(v) = line.strip_prefix("name")
                     && let Some(q) = v.find('"')
-                        && let Some(end) = v[q + 1..].find('"') {
-                            name = v[q + 1..q + 1 + end].to_string();
-                        }
+                    && let Some(end) = v[q + 1..].find('"')
+                {
+                    name = v[q + 1..q + 1 + end].to_string();
+                }
             }
             Sec::Deps | Sec::DevDeps => {
                 // dep key is the token before `=`, then before any `.`
@@ -179,7 +182,11 @@ fn parse_manifest(dir: &Path) -> Manifest {
         }
     }
     assert!(!name.is_empty(), "no package name in {}", dir.display());
-    Manifest { name, deps, dev_deps }
+    Manifest {
+        name,
+        deps,
+        dev_deps,
+    }
 }
 
 /// Build the internal dependency graph (edges restricted to workspace crates).
@@ -207,18 +214,6 @@ fn d0_every_crate_has_a_layer() {
     assert!(
         missing.is_empty(),
         "workspace crates without a layer in SRD-05 (add them to `layer()` + the SRD): {missing:?}"
-    );
-}
-
-#[test]
-fn d1_polydat_standalone() {
-    let g = load_graph();
-    let polydat = &g["polydat"];
-    let expected: BTreeSet<String> = ["polydat-derive".to_string()].into_iter().collect();
-    assert_eq!(
-        polydat.deps, expected,
-        "D1: polydat must depend ONLY on polydat-derive (keeps it extractable). Found: {:?}",
-        polydat.deps
     );
 }
 
@@ -270,11 +265,6 @@ fn d6_no_polydat_deep_paths() {
     let root = workspace_root();
     let mut hits = Vec::new();
     for member in workspace_members(&root) {
-        let crate_name = member.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        // polydat owns these paths; skip the crate itself and its derive macro.
-        if crate_name == "polydat" || crate_name == "polydat-derive" {
-            continue;
-        }
         let src = member.join("src");
         if src.is_dir() {
             scan_rs(&src, FORBIDDEN, &mut hits);
@@ -288,21 +278,24 @@ fn d6_no_polydat_deep_paths() {
 }
 
 fn scan_rs(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
             scan_rs(&p, needles, hits);
         } else if p.extension().and_then(|s| s.to_str()) == Some("rs")
-            && let Ok(txt) = fs::read_to_string(&p) {
-                for (i, line) in txt.lines().enumerate() {
-                    for n in needles {
-                        if line.contains(n) {
-                            hits.push(format!("{}:{}: {}", p.display(), i + 1, line.trim()));
-                        }
+            && let Ok(txt) = fs::read_to_string(&p)
+        {
+            for (i, line) in txt.lines().enumerate() {
+                for n in needles {
+                    if line.contains(n) {
+                        hits.push(format!("{}:{}: {}", p.display(), i + 1, line.trim()));
                     }
                 }
             }
+        }
     }
 }
 
@@ -319,21 +312,42 @@ fn scan_rs(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
 fn d5_public_surface() {
     // (crate dir, modules that must be `pub(crate) mod`). Only
     // *workspace-internal* crates appear here: their public API is "what the
-    // workspace consumes". Standalone, extractable libraries (polydat,
-    // nbrs-metricsql, nbrs-rate, nbrs-errorhandler) are exempt — their public
+    // workspace consumes". Standalone libraries (nbrs-metricsql, nbrs-rate,
+    // nbrs-errorhandler) are exempt — their public
     // API is their own library contract, broader than any one consumer.
     let internal: &[(&str, &[&str])] = &[
         (
             "nbrs-tui",
-            &["widgets", "frame_broker", "prompt_state", "readout_panel", "readout_sink", "tui_sink"],
+            &[
+                "widgets",
+                "frame_broker",
+                "prompt_state",
+                "readout_panel",
+                "readout_sink",
+                "tui_sink",
+            ],
         ),
         (
             "nbrs-runtime",
             &[
-                "adapters", "params", "scope_elision", "phase_filter",
-                "phase_params", "scheduler", "profiler", "trace_router", "executor", "error_policy",
-                "stop_conditions", "workload_shell", "describe", "wrapper_registrations", "relevancy",
-                "fiber_pool", "daemon_pool", "readout_context",
+                "adapters",
+                "params",
+                "scope_elision",
+                "phase_filter",
+                "phase_params",
+                "scheduler",
+                "profiler",
+                "trace_router",
+                "executor",
+                "error_policy",
+                "stop_conditions",
+                "workload_shell",
+                "describe",
+                "wrapper_registrations",
+                "relevancy",
+                "fiber_pool",
+                "daemon_pool",
+                "readout_context",
             ],
         ),
     ];
@@ -341,8 +355,8 @@ fn d5_public_surface() {
     let mut violations = Vec::new();
     for (crate_dir, mods) in internal {
         let lib = root.join(crate_dir).join("src/lib.rs");
-        let txt = fs::read_to_string(&lib)
-            .unwrap_or_else(|e| panic!("read {}: {e}", lib.display()));
+        let txt =
+            fs::read_to_string(&lib).unwrap_or_else(|e| panic!("read {}: {e}", lib.display()));
         for m in *mods {
             let crated = format!("pub(crate) mod {m};");
             if !txt.contains(&crated) {
@@ -359,27 +373,6 @@ fn d5_public_surface() {
         violations.is_empty(),
         "D5: declared-internal modules must stay `pub(crate)` (don't re-grow the surface):\n  {}",
         violations.join("\n  ")
-    );
-}
-
-/// D7 — polydat stays self-contained: neither its docs nor its source
-/// reference the nbrs `docs/SRD/` layer. polydat is independently
-/// extractable (D1); its design must not depend on the consumer's docs,
-/// or lifting it out would leave dangling references. This is the
-/// docs-level analog of D1/D6. Conceptual mentions of the host ("the
-/// host", even "nbrs-runtime" in migration notes) are fine — only
-/// references *into* `docs/SRD/` are forbidden.
-#[test]
-fn d7_polydat_self_contained() {
-    let root = workspace_root();
-    let mut hits = Vec::new();
-    for sub in ["polydat/docs", "polydat/src"] {
-        scan_for(&root.join(sub), "docs/SRD", &mut hits);
-    }
-    assert!(
-        hits.is_empty(),
-        "D7: polydat must not reference the nbrs `docs/SRD/` layer (keep it extractable):\n  {}",
-        hits.join("\n  ")
     );
 }
 
@@ -432,7 +425,9 @@ fn a1_output_channel_no_fd_bypass() {
 }
 
 fn scan_no_fd_writes_dir(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -446,7 +441,9 @@ fn scan_no_fd_writes_dir(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
 /// Scan one `.rs` file for `needles`, skipping comment text and the trailing
 /// `#[cfg(test)]` test module (tests legitimately print for assertions).
 fn scan_no_fd_writes_file(path: &Path, needles: &[&str], hits: &mut Vec<String>) {
-    let Ok(txt) = fs::read_to_string(path) else { return };
+    let Ok(txt) = fs::read_to_string(path) else {
+        return;
+    };
     for (i, raw) in txt.lines().enumerate() {
         // A test module (conventionally at the file tail) ends production
         // code: stop scanning the file at its start.
@@ -464,27 +461,6 @@ fn scan_no_fd_writes_file(path: &Path, needles: &[&str], hits: &mut Vec<String>)
             if code.contains(n) {
                 hits.push(format!("{}:{}: {}", path.display(), i + 1, raw.trim()));
             }
-        }
-    }
-}
-
-/// Recursively scan `.md` / `.rs` files under `dir` for `needle`.
-fn scan_for(dir: &Path, needle: &str, hits: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            scan_for(&p, needle, hits);
-        } else {
-            let ext = p.extension().and_then(|s| s.to_str());
-            if matches!(ext, Some("md") | Some("rs"))
-                && let Ok(txt) = fs::read_to_string(&p) {
-                    for (i, line) in txt.lines().enumerate() {
-                        if line.contains(needle) {
-                            hits.push(format!("{}:{}: {}", p.display(), i + 1, line.trim()));
-                        }
-                    }
-                }
         }
     }
 }

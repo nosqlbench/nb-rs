@@ -16,7 +16,7 @@ the const binding contract Plan A/B, non-deterministic node
 exclusion, input spaces, capture context, compilation
 levels) has moved into the polydat crate:
 
-- [polydat/docs/design/evaluation_model.md](../../polydat/docs/design/evaluation_model.md)
+- [polydat/docs/design/evaluation_model.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/evaluation_model.md)
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 

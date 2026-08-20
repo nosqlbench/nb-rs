@@ -5,7 +5,7 @@ as part of the import-first reorganization (see
 [docs/polydat_srd_audit.md](../polydat_srd_audit.md)).
 
 **New location:**
-[polydat/docs/design/scope_model.md](../../polydat/docs/design/scope_model.md)
+[polydat/docs/design/scope_model.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/scope_model.md)
 
 How Polydat kernels compose across lifecycle boundaries
 (phases, `for_each` iterations, scope groups) with

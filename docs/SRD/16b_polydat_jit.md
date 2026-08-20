@@ -5,7 +5,7 @@ as part of the import-first reorganization (see
 [docs/polydat_srd_audit.md](../polydat_srd_audit.md)).
 
 **New location:**
-[polydat/docs/design/jit_boundary.md](../../polydat/docs/design/jit_boundary.md)
+[polydat/docs/design/jit_boundary.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/jit_boundary.md)
 
 The Phase-3 native-kernel call boundary, Cranelift
 extern-helper table, setjmp/longjmp predicate-violation

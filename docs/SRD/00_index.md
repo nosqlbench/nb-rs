@@ -13,8 +13,8 @@ Every subsystem here is held to the
 [Subsystem Treatment Standard](00b_subsystem_standard.md) — a Contract
 surface, axiom-tier invariants, mechanism detail, cross-references, and
 machine-checked dependency edges. **polydat** is the worked exemplar;
-its substrate design lives in `polydat/docs/` because it is an
-independently extractable crate.
+its substrate design lives in the external
+[Polydat repository](https://github.com/nosqlbench/polydat/tree/main/crates/polydat/docs).
 
 ---
 
@@ -28,7 +28,7 @@ independently extractable crate.
 | 01 | [System Overview](01_system_overview.md) | Crate map, data flow, build structure |
 | 02 | [Concurrency Model](02_concurrency_model.md) | Async fibers, tokio runtime, cycle source, rate limiting |
 | 03 | [Error Handling](03_error_handling.md) | Error scoping, routing, retry semantics, silent failure policy |
-| 05 | [Crate & Module Dependency Rules](05_dependency_rules.md) | Dependency layers (L0–L7), the Contract Registry, no-upward-imports, polydat-standalone; **machine-checked** by `nbrs/tests/architecture_rules.rs`. Pillar 5 of the Subsystem Treatment Standard |
+| 05 | [Crate & Module Dependency Rules](05_dependency_rules.md) | Dependency layers (L0–L6), the Contract Registry, no-upward-imports, external Polydat boundary; workspace edges are **machine-checked** by `nbrs/tests/architecture_rules.rs`. Pillar 5 of the Subsystem Treatment Standard |
 | 06 | [Rate Limiter — Contract & Axioms](06_rate_limiter.md) | Front door for **nbrs-rate**: tight 3-type surface, async-non-blocking acquire, live retarget |
 | 07 | [Error Routing — Contract & Axioms](07_error_routing.md) | Front door for **nbrs-errorhandler**: pattern→handler-chain router, every-error-routed, standalone |
 | 82 | [Uniform Execution Shells](82_uniform_execution_shells.md) *(DRAFT)* | Scenario graph / phase / stanza / op as one recursive execution shell (body + policy + outcome); two-axis `Outcome` (`Disposition` × `Validity`) replacing `PhaseStatus`; `ErrorPolicy` = per-op router that is also its own resolver (depth-inherit / breadth-share, value-equality, scope-init bound); `stop` cause `Interrupt` vs `Fault`. Extends SRD-03 + SRD-76. Stop conditions are orthogonal — SRD-83 |
@@ -38,16 +38,17 @@ independently extractable crate.
 
 ### 2. Polydat Kernel (polydat)
 
-polydat is the standalone substrate **exemplar**: its authoritative substrate design
-lives in `polydat/docs/` (axiom + mechanism tiers). The documents below are the
+polydat is the external substrate **exemplar**: its authoritative substrate design
+lives in the [Polydat repository](https://github.com/nosqlbench/polydat/tree/main/crates/polydat/docs)
+(axiom + mechanism tiers). The documents below are the
 **nbrs-side** integration view — start at [09 Polydat Contract](09_polydat_contract.md)
-for the public surface nb-rs consumes and the map into `polydat/docs/`. Several entries
+for the public surface nb-rs consumes and the map into the upstream docs. Several entries
 (12, 13c, 16, 16b, 67, 74) are redirect stubs to their polydat home.
 
 | # | Document | Scope |
 |---|----------|-------|
 | 09 | [Polydat Contract Surface](09_polydat_contract.md) | **Front door:** the public boundary nb-rs consumes (`PolydatKernel`, `Value`, `compile_polydat`, `PolydatMatter`, `audit`, …) + the map from each polydat-integration SRD to its authoritative `polydat/docs/` home. Pillar 1 for the exemplar |
-| 10 | [GK Language and Compilation](10_polydat_language.md) | nbrs-side framing only (output selection, unified state holder, op-level bindings); **the definitive surface-language grammar spec+guide is [polydat_grammar.md](../../polydat/docs/design/polydat_grammar.md)**, with **Polydat as the unified access surface for runtime state** |
+| 10 | [GK Language and Compilation](10_polydat_language.md) | nbrs-side framing only (output selection, unified state holder, op-level bindings); **the definitive surface-language grammar spec+guide is [polydat_grammar.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/polydat_grammar.md)**, with **Polydat as the unified access surface for runtime state** |
 | 11 | [GK Evaluation Model](11_polydat_evaluation.md) | Kernel/state split, input spaces, two lifecycles (effectively-const / dynamic), provenance-based invalidation, const-binding contract |
 | 12 | [GK Standard Library](12_polydat_stdlib.md) | Node catalog, type signatures, P3 JIT eligibility, runtime context nodes |
 | 13 | [GK Modules](13_polydat_modules.md) | File-based modules, inlining resolution, compiler diagnostic event stream |

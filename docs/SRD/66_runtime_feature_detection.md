@@ -471,7 +471,7 @@ The three stdlib node functions that back this SRD —
 `log_warn` / `log_error` (in-binding diagnostics) — are
 polydat-substrate and have moved into the polydat crate:
 
-- [polydat/docs/design/library_catalog.md §"Diagnostic" and §"Branched dispatch and structured-body assertions"](../../polydat/docs/design/library_catalog.md)
+- [polydat/docs/design/library_catalog.md §"Diagnostic" and §"Branched dispatch and structured-body assertions"](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/library_catalog.md)
   — hoisted 2026-05-30 into the unified library catalog
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 

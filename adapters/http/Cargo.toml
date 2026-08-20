@@ -12,7 +12,7 @@ readme.workspace = true
 
 [dependencies]
 nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1", default-features = false }
-polydat = { path = "../../polydat", version = "0.1.0" }
+polydat = "0.2"
 nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
 reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1"

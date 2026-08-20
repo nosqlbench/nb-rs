@@ -66,7 +66,7 @@ nbrs-workload (YAML→PolyStreamer-binding desugaring).
   unit-of-work that maps a coordinate tuple to a
   `ScopedKernelInstance<PolydatKernel>`; it shares the
   parent-gating discipline with `SubcontextBuilder`.
-- [polydat comprehension spec](../../polydat/docs/design/comprehension_forms.md)
+- [polydat comprehension spec](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/comprehension_forms.md)
   — the completed migration moved the AST + parser + evaluator
   + synthesizer into polydat. PolyStreamer is the next phase: a
   runtime value with grammar-level identity, lifting the type

@@ -4,7 +4,7 @@ The module-as-source-file system (file-based modules, inlining
 mechanics, resolution chain, strict mode) has moved into the
 polydat crate:
 
-- [polydat/docs/design/module_system.md](../../polydat/docs/design/module_system.md)
+- [polydat/docs/design/module_system.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/module_system.md)
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 

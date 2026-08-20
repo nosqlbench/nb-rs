@@ -56,7 +56,7 @@ openapi = ["dep:nbrs-adapter-openapi", "dep:openapiv3"]
 flamegraph = ["nbrs-runtime/flamegraph"]
 
 [dependencies]
-polydat = { path = "../polydat", version = "0.1.0" }
+polydat = "0.2"
 # The sqlite metrics-access backend now lives in nbrs-metrics (SRD-86
 # §"The metric-reader surface"); the CLI locates it via the queryapi.
 nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1", features = ["sqlite"] }

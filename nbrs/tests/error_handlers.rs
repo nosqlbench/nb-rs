@@ -23,7 +23,8 @@ fn nbrs() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     // Run from workspace root so relative workload paths resolve.
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd
 }
@@ -36,14 +37,12 @@ fn write_workload(label: &str, body: &str) -> PathBuf {
     // `.cargo/config.toml` redirects TMPDIR to `target/test-tmp/`,
     // which cargo does not create for us — the first test to write
     // there would fail otherwise. Create-on-demand.
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
     dir.push(format!(
         "nbrs_errhandler_{label}_{}.yaml",
         std::process::id(),
     ));
-    let mut f = std::fs::File::create(&dir)
-        .unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
+    let mut f = std::fs::File::create(&dir).unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
     f.write_all(body.as_bytes())
         .unwrap_or_else(|e| panic!("write {dir:?}: {e}"));
     dir
@@ -64,7 +63,9 @@ fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
         "nbrs-errh-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -78,8 +79,7 @@ fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
         cmd.arg(a);
     }
     let out = cmd.output().expect("failed to exec nbrs");
-    let session_log = std::fs::read_to_string(session_path.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session_path.join("session.log")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&session_parent);
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
@@ -149,25 +149,33 @@ blocks:
 /// message is only printed on successful completion).
 #[test]
 fn stop_aborts_on_first_error() {
-    let wl = write_workload("stop", r#"
+    let wl = write_workload(
+        "stop",
+        r#"
 blocks:
   main:
     ops:
       insert:
         stmt: "op"
         result-error-rate: 1.0
-"#);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=stop",
-    ]);
+"#,
+    );
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=stop",
+        ],
+    );
     assert!(!ok, "run should have failed, stderr={stderr}");
     // Line-based: the completion marker is a bare `done.` on stderr or
     // a `… INF done.` session.log line — either ends the line with it.
-    assert!(!stderr.lines().any(|l| l.trim_end().ends_with("done.")),
-        "run should not have completed, stderr={stderr}");
+    assert!(
+        !stderr.lines().any(|l| l.trim_end().ends_with("done.")),
+        "run should not have completed, stderr={stderr}"
+    );
 }
 
 /// `errors=warn`: log each error to stderr, keep running. Every
@@ -177,30 +185,44 @@ blocks:
 #[test]
 fn warn_logs_and_continues() {
     let wl = write_workload("warn", DETERMINISTIC_ERROR_YAML);
-    let (stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=warn",
-    ]);
+    let (stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=warn",
+        ],
+    );
     assert!(ok, "run should have succeeded, stderr={stderr}");
-    assert!(stderr.contains("done"), "stderr should log 'done': {stderr}");
+    assert!(
+        stderr.contains("done"),
+        "stderr should log 'done': {stderr}"
+    );
 
     let stdout_lines = stdout.lines().filter(|l| l.trim() == "op").count();
-    assert_eq!(stdout_lines, 20,
-        "all 20 cycles should have printed before error injection, got {stdout_lines}");
+    assert_eq!(
+        stdout_lines, 20,
+        "all 20 cycles should have printed before error injection, got {stdout_lines}"
+    );
 
     // Per-cycle WARN spam was deferred into the structured
     // `error_readout` block at PhaseEnd (the normative phase
     // line renders first; errors are appended below it).
     // Assert the new shape: the readout block lists the first
     // ModelError with the `(+N more)` extra-count tail.
-    assert!(stderr.contains("errors:"),
-        "expected error_readout block in stderr: {stderr}");
-    assert!(stderr.contains("[ModelError]"),
-        "expected ModelError class in error_readout block: {stderr}");
-    assert!(stderr.contains("more"),
-        "expected `(+N more)` extra-count tail when several errors fire: {stderr}");
+    assert!(
+        stderr.contains("errors:"),
+        "expected error_readout block in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[ModelError]"),
+        "expected ModelError class in error_readout block: {stderr}"
+    );
+    assert!(
+        stderr.contains("more"),
+        "expected `(+N more)` extra-count tail when several errors fire: {stderr}"
+    );
 }
 
 /// `errors=ignore`: errors pass through silently. Every cycle runs
@@ -208,22 +230,31 @@ fn warn_logs_and_continues() {
 #[test]
 fn ignore_suppresses_output() {
     let wl = write_workload("ignore", DETERMINISTIC_ERROR_YAML);
-    let (stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=ignore",
-    ]);
+    let (stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=ignore",
+        ],
+    );
     assert!(ok, "run should have succeeded, stderr={stderr}");
 
     let stdout_lines = stdout.lines().filter(|l| l.trim() == "op").count();
-    assert_eq!(stdout_lines, 20,
-        "all 20 cycles should have printed, got {stdout_lines}");
+    assert_eq!(
+        stdout_lines, 20,
+        "all 20 cycles should have printed, got {stdout_lines}"
+    );
 
-    assert!(!stderr.contains("WARN error"),
-        "ignore handler should emit no WARN output: {stderr}");
-    assert!(!stderr.contains("ERROR at cycle"),
-        "ignore handler should emit no ERROR output: {stderr}");
+    assert!(
+        !stderr.contains("WARN error"),
+        "ignore handler should emit no WARN output: {stderr}"
+    );
+    assert!(
+        !stderr.contains("ERROR at cycle"),
+        "ignore handler should emit no ERROR output: {stderr}"
+    );
 }
 
 /// `errors=.*:warn,counter`: the counter handler tallies error
@@ -234,22 +265,27 @@ fn ignore_suppresses_output() {
 #[test]
 fn warn_then_counter_chain() {
     let wl = write_workload("warncount", DETERMINISTIC_ERROR_YAML);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        // Full router syntax: match all error names, run warn then
-        // counter. Handlers are comma-separated and executed in
-        // order; either alone would also work.
-        "errors=.*:warn,counter",
-    ]);
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            // Full router syntax: match all error names, run warn then
+            // counter. Handlers are comma-separated and executed in
+            // order; either alone would also work.
+            "errors=.*:warn,counter",
+        ],
+    );
     assert!(ok, "run should have succeeded, stderr={stderr}");
     // The `warn` half of the chain no longer floods stderr with
     // per-cycle lines (deferred into error_readout); the test
     // verifies the chain ran through to completion by checking
     // the structured error block surfaces the class.
-    assert!(stderr.contains("[ModelError]"),
-        "warn-then-counter chain should still surface errors via error_readout: {stderr}");
+    assert!(
+        stderr.contains("[ModelError]"),
+        "warn-then-counter chain should still surface errors via error_readout: {stderr}"
+    );
 }
 
 /// Pattern routing: different handlers per error class. `Overload`
@@ -265,15 +301,21 @@ fn warn_then_counter_chain() {
 #[test]
 fn pattern_routing_distinguishes_error_classes() {
     let wl = write_workload("pattern", DETERMINISTIC_ERROR_YAML);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        // Rules are semicolon-separated. Overload errors go to
-        // retry,warn; anything else hits stop.
-        "errors=Overload:retry,warn;.*:stop",
-    ]);
-    assert!(!ok, "ModelError should have hit the stop rule, stderr={stderr}");
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            // Rules are semicolon-separated. Overload errors go to
+            // retry,warn; anything else hits stop.
+            "errors=Overload:retry,warn;.*:stop",
+        ],
+    );
+    assert!(
+        !ok,
+        "ModelError should have hit the stop rule, stderr={stderr}"
+    );
 }
 
 /// Pattern routing on the saturation path: `Overload` → warn (soft
@@ -282,19 +324,26 @@ fn pattern_routing_distinguishes_error_classes() {
 #[test]
 fn overload_warned_other_errors_stopped() {
     let wl = write_workload("overload_warn", OVERLOAD_YAML);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=40",
-        "concurrency=8",
-        "errors=Overload:warn;.*:stop",
-    ]);
-    assert!(ok,
-        "Overload warnings should not abort the run, stderr={stderr}");
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=40",
+            "concurrency=8",
+            "errors=Overload:warn;.*:stop",
+        ],
+    );
+    assert!(
+        ok,
+        "Overload warnings should not abort the run, stderr={stderr}"
+    );
     // Per-cycle WARN lines are now collected into the
     // error_readout block at PhaseEnd. Assert the structured
     // surface mentions Overload.
-    assert!(stderr.contains("[Overload]"),
-        "at least one Overload error expected in error_readout: {stderr}");
+    assert!(
+        stderr.contains("[Overload]"),
+        "at least one Overload error expected in error_readout: {stderr}"
+    );
 }
 
 /// SRD-82 op shell — an op-template's own `errors:` overrides the
@@ -306,7 +355,9 @@ fn overload_warned_other_errors_stopped() {
 /// policy.
 #[test]
 fn op_level_errors_overrides_scope_policy() {
-    let wl = write_workload("op_lenient", r#"
+    let wl = write_workload(
+        "op_lenient",
+        r#"
 blocks:
   main:
     ops:
@@ -315,20 +366,28 @@ blocks:
         result-error-rate: 1.0
         result-error-name: "ModelError"
         errors: ".*:warn,counter"
-"#);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        // Global policy says stop-on-first-error; the op overrides it.
-        "errors=stop",
-    ]);
-    assert!(ok,
+"#,
+    );
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            // Global policy says stop-on-first-error; the op overrides it.
+            "errors=stop",
+        ],
+    );
+    assert!(
+        ok,
         "op-scoped `.*:warn,counter` should tolerate the errors despite the \
-         global `errors=stop`, stderr={stderr}");
-    assert!(stderr.contains("[ModelError]"),
+         global `errors=stop`, stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("[ModelError]"),
         "the op DID error (and was tolerated) — its class should surface in \
-         the error_readout block: {stderr}");
+         the error_readout block: {stderr}"
+    );
 }
 
 /// SRD-82 op shell — one op's leniency does NOT leak to its siblings.
@@ -338,7 +397,9 @@ blocks:
 /// not a shared phase-wide one softened by a neighbor.
 #[test]
 fn op_level_errors_does_not_leak_to_siblings() {
-    let wl = write_workload("op_sibling", r#"
+    let wl = write_workload(
+        "op_sibling",
+        r#"
 blocks:
   main:
     ops:
@@ -351,16 +412,22 @@ blocks:
         stmt: "strict"
         result-error-rate: 1.0
         result-error-name: "ModelError"
-"#);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=stop",
-    ]);
-    assert!(!ok,
+"#,
+    );
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=stop",
+        ],
+    );
+    assert!(
+        !ok,
         "the `strict` sibling inherits the global `errors=stop` and must \
-         abort — `lenient`'s override must not soften it, stderr={stderr}");
+         abort — `lenient`'s override must not soften it, stderr={stderr}"
+    );
 }
 
 /// Two-class routing: `flaky` errors (ModelError) get ignored,
@@ -370,19 +437,26 @@ blocks:
 #[test]
 fn two_class_routing() {
     let wl = write_workload("twoclass", TWO_CLASS_YAML);
-    let (_stdout, stderr, ok) = run(&wl, &[
-        "adapter=testkit",
-        "cycles=40",
-        "concurrency=6",
-        "errors=Overload:warn;ModelError:ignore",
-    ]);
+    let (_stdout, stderr, ok) = run(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=40",
+            "concurrency=6",
+            "errors=Overload:warn;ModelError:ignore",
+        ],
+    );
     assert!(ok, "both classes should be tolerated, stderr={stderr}");
-    assert!(!stderr.lines().any(|l|
-        l.contains("WARN error") && l.contains("ModelError")),
-        "ModelError should have been ignored, not warned: {stderr}");
+    assert!(
+        !stderr
+            .lines()
+            .any(|l| l.contains("WARN error") && l.contains("ModelError")),
+        "ModelError should have been ignored, not warned: {stderr}"
+    );
     // We can't assert Overload actually fired (it depends on timing
     // + scheduling), but if it did, it must have been warned about.
-    let model_warns = stderr.lines()
+    let model_warns = stderr
+        .lines()
         .filter(|l| l.contains("WARN error") && l.contains("ModelError"))
         .count();
     assert_eq!(model_warns, 0);
@@ -394,7 +468,9 @@ fn two_class_routing() {
 /// with NO raw un-enriched hook print drowning it out.
 #[test]
 fn binding_panic_surfaces_enriched_headline() {
-    let wl = write_workload("panic_headline", r#"
+    let wl = write_workload(
+        "panic_headline",
+        r#"
 phases:
   probe:
     adapter: stdout
@@ -404,34 +480,54 @@ phases:
     ops:
       o:
         op: "c={checked}"
-"#);
+"#,
+    );
     let (_stdout, stderr, ok) = run(&wl, &[]);
-    assert!(!ok, "a panicking binding must fail the run, stderr={stderr}");
-    assert!(stderr.contains("is_positive"),
-        "original panic body names the violated predicate: {stderr}");
-    assert!(stderr.contains("in node"),
-        "enriched context (node name) expected: {stderr}");
-    assert!(stderr.contains("[panic]"),
-        "headline stop_reason expected: {stderr}");
+    assert!(
+        !ok,
+        "a panicking binding must fail the run, stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("is_positive"),
+        "original panic body names the violated predicate: {stderr}"
+    );
+    assert!(
+        stderr.contains("in node"),
+        "enriched context (node name) expected: {stderr}"
+    );
+    assert!(
+        stderr.contains("[panic]"),
+        "headline stop_reason expected: {stderr}"
+    );
     // The suppression hook must have eaten the raw pre-enrichment
     // print. A raw hook line reads `thread '…' panicked at
-    // polydat/src/library/param_helpers.rs:…` — pointing at the
-    // ORIGINAL panic site with no node context.
-    assert!(!stderr.lines().any(|l|
-        l.contains("thread '") && l.contains("polydat/src/library")),
-        "raw un-enriched hook print leaked through: {stderr}");
+    // <crate source>/src/library/param_helpers.rs:…` — pointing
+    // at the ORIGINAL panic site with no node context.
+    assert!(
+        !stderr
+            .lines()
+            .any(|l| l.contains("thread '") && l.contains("panicked at")),
+        "raw un-enriched hook print leaked through: {stderr}"
+    );
     // SRD-82 §"Panic reporting: one full render" (catchup C3):
     // the runtime declares downstream reporting, so the hook
     // prints ONE short first-line notice; headlines (stop_reason,
     // footer) are first-line short form; the `errors:` block owns
     // the full multi-line render.
-    assert!(stderr.contains("op eval panic (detail in phase errors)"),
-        "hook prints the short notice: {stderr}");
-    assert!(!stderr.lines().any(|l|
-        l.contains("stopped by error handler") && l.contains("in node")),
-        "headline must be first-line short form: {stderr}");
-    assert!(stderr.contains("errors:"),
-        "the errors block is present: {stderr}");
+    assert!(
+        stderr.contains("op eval panic (detail in phase errors)"),
+        "hook prints the short notice: {stderr}"
+    );
+    assert!(
+        !stderr
+            .lines()
+            .any(|l| l.contains("stopped by error handler") && l.contains("in node")),
+        "headline must be first-line short form: {stderr}"
+    );
+    assert!(
+        stderr.contains("errors:"),
+        "the errors block is present: {stderr}"
+    );
 }
 
 /// Attempt-level stop wires (compaction-demo diagnosis: the result-
@@ -445,7 +541,9 @@ fn attempt_level_guard_is_declarable() {
     // otherwise drain all cycles before the first tick. (testkit
     // injects the error before its latency await, so
     // result-latency can't provide the pacing.)
-    let wl = write_workload("attempt_guard", r#"
+    let wl = write_workload(
+        "attempt_guard",
+        r#"
 phases:
   probe:
     adapter: testkit
@@ -457,11 +555,16 @@ phases:
       insert:
         stmt: "op"
         result-error-rate: 1.0
-"#);
+"#,
+    );
     let (_stdout, stderr, ok) = run(&wl, &["errors=warn", "concurrency=4"]);
     assert!(!ok, "attempt guard must fail the phase: {stderr}");
-    assert!(stderr.contains("attempt_failure"),
-        "trip names the attempt instrument: {stderr}");
-    assert!(stderr.contains("attempt_failure_fraction="),
-        "derived attempt fraction reported in the actuals: {stderr}");
+    assert!(
+        stderr.contains("attempt_failure"),
+        "trip names the attempt instrument: {stderr}"
+    );
+    assert!(
+        stderr.contains("attempt_failure_fraction="),
+        "derived attempt fraction reported in the actuals: {stderr}"
+    );
 }

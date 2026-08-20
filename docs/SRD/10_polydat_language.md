@@ -15,15 +15,15 @@ node functions.
 The DSL syntax, type system, node contract, wiring model, and
 compilation pipeline now live in the polydat crate:
 
-- [polydat/docs/design/polydat_grammar.md](../../polydat/docs/design/polydat_grammar.md)
+- [polydat/docs/design/polydat_grammar.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/polydat_grammar.md)
   — **the definitive Polydat surface-language specification and guide**
   (2026-06-28). For any grammar matter — lexical rules, statement and
   expression productions, modifiers, cursors (including the `over`
   clause), `as` casts, type-name vocabulary, projection/round-trip
   behaviour — this is authoritative. Its examples are machine-verified on
   every `cargo test` run, with a programmatic AST-builder companion at
-  [polydat_grammar_programmatic.md](../../polydat/docs/design/polydat_grammar_programmatic.md).
-- [polydat/docs/design/language_spec.md](../../polydat/docs/design/language_spec.md)
+  [polydat_grammar_programmatic.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/polydat_grammar_programmatic.md).
+- [polydat/docs/design/language_spec.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/language_spec.md)
   — the substrate half of this SRD (moved 2026-05-30 as part of
   the import-first reorganization; see
   [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
@@ -34,7 +34,7 @@ selects outputs, how the Polydat kernel acts as the unified
 state holder for inter-op flow, and op-level binding
 conventions. Its grammar-facing material (cursor declarations,
 modifiers) is now specified definitively in
-[polydat_grammar.md](../../polydat/docs/design/polydat_grammar.md); the
+[polydat_grammar.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/polydat_grammar.md); the
 prose below is retained for the host-integration framing and resolves to
 that spec on any grammar-structural conflict.
 
@@ -76,7 +76,7 @@ workload's side:
   for a live metric, `control(...)` for a dynamic control
   (SRD 23), and similar nodes for fiber-pool state, phase
   identity, etc. See
-  [polydat/docs/design/library_catalog.md §"Runtime context nodes"](../../polydat/docs/design/library_catalog.md).
+  [polydat/docs/design/library_catalog.md §"Runtime context nodes"](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/library_catalog.md).
 
 The three share one implication: **a workload never has a
 "second" way to read a value**. If a new runtime quantity is
@@ -129,7 +129,7 @@ never pulled, so constant folding may eliminate them entirely.
 This is an nbrs-runtime concern: the activity layer is what
 defines "consumer" (which fields and which params count). The
 polydat compiler's Output Selection step (see
-[polydat/docs/design/language_spec.md §Compilation Pipeline](../../polydat/docs/design/language_spec.md#compilation-pipeline))
+[polydat/docs/design/language_spec.md §Compilation Pipeline](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/language_spec.md#compilation-pipeline))
 operates on whatever consumer set the host hands it.
 
 ---
@@ -157,7 +157,7 @@ computation on top.
 
 The polydat substrate mechanism that supports this
 (`ctx.wires` read/write, capture-aware embedding) is in
-[polydat composition_substrate.md L3](../../polydat/docs/design/composition_substrate.md).
+[polydat composition_substrate.md L3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md).
 
 ---
 

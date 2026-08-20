@@ -14,7 +14,7 @@
 > **Status:** IMPLEMENTED (core), with two deltas from this draft
 > — see the call-outs in §4 and §5/§10. The as-built resolution
 > **semantics** are documented in the authoritative polydat spec,
-> [`comprehension_forms.md` §3.1.1–§3.1.4](../../polydat/docs/design/comprehension_forms.md);
+> [`comprehension_forms.md` §3.1.1–§3.1.4](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/comprehension_forms.md);
 > this SRD remains the surface reference. Replaced the ad-hoc
 > scalar/structured handling that lived in
 > `polydat::iteration::comprehension::eval::evaluate_spec_internal`
@@ -295,7 +295,7 @@ positional rule means bindings, op templates, and function args
 see ordinary string literals exactly as today (zero blast
 radius). The breaking part of the bare-word→reference change is
 staged behind
-[`comprehension_migration_gate.md`](../../polydat/docs/design/comprehension_migration_gate.md)
+[`comprehension_migration_gate.md`](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/comprehension_migration_gate.md)
 (Delta 2).
 
 ---

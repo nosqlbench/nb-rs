@@ -5,7 +5,7 @@ as part of the import-first reorganization (see
 [docs/polydat_srd_audit.md](../polydat_srd_audit.md)).
 
 **New location:**
-[polydat/docs/design/library_catalog.md](../../polydat/docs/design/library_catalog.md)
+[polydat/docs/design/library_catalog.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/library_catalog.md)
 
 The wire cost classes, node-category catalog, registration
 conventions, and node-fusion catalog are all polydat

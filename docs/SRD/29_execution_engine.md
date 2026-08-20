@@ -148,7 +148,7 @@ Adding new mutable runtime state: attach it to the component it governs, decide 
 projection (context node) vs writable (control), and register it so authors see it by name
 in `--explain` / `dryrun=controls`. The reification framing is [SRD 10 §"GK as the unified
 access surface"](10_polydat_language.md); the open-registry mechanism is
-[polydat `library_catalog.md` §Host-registered nodes](../../polydat/docs/design/library_catalog.md).
+[polydat `library_catalog.md` §Host-registered nodes](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/library_catalog.md).
 
 ---
 

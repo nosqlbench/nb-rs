@@ -23,7 +23,7 @@ service targets using composable data generation kernels.
 │  Activity engine: executor, op synthesis, sequencing,     │
 │  validation, dispenser wrappers                           │
 ├───────────────┬─────────────────────┬─────────────────────┤
-│  nbrs-workload  │  polydat        │  nbrs-metrics         │
+│  nbrs-workload  │  polydat 0.2    │  nbrs-metrics         │
 │  YAML parsing │  Polydat kernel, nodes,  │  Timers, counters,  │
 │  ParsedOp     │  DSL compiler,      │  HDR histograms,    │
 │  tag filters  │  constant folding   │  frame capture      │
@@ -36,11 +36,11 @@ service targets using composable data generation kernels.
 
 ### Dependency Rules
 
-The crate/module dependency rules — the 8-layer DAG, the per-crate Contract
-Registry, polydat-standalone, no-upward-imports, no-cross-adapter edges — are
-specified and **CI-enforced** in [SRD 05 — Dependency Rules](05_dependency_rules.md)
-(D1–D7, gate: `nbrs/tests/architecture_rules.rs`). In one line: dependencies flow
-strictly downward, `polydat` depends only on `polydat-derive`, `nbrs-runtime` is the
+The crate/module dependency rules — the 7-layer workspace DAG, the per-crate Contract
+Registry, external Polydat boundary, no-upward-imports, no-cross-adapter edges — are
+specified in [SRD 05 — Dependency Rules](05_dependency_rules.md), with workspace-applicable
+edges **CI-enforced** by `nbrs/tests/architecture_rules.rs`. In one line: internal dependencies flow
+strictly downward, workspace crates consume published `polydat 0.2`, `nbrs-runtime` is the
 integration hub above the foundation crates, adapters implement the
 `nbrs_runtime::adapter` contract, and `nbrs` is the composition root.
 
@@ -49,8 +49,6 @@ integration hub above the foundation crates, adapters implement the
 ```
 nb-rs/
 ├── nbrs/                   single user-facing binary
-├── polydat/               Polydat kernel and node library (standalone, extractable)
-├── polydat-derive/        #[polydat_node] proc-macro
 ├── nbrs-workload/         YAML workload parser
 ├── nbrs-runtime/         execution engine
 ├── nbrs-metrics/          metrics instruments and reporters
@@ -69,7 +67,6 @@ nb-rs/
 │   │                      Dockerfiles, sysroot/)
 │   └── openapi/           OpenAPI 3.x workload synthesis
 ├── workloads/             shared workload examples
-├── polydat/docs/          polydat's own substrate design (axiom + mechanism)
 └── docs/
     ├── SRD/               the nb-rs system reference (this doc set)
     │   ├── notes/         living design rationale (discursive, Pillar-3 mechanism)
@@ -77,9 +74,9 @@ nb-rs/
     └── guide/             user-facing documentation
 ```
 
-The polydat substrate design lives in `polydat/docs/` because polydat is an
-independently extractable crate; `docs/SRD` carries only the nbrs-side
-integration plus the polydat contract surface. See
+The Polydat source and substrate design live in the external
+[Polydat repository](https://github.com/nosqlbench/polydat); `docs/SRD` carries
+only the nb-rs-side integration and Polydat contract surface. See
 [SRD 05 §Dependency Rules](05_dependency_rules.md) and the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
 

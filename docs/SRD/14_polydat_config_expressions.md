@@ -5,7 +5,7 @@ the const-expression evaluation API, config-value type
 rendering, and the typed-error surface) has been hoisted into
 the axiom-level polydat design:
 
-- [polydat/docs/design/expression_engine.md §3.1](../../polydat/docs/design/expression_engine.md)
+- [polydat/docs/design/expression_engine.md §3.1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md)
   — `eval_const_expr` API + works/doesn't-work catalog +
   EmbeddingError variants. Hoisted 2026-05-30 as part of the
   reconciliation pass (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))

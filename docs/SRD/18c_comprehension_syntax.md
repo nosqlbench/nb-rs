@@ -485,7 +485,7 @@ positions is the workaround.
 ## Canonical text form vs YAML sugar
 
 The text form passed to
-[`parse_comprehension_text`](../../polydat/src/iteration/comprehension/parse.rs)
+[`parse_comprehension_text`](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/src/iteration/comprehension/parse.rs)
 is the canonical surface. YAML accepts two interchangeable
 shapes; both lower to the same `Comprehension` AST.
 

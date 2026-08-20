@@ -14,7 +14,7 @@ as part of the import-first reorganization (see
 [docs/polydat_srd_audit.md](../polydat_srd_audit.md)).
 
 **New location:**
-[polydat/docs/design/subcontext_construction.md](../../polydat/docs/design/subcontext_construction.md)
+[polydat/docs/design/subcontext_construction.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/subcontext_construction.md)
 
 The walled-off construction protocol
 (`SubcontextBuilder`, `ScopeKernel<M>`, `ScopeModule`),
@@ -23,7 +23,7 @@ write-through, the named-child registry, and the
 compile_fail seals over `bind_outer_scope` / `from_program`
 are all polydat-internal substrate. The protocol enforces
 the chokepoint that
-[composition_substrate.md L1/L4](../../polydat/docs/design/composition_substrate.md)
+[composition_substrate.md L1/L4](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md)
 identifies as load-bearing.
 
 nbrs-side composition concerns (typed `ScopeModule`

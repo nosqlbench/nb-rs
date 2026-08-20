@@ -7,8 +7,9 @@ generalize that treatment to *every* subsystem so the whole system reads with on
 level of architectural rigor.
 
 A "subsystem" is a workspace crate (or a cohesive cluster — e.g. the adapters) that
-owns a contract. Each subsystem's documentation in `docs/SRD` (and, for the
-extractable exemplar, in `polydat/docs/`) must satisfy the five pillars below.
+owns a contract. Each subsystem's documentation in `docs/SRD` (and, for the external
+exemplar, in the [Polydat repository](https://github.com/nosqlbench/polydat/tree/main/crates/polydat/docs))
+must satisfy the five pillars below.
 
 ---
 
@@ -38,9 +39,9 @@ That registry is the single source of truth the CI gate reads.
 The **load-bearing invariants** of the subsystem — the rules a design proposal cannot
 contradict. These are short, named, and stable. Mechanism detail delegates *up* to them.
 
-- *polydat reference:* `polydat/docs/design/composition_substrate.md` (the S/T/L
-  pillars) and the slot-state axioms S1–S10 (CI-gated in
-  `polydat/tests/slot_state_axioms.rs`).
+- *polydat reference:* [composition_substrate.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md)
+  (the S/T/L pillars) and the slot-state axioms S1–S10 (CI-gated in the Polydat
+  repository).
 - For nbrs subsystems, the axioms already exist but are scattered across
   [SYSREF.md](../SYSREF.md)'s rules table and the per-SRD prose. The treatment **hoists**
   each subsystem's axioms into a named "Axioms" block at the top of its SRD (e.g. for
@@ -53,8 +54,8 @@ The concrete, detailed layer: API tables, worked examples, diagnostic formats,
 the axioms rather than restating them.
 
 - *polydat reference:* the (reduced) sysref polydat-SRDs are mechanism docs that point
-  at the axiom docs in `polydat/docs/design/`; the substrate axioms do not live in
-  `docs/SRD`.
+  at the axiom docs in the external Polydat repository; the substrate axioms do not
+  live in `docs/SRD`.
 
 ### Pillar 4 — Cross-reference
 
@@ -70,8 +71,8 @@ any of those four can find the others.
 The subsystem's **allowed dependency edges** and **public-surface boundary** are
 machine-checked, not merely documented. Drift fails CI.
 
-- *polydat reference:* rule **D1** (polydat depends only on `polydat-derive`) in
-  `nbrs/tests/architecture_rules.rs`.
+- *polydat reference:* Polydat's dependency boundary is enforced in its own repository;
+  nb-rs enforces its side of the boundary with D6 (no deep Polydat paths).
 - The gate reads the Contract Registry (Pillar 1) so the contracts have teeth:
   forbidden crate edges, adapter→adapter edges, upward imports, and reaches past a
   crate's declared public surface all fail.
@@ -108,11 +109,11 @@ Tracks each subsystem against the five pillars. Tick as the treatment lands.
 
 | Subsystem (crate) | P1 Contract | P2 Axioms | P3 Mechanism | P4 Xref | P5 Enforced | Owning SRDs |
 |---|:--:|:--:|:--:|:--:|:--:|---|
-| **polydat** (exemplar) | ✅ | ✅ | ✅ | ✅ | ✅ (D1) | **09** contract; substrate in `polydat/docs/` |
+| **polydat** (external exemplar) | ✅ | ✅ | ✅ | ✅ | ✅ (upstream + D6) | **09** contract; substrate in the [Polydat repository](https://github.com/nosqlbench/polydat/tree/main/crates/polydat/docs) |
 | nbrs-runtime | ✅ | ✅ | ✅ | ✅ | ✅ | **29** + 30/31/32/32a/33/34/35/68/71/73/75/76/82/83 |
 | nbrs-workload | ✅ | ✅ | ✅ | ✅ | ✅ | **25** + 18/18b–f, 20, 21, 22, 72, 85 |
 | nbrs-metrics | ✅ | ✅ | ✅ | ✅ | ✅ | **39** + 40/40a/40b/40c, 42, 43, 24 |
-| nbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: own contract; L3 atop nbrs-metrics) | **08** + 40c, 47, 48, 49 |
+| nbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: own contract; L2 atop nbrs-metrics) | **08** + 40c, 47, 48, 49 |
 | nbrs-rate | ✅ | ✅ | ✅ | ✅ | ✅ | **06** (+ 02, 23) |
 | nbrs-errorhandler | ✅ | ✅ | ✅ | ✅ | ✅ | **07** (+ 03, 82, 83) |
 | nbrs-tui | ✅ | ✅ | ✅ | ✅ | ✅ | **59** + 62, 63, 81 |

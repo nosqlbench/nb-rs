@@ -335,14 +335,14 @@ For each SRD, sections are categorized:
 
 The polydat docs that own definitive content:
 
-- [composition_substrate.md](../polydat/docs/design/composition_substrate.md) — S/T/L axioms; slot contract; the three pillars (Context Synthesis, Type Safety, State Layering).
-- [grammar.md](../polydat/docs/design/grammar.md) — G axioms; formal grammar productions; type-inference rules.
-- [graph_compiler.md](../polydat/docs/design/graph_compiler.md) — H/CF/NF axioms; hoisting + Graph Fusion (Context Fusion + Node Fusion) pipeline.
-- [runtime_model.md](../polydat/docs/design/runtime_model.md) — R/D axioms; data flow, caching, invalidation, determinism guarantees.
-- [expression_engine.md](../polydat/docs/design/expression_engine.md) — E axioms; host-embeddable evaluation surface; embedding system contract.
+- [composition_substrate.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md) — S/T/L axioms; slot contract; the three pillars (Context Synthesis, Type Safety, State Layering).
+- [grammar.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md) — G axioms; formal grammar productions; type-inference rules.
+- [graph_compiler.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md) — H/CF/NF axioms; hoisting + Graph Fusion (Context Fusion + Node Fusion) pipeline.
+- [runtime_model.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md) — R/D axioms; data flow, caching, invalidation, determinism guarantees.
+- [expression_engine.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md) — E axioms; host-embeddable evaluation surface; embedding system contract.
 
 Plus the existing comprehension treatment:
-[comprehension_forms.md](../polydat/docs/design/comprehension_forms.md)
+[comprehension_forms.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/comprehension_forms.md)
 and related plan/cutover docs.
 
 ---
@@ -359,18 +359,18 @@ are now all formally specified in polydat docs.
 |---|---|---|
 | §"GK as the unified access surface" | KEEP | nbrs-side framing — why Polydat exists in the workload runtime. |
 | §"Reification: runtime state → Polydat wire" | KEEP | nbrs-runtime integration concern. |
-| §"DSL Syntax" (lines 82–384) | **DELETE** | Now owned by [grammar.md §2 (productions)](../polydat/docs/design/grammar.md). Replace with a one-line pointer. |
+| §"DSL Syntax" (lines 82–384) | **DELETE** | Now owned by [grammar.md §2 (productions)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). Replace with a one-line pointer. |
 | §"Bitwise Operations" (lines 385–418) | KEEP | Library-catalog reference; concrete operator behavior. |
-| §"Const Expression Syntax" (lines 419–441) | **REDUCE** | Cross-reference [grammar.md G2 + expression_engine.md §3.1](../polydat/docs/design/expression_engine.md); keep only nbrs-side use cases. |
-| §"Type Inference Details" (lines 442–462) | **DELETE** | Owned by [grammar.md §3 type-inference rules](../polydat/docs/design/grammar.md). |
-| §"Compilation Pipeline" (lines 463–500) | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline overview](../polydat/docs/design/graph_compiler.md). Keep only nbrs-runtime-level invocation context. |
+| §"Const Expression Syntax" (lines 419–441) | **REDUCE** | Cross-reference [grammar.md G2 + expression_engine.md §3.1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md); keep only nbrs-side use cases. |
+| §"Type Inference Details" (lines 442–462) | **DELETE** | Owned by [grammar.md §3 type-inference rules](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). |
+| §"Compilation Pipeline" (lines 463–500) | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline overview](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). Keep only nbrs-runtime-level invocation context. |
 | §"Output Selection" (lines 501–515) | KEEP | nbrs-runtime scope; how the activity selects which kernel output to consume. |
-| §"Type System" (lines 516–571) | **REDUCE** | Cross-reference [composition_substrate.md T1](../polydat/docs/design/composition_substrate.md) + [grammar.md §3](../polydat/docs/design/grammar.md). Keep only the part listing nbrs-runtime's use of PortType. |
-| §"Node Contract" (lines 572–592) | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](../polydat/docs/design/composition_substrate.md). |
-| §"Wiring Model" (lines 593–616) | **DELETE** | Owned by [composition_substrate.md §2 + runtime_model.md §1](../polydat/docs/design/runtime_model.md). |
+| §"Type System" (lines 516–571) | **REDUCE** | Cross-reference [composition_substrate.md T1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md) + [grammar.md §3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). Keep only the part listing nbrs-runtime's use of PortType. |
+| §"Node Contract" (lines 572–592) | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
+| §"Wiring Model" (lines 593–616) | **DELETE** | Owned by [composition_substrate.md §2 + runtime_model.md §1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md). |
 | §"GK as Unified State Holder" (lines 617–637) | KEEP | nbrs-runtime framing — why Polydat kernels hold scope state. |
-| §"Incremental Invalidation" (lines 638–663) | **DELETE** | Owned by [runtime_model.md §3-§4 (R1, R2)](../polydat/docs/design/runtime_model.md). |
-| §"GK Scope Model" (lines 664–688) | **DELETE** | Owned by SRD-13c + [composition_substrate.md L1/L2](../polydat/docs/design/composition_substrate.md). |
+| §"Incremental Invalidation" (lines 638–663) | **DELETE** | Owned by [runtime_model.md §3-§4 (R1, R2)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md). |
+| §"GK Scope Model" (lines 664–688) | **DELETE** | Owned by SRD-13c + [composition_substrate.md L1/L2](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"Op-Level Bindings" | KEEP | nbrs-runtime-specific. |
 | §"Cursor Declarations" | KEEP | nbrs-runtime-specific. |
 
@@ -383,14 +383,14 @@ composition_substrate.md.
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"Program / State Split" | **DELETE** | Owned by [runtime_model.md §5 + composition_substrate.md L1](../polydat/docs/design/runtime_model.md). |
-| §"Provenance-Based Invalidation" | **DELETE** | Owned by [runtime_model.md §2 (Dependency tracking) + §4 (Invalidation)](../polydat/docs/design/runtime_model.md). |
-| §"Two Evaluation Lifecycles" | **REDUCE** | Cross-reference [composition_substrate.md L2 + grammar.md G2/G5](../polydat/docs/design/composition_substrate.md). Keep the host-visible behavioral distinction. |
-| §"Const Binding Contract" | **DELETE** | Owned by [grammar.md G2 + composition_substrate.md L2](../polydat/docs/design/grammar.md). Plan A/B mechanism is polydat-internal. |
-| §"Non-Deterministic Nodes" | **REDUCE** | Cross-reference [runtime_model.md D2 (purity declaration)](../polydat/docs/design/runtime_model.md). |
-| §"Input Spaces" | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](../polydat/docs/design/composition_substrate.md). |
-| §"Capture Context" | **REDUCE** | Cross-reference [composition_substrate.md L3](../polydat/docs/design/composition_substrate.md). Keep nbrs-side capture integration. |
-| §"Compilation Levels" | **DELETE** | Owned by [graph_compiler.md §6 (pipeline) + SRD-16](../polydat/docs/design/graph_compiler.md). |
+| §"Program / State Split" | **DELETE** | Owned by [runtime_model.md §5 + composition_substrate.md L1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md). |
+| §"Provenance-Based Invalidation" | **DELETE** | Owned by [runtime_model.md §2 (Dependency tracking) + §4 (Invalidation)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md). |
+| §"Two Evaluation Lifecycles" | **REDUCE** | Cross-reference [composition_substrate.md L2 + grammar.md G2/G5](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). Keep the host-visible behavioral distinction. |
+| §"Const Binding Contract" | **DELETE** | Owned by [grammar.md G2 + composition_substrate.md L2](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). Plan A/B mechanism is polydat-internal. |
+| §"Non-Deterministic Nodes" | **REDUCE** | Cross-reference [runtime_model.md D2 (purity declaration)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md). |
+| §"Input Spaces" | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
+| §"Capture Context" | **REDUCE** | Cross-reference [composition_substrate.md L3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). Keep nbrs-side capture integration. |
+| §"Compilation Levels" | **DELETE** | Owned by [graph_compiler.md §6 (pipeline) + SRD-16](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). |
 | §"FiberBuilder" | KEEP | nbrs-runtime integration surface. |
 | §"Cursor-Driven Evaluation" | KEEP | nbrs-runtime scope — how the activity cycle pump drives polydat. |
 
@@ -406,9 +406,9 @@ design doc.
 |---|---|---|
 | §"Wire Cost Classes" | KEEP | Library reference. |
 | §"Node Categories" (39–292) | KEEP | Library catalog. **Gap:** polydat doesn't have a formal library-catalog doc; SRD-12 is the de facto reference. |
-| §"Registration" + §"Node Registration" | **REDUCE** | Cross-reference [expression_engine.md §5.5 (virtual nodes)](../polydat/docs/design/expression_engine.md) for the factory-registration contract. Keep nbrs-specific registration sites. |
+| §"Registration" + §"Node Registration" | **REDUCE** | Cross-reference [expression_engine.md §5.5 (virtual nodes)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md) for the factory-registration contract. Keep nbrs-specific registration sites. |
 | §"GK Modules" | **DELETE** | Owned by SRD-13. |
-| §"Node Fusion" | **DELETE** | Owned by [graph_compiler.md §5](../polydat/docs/design/graph_compiler.md). |
+| §"Node Fusion" | **DELETE** | Owned by [graph_compiler.md §5](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). |
 
 **Estimated reduction:** ~60 lines. SRD-12 shrinks from 359 → ~300 lines.
 
@@ -416,7 +416,7 @@ design doc.
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"Module System" | **REDUCE** | Module definition syntax is owned by [grammar.md §2.4](../polydat/docs/design/grammar.md). Keep nbrs-side module-resolution concerns (file paths, stdlib organization). |
+| §"Module System" | **REDUCE** | Module definition syntax is owned by [grammar.md §2.4](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). Keep nbrs-side module-resolution concerns (file paths, stdlib organization). |
 | §"Compiler Diagnostic Event Stream" | KEEP | nbrs-runtime-facing diagnostic API. |
 
 **Estimated reduction:** minor. SRD-13 shrinks from 109 → ~80 lines.
@@ -429,7 +429,7 @@ mostly intact.
 | Section | Disposition | Action |
 |---|---|---|
 | §"1. Inline" | KEEP | nbrs-side terminology. |
-| §"2. Scope composition" | **CROSS-REF** | Add pointer to [composition_substrate.md + SRD-13c](../polydat/docs/design/composition_substrate.md). |
+| §"2. Scope composition" | **CROSS-REF** | Add pointer to [composition_substrate.md + SRD-13c](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"3. Subgraph" | KEEP | nbrs-side terminology. |
 | §"4. Reification" | KEEP | nbrs-side terminology. |
 | §"Retired terminology" | KEEP | Historical reference. |
@@ -446,15 +446,15 @@ formalisation now.
 | Section | Disposition | Action |
 |---|---|---|
 | §"Principles" | **REDUCE** | The S/T/L pillars now formalise these principles. Cross-reference and keep the nbrs-framing intro. |
-| §"Scope Hierarchy" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4](../polydat/docs/design/composition_substrate.md). Keep nbrs-runtime scope-tree integration. |
-| §"No Flattening, No Duplication" | **DELETE** | Owned by [composition_substrate.md L1](../polydat/docs/design/composition_substrate.md). |
-| §"Visibility Rules" | **REDUCE** | Cross-reference [grammar.md G3 (scope-chain transparency) + composition_substrate.md L1](../polydat/docs/design/grammar.md). Keep workload-author-visible behavior. |
-| §"Mutability Rules" | **REDUCE** | Cross-reference [composition_substrate.md L4 + SRD-13f](../polydat/docs/design/composition_substrate.md). Keep nbrs-side `shared` / `const` author guidance. |
-| §"Scope Lifecycle for for_each" | **REDUCE** | Cross-reference [graph_compiler.md §4 (Context Fusion)](../polydat/docs/design/graph_compiler.md). Keep the workload-author lifecycle story. |
-| §"Implementation via Existing Mechanisms" | **DELETE** | Owned by [graph_compiler.md CF1-CF4 + composition_substrate.md S2](../polydat/docs/design/graph_compiler.md). |
-| §"Variable Partitioning" | **DELETE** | Owned by [composition_substrate.md L2 + grammar.md G5](../polydat/docs/design/composition_substrate.md). |
-| §"Syntax Summary" | **DELETE** | Owned by [grammar.md §2.3](../polydat/docs/design/grammar.md). |
-| §"How It Works: Plugging Graphs Together" | **DELETE** | Owned by [graph_compiler.md §4 (Context Fusion)](../polydat/docs/design/graph_compiler.md). |
+| §"Scope Hierarchy" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). Keep nbrs-runtime scope-tree integration. |
+| §"No Flattening, No Duplication" | **DELETE** | Owned by [composition_substrate.md L1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
+| §"Visibility Rules" | **REDUCE** | Cross-reference [grammar.md G3 (scope-chain transparency) + composition_substrate.md L1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). Keep workload-author-visible behavior. |
+| §"Mutability Rules" | **REDUCE** | Cross-reference [composition_substrate.md L4 + SRD-13f](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). Keep nbrs-side `shared` / `const` author guidance. |
+| §"Scope Lifecycle for for_each" | **REDUCE** | Cross-reference [graph_compiler.md §4 (Context Fusion)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). Keep the workload-author lifecycle story. |
+| §"Implementation via Existing Mechanisms" | **DELETE** | Owned by [graph_compiler.md CF1-CF4 + composition_substrate.md S2](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). |
+| §"Variable Partitioning" | **DELETE** | Owned by [composition_substrate.md L2 + grammar.md G5](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
+| §"Syntax Summary" | **DELETE** | Owned by [grammar.md §2.3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). |
+| §"How It Works: Plugging Graphs Together" | **DELETE** | Owned by [graph_compiler.md §4 (Context Fusion)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). |
 | §"What This Does NOT Change" | KEEP | nbrs-side framing. |
 | §"Open Design Issue" | KEEP | nbrs-side discussion. |
 | §"Design Rationale" | KEEP | Historical context. |
@@ -469,7 +469,7 @@ concept). Keep with cross-references to substrate.
 | Section | Disposition | Action |
 |---|---|---|
 | §"1-3" + §"4. Realisation lifecycle" | KEEP | nbrs-runtime-specific. |
-| §"5. Walking parent-kernel reference" | **CROSS-REF** | Add pointer to [composition_substrate.md L1 + graph_compiler.md CF1](../polydat/docs/design/composition_substrate.md). |
+| §"5. Walking parent-kernel reference" | **CROSS-REF** | Add pointer to [composition_substrate.md L1 + graph_compiler.md CF1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"6. Proving-out test suite" | KEEP | nbrs-runtime tests. |
 | §"7. Structural rules carried forward from SRD-13c" | **REDUCE** | Cross-reference SRD-13c (which now points at polydat). |
 | §"8-9" | KEEP | nbrs-runtime-specific. |
@@ -484,7 +484,7 @@ DESIGN doc; reframe as integration spec with polydat substrate.
 |---|---|---|
 | §"What this SRD covers" | **REWRITE** | Reframe: nbrs-runtime uses polydat's `kernel/subcontext/` (per SRD-67); this SRD specifies the typed `ScopeModule` interface on top. |
 | §"Why this SRD now" | KEEP | Historical motivation. |
-| §"1. The contract surface" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4 + SRD-67](../polydat/docs/design/composition_substrate.md). Keep nbrs-side typed-module shape. |
+| §"1. The contract surface" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4 + SRD-67](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). Keep nbrs-side typed-module shape. |
 | §"2-4" | KEEP | nbrs-side mechanism. |
 | §"5. Migration plan" | KEEP | nbrs-side execution. |
 
@@ -499,8 +499,8 @@ formalises the gradient honoring.
 | Section | Disposition | Action |
 |---|---|---|
 | §"What this SRD covers" | KEEP | Scoping intro. |
-| §"Architectural model" | **REDUCE** | Cross-reference [composition_substrate.md L4 (write-through) + graph_compiler.md CF3](../polydat/docs/design/composition_substrate.md). Keep the cell-classification visual. |
-| §"Materialization gradient" | **REDUCE** | Cross-reference [graph_compiler.md CF3 (gradient honoring)](../polydat/docs/design/graph_compiler.md). Keep nbrs-side classification details. |
+| §"Architectural model" | **REDUCE** | Cross-reference [composition_substrate.md L4 (write-through) + graph_compiler.md CF3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). Keep the cell-classification visual. |
+| §"Materialization gradient" | **REDUCE** | Cross-reference [graph_compiler.md CF3 (gradient honoring)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). Keep nbrs-side classification details. |
 | §"Wire-reference classification (synthesizer rule)" | KEEP | nbrs-runtime synthesizer is the consumer. |
 | §"How this differs from what's coded today" | KEEP | Implementation status. |
 | §"Plan to true-up" | KEEP | nbrs-side work. |
@@ -515,12 +515,12 @@ Direct overlap with expression_engine.md.
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"Expression Syntax" | **DELETE** | Owned by [expression_engine.md §3.1 (eval_const_expr)](../polydat/docs/design/expression_engine.md). |
+| §"Expression Syntax" | **DELETE** | Owned by [expression_engine.md §3.1 (eval_const_expr)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md). |
 | §"Resolution Order" | KEEP | nbrs-side param-resolution order is host-specific. |
-| §"Const Expression Evaluation" | **DELETE** | Owned by [expression_engine.md §3.1 + grammar.md G2](../polydat/docs/design/expression_engine.md). |
-| §"Config Value Types" | **REDUCE** | Cross-reference [composition_substrate.md T1](../polydat/docs/design/composition_substrate.md). |
+| §"Const Expression Evaluation" | **DELETE** | Owned by [expression_engine.md §3.1 + grammar.md G2](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md). |
+| §"Config Value Types" | **REDUCE** | Cross-reference [composition_substrate.md T1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"Param Substitution Interaction" | KEEP | SRD-21 ownership; nbrs-side. |
-| §"Error Handling" | **REDUCE** | Cross-reference [expression_engine.md §6 (EmbeddingError)](../polydat/docs/design/expression_engine.md). |
+| §"Error Handling" | **REDUCE** | Cross-reference [expression_engine.md §6 (EmbeddingError)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md). |
 | §"Implementation State" | DELETE | Stale tracking. |
 | §"What This Replaces" | KEEP | Historical context. |
 
@@ -534,7 +534,7 @@ expression_engine §5.1.3 (opt-in strict contract).
 | Section | Disposition | Action |
 |---|---|---|
 | Most sections | KEEP | nbrs-side strict-mode policy is host-specific. |
-| Any section discussing typed-embedding strict mode | **CROSS-REF** | Pointer to [expression_engine.md §5.1.3](../polydat/docs/design/expression_engine.md). |
+| Any section discussing typed-embedding strict mode | **CROSS-REF** | Pointer to [expression_engine.md §5.1.3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/expression_engine.md). |
 
 **Estimated reduction:** minor. ~20 lines.
 
@@ -545,10 +545,10 @@ selection) and §5.3 (Node Fusion polyfills).
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"Compilation Levels" | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline + §6 ordered composition](../polydat/docs/design/graph_compiler.md). Keep nbrs-runtime invocation. |
-| §"Provenance Optimization" | **DELETE** | Owned by [runtime_model.md §2 (Dependency tracking) + §4 (Invalidation)](../polydat/docs/design/runtime_model.md). |
+| §"Compilation Levels" | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline + §6 ordered composition](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). Keep nbrs-runtime invocation. |
+| §"Provenance Optimization" | **DELETE** | Owned by [runtime_model.md §2 (Dependency tracking) + §4 (Invalidation)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/runtime_model.md). |
 | §"Automatic Selection Heuristic" | KEEP | Engine selection is a polydat-internal concern; details stay here for now (no polydat doc owns it). |
-| §"Type System" | **DELETE** | Owned by [grammar.md §3 + composition_substrate.md T1](../polydat/docs/design/grammar.md). |
+| §"Type System" | **DELETE** | Owned by [grammar.md §3 + composition_substrate.md T1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/grammar.md). |
 
 **Estimated reduction:** ~80 lines. SRD-16 shrinks from 225 → ~145 lines.
 
@@ -574,12 +574,12 @@ references it as the chokepoint enforcer for L1/L4.
 | §"What this SRD specifies" | KEEP | Scoping. |
 | §"Vocabulary" | KEEP | nbrs-side terminology. |
 | §"The construction protocol" | KEEP | Polydat-internal but no polydat doc owns the parent-gated protocol in depth. SRD-67 IS the authority. **Possible gap:** consider migrating to polydat-side `subcontext_construction.md`. |
-| §"Compile once, spawn once, fiber-state separately" | **CROSS-REF** | Add pointer to [composition_substrate.md L1](../polydat/docs/design/composition_substrate.md). |
+| §"Compile once, spawn once, fiber-state separately" | **CROSS-REF** | Add pointer to [composition_substrate.md L1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"Named-child registry" | KEEP | nbrs-runtime integration. |
-| §"Cross-binding rules" | **REDUCE** | Cross-reference [composition_substrate.md L1+L4 + graph_compiler.md CF3](../polydat/docs/design/composition_substrate.md). |
+| §"Cross-binding rules" | **REDUCE** | Cross-reference [composition_substrate.md L1+L4 + graph_compiler.md CF3](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"Walled-off invariant" | KEEP | The chokepoint contract — load-bearing for substrate enforcement. |
 | §"What disappears" | KEEP | Historical context. |
-| §"Lifecycle boundary contract" | **REDUCE** | Cross-reference [graph_compiler.md CF4 (synthesis once per scope-init)](../polydat/docs/design/graph_compiler.md). |
+| §"Lifecycle boundary contract" | **REDUCE** | Cross-reference [graph_compiler.md CF4 (synthesis once per scope-init)](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/graph_compiler.md). |
 | §"Composition with SRD-13e" | KEEP | nbrs-side cross-reference. |
 
 **Estimated reduction:** ~100 lines. SRD-67 shrinks from 1030 → ~930 lines.
@@ -593,7 +593,7 @@ reference but the high-level model is polydat's.
 | Section | Disposition | Action |
 |---|---|---|
 | §"Motivation" | KEEP | nbrs-side motivation. |
-| §"Three orthogonal rules" | KEEP | Concrete rule list useful as reference; cross-reference [composition_substrate.md T1 + runtime_model.md D1](../polydat/docs/design/composition_substrate.md). |
+| §"Three orthogonal rules" | KEEP | Concrete rule list useful as reference; cross-reference [composition_substrate.md T1 + runtime_model.md D1](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md). |
 | §"Interaction with set: and the GK-grammar invariant" | KEEP | nbrs-runtime workload integration. |
 | §"Conditional-shadow semantics for const" | KEEP | Workload-author behavior. |
 | §"Test contract" | KEEP | nbrs-side tests. |
@@ -787,7 +787,7 @@ For cross-references inside a kept section, use the
 inline form:
 
 ```markdown
-... per [composition_substrate.md L2](../polydat/docs/design/composition_substrate.md) ...
+... per [composition_substrate.md L2](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md) ...
 ```
 
 Either form is recognisable as "polydat owns the
