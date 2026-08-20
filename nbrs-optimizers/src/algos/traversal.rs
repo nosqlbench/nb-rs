@@ -20,7 +20,12 @@ impl Optimizer for CostGreedyTraversal {
         "cost_greedy_traversal"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let lists = axis_value_lists(space);
         let n = lists.len();
@@ -29,7 +34,9 @@ impl Optimizer for CostGreedyTraversal {
         let costs = space.cost_priors();
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by(|&a, &b| {
-            costs[b].partial_cmp(&costs[a]).unwrap_or(std::cmp::Ordering::Equal)
+            costs[b]
+                .partial_cmp(&costs[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // `idx[p]` is the detent index of the axis at order-position `p`.
@@ -63,7 +70,11 @@ impl Optimizer for CostGreedyTraversal {
                 break;
             }
         }
-        let stop = if exhausted { StopReason::Converged } else { StopReason::BudgetExhausted };
+        let stop = if exhausted {
+            StopReason::Converged
+        } else {
+            StopReason::BudgetExhausted
+        };
         ev.into_report(stop)
     }
 }

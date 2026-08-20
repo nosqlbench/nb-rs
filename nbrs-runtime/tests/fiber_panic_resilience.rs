@@ -17,10 +17,10 @@
 
 use std::sync::Arc;
 
+use nbrs_metrics::labels::Labels;
 use nbrs_runtime::activity::{Activity, ActivityConfig};
 use nbrs_runtime::adapter::{DriverAdapter, ExecutionError, OpDispenser, OpResult};
 use nbrs_runtime::opseq::{OpSequence, SequencerType};
-use nbrs_metrics::labels::Labels;
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::identity::Identity;
 
@@ -28,14 +28,17 @@ use polydat::library::identity::Identity;
 struct PanickingAdapter;
 
 impl DriverAdapter for PanickingAdapter {
-    fn name(&self) -> &str { "panicker" }
+    fn name(&self) -> &str {
+        "panicker"
+    }
 
     fn map_op<'a>(
         &'a self,
         _template: &'a nbrs_workload::model::ParsedOp,
         _parent: Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move { Ok(Box::new(PanickingDispenser) as Box<dyn OpDispenser>) })
     }
 }
@@ -47,8 +50,9 @@ impl OpDispenser for PanickingDispenser {
         &'a self,
         cycle: u64,
         _ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Panic once every 50 cycles (cycles 25, 75, … 375 → 8 panics over
             // 400). The panic unwinds out of `execute`; the fiber's op-boundary
@@ -56,7 +60,10 @@ impl OpDispenser for PanickingDispenser {
             if cycle % 50 == 25 {
                 panic!("synthetic op panic at cycle {cycle}");
             }
-            Ok(OpResult { body: None, skipped: false })
+            Ok(OpResult {
+                body: None,
+                skipped: false,
+            })
         })
     }
 }

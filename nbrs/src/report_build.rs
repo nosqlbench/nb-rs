@@ -34,16 +34,13 @@
 //!    (`--add` / `--workload` / `--session` / etc.) that
 //!    the caller dispatches against.
 
-use nbrs_workload::report::vocab::{
-    self, Directive, DirectiveTarget, ValueProvider, YamlForm,
-};
+use nbrs_workload::report::vocab::{self, Directive, DirectiveTarget, ValueProvider, YamlForm};
 use nbrs_workload::report::{Kind, ReportItem, SeriesOverride, Style};
 
 /// Result of [`build_item`]: the constructed item plus the
 /// orthogonal CLI flags that drive dispatch (where to write,
 /// whether to promote to workload, etc.).
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BuildResult {
     pub item: ReportItem,
     pub dispatch: Dispatch,
@@ -97,7 +94,6 @@ pub struct Dispatch {
     pub body_file: Option<String>,
 }
 
-
 /// Build a [`ReportItem`] from `args`, validated against
 /// `kind`. The first positional arg (if any, and not a
 /// flag) is the canonical name; later positionals after
@@ -133,18 +129,25 @@ pub fn build_item(kind: Kind, args: &[String]) -> Result<BuildResult, String> {
         // shadow vocab lookups for any future name overlap.
         if let Some((consumed, applied)) =
             try_consume_dispatch_flag(arg, args.get(i + 1), &mut dispatch, &mut item)?
-            && applied { i += consumed; continue; }
+            && applied
+        {
+            i += consumed;
+            continue;
+        }
 
         // Vocab-driven flags.
         let flag = arg.trim_start_matches('-');
         let directive = vocab::directive_by_cli_flag(flag);
         let directive = match directive {
             Some(d) => d,
-            None => return Err(format!(
-                "unknown flag '{arg}' for `nbrs report {}` — \
+            None => {
+                return Err(format!(
+                    "unknown flag '{arg}' for `nbrs report {}` — \
                  see `nbrs report {} --help` for the directive list",
-                kind.as_str(), kind.as_str(),
-            )),
+                    kind.as_str(),
+                    kind.as_str(),
+                ));
+            }
         };
         if !directive.applies_to.contains(kind) {
             return Err(format!(
@@ -161,10 +164,10 @@ pub fn build_item(kind: Kind, args: &[String]) -> Result<BuildResult, String> {
         // per-series style override, declared via the `style`
         // directive; the type name is internal.)
         if directive.cli_flag == "--style" {
-            let value = args.get(i + 1)
+            let value = args
+                .get(i + 1)
                 .ok_or_else(|| format!("flag '{arg}' requires a value"))?;
-            let so = parse_series_arg(value)
-                .map_err(|e| format!("--style '{value}': {e}"))?;
+            let so = parse_series_arg(value).map_err(|e| format!("--style '{value}': {e}"))?;
             item.style.series.push(so);
             i += 2;
             continue;
@@ -174,14 +177,15 @@ pub fn build_item(kind: Kind, args: &[String]) -> Result<BuildResult, String> {
             // this branch alive so adding one is a one-line
             // change.
             return Err(format!(
-                "internal: directive '{}' marked repeatable but no handler", arg
+                "internal: directive '{}' marked repeatable but no handler",
+                arg
             ));
         }
         // Single-value flag.
-        let value = args.get(i + 1)
+        let value = args
+            .get(i + 1)
             .ok_or_else(|| format!("flag '{arg}' requires a value"))?;
-        validate_value(directive, value)
-            .map_err(|e| format!("flag '{arg}': {e}"))?;
+        validate_value(directive, value).map_err(|e| format!("flag '{arg}': {e}"))?;
         apply_directive(directive, value, &mut item)?;
         i += 2;
     }
@@ -201,8 +205,8 @@ pub fn build_item(kind: Kind, args: &[String]) -> Result<BuildResult, String> {
         if let Some(b) = &dispatch.body {
             item.body = b.clone();
         } else if let Some(p) = &dispatch.body_file {
-            item.body = std::fs::read_to_string(p)
-                .map_err(|e| format!("--body-file '{p}': {e}"))?;
+            item.body =
+                std::fs::read_to_string(p).map_err(|e| format!("--body-file '{p}': {e}"))?;
         }
     }
 
@@ -284,8 +288,7 @@ fn try_consume_dispatch_flag(
             // `--name auto` is the SRD-64 §2.1 form for "give me
             // a scratch name"; everything else is a literal.
             if v == "auto" {
-                item.name = format!("scratch_{}",
-                    crate::report_scratch::timestamp_id());
+                item.name = format!("scratch_{}", crate::report_scratch::timestamp_id());
             } else {
                 item.name = v.clone();
             }
@@ -316,11 +319,21 @@ fn try_consume_dispatch_flag(
 fn applicable_kinds_label(d: &Directive) -> String {
     use vocab::KindMask;
     let mut parts: Vec<&str> = Vec::new();
-    if d.applies_to.contains(Kind::Plot)    { parts.push("plot"); }
-    if d.applies_to.contains(Kind::Table)   { parts.push("table"); }
-    if d.applies_to.contains(Kind::Text)    { parts.push("text"); }
-    if d.applies_to.contains(Kind::File)    { parts.push("file"); }
-    if d.applies_to.contains(Kind::Details) { parts.push("details"); }
+    if d.applies_to.contains(Kind::Plot) {
+        parts.push("plot");
+    }
+    if d.applies_to.contains(Kind::Table) {
+        parts.push("table");
+    }
+    if d.applies_to.contains(Kind::Text) {
+        parts.push("text");
+    }
+    if d.applies_to.contains(Kind::File) {
+        parts.push("file");
+    }
+    if d.applies_to.contains(Kind::Details) {
+        parts.push("details");
+    }
     let _ = KindMask::ALL; // keep import alive
     parts.join(", ")
 }
@@ -336,11 +349,10 @@ fn validate_value(d: &Directive, value: &str) -> Result<(), String> {
             }
             Ok(())
         }
-        ValueProvider::Number => {
-            value.parse::<f64>()
-                .map(|_| ())
-                .map_err(|_| format!("'{value}' is not a number"))
-        }
+        ValueProvider::Number => value
+            .parse::<f64>()
+            .map(|_| ())
+            .map_err(|_| format!("'{value}' is not a number")),
         ValueProvider::HexColor => {
             if value.starts_with('#')
                 && value.len() >= 7
@@ -351,11 +363,9 @@ fn validate_value(d: &Directive, value: &str) -> Result<(), String> {
                 Err(format!("'{value}' is not a #RRGGBB hex color"))
             }
         }
-        ValueProvider::Json => {
-            serde_json::from_str::<serde_json::Value>(value)
-                .map(|_| ())
-                .map_err(|e| format!("'{value}' is not valid JSON: {e}"))
-        }
+        ValueProvider::Json => serde_json::from_str::<serde_json::Value>(value)
+            .map(|_| ())
+            .map_err(|e| format!("'{value}' is not valid JSON: {e}")),
         // Open-set providers (Db*) and free Text accept
         // anything at parse time. The renderer queries the
         // db at render time and reports empty/missing data
@@ -374,9 +384,7 @@ fn apply_directive(d: &Directive, value: &str, item: &mut ReportItem) -> Result<
         DirectiveTarget::ItemAsStem => item.as_stem = Some(value.to_string()),
         DirectiveTarget::StyleField => apply_style_field(d, value, &mut item.style)?,
         DirectiveTarget::Body => append_body_directive(d, value, &mut item.body),
-        DirectiveTarget::StyleSeries => unreachable!(
-            "series flag handled in build_item directly"
-        ),
+        DirectiveTarget::StyleSeries => unreachable!("series flag handled in build_item directly"),
     }
     Ok(())
 }
@@ -384,17 +392,37 @@ fn apply_directive(d: &Directive, value: &str, item: &mut ReportItem) -> Result<
 fn apply_style_field(d: &Directive, value: &str, style: &mut Style) -> Result<(), String> {
     match d.yaml_directive {
         "palette" => style.palette = Some(value.to_string()),
-        "line"    => style.line = Some(value.to_string()),
-        "width"   => style.width = Some(value.parse()
-            .map_err(|_| format!("width '{value}' must be a number"))?),
-        "marker"  => style.marker = Some(value.to_string()),
-        "size"    => style.size = Some(value.parse()
-            .map_err(|_| format!("size '{value}' must be a number"))?),
-        "color"   => style.color = Some(value.to_string()),
-        "figure_width"  => style.figure_width = Some(value.parse()
-            .map_err(|_| format!("figure_width '{value}' must be an integer"))?),
-        "figure_height" => style.figure_height = Some(value.parse()
-            .map_err(|_| format!("figure_height '{value}' must be an integer"))?),
+        "line" => style.line = Some(value.to_string()),
+        "width" => {
+            style.width = Some(
+                value
+                    .parse()
+                    .map_err(|_| format!("width '{value}' must be a number"))?,
+            )
+        }
+        "marker" => style.marker = Some(value.to_string()),
+        "size" => {
+            style.size = Some(
+                value
+                    .parse()
+                    .map_err(|_| format!("size '{value}' must be a number"))?,
+            )
+        }
+        "color" => style.color = Some(value.to_string()),
+        "figure_width" => {
+            style.figure_width = Some(
+                value
+                    .parse()
+                    .map_err(|_| format!("figure_width '{value}' must be an integer"))?,
+            )
+        }
+        "figure_height" => {
+            style.figure_height = Some(
+                value
+                    .parse()
+                    .map_err(|_| format!("figure_height '{value}' must be an integer"))?,
+            )
+        }
         other => return Err(format!("internal: unhandled style field '{other}'")),
     }
     Ok(())
@@ -430,27 +458,30 @@ fn append_body_directive(d: &Directive, value: &str, body: &mut String) {
 /// Returns the [`SeriesOverride`] ready to push into
 /// [`Style::series`].
 fn parse_series_arg(s: &str) -> Result<SeriesOverride, String> {
-    let (head, rest) = s.split_once(':')
-        .ok_or_else(|| format!(
-            "--series value '{s}' must be 'key=value:<json|directives>'"
-        ))?;
-    let (key, value) = head.split_once('=')
+    let (head, rest) = s
+        .split_once(':')
+        .ok_or_else(|| format!("--series value '{s}' must be 'key=value:<json|directives>'"))?;
+    let (key, value) = head
+        .split_once('=')
         .ok_or_else(|| format!("--series head '{head}' must be 'key=value'"))?;
     let mut style = Style::default();
     let rest = rest.trim();
     if rest.starts_with('{') {
-        let v: serde_json::Value = serde_json::from_str(rest)
-            .map_err(|e| format!("series JSON '{rest}': {e}"))?;
-        let map = v.as_object()
+        let v: serde_json::Value =
+            serde_json::from_str(rest).map_err(|e| format!("series JSON '{rest}': {e}"))?;
+        let map = v
+            .as_object()
             .ok_or_else(|| "series JSON must be an object".to_string())?;
         for (k, val) in map {
             let v_str = match val {
                 serde_json::Value::String(s) => s.clone(),
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::Bool(b) => b.to_string(),
-                _ => return Err(format!(
-                    "series JSON '{k}': value must be string/number/bool"
-                )),
+                _ => {
+                    return Err(format!(
+                        "series JSON '{k}': value must be string/number/bool"
+                    ));
+                }
             };
             apply_series_kv(k, &v_str, &mut style)?;
         }
@@ -458,15 +489,19 @@ fn parse_series_arg(s: &str) -> Result<SeriesOverride, String> {
         // Brace-free directive list: split on whitespace,
         // each token is `k=v`.
         for tok in rest.split_whitespace() {
-            let (k, v) = tok.split_once('=').ok_or_else(|| format!(
-                "series directive '{tok}' must be key=value"
-            ))?;
+            let (k, v) = tok
+                .split_once('=')
+                .ok_or_else(|| format!("series directive '{tok}' must be key=value"))?;
             apply_series_kv(k, v, &mut style)?;
         }
     }
     Ok(SeriesOverride {
         key: key.trim().to_string(),
-        value: value.trim().trim_matches('"').trim_matches('\'').to_string(),
+        value: value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string(),
         style,
     })
 }
@@ -475,13 +510,21 @@ fn apply_series_kv(k: &str, v: &str, style: &mut Style) -> Result<(), String> {
     let v = v.trim().trim_matches('"').trim_matches('\'');
     match k {
         "palette" => style.palette = Some(v.to_string()),
-        "line"    => style.line = Some(v.to_string()),
-        "width"   => style.width = Some(v.parse()
-            .map_err(|_| format!("series width '{v}' must be a number"))?),
-        "marker"  => style.marker = Some(v.to_string()),
-        "size"    => style.size = Some(v.parse()
-            .map_err(|_| format!("series size '{v}' must be a number"))?),
-        "color"   => style.color = Some(v.to_string()),
+        "line" => style.line = Some(v.to_string()),
+        "width" => {
+            style.width = Some(
+                v.parse()
+                    .map_err(|_| format!("series width '{v}' must be a number"))?,
+            )
+        }
+        "marker" => style.marker = Some(v.to_string()),
+        "size" => {
+            style.size = Some(
+                v.parse()
+                    .map_err(|_| format!("series size '{v}' must be a number"))?,
+            )
+        }
+        "color" => style.color = Some(v.to_string()),
         other => return Err(format!("unknown series style key '{other}'")),
     }
     Ok(())
@@ -497,8 +540,7 @@ mod tests {
 
     #[test]
     fn build_minimal_plot() {
-        let r = build_item(Kind::Plot, &args(&["demo", "--over", "cycle"]))
-            .expect("build");
+        let r = build_item(Kind::Plot, &args(&["demo", "--over", "cycle"])).expect("build");
         assert_eq!(r.item.name, "demo");
         assert_eq!(r.item.kind, Kind::Plot);
         assert!(r.item.body.contains("over cycle"));
@@ -507,21 +549,37 @@ mod tests {
 
     #[test]
     fn build_full_plot_with_styles() {
-        let r = build_item(Kind::Plot, &args(&[
-            "recall",
-            "--over", "limit",
-            "--by", "profile",
-            "--where", "dataset=glove",
-            "--agg", "mean",
-            "--label", "Recall@10",
-            "--palette", "tol_muted",
-            "--line", "dashed",
-            "--width", "2",
-            "--marker", "triangle",
-            "--xlabel", "limit",
-            "--ylabel", "recall",
-            "--x-scale", "log",
-        ])).expect("build");
+        let r = build_item(
+            Kind::Plot,
+            &args(&[
+                "recall",
+                "--over",
+                "limit",
+                "--by",
+                "profile",
+                "--where",
+                "dataset=glove",
+                "--agg",
+                "mean",
+                "--label",
+                "Recall@10",
+                "--palette",
+                "tol_muted",
+                "--line",
+                "dashed",
+                "--width",
+                "2",
+                "--marker",
+                "triangle",
+                "--xlabel",
+                "limit",
+                "--ylabel",
+                "recall",
+                "--x-scale",
+                "log",
+            ]),
+        )
+        .expect("build");
         assert_eq!(r.item.label.as_deref(), Some("Recall@10"));
         assert_eq!(r.item.style.palette.as_deref(), Some("tol_muted"));
         assert_eq!(r.item.style.line.as_deref(), Some("dashed"));
@@ -539,60 +597,75 @@ mod tests {
     #[test]
     fn build_rejects_table_axis_directives() {
         // --xlabel applies to plot only.
-        let err = build_item(Kind::Table, &args(&[
-            "summary", "--xlabel", "limit",
-        ])).unwrap_err();
-        assert!(err.contains("not valid for `nbrs report table`"),
-            "got: {err}");
+        let err = build_item(Kind::Table, &args(&["summary", "--xlabel", "limit"])).unwrap_err();
+        assert!(
+            err.contains("not valid for `nbrs report table`"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn build_validates_closed_sets() {
-        let err = build_item(Kind::Plot, &args(&[
-            "x", "--palette", "not_a_palette",
-        ])).unwrap_err();
+        let err = build_item(Kind::Plot, &args(&["x", "--palette", "not_a_palette"])).unwrap_err();
         assert!(err.contains("not one of"), "got: {err}");
     }
 
     #[test]
     fn build_validates_hex_color() {
-        let err = build_item(Kind::Plot, &args(&[
-            "x", "--color", "not_hex",
-        ])).unwrap_err();
+        let err = build_item(Kind::Plot, &args(&["x", "--color", "not_hex"])).unwrap_err();
         assert!(err.contains("hex color"), "got: {err}");
 
-        let r = build_item(Kind::Plot, &args(&[
-            "x", "--color", "#117733",
-        ])).expect("hex color");
+        let r = build_item(Kind::Plot, &args(&["x", "--color", "#117733"])).expect("hex color");
         assert_eq!(r.item.style.color.as_deref(), Some("#117733"));
     }
 
     #[test]
     fn build_repeatable_style_directives() {
-        let r = build_item(Kind::Plot, &args(&[
-            "x", "--over", "cycle",
-            "--style", r#"profile=hnsw:{"line":"dashed"}"#,
-            "--style", "profile=ivf:line=solid marker=circle",
-        ])).expect("build");
+        let r = build_item(
+            Kind::Plot,
+            &args(&[
+                "x",
+                "--over",
+                "cycle",
+                "--style",
+                r#"profile=hnsw:{"line":"dashed"}"#,
+                "--style",
+                "profile=ivf:line=solid marker=circle",
+            ]),
+        )
+        .expect("build");
         assert_eq!(r.item.style.series.len(), 2);
         assert_eq!(r.item.style.series[0].key, "profile");
         assert_eq!(r.item.style.series[0].value, "hnsw");
         assert_eq!(r.item.style.series[0].style.line.as_deref(), Some("dashed"));
         assert_eq!(r.item.style.series[1].value, "ivf");
-        assert_eq!(r.item.style.series[1].style.marker.as_deref(), Some("circle"));
+        assert_eq!(
+            r.item.style.series[1].style.marker.as_deref(),
+            Some("circle")
+        );
     }
 
     #[test]
     fn build_dispatch_flags() {
-        let r = build_item(Kind::Plot, &args(&[
-            "x", "--over", "cycle",
-            "--add", "--replace",
-            "--at", "scenario:foo",
-            "--group", "my_group",
-            "--workload", "/tmp/wl.yaml",
-            "--stdout",
-            "--dry-run",
-        ])).expect("build");
+        let r = build_item(
+            Kind::Plot,
+            &args(&[
+                "x",
+                "--over",
+                "cycle",
+                "--add",
+                "--replace",
+                "--at",
+                "scenario:foo",
+                "--group",
+                "my_group",
+                "--workload",
+                "/tmp/wl.yaml",
+                "--stdout",
+                "--dry-run",
+            ]),
+        )
+        .expect("build");
         assert!(r.dispatch.add);
         assert!(r.dispatch.replace);
         assert_eq!(r.dispatch.at.as_deref(), Some("scenario:foo"));
@@ -604,67 +677,74 @@ mod tests {
 
     #[test]
     fn build_at_and_contextual_are_mutually_exclusive() {
-        let err = build_item(Kind::Plot, &args(&[
-            "x", "--at", "root", "--contextual", "auto",
-        ])).unwrap_err();
+        let err = build_item(
+            Kind::Plot,
+            &args(&["x", "--at", "root", "--contextual", "auto"]),
+        )
+        .unwrap_err();
         assert!(err.contains("mutually exclusive"), "got: {err}");
     }
 
     #[test]
     fn build_text_uses_body_flag() {
-        let r = build_item(Kind::Text, &args(&[
-            "intro", "--body", "Hello world\nMulti-line",
-        ])).expect("build");
+        let r = build_item(
+            Kind::Text,
+            &args(&["intro", "--body", "Hello world\nMulti-line"]),
+        )
+        .expect("build");
         assert_eq!(r.item.kind, Kind::Text);
         assert_eq!(r.item.body, "Hello world\nMulti-line");
     }
 
     #[test]
     fn build_unknown_flag_errors_with_kind_label() {
-        let err = build_item(Kind::Plot, &args(&[
-            "x", "--frobnicate", "yes",
-        ])).unwrap_err();
+        let err = build_item(Kind::Plot, &args(&["x", "--frobnicate", "yes"])).unwrap_err();
         assert!(err.contains("--frobnicate"));
         assert!(err.contains("nbrs report plot"));
     }
 
     #[test]
     fn build_no_name_generates_scratch_name() {
-        let r = build_item(Kind::Plot, &args(&[
-            "--over", "cycle",
-        ])).expect("build");
-        assert!(r.item.name.starts_with("scratch_"),
-            "got: {}", r.item.name);
+        let r = build_item(Kind::Plot, &args(&["--over", "cycle"])).expect("build");
+        assert!(r.item.name.starts_with("scratch_"), "got: {}", r.item.name);
     }
 
     #[test]
     fn build_name_auto_generates_scratch_name() {
-        let r = build_item(Kind::Plot, &args(&[
-            "--name", "auto", "--over", "cycle",
-        ])).expect("build");
-        assert!(r.item.name.starts_with("scratch_"),
-            "got: {}", r.item.name);
+        let r =
+            build_item(Kind::Plot, &args(&["--name", "auto", "--over", "cycle"])).expect("build");
+        assert!(r.item.name.starts_with("scratch_"), "got: {}", r.item.name);
     }
 
     #[test]
     fn build_session_flags_pass_through() {
         // --session is consumed but not stored in the
         // BuildResult; the dispatcher reads it from raw args.
-        let r = build_item(Kind::Plot, &args(&[
-            "x", "--session", "foo", "--over", "cycle",
-        ])).expect("build");
+        let r = build_item(
+            Kind::Plot,
+            &args(&["x", "--session", "foo", "--over", "cycle"]),
+        )
+        .expect("build");
         assert!(r.item.body.contains("over cycle"));
     }
 
     #[test]
     fn build_table_accepts_data_directives() {
-        let r = build_item(Kind::Table, &args(&[
-            "summary",
-            "--metric", "recall@.*",
-            "--by", "profile",
-            "--agg", "mean",
-            "--label", "Recall summary",
-        ])).expect("build");
+        let r = build_item(
+            Kind::Table,
+            &args(&[
+                "summary",
+                "--metric",
+                "recall@.*",
+                "--by",
+                "profile",
+                "--agg",
+                "mean",
+                "--label",
+                "Recall summary",
+            ]),
+        )
+        .expect("build");
         assert_eq!(r.item.kind, Kind::Table);
         assert!(r.item.body.contains("metric recall@.*"));
         assert!(r.item.body.contains("by profile"));

@@ -110,7 +110,12 @@ fn sigterm_drives_graceful_shutdown_with_consolidated_db() {
     // the run; instant ops so the drain is prompt.
     let mut child = spawn_run(
         &session,
-        &["op=t-{cycle}", "cycles=1000000", "rate=20", "adapter=stdout"],
+        &[
+            "op=t-{cycle}",
+            "cycles=1000000",
+            "rate=20",
+            "adapter=stdout",
+        ],
     );
 
     send_sigterm(&child);
@@ -118,7 +123,11 @@ fn sigterm_drives_graceful_shutdown_with_consolidated_db() {
 
     // Level-1 graceful is not a force-exit: the process must end by
     // its own normal exit path, not the 143 hard floor.
-    assert_ne!(status.code(), Some(143), "graceful TERM must not force-exit");
+    assert_ne!(
+        status.code(),
+        Some(143),
+        "graceful TERM must not force-exit"
+    );
 
     // The shutdown ceremony ran: WAL merged into a self-contained db
     // (journal_mode=DELETE drops the sidecars), read indexes built and
@@ -129,16 +138,16 @@ fn sigterm_drives_graceful_shutdown_with_consolidated_db() {
         !session.join("metrics.db-wal").exists(),
         "-wal sidecar still present: WAL consolidation did not run"
     );
-    let conn = rusqlite::Connection::open_with_flags(
-        &db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .expect("open consolidated db read-only");
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open consolidated db read-only");
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("read user_version");
-    assert_eq!(version, 4,
-        "shutdown must leave the db at v2-tables + indexes (SRD-93 ladder)");
+    assert_eq!(
+        version, 4,
+        "shutdown must leave the db at v2-tables + indexes (SRD-93 ladder)"
+    );
     let disposition: Option<String> = conn
         .query_row(
             "SELECT disposition FROM executions WHERE verb != 'pending' LIMIT 1",

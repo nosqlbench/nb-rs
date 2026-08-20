@@ -63,13 +63,18 @@ pub enum ValidationKind {
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", match self.kind {
-            ValidationKind::InvalidName     => "invalid name",
-            ValidationKind::ReservedName    => "reserved name",
-            ValidationKind::UnitSuffix      => "unit suffix",
-            ValidationKind::NonMonotonic    => "non-monotonic buckets",
-            ValidationKind::ExemplarTooLong => "exemplar label-set too long",
-        }, self.message)
+        write!(
+            f,
+            "{}: {}",
+            match self.kind {
+                ValidationKind::InvalidName => "invalid name",
+                ValidationKind::ReservedName => "reserved name",
+                ValidationKind::UnitSuffix => "unit suffix",
+                ValidationKind::NonMonotonic => "non-monotonic buckets",
+                ValidationKind::ExemplarTooLong => "exemplar label-set too long",
+            },
+            self.message
+        )
     }
 }
 
@@ -187,7 +192,9 @@ fn is_label_char(c: char) -> bool {
 /// The reader-side synthetic name `__name__` is exempt —
 /// it's a recognised OpenMetrics convention.
 pub fn check_reserved_name(name: &str) -> Result<(), ValidationError> {
-    if name == "__name__" { return Ok(()); }
+    if name == "__name__" {
+        return Ok(());
+    }
     if name.starts_with("__") {
         return Err(ValidationError {
             kind: ValidationKind::ReservedName,
@@ -220,18 +227,22 @@ pub fn check_reserved_name(name: &str) -> Result<(), ValidationError> {
 ///   or as an infix immediately before a known
 ///   exposition suffix (`_total` for counters, `_count`
 ///   etc.).
-pub fn check_unit_suffix(name: &str, unit: Option<&str>)
-    -> Result<(), ValidationError>
-{
-    let Some(unit) = unit else { return Ok(()); };
-    if unit.is_empty() { return Ok(()); }
+pub fn check_unit_suffix(name: &str, unit: Option<&str>) -> Result<(), ValidationError> {
+    let Some(unit) = unit else {
+        return Ok(());
+    };
+    if unit.is_empty() {
+        return Ok(());
+    }
     let needle = format!("_{unit}");
     // Suffix match.
-    if name.ends_with(&needle) { return Ok(()); }
+    if name.ends_with(&needle) {
+        return Ok(());
+    }
     // Infix match before any known exposition suffix.
-    for suffix in ["_total", "_created", "_count", "_sum", "_bucket",
-                   "_gcount", "_gsum", "_info"]
-    {
+    for suffix in [
+        "_total", "_created", "_count", "_sum", "_bucket", "_gcount", "_gsum", "_info",
+    ] {
         if let Some(stem) = name.strip_suffix(suffix)
             && stem.ends_with(&needle)
         {
@@ -260,9 +271,7 @@ pub fn check_unit_suffix(name: &str, unit: Option<&str>)
 /// GaugeHistogram (§5.4) bucket counts MAY decrease;
 /// callers who deal with a GaugeHistogram should not call
 /// this.
-pub fn check_bucket_monotonicity(
-    buckets: &[(BucketBound, u64)],
-) -> Result<(), ValidationError> {
+pub fn check_bucket_monotonicity(buckets: &[(BucketBound, u64)]) -> Result<(), ValidationError> {
     let mut prev: Option<u64> = None;
     for (i, (le, count)) in buckets.iter().enumerate() {
         if let Some(p) = prev
@@ -304,10 +313,10 @@ pub fn check_bucket_monotonicity(
 /// emit a diagnostic before the data lands.
 pub const EXEMPLAR_LABELSET_MAX_CHARS: usize = 128;
 
-pub fn check_exemplar_length(exemplar: &Exemplar)
-    -> Result<(), ValidationError>
-{
-    let total: usize = exemplar.labels.iter()
+pub fn check_exemplar_length(exemplar: &Exemplar) -> Result<(), ValidationError> {
+    let total: usize = exemplar
+        .labels
+        .iter()
         .map(|(k, v)| k.chars().count() + v.chars().count())
         .sum();
     if total > EXEMPLAR_LABELSET_MAX_CHARS {
@@ -453,18 +462,17 @@ mod tests {
         ];
         let err = check_bucket_monotonicity(&bs).unwrap_err();
         assert_eq!(err.kind, ValidationKind::NonMonotonic);
-        assert!(err.message.contains("le=10"),
-            "error should name the violating bucket: {err}");
+        assert!(
+            err.message.contains("le=10"),
+            "error should name the violating bucket: {err}"
+        );
     }
 
     // ── Exemplar length ──
 
     #[test]
     fn exemplar_under_limit_passes() {
-        let ex = Exemplar::new(
-            crate::labels::Labels::of("trace_id", "abc123"),
-            42.0,
-        );
+        let ex = Exemplar::new(crate::labels::Labels::of("trace_id", "abc123"), 42.0);
         assert!(check_exemplar_length(&ex).is_ok());
     }
 
@@ -472,10 +480,7 @@ mod tests {
     fn exemplar_over_limit_rejected() {
         // Build a label whose serialized chars exceed 128.
         let big_value = "x".repeat(150);
-        let ex = Exemplar::new(
-            crate::labels::Labels::of("trace_id", big_value),
-            42.0,
-        );
+        let ex = Exemplar::new(crate::labels::Labels::of("trace_id", big_value), 42.0);
         let err = check_exemplar_length(&ex).unwrap_err();
         assert_eq!(err.kind, ValidationKind::ExemplarTooLong);
     }
@@ -483,10 +488,7 @@ mod tests {
     #[test]
     fn exemplar_at_exact_limit_passes() {
         let v = "x".repeat(EXEMPLAR_LABELSET_MAX_CHARS - "trace_id".len());
-        let ex = Exemplar::new(
-            crate::labels::Labels::of("trace_id", v),
-            42.0,
-        );
+        let ex = Exemplar::new(crate::labels::Labels::of("trace_id", v), 42.0);
         assert!(check_exemplar_length(&ex).is_ok());
     }
 }

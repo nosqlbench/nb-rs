@@ -29,7 +29,9 @@ impl SequencerType {
             "bucket" => Ok(Self::Bucket),
             "interval" => Ok(Self::Interval),
             "concat" => Ok(Self::Concat),
-            other => Err(format!("unknown sequencer type: '{other}', use bucket|interval|concat")),
+            other => Err(format!(
+                "unknown sequencer type: '{other}', use bucket|interval|concat"
+            )),
         }
     }
 }
@@ -47,7 +49,11 @@ pub struct OpSequence {
 impl OpSequence {
     /// Build a sequence from ops with explicit ratios and strategy.
     pub fn build(ops: Vec<ParsedOp>, ratios: &[u64], strategy: SequencerType) -> Self {
-        assert_eq!(ops.len(), ratios.len(), "ops and ratios must have equal length");
+        assert_eq!(
+            ops.len(),
+            ratios.len(),
+            "ops and ratios must have equal length"
+        );
         assert!(!ops.is_empty(), "must have at least one op");
 
         let lut = match strategy {
@@ -56,7 +62,11 @@ impl OpSequence {
             SequencerType::Concat => build_concat_lut(ratios),
         };
 
-        Self { ops, lut, sequencer_type: strategy }
+        Self {
+            ops,
+            lut,
+            sequencer_type: strategy,
+        }
     }
 
     /// Build with uniform ratios (1 each) using bucket sequencing.
@@ -72,9 +82,11 @@ impl OpSequence {
     /// Checks `params["ratio"]` first (explicit params), then
     /// `op["ratio"]` (inline with op fields). Defaults to 1.
     pub fn from_ops(ops: Vec<ParsedOp>, strategy: SequencerType) -> Self {
-        let ratios: Vec<u64> = ops.iter()
+        let ratios: Vec<u64> = ops
+            .iter()
             .map(|op| {
-                op.params.get("ratio")
+                op.params
+                    .get("ratio")
                     .and_then(|v| v.as_u64())
                     .or_else(|| op.op.get("ratio").and_then(|v| v.as_u64()))
                     .unwrap_or(1)
@@ -166,7 +178,9 @@ fn build_bucket_lut(ratios: &[u64]) -> Vec<usize> {
                 any_drawn = true;
             }
         }
-        if !any_drawn { break; }
+        if !any_drawn {
+            break;
+        }
     }
 
     lut
@@ -184,12 +198,16 @@ fn build_bucket_lut(ratios: &[u64]) -> Vec<usize> {
 ///   LUT: [0, 1, 0, 0, 1, 0]
 fn build_interval_lut(ratios: &[u64]) -> Vec<usize> {
     let total: u64 = ratios.iter().sum();
-    if total == 0 { return Vec::new(); }
+    if total == 0 {
+        return Vec::new();
+    }
 
     // Generate (position, op_index) pairs
     let mut entries: Vec<(f64, usize, usize)> = Vec::new(); // (pos, op_idx, instance)
     for (i, &ratio) in ratios.iter().enumerate() {
-        if ratio == 0 { continue; }
+        if ratio == 0 {
+            continue;
+        }
         let spacing = total as f64 / ratio as f64;
         for j in 0..ratio as usize {
             entries.push((j as f64 * spacing, i, j));
@@ -198,7 +216,8 @@ fn build_interval_lut(ratios: &[u64]) -> Vec<usize> {
 
     // Sort by position, then by op index for stability
     entries.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.1.cmp(&b.1))
     });
 
@@ -258,10 +277,7 @@ mod tests {
 
     #[test]
     fn bucket_interleaves() {
-        let ops = vec![
-            ParsedOp::simple("A", "a"),
-            ParsedOp::simple("B", "b"),
-        ];
+        let ops = vec![ParsedOp::simple("A", "a"), ParsedOp::simple("B", "b")];
         let seq = OpSequence::build(ops, &[3, 1], SequencerType::Bucket);
         // Bucket draws: Pass1: A,B  Pass2: A  Pass3: A
         assert_eq!(seq.lut(), &[0, 1, 0, 0]);
@@ -271,10 +287,7 @@ mod tests {
 
     #[test]
     fn interval_uniform() {
-        let ops = vec![
-            ParsedOp::simple("A", "a"),
-            ParsedOp::simple("B", "b"),
-        ];
+        let ops = vec![ParsedOp::simple("A", "a"), ParsedOp::simple("B", "b")];
         let seq = OpSequence::build(ops, &[1, 1], SequencerType::Interval);
         assert_eq!(seq.stanza_length(), 2);
         assert_eq!(names(&seq, 4), vec!["A", "B", "A", "B"]);
@@ -282,10 +295,7 @@ mod tests {
 
     #[test]
     fn interval_weighted() {
-        let ops = vec![
-            ParsedOp::simple("A", "a"),
-            ParsedOp::simple("B", "b"),
-        ];
+        let ops = vec![ParsedOp::simple("A", "a"), ParsedOp::simple("B", "b")];
         let seq = OpSequence::build(ops, &[4, 2], SequencerType::Interval);
         assert_eq!(seq.stanza_length(), 6);
         let n = names(&seq, 6);
@@ -295,10 +305,7 @@ mod tests {
 
     #[test]
     fn interval_distributes_evenly() {
-        let ops = vec![
-            ParsedOp::simple("A", "a"),
-            ParsedOp::simple("B", "b"),
-        ];
+        let ops = vec![ParsedOp::simple("A", "a"), ParsedOp::simple("B", "b")];
         let seq = OpSequence::build(ops, &[3, 3], SequencerType::Interval);
         // Both at spacing 2: A at 0,2,4; B at 0,2,4
         // Sorted by pos then index: A(0), B(0), A(2), B(2), A(4), B(4)
@@ -322,10 +329,7 @@ mod tests {
 
     #[test]
     fn concat_wraps() {
-        let ops = vec![
-            ParsedOp::simple("X", "x"),
-            ParsedOp::simple("Y", "y"),
-        ];
+        let ops = vec![ParsedOp::simple("X", "x"), ParsedOp::simple("Y", "y")];
         let seq = OpSequence::build(ops, &[2, 1], SequencerType::Concat);
         assert_eq!(names(&seq, 6), vec!["X", "X", "Y", "X", "X", "Y"]);
     }
@@ -346,15 +350,28 @@ mod tests {
 
     #[test]
     fn sequencer_type_parse() {
-        assert_eq!(SequencerType::parse("bucket").unwrap(), SequencerType::Bucket);
-        assert_eq!(SequencerType::parse("INTERVAL").unwrap(), SequencerType::Interval);
-        assert_eq!(SequencerType::parse("Concat").unwrap(), SequencerType::Concat);
+        assert_eq!(
+            SequencerType::parse("bucket").unwrap(),
+            SequencerType::Bucket
+        );
+        assert_eq!(
+            SequencerType::parse("INTERVAL").unwrap(),
+            SequencerType::Interval
+        );
+        assert_eq!(
+            SequencerType::parse("Concat").unwrap(),
+            SequencerType::Concat
+        );
         assert!(SequencerType::parse("bogus").is_err());
     }
 
     #[test]
     fn single_op_any_strategy() {
-        for strategy in [SequencerType::Bucket, SequencerType::Interval, SequencerType::Concat] {
+        for strategy in [
+            SequencerType::Bucket,
+            SequencerType::Interval,
+            SequencerType::Concat,
+        ] {
             let ops = vec![ParsedOp::simple("only", "SELECT 1")];
             let seq = OpSequence::build(ops, &[1], strategy);
             assert_eq!(seq.get(0).name, "only");
@@ -364,15 +381,16 @@ mod tests {
 
     #[test]
     fn stanza_repeats_cleanly() {
-        let ops = vec![
-            ParsedOp::simple("A", "a"),
-            ParsedOp::simple("B", "b"),
-        ];
+        let ops = vec![ParsedOp::simple("A", "a"), ParsedOp::simple("B", "b")];
         let seq = OpSequence::build(ops, &[2, 1], SequencerType::Bucket);
         let stanza = seq.stanza_length();
         // Two full stanzas should produce the same pattern
-        let first: Vec<String> = (0..stanza as u64).map(|c| seq.get(c).name.clone()).collect();
-        let second: Vec<String> = (stanza as u64..2 * stanza as u64).map(|c| seq.get(c).name.clone()).collect();
+        let first: Vec<String> = (0..stanza as u64)
+            .map(|c| seq.get(c).name.clone())
+            .collect();
+        let second: Vec<String> = (stanza as u64..2 * stanza as u64)
+            .map(|c| seq.get(c).name.clone())
+            .collect();
         assert_eq!(first, second);
     }
 }

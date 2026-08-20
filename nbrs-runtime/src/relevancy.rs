@@ -172,9 +172,7 @@ impl RelevancyFn {
             "precision" => Some(Self::Precision),
             "f1" => Some(Self::F1),
             "reciprocal_rank" | "reciprocalrank" | "mrr" => Some(Self::ReciprocalRank),
-            "average_precision" | "averageprecision" | "ap" | "map" => {
-                Some(Self::AveragePrecision)
-            }
+            "average_precision" | "averageprecision" | "ap" | "map" => Some(Self::AveragePrecision),
             "ndcg" => Some(Self::Ndcg),
             _ => None,
         }
@@ -470,13 +468,28 @@ mod tests {
     #[test]
     fn relevancy_fn_parse() {
         assert_eq!(RelevancyFn::parse("recall"), Some(RelevancyFn::Recall));
-        assert_eq!(RelevancyFn::parse("PRECISION"), Some(RelevancyFn::Precision));
+        assert_eq!(
+            RelevancyFn::parse("PRECISION"),
+            Some(RelevancyFn::Precision)
+        );
         assert_eq!(RelevancyFn::parse("f1"), Some(RelevancyFn::F1));
-        assert_eq!(RelevancyFn::parse("reciprocal_rank"), Some(RelevancyFn::ReciprocalRank));
+        assert_eq!(
+            RelevancyFn::parse("reciprocal_rank"),
+            Some(RelevancyFn::ReciprocalRank)
+        );
         assert_eq!(RelevancyFn::parse("mrr"), Some(RelevancyFn::ReciprocalRank));
-        assert_eq!(RelevancyFn::parse("average_precision"), Some(RelevancyFn::AveragePrecision));
-        assert_eq!(RelevancyFn::parse("ap"), Some(RelevancyFn::AveragePrecision));
-        assert_eq!(RelevancyFn::parse("map"), Some(RelevancyFn::AveragePrecision));
+        assert_eq!(
+            RelevancyFn::parse("average_precision"),
+            Some(RelevancyFn::AveragePrecision)
+        );
+        assert_eq!(
+            RelevancyFn::parse("ap"),
+            Some(RelevancyFn::AveragePrecision)
+        );
+        assert_eq!(
+            RelevancyFn::parse("map"),
+            Some(RelevancyFn::AveragePrecision)
+        );
         assert_eq!(RelevancyFn::parse("ndcg"), Some(RelevancyFn::Ndcg));
         assert_eq!(RelevancyFn::parse("NDCG"), Some(RelevancyFn::Ndcg));
         assert_eq!(RelevancyFn::parse("unknown"), None);

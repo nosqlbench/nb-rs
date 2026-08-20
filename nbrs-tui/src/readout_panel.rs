@@ -56,11 +56,7 @@ impl PhaseRowContext {
     /// (live counters from `ActivePhase`). Fires under
     /// [`EventType::Update`] — the refresh-tick event the TUI
     /// re-renders against every frame.
-    pub fn live(
-        phase: &PhaseEntry,
-        live: &ActivePhase,
-        refresh_tick: u64,
-    ) -> Self {
+    pub fn live(phase: &PhaseEntry, live: &ActivePhase, refresh_tick: u64) -> Self {
         let elapsed = live.started_at.elapsed().as_secs_f64();
         Self {
             name: phase.name.clone(),
@@ -91,14 +87,24 @@ impl PhaseRowContext {
         let state = match &phase.status {
             PhaseStatus::Completed => ro::LifecycleState::Completed,
             PhaseStatus::Failed(e) => ro::LifecycleState::Failed(e.clone()),
-            PhaseStatus::Running   => ro::LifecycleState::Running,
-            PhaseStatus::Pending   => ro::LifecycleState::Pending,
+            PhaseStatus::Running => ro::LifecycleState::Running,
+            PhaseStatus::Pending => ro::LifecycleState::Pending,
         };
         let elapsed = phase.duration_secs.unwrap_or(0.0);
-        let (cycles_completed, ops_ok, skips, errors, retries, concurrency) =
-            phase.summary.as_ref().map(|s|
-                (s.ops_finished, s.ops_ok, s.skips, s.errors, s.retries, s.fibers)
-            ).unwrap_or((0, 0, 0, 0, 0, 0));
+        let (cycles_completed, ops_ok, skips, errors, retries, concurrency) = phase
+            .summary
+            .as_ref()
+            .map(|s| {
+                (
+                    s.ops_finished,
+                    s.ops_ok,
+                    s.skips,
+                    s.errors,
+                    s.retries,
+                    s.fibers,
+                )
+            })
+            .unwrap_or((0, 0, 0, 0, 0, 0));
         let cycles_total = phase.summary.as_ref().map(|s| s.cursor_extent).unwrap_or(0);
         Self {
             name: phase.name.clone(),
@@ -123,27 +129,65 @@ impl PhaseRowContext {
 }
 
 impl ro::ReadoutContext for PhaseRowContext {
-    fn subject_name(&self) -> &str { &self.name }
-    fn subject_labels(&self) -> &str { &self.labels }
-    fn subject_state(&self) -> ro::LifecycleState { self.state.clone() }
-    fn elapsed_secs(&self) -> f64 { self.elapsed }
-    fn cycles_completed(&self) -> u64 { self.cycles_completed }
-    fn cycles_total(&self) -> u64 { self.cycles_total }
-    fn ops_started(&self) -> u64 { self.ops_started }
-    fn ops_finished(&self) -> u64 { self.ops_finished }
-    fn ops_ok(&self) -> u64 { self.ops_ok }
-    fn skips(&self) -> u64 { self.skips }
-    fn errors(&self) -> u64 { self.errors }
-    fn retries(&self) -> u64 { self.retries }
-    fn concurrency(&self) -> usize { self.concurrency }
-    fn consumed(&self) -> u64 { self.consumed }
-    fn refresh_tick(&self) -> u64 { self.refresh_tick }
-    fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> EventType { self.event }
+    fn subject_name(&self) -> &str {
+        &self.name
+    }
+    fn subject_labels(&self) -> &str {
+        &self.labels
+    }
+    fn subject_state(&self) -> ro::LifecycleState {
+        self.state.clone()
+    }
+    fn elapsed_secs(&self) -> f64 {
+        self.elapsed
+    }
+    fn cycles_completed(&self) -> u64 {
+        self.cycles_completed
+    }
+    fn cycles_total(&self) -> u64 {
+        self.cycles_total
+    }
+    fn ops_started(&self) -> u64 {
+        self.ops_started
+    }
+    fn ops_finished(&self) -> u64 {
+        self.ops_finished
+    }
+    fn ops_ok(&self) -> u64 {
+        self.ops_ok
+    }
+    fn skips(&self) -> u64 {
+        self.skips
+    }
+    fn errors(&self) -> u64 {
+        self.errors
+    }
+    fn retries(&self) -> u64 {
+        self.retries
+    }
+    fn concurrency(&self) -> usize {
+        self.concurrency
+    }
+    fn consumed(&self) -> u64 {
+        self.consumed
+    }
+    fn refresh_tick(&self) -> u64 {
+        self.refresh_tick
+    }
+    fn use_color(&self) -> bool {
+        self.use_color
+    }
+    fn event(&self) -> EventType {
+        self.event
+    }
     fn eta_secs(&self) -> Option<f64> {
-        if self.cycles_total == 0 || self.elapsed <= 0.0 { return None; }
+        if self.cycles_total == 0 || self.elapsed <= 0.0 {
+            return None;
+        }
         let rate = self.ops_finished as f64 / self.elapsed;
-        if rate <= 0.0 { return None; }
+        if rate <= 0.0 {
+            return None;
+        }
         let remaining = self.cycles_total.saturating_sub(self.ops_finished) as f64;
         Some(remaining / rate)
     }
@@ -203,7 +247,10 @@ pub fn render_phase_readouts(
     // "you're navigating; the binder is showing you the
     // currently-active row."
     let tinted = if binder.focus_for(event).is_some() {
-        lines.into_iter().map(|line| apply_focus_tint(line)).collect()
+        lines
+            .into_iter()
+            .map(|line| apply_focus_tint(line))
+            .collect()
     } else {
         lines
     };
@@ -217,22 +264,28 @@ pub fn render_phase_readouts(
 /// fg are untouched) — only `bg` is overridden.
 fn apply_focus_tint(line: Line<'static>) -> Line<'static> {
     let tint = Color::Rgb(40, 40, 60);
-    let new_spans: Vec<Span<'static>> = line.spans.into_iter().map(|s| {
-        let style = s.style.bg(tint).add_modifier(Modifier::BOLD);
-        Span::styled(s.content.into_owned(), style)
-    }).collect();
+    let new_spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|s| {
+            let style = s.style.bg(tint).add_modifier(Modifier::BOLD);
+            Span::styled(s.content.into_owned(), style)
+        })
+        .collect();
     Line::from(new_spans)
 }
 
 // Suppress unused-import warning; Instant is used inside
 // PhaseRowContext::live but only for elapsed derivation.
 #[allow(dead_code)]
-fn _instant_marker() -> Instant { Instant::now() }
+fn _instant_marker() -> Instant {
+    Instant::now()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{PhaseEntry, EntryKind};
+    use crate::state::{EntryKind, PhaseEntry};
 
     fn pending_phase(name: &str) -> PhaseEntry {
         PhaseEntry {
@@ -261,7 +314,10 @@ mod tests {
 
         let (lines, event) = render_phase_readouts(&mut binder, &phase, None, 0);
         assert_eq!(event, EventType::PhaseEnd);
-        assert!(!lines.is_empty(), "completed phase should render at least one line");
+        assert!(
+            !lines.is_empty(),
+            "completed phase should render at least one line"
+        );
     }
 
     #[test]
@@ -278,8 +334,10 @@ mod tests {
         // tint the lines.
         use ro::{BinderKey, ReadoutBinder};
         binder.on_key(BinderKey::CycleFocusNext);
-        assert!(binder.focus_for(EventType::PhaseEnd).is_some(),
-            "cycle should land focus somewhere");
+        assert!(
+            binder.focus_for(EventType::PhaseEnd).is_some(),
+            "cycle should land focus somewhere"
+        );
 
         let (tinted, _) = render_phase_readouts(&mut binder, &phase, None, 0);
         assert!(!tinted.is_empty());
@@ -321,20 +379,18 @@ mod tests {
             throughput_summary: std::sync::Arc::new(
                 nbrs_metrics::summaries::binomial_summary::BinomialSummary::new(60),
             ),
-            rate_ewma: std::sync::Arc::new(
-                nbrs_metrics::summaries::ewma::Ewma::new(
-                    std::time::Duration::from_millis(500),
-                ),
-            ),
+            rate_ewma: std::sync::Arc::new(nbrs_metrics::summaries::ewma::Ewma::new(
+                std::time::Duration::from_millis(500),
+            )),
             latency_peak_5s: std::sync::Arc::new(
                 nbrs_metrics::summaries::peak_tracker::PeakTracker::max(
-                    std::time::Duration::from_secs(5)
-                )
+                    std::time::Duration::from_secs(5),
+                ),
             ),
             latency_peak_10s: std::sync::Arc::new(
                 nbrs_metrics::summaries::peak_tracker::PeakTracker::max(
-                    std::time::Duration::from_secs(10)
-                )
+                    std::time::Duration::from_secs(10),
+                ),
             ),
             render: None,
         };
@@ -359,7 +415,8 @@ mod tests {
             expanded_lines.len() >= labeled_lines.len(),
             "expanded LOD should produce at least as many lines as labeled \
              (got expanded={}, labeled={})",
-            expanded_lines.len(), labeled_lines.len(),
+            expanded_lines.len(),
+            labeled_lines.len(),
         );
     }
 }

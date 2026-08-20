@@ -7,9 +7,9 @@
 //! - `DriverAdapter::map_op()` — called once per template at activity startup
 //! - `OpDispenser::execute()` — called per-cycle to bind values and execute
 
-use std::sync::OnceLock;
 use std::any::Any;
 use std::fmt;
+use std::sync::OnceLock;
 
 // Re-export so adapter crates can write `use nbrs_runtime::adapter::ExecCtx`
 // alongside `use nbrs_runtime::adapter::{OpDispenser, ResolvedFields, ...}`.
@@ -26,14 +26,15 @@ pub use polydat::kernel::PolydatKernel;
 // the existing `nbrs_runtime::adapter` import path, no direct
 // polydat dependency required. Same reason as the PolydatKernel
 // re-export above.
-pub use polydat::binder::{Binder, BinderSlot};
 pub use polydat::ast::PortType;
+pub use polydat::binder::{Binder, BinderSlot};
 
 /// Boxed, `Send` future returned by [`DriverAdapter::map_op`] — yields a
 /// boxed [`OpDispenser`] (or an error message). The lifetime ties the
 /// future to the borrowed `&self` / template references.
-pub type MapOpFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>;
+pub type MapOpFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+>;
 
 /// Boxed, `Send` future produced by an adapter/driver `create` factory —
 /// yields a connected [`DriverAdapter`] (or an error message).
@@ -60,11 +61,15 @@ pub trait ResultBody: Send + Sync + fmt::Debug {
 
     /// Count of logical elements in this result (rows, records, items).
     /// Used by the result traverser for metrics. Default 1 (one result).
-    fn element_count(&self) -> u64 { 1 }
+    fn element_count(&self) -> u64 {
+        1
+    }
 
     /// Size in bytes of the result payload, if known.
     /// Used by the result traverser for throughput metrics.
-    fn byte_count(&self) -> Option<u64> { None }
+    fn byte_count(&self) -> Option<u64> {
+        None
+    }
 
     /// SRD-66 §"Surface 1" body projection — return the body's
     /// canonical text representation for use by result-binding
@@ -86,8 +91,12 @@ impl ResultBody for TextBody {
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.0.clone())
     }
-    fn as_any(&self) -> &dyn Any { self }
-    fn to_text(&self) -> String { self.0.clone() }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn to_text(&self) -> String {
+        self.0.clone()
+    }
 }
 
 /// JSON result body. Adapters that natively produce JSON
@@ -105,8 +114,12 @@ impl ResultBody for TextBody {
 pub struct JsonBody(pub serde_json::Value);
 
 impl ResultBody for JsonBody {
-    fn to_json(&self) -> serde_json::Value { self.0.clone() }
-    fn as_any(&self) -> &dyn Any { self }
+    fn to_json(&self) -> serde_json::Value {
+        self.0.clone()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn element_count(&self) -> u64 {
         match &self.0 {
             serde_json::Value::Array(arr) => arr.len() as u64,
@@ -136,11 +149,13 @@ pub struct OpResult {
     pub skipped: bool,
 }
 
-
 impl OpResult {
     /// Create a skipped result (no execution).
     pub fn skipped() -> Self {
-        Self { body: None, skipped: true }
+        Self {
+            body: None,
+            skipped: true,
+        }
     }
 }
 
@@ -287,7 +302,9 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// Each entry is a metric name (matching `adapter_metrics()` labels)
     /// and a display label. Workloads can override this via a `status:`
     /// field on phases or ops. Default: empty (no adapter-specific status).
-    fn default_status_metrics(&self) -> Vec<StatusMetric> { Vec::new() }
+    fn default_status_metrics(&self) -> Vec<StatusMetric> {
+        Vec::new()
+    }
 
     /// Preferred display mode for this adapter.
     ///
@@ -298,7 +315,9 @@ pub trait DriverAdapter: Send + Sync + 'static {
     ///
     /// - `Auto`: adapter is compatible with TUI (default)
     /// - `Off`: adapter requires raw stderr/stdout, TUI must not activate
-    fn display_preference(&self) -> DisplayPreference { DisplayPreference::Auto }
+    fn display_preference(&self) -> DisplayPreference {
+        DisplayPreference::Auto
+    }
 
     /// Declare the set of op-field names this adapter knows how to
     /// interpret. SRD 30 §"Core-first field processing" requires
@@ -315,7 +334,9 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// Returning an empty slice `Some(&[])` is a valid declaration
     /// for an adapter that consumes no op fields (e.g. `stdout`
     /// rendering the raw bindings only).
-    fn known_op_fields(&self) -> Option<&'static [&'static str]> { None }
+    fn known_op_fields(&self) -> Option<&'static [&'static str]> {
+        None
+    }
 
     /// Adapter-specific params keys allowed under an op's
     /// top-level `params` (not `op`) section. Returned keys
@@ -325,7 +346,9 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// core vocab. Override to declare adapter-only params
     /// (e.g. CQL's `cl:` consistency-level overrides if those
     /// were lifted from `op` to `params` someday).
-    fn known_op_params(&self) -> &'static [&'static str] { &[] }
+    fn known_op_params(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Declare adapter-specific dynamic controls (SRD 23) on a
     /// subcomponent attached to the activity's component. Called
@@ -349,7 +372,8 @@ pub trait DriverAdapter: Send + Sync + 'static {
     fn declare_controls(
         &self,
         _parent: &std::sync::Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
-    ) {}
+    ) {
+    }
 
     /// Async teardown hook fired by the resource pool when a
     /// shared adapter's last reference detaches (or at session
@@ -381,7 +405,9 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// to reach a live handle (the first consumer is the CQL session handle,
     /// SRD-103). Built over the adapter's own connected session, so the
     /// payload and the op-execution path share one resource.
-    fn accessor_payload(&self) -> Option<std::sync::Arc<dyn Any + Send + Sync>> { None }
+    fn accessor_payload(&self) -> Option<std::sync::Arc<dyn Any + Send + Sync>> {
+        None
+    }
 }
 
 /// Adapter display preference for TUI activation.
@@ -436,7 +462,9 @@ pub trait OpDispenser: Send + Sync {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    >;
 
     /// One-line description of the op this dispenser
     /// represents — typically the statement text /
@@ -490,7 +518,8 @@ pub trait OpDispenser: Send + Sync {
     /// dispenser; leaf dispensers should override when they have a
     /// useful per-cycle rendering.
     fn describe_resolved(&self, wires: &dyn crate::wires::WireSource) -> Option<String> {
-        self.inner_dispenser().and_then(|inner| inner.describe_resolved(wires))
+        self.inner_dispenser()
+            .and_then(|inner| inner.describe_resolved(wires))
     }
 
     /// SRD-68 invariant I-3 — the dispenser's canonical Polydat Kernel,
@@ -509,7 +538,8 @@ pub trait OpDispenser: Send + Sync {
     ///
     /// Default: delegate to inner dispenser if any, else `None`.
     fn canonical_kernel(&self) -> Option<&std::sync::Arc<PolydatKernel>> {
-        self.inner_dispenser().and_then(|inner| inner.canonical_kernel())
+        self.inner_dispenser()
+            .and_then(|inner| inner.canonical_kernel())
     }
 
     /// Snapshot adapter-specific metrics for inclusion in the capture
@@ -525,7 +555,13 @@ pub trait OpDispenser: Send + Sync {
     /// — adapters typically build `MetricValue::Counter` /
     /// `MetricValue::Histogram` / `MetricValue::Gauge` directly.
     /// Default: no additional metrics.
-    fn adapter_metrics(&self) -> Vec<(String, nbrs_metrics::labels::Labels, nbrs_metrics::snapshot::MetricValue)> {
+    fn adapter_metrics(
+        &self,
+    ) -> Vec<(
+        String,
+        nbrs_metrics::labels::Labels,
+        nbrs_metrics::snapshot::MetricValue,
+    )> {
         if let Some(inner) = self.inner_dispenser() {
             inner.adapter_metrics()
         } else {
@@ -582,7 +618,9 @@ pub trait OpDispenser: Send + Sync {
     /// the ordinals reserved — never over-reading, never dropping the
     /// remainder.
     fn rows_per_op(&self) -> usize {
-        self.inner_dispenser().map(|inner| inner.rows_per_op()).unwrap_or(1)
+        self.inner_dispenser()
+            .map(|inner| inner.rows_per_op())
+            .unwrap_or(1)
     }
 
     /// Returns the wrapped dispenser when this is a
@@ -614,7 +652,9 @@ pub trait OpDispenser: Send + Sync {
     /// composition machinery (SRD-32a) will use the
     /// `WrappingDispenser` bound to require the override
     /// at the registration boundary.
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { None }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        None
+    }
 }
 
 /// Marker trait for dispensers that wrap another
@@ -682,26 +722,33 @@ impl Clone for ResolvedFields {
 impl ResolvedFields {
     /// Create with names and typed values. Strings are lazily rendered.
     pub fn new(names: Vec<String>, values: Vec<polydat::ast::Value>) -> Self {
-        Self { names, values, strings: OnceLock::new() }
+        Self {
+            names,
+            values,
+            strings: OnceLock::new(),
+        }
     }
 
     /// Access the lazily-rendered string representations.
     /// Computed once on first call, then cached.
     pub fn strings(&self) -> &[String] {
-        self.strings.get_or_init(|| {
-            self.values.iter().map(|v| v.to_display_string()).collect()
-        })
+        self.strings
+            .get_or_init(|| self.values.iter().map(|v| v.to_display_string()).collect())
     }
 
     /// Get a field value by name as a string.
     pub fn get_str(&self, name: &str) -> Option<&str> {
-        self.names.iter().position(|n| n == name)
+        self.names
+            .iter()
+            .position(|n| n == name)
             .map(|i| self.strings()[i].as_str())
     }
 
     /// Get a field value by name as a typed Value.
     pub fn get_value(&self, name: &str) -> Option<&polydat::ast::Value> {
-        self.names.iter().position(|n| n == name)
+        self.names
+            .iter()
+            .position(|n| n == name)
             .map(|i| &self.values[i])
     }
 
@@ -727,16 +774,16 @@ impl ResolvedFields {
 
     /// Serialize all fields to JSON for diagnostic/logging use.
     pub fn to_json(&self) -> serde_json::Value {
-        let map: serde_json::Map<String, serde_json::Value> = self.names.iter()
+        let map: serde_json::Map<String, serde_json::Value> = self
+            .names
+            .iter()
             .zip(self.values.iter())
             .map(|(name, value)| {
                 let json_val = match value {
                     polydat::ast::Value::U64(v) => serde_json::Value::Number((*v).into()),
-                    polydat::ast::Value::F64(v) => {
-                        serde_json::Number::from_f64(*v)
-                            .map(serde_json::Value::Number)
-                            .unwrap_or(serde_json::Value::Null)
-                    }
+                    polydat::ast::Value::F64(v) => serde_json::Number::from_f64(*v)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null),
                     polydat::ast::Value::Bool(v) => serde_json::Value::Bool(*v),
                     _ => serde_json::Value::String(value.to_display_string()),
                 };
@@ -780,10 +827,7 @@ mod tests {
 
     #[test]
     fn resolved_fields_get_value() {
-        let fields = ResolvedFields::new(
-            vec!["x".into()],
-            vec![polydat::ast::Value::F64(3.5)],
-        );
+        let fields = ResolvedFields::new(vec!["x".into()], vec![polydat::ast::Value::F64(3.5)]);
         match fields.get_value("x") {
             Some(polydat::ast::Value::F64(v)) => assert!((v - 3.5).abs() < 1e-10),
             other => panic!("expected F64(3.5), got {other:?}"),
@@ -850,7 +894,10 @@ inventory::collect!(AdapterRegistration);
 
 /// Look up an adapter by driver name from all link-time registrations.
 pub fn find_adapter_registration(driver: &str) -> Option<&'static AdapterRegistration> {
-    inventory::iter::<AdapterRegistration>.into_iter().find(|&reg| (reg.names)().contains(&driver)).map(|v| v as _)
+    inventory::iter::<AdapterRegistration>
+        .into_iter()
+        .find(|&reg| (reg.names)().contains(&driver))
+        .map(|v| v as _)
 }
 
 /// List all registered driver names.
@@ -980,8 +1027,9 @@ pub struct SharedDriverRegistration {
     /// instance-shaping params (`hosts`, `keyspace`, …)
     /// belong here; per-statement and per-phase knobs MUST
     /// NOT.
-    pub resource_key: fn(&std::collections::HashMap<String, String>)
-        -> Result<crate::resource_pool::ResourceKey, String>,
+    pub resource_key: fn(
+        &std::collections::HashMap<String, String>,
+    ) -> Result<crate::resource_pool::ResourceKey, String>,
 }
 
 inventory::collect!(SharedDriverRegistration);
@@ -1028,7 +1076,10 @@ pub fn find_driver(adapter: &str, driver: &str) -> Option<&'static DriverImpl> {
 /// `keyspace`).
 pub fn adapter_driver_params(adapter: &str) -> Vec<&'static str> {
     let mut params: Vec<&'static str> = Vec::new();
-    for e in inventory::iter::<DriverImpl>.into_iter().filter(|e| e.adapter == adapter) {
+    for e in inventory::iter::<DriverImpl>
+        .into_iter()
+        .filter(|e| e.adapter == adapter)
+    {
         params.extend_from_slice((e.known_params)());
     }
     params
@@ -1072,8 +1123,12 @@ pub fn resolve_driver_name(
     selector_param: &str,
     params: &std::collections::HashMap<String, String>,
 ) -> Option<&'static str> {
-    let user_order: Option<Vec<&str>> = params.get(selector_param)
-        .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect());
+    let user_order: Option<Vec<&str>> = params.get(selector_param).map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
     let default_order = default_drivers(adapter);
     let order: Vec<&str> = match &user_order {
         Some(v) => v.clone(),
@@ -1096,8 +1151,12 @@ pub async fn instantiate_with_driver(
     selector_param: &str,
     params: std::collections::HashMap<String, String>,
 ) -> Result<std::sync::Arc<dyn DriverAdapter>, String> {
-    let user_order: Option<Vec<&str>> = params.get(selector_param)
-        .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect());
+    let user_order: Option<Vec<&str>> = params.get(selector_param).map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
     let default_order = default_drivers(adapter);
     let order: Vec<&str> = match &user_order {
         Some(v) => v.clone(),

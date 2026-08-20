@@ -136,8 +136,7 @@ mod inner {
 
     impl SqliteReporter {
         pub fn new(path: impl AsRef<Path>) -> Result<Self, String> {
-            let conn = Connection::open(path)
-                .map_err(|e| format!("failed to open SQLite: {e}"))?;
+            let conn = Connection::open(path).map_err(|e| format!("failed to open SQLite: {e}"))?;
             // WAL mode: readers don't block writers, no fsync on every commit.
             // synchronous=NORMAL: fsync only on WAL checkpoint, not every transaction.
             conn.execute_batch(
@@ -150,8 +149,9 @@ mod inner {
                 "PRAGMA journal_mode=WAL;\
                  PRAGMA synchronous=NORMAL;\
                  PRAGMA wal_autocheckpoint=1000;\
-                 PRAGMA foreign_keys=ON;"
-            ).map_err(|e| format!("failed to set SQLite pragmas: {e}"))?;
+                 PRAGMA foreign_keys=ON;",
+            )
+            .map_err(|e| format!("failed to set SQLite pragmas: {e}"))?;
             let mut reporter = Self::from_connection(conn)?;
             reporter.create_schema()?;
             reporter.session_epoch_utc_nanos =
@@ -189,19 +189,26 @@ mod inner {
             if let Ok(v) = conn.query_row(
                 "SELECT CAST(value AS INTEGER) FROM session_metadata \
                  WHERE key = 'session_epoch_utc_nanos'",
-                [], |r| r.get::<_, i64>(0))
-            {
+                [],
+                |r| r.get::<_, i64>(0),
+            ) {
                 return v;
             }
-            let derived: Option<i64> = conn.query_row(
-                "SELECT MIN(started_at_nanos) FROM executions \
+            let derived: Option<i64> = conn
+                .query_row(
+                    "SELECT MIN(started_at_nanos) FROM executions \
                  WHERE started_at_nanos > 0",
-                [], |r| r.get(0)).ok().flatten();
+                    [],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
             let epoch = derived.unwrap_or(anchor_utc_nanos);
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO session_metadata (key, value) \
                  VALUES ('session_epoch_utc_nanos', ?1)",
-                params![epoch.to_string()]);
+                params![epoch.to_string()],
+            );
             epoch
         }
 
@@ -209,8 +216,7 @@ mod inner {
         /// session_nanos)`, both derived from the same monotonic
         /// anchor so the two columns always agree.
         fn clock_now(&self) -> (i64, i64) {
-            let utc = self.anchor_utc_nanos
-                + self.anchor_instant.elapsed().as_nanos() as i64;
+            let utc = self.anchor_utc_nanos + self.anchor_instant.elapsed().as_nanos() as i64;
             (utc, utc - self.session_epoch_utc_nanos)
         }
 
@@ -249,30 +255,30 @@ mod inner {
         /// rather than propagating, since a purge failure
         /// shouldn't abort the run (it surfaces as a duplicate-
         /// counting metric, not silent corruption of state).
-        pub fn purge_samples_with_labels(
-            &mut self,
-            labels: &Labels,
-        ) -> usize {
+        pub fn purge_samples_with_labels(&mut self, labels: &Labels) -> usize {
             // For each (k, v) in labels, every kept instance
             // must own a matching `instance_label` row. Build
             // the AND-of-EXISTS query against the denormalised
             // schema — one EXISTS per pair, scanning the
             // (key, value, instance_id) index.
-            let pairs: Vec<(String, String)> = labels.iter()
+            let pairs: Vec<(String, String)> = labels
+                .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
             if pairs.is_empty() {
                 return 0;
             }
-            let exists_clauses: Vec<String> = (0..pairs.len()).map(|i| {
-                let kparam = i * 2 + 1;
-                let vparam = i * 2 + 2;
-                format!(
-                    "EXISTS (SELECT 1 FROM instance_label e \
+            let exists_clauses: Vec<String> = (0..pairs.len())
+                .map(|i| {
+                    let kparam = i * 2 + 1;
+                    let vparam = i * 2 + 2;
+                    format!(
+                        "EXISTS (SELECT 1 FROM instance_label e \
                      WHERE e.instance_id = mi.id \
                      AND e.key = ?{kparam} AND e.value = ?{vparam})",
-                )
-            }).collect();
+                    )
+                })
+                .collect();
             let sql = format!(
                 "DELETE FROM sample_value WHERE instance_id IN (\
                    SELECT mi.id FROM metric_instance mi WHERE {})",
@@ -283,11 +289,15 @@ mod inner {
                 bound.push(k as &dyn rusqlite::ToSql);
                 bound.push(v as &dyn rusqlite::ToSql);
             }
-            match self.conn.execute(&sql, rusqlite::params_from_iter(bound.iter().copied())) {
+            match self
+                .conn
+                .execute(&sql, rusqlite::params_from_iter(bound.iter().copied()))
+            {
                 Ok(n) => n,
                 Err(e) => {
                     crate::diag::warn(&format!(
-                        "warning: sqlite purge_samples_with_labels failed: {e}"));
+                        "warning: sqlite purge_samples_with_labels failed: {e}"
+                    ));
                     0
                 }
             }
@@ -298,10 +308,15 @@ mod inner {
         /// per execution (the common case) so a `refine`'s newer
         /// execution doesn't clobber a prior execution's value.
         pub fn set_metadata(&mut self, key: &str, value: &str) {
-            self.conn.execute(
-                "INSERT OR REPLACE INTO session_metadata (key, value) VALUES (?1, ?2)",
-                params![key, value],
-            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite metadata write: {e}")); 0 });
+            self.conn
+                .execute(
+                    "INSERT OR REPLACE INTO session_metadata (key, value) VALUES (?1, ?2)",
+                    params![key, value],
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag::warn(&format!("warning: sqlite metadata write: {e}"));
+                    0
+                });
         }
 
         /// Store a per-execution metadata key-value pair under
@@ -314,14 +329,16 @@ mod inner {
             key: &str,
             value: &str,
         ) {
-            self.conn.execute(
-                "INSERT OR REPLACE INTO execution_metadata (session, exec_id, key, value) \
+            self.conn
+                .execute(
+                    "INSERT OR REPLACE INTO execution_metadata (session, exec_id, key, value) \
                  VALUES (?1, ?2, ?3, ?4)",
-                params![session, exec_id as i64, key, value],
-            ).unwrap_or_else(|e| {
-                crate::diag::warn(&format!("warning: sqlite execution metadata write: {e}"));
-                0
-            });
+                    params![session, exec_id as i64, key, value],
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag::warn(&format!("warning: sqlite execution metadata write: {e}"));
+                    0
+                });
         }
 
         /// `PRAGMA user_version` levels — the single source of truth for how
@@ -348,25 +365,29 @@ mod inner {
         /// ALTERed) because SQLite has no ADD COLUMN IF NOT
         /// EXISTS; skipped entirely on brand-new dbs where the
         /// CREATE below carries the column.
-        fn ensure_phase_outcomes_params_column(
-            conn: &Connection,
-        ) -> Result<(), String> {
-            let table_exists: bool = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master \
+        fn ensure_phase_outcomes_params_column(conn: &Connection) -> Result<(), String> {
+            let table_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
                  WHERE type='table' AND name='phase_outcomes'",
-                [], |r| r.get::<_, i64>(0),
-            ).map(|n| n > 0)
-             .map_err(|e| format!("phase_outcomes probe: {e}"))?;
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|n| n > 0)
+                .map_err(|e| format!("phase_outcomes probe: {e}"))?;
             if !table_exists {
                 return Ok(());
             }
-            let mut stmt = conn.prepare("PRAGMA table_info(phase_outcomes)")
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(phase_outcomes)")
                 .map_err(|e| format!("phase_outcomes pragma: {e}"))?;
-            let mut rows = stmt.query([])
+            let mut rows = stmt
+                .query([])
                 .map_err(|e| format!("phase_outcomes pragma query: {e}"))?;
             while let Ok(Some(r)) = rows.next() {
                 if r.get::<_, String>(1)
-                    .map(|n| n == "params_consumed").unwrap_or(false)
+                    .map(|n| n == "params_consumed")
+                    .unwrap_or(false)
                 {
                     return Ok(());
                 }
@@ -374,7 +395,8 @@ mod inner {
             conn.execute(
                 "ALTER TABLE phase_outcomes ADD COLUMN params_consumed TEXT",
                 [],
-            ).map_err(|e| format!("phase_outcomes params migration: {e}"))?;
+            )
+            .map_err(|e| format!("phase_outcomes params migration: {e}"))?;
             Ok(())
         }
 
@@ -443,25 +465,27 @@ mod inner {
             // current version. One PRAGMA probe (and at most one
             // ALTER, once per db) per open.
             Self::ensure_phase_outcomes_params_column(&self.conn)?;
-            let version: i64 = self.conn
+            let version: i64 = self
+                .conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .map_err(|e| format!("failed to read schema version: {e}"))?;
             if version >= Self::SCHEMA_VERSION {
                 return Ok(());
             }
-            self.conn.execute_batch(
-                // SRD-77 — `executions` MUST be defined before any
-                // table that FK-references it; the FK on
-                // metric_instance(session, exec_id) below targets
-                // this table. One row per `nbrs run` / `nbrs
-                // refine` / `nbrs resume` invocation that reached
-                // the runner. `verb` records the launching CLI
-                // verb; `scope` records the `--scope=` setting for
-                // refine (NULL elsewhere). `workload_yaml_snapshot`
-                // stores the workload yaml verbatim so an operator
-                // can reconstruct what THIS execution ran without
-                // needing the workload file to still exist on disk.
-                "CREATE TABLE IF NOT EXISTS executions (
+            self.conn
+                .execute_batch(
+                    // SRD-77 — `executions` MUST be defined before any
+                    // table that FK-references it; the FK on
+                    // metric_instance(session, exec_id) below targets
+                    // this table. One row per `nbrs run` / `nbrs
+                    // refine` / `nbrs resume` invocation that reached
+                    // the runner. `verb` records the launching CLI
+                    // verb; `scope` records the `--scope=` setting for
+                    // refine (NULL elsewhere). `workload_yaml_snapshot`
+                    // stores the workload yaml verbatim so an operator
+                    // can reconstruct what THIS execution ran without
+                    // needing the workload file to still exist on disk.
+                    "CREATE TABLE IF NOT EXISTS executions (
                     session                 TEXT    NOT NULL,
                     exec_id                 INTEGER NOT NULL,
                     verb                    TEXT    NOT NULL,
@@ -762,8 +786,9 @@ mod inner {
                                FROM session_metadata
                                WHERE key = 'session_epoch_utc_nanos')
                                AS ended_at_session_nanos
-                    FROM phase_outcomes p;"
-            ).map_err(|e| format!("schema creation failed: {e}"))?;
+                    FROM phase_outcomes p;",
+                )
+                .map_err(|e| format!("schema creation failed: {e}"))?;
             // Tables done — stamp SCHEMA_VERSION so a reopen skips the table
             // DDL. Indexes are deferred (a higher version) to `ensure_indexes`.
             self.conn
@@ -788,8 +813,7 @@ mod inner {
             let tx = match self.conn.transaction() {
                 Ok(t) => t,
                 Err(e) => {
-                    crate::diag::warn(&format!(
-                        "sqlite phase_outcome tx open failed: {e}"));
+                    crate::diag::warn(&format!("sqlite phase_outcome tx open failed: {e}"));
                     return;
                 }
             };
@@ -801,10 +825,17 @@ mod inner {
                       phase_hash, reason_class, params_consumed) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
-                        row.session, row.exec_id as i64,
-                        row.phase_name, row.phase_labels, row.status,
-                        row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
-                        row.phase_hash, row.reason_class, row.params_consumed,
+                        row.session,
+                        row.exec_id as i64,
+                        row.phase_name,
+                        row.phase_labels,
+                        row.status,
+                        row.duration_secs,
+                        row.started_at_nanos,
+                        row.ended_at_nanos,
+                        row.phase_hash,
+                        row.reason_class,
+                        row.params_consumed,
                     ],
                 )?;
                 tx.execute(
@@ -812,8 +843,10 @@ mod inner {
                      WHERE session = ?1 AND exec_id = ?2 \
                        AND phase_name = ?3 AND phase_labels = ?4",
                     params![
-                        row.session, row.exec_id as i64,
-                        row.phase_name, row.phase_labels,
+                        row.session,
+                        row.exec_id as i64,
+                        row.phase_name,
+                        row.phase_labels,
                     ],
                 )?;
                 for (seq, e) in row.errors.iter().enumerate() {
@@ -825,12 +858,19 @@ mod inner {
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
                                  ?11, ?12, ?13)",
                         params![
-                            row.session, row.exec_id as i64,
-                            row.phase_name, row.phase_labels, seq as i64,
-                            e.class, e.message,
-                            e.op_name, e.cycle.map(|c| c as i64),
-                            e.op_template, e.op_resolved,
-                            e.at_nanos, e.retryable as i64,
+                            row.session,
+                            row.exec_id as i64,
+                            row.phase_name,
+                            row.phase_labels,
+                            seq as i64,
+                            e.class,
+                            e.message,
+                            e.op_name,
+                            e.cycle.map(|c| c as i64),
+                            e.op_template,
+                            e.op_resolved,
+                            e.at_nanos,
+                            e.retryable as i64,
                         ],
                     )?;
                 }
@@ -839,13 +879,11 @@ mod inner {
             match res {
                 Ok(()) => {
                     if let Err(e) = tx.commit() {
-                        crate::diag::warn(&format!(
-                            "sqlite phase_outcome commit failed: {e}"));
+                        crate::diag::warn(&format!("sqlite phase_outcome commit failed: {e}"));
                     }
                 }
                 Err(e) => {
-                    crate::diag::warn(&format!(
-                        "sqlite phase_outcome write failed: {e}"));
+                    crate::diag::warn(&format!("sqlite phase_outcome write failed: {e}"));
                 }
             }
         }
@@ -896,8 +934,13 @@ mod inner {
                      cli_params_snapshot    = excluded.cli_params_snapshot \
                  WHERE executions.verb = 'pending'",
                 params![
-                    session, exec_id as i64, verb, scope,
-                    started_at_nanos, workload_yaml_snapshot, cli_params_snapshot,
+                    session,
+                    exec_id as i64,
+                    verb,
+                    scope,
+                    started_at_nanos,
+                    workload_yaml_snapshot,
+                    cli_params_snapshot,
                 ],
             );
             match res {
@@ -907,11 +950,13 @@ mod inner {
                 // strict-INSERT behaviour) without overwriting history.
                 Ok(0) => crate::diag::warn(&format!(
                     "sqlite executions insert skipped: (session={session}, \
-                     exec_id={exec_id}) already records a completed execution")),
+                     exec_id={exec_id}) already records a completed execution"
+                )),
                 Ok(_) => {}
                 Err(e) => crate::diag::warn(&format!(
                     "sqlite executions insert failed (session={session}, \
-                     exec_id={exec_id}): {e}")),
+                     exec_id={exec_id}): {e}"
+                )),
             }
         }
 
@@ -933,15 +978,13 @@ mod inner {
                  SET ended_at_nanos = ?1, disposition = ?2 \
                  WHERE session = ?3 AND exec_id = ?4 \
                    AND ended_at_nanos IS NULL",
-                params![
-                    ended_at_nanos, disposition,
-                    session, exec_id as i64,
-                ],
+                params![ended_at_nanos, disposition, session, exec_id as i64,],
             );
             if let Err(e) = res {
                 crate::diag::warn(&format!(
                     "sqlite executions update failed (session={session}, \
-                     exec_id={exec_id}): {e}"));
+                     exec_id={exec_id}): {e}"
+                ));
             }
         }
 
@@ -954,9 +997,7 @@ mod inner {
         /// layer doesn't depend on the activity crate. Ordered
         /// by `exec_id` so callers see them in cardinal
         /// sequence.
-        pub fn read_executions(&self, exec_id_filter: Option<u64>)
-            -> Vec<ExecutionRow>
-        {
+        pub fn read_executions(&self, exec_id_filter: Option<u64>) -> Vec<ExecutionRow> {
             let (sql, params): (&str, Vec<i64>) = match exec_id_filter {
                 Some(id) => (
                     "SELECT session, exec_id, verb, scope, \
@@ -979,20 +1020,19 @@ mod inner {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
-            let rows = stmt.query_map(
-                rusqlite::params_from_iter(params.iter()),
-                |r| Ok(ExecutionRow {
-                    session:                r.get(0)?,
-                    exec_id:                r.get::<_, i64>(1)? as u64,
-                    verb:                   r.get(2)?,
-                    scope:                  r.get(3)?,
-                    started_at_nanos:       r.get(4)?,
-                    ended_at_nanos:         r.get(5)?,
-                    disposition:            r.get(6)?,
+            let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                Ok(ExecutionRow {
+                    session: r.get(0)?,
+                    exec_id: r.get::<_, i64>(1)? as u64,
+                    verb: r.get(2)?,
+                    scope: r.get(3)?,
+                    started_at_nanos: r.get(4)?,
+                    ended_at_nanos: r.get(5)?,
+                    disposition: r.get(6)?,
                     workload_yaml_snapshot: r.get(7)?,
-                    cli_params_snapshot:    r.get(8)?,
+                    cli_params_snapshot: r.get(8)?,
                 })
-            );
+            });
             rows.map(|iter| iter.filter_map(Result::ok).collect())
                 .unwrap_or_default()
         }
@@ -1017,22 +1057,21 @@ mod inner {
         /// absent column reads as NULL via a probed column-or-NULL
         /// SELECT; no migration write on read-only opens.
         fn phase_outcomes_has_column(&self, name: &str) -> bool {
-            let Ok(mut stmt) = self.conn.prepare(
-                "PRAGMA table_info(phase_outcomes)") else { return false };
-            let Ok(mut rows) = stmt.query([]) else { return false };
+            let Ok(mut stmt) = self.conn.prepare("PRAGMA table_info(phase_outcomes)") else {
+                return false;
+            };
+            let Ok(mut rows) = stmt.query([]) else {
+                return false;
+            };
             while let Ok(Some(r)) = rows.next() {
-                if r.get::<_, String>(1)
-                    .map(|n| n == name).unwrap_or(false)
-                {
+                if r.get::<_, String>(1).map(|n| n == name).unwrap_or(false) {
                     return true;
                 }
             }
             false
         }
 
-        pub fn read_phase_outcomes(&self, exec_id_filter: Option<u64>)
-            -> Vec<PhaseOutcomeRow>
-        {
+        pub fn read_phase_outcomes(&self, exec_id_filter: Option<u64>) -> Vec<PhaseOutcomeRow> {
             let mut outcomes: Vec<PhaseOutcomeRow> = Vec::new();
             let rc_col = if self.phase_outcomes_has_reason_class() {
                 "reason_class"
@@ -1047,24 +1086,26 @@ mod inner {
             let (sql, params): (String, Vec<i64>) = match exec_id_filter {
                 Some(id) => (
                     format!(
-                    "SELECT session, exec_id, phase_name, phase_labels, \
+                        "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
                             started_at_nanos, ended_at_nanos, phase_hash, \
                             {rc_col}, {pc_col} \
                      FROM phase_outcomes WHERE exec_id = ?1 \
                      ORDER BY ended_at_nanos, session, exec_id, \
-                              phase_name, phase_labels"),
+                              phase_name, phase_labels"
+                    ),
                     vec![id as i64],
                 ),
                 None => (
                     format!(
-                    "SELECT session, exec_id, phase_name, phase_labels, \
+                        "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
                             started_at_nanos, ended_at_nanos, phase_hash, \
                             {rc_col}, {pc_col} \
                      FROM phase_outcomes \
                      ORDER BY ended_at_nanos, session, exec_id, \
-                              phase_name, phase_labels"),
+                              phase_name, phase_labels"
+                    ),
                     Vec::new(),
                 ),
             };
@@ -1073,22 +1114,20 @@ mod inner {
                     Ok(s) => s,
                     Err(_) => return Vec::new(),
                 };
-                let rows = out_stmt.query_map(
-                    rusqlite::params_from_iter(params.iter()),
-                    |row| {
+                let rows = out_stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
                     Ok(PhaseOutcomeRow {
-                        session:           row.get(0)?,
-                        exec_id:           row.get::<_, i64>(1)? as u64,
-                        phase_name:        row.get(2)?,
-                        phase_labels:      row.get(3)?,
-                        status:            row.get(4)?,
-                        duration_secs:     row.get(5)?,
-                        started_at_nanos:  row.get(6)?,
-                        ended_at_nanos:    row.get(7)?,
-                        phase_hash:        row.get::<_, Option<String>>(8)?,
-                        reason_class:      row.get::<_, Option<String>>(9)?,
-                        params_consumed:   row.get::<_, Option<String>>(10)?,
-                        errors:            Vec::new(),
+                        session: row.get(0)?,
+                        exec_id: row.get::<_, i64>(1)? as u64,
+                        phase_name: row.get(2)?,
+                        phase_labels: row.get(3)?,
+                        status: row.get(4)?,
+                        duration_secs: row.get(5)?,
+                        started_at_nanos: row.get(6)?,
+                        ended_at_nanos: row.get(7)?,
+                        phase_hash: row.get::<_, Option<String>>(8)?,
+                        reason_class: row.get::<_, Option<String>>(9)?,
+                        params_consumed: row.get::<_, Option<String>>(10)?,
+                        errors: Vec::new(),
                     })
                 });
                 if let Ok(iter) = rows {
@@ -1097,8 +1136,11 @@ mod inner {
             }
             for outcome in outcomes.iter_mut() {
                 outcome.errors = self.load_phase_errors(
-                    &outcome.session, outcome.exec_id,
-                    &outcome.phase_name, &outcome.phase_labels);
+                    &outcome.session,
+                    outcome.exec_id,
+                    &outcome.phase_name,
+                    &outcome.phase_labels,
+                );
             }
             outcomes
         }
@@ -1124,31 +1166,36 @@ mod inner {
             } else {
                 "NULL"
             };
-            let mut row = self.conn.query_row(
-                &format!(
-                "SELECT status, duration_secs, started_at_nanos, ended_at_nanos, \
+            let mut row = self
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT status, duration_secs, started_at_nanos, ended_at_nanos, \
                         phase_hash, {rc_col}, {pc_col} \
                  FROM phase_outcomes \
                  WHERE session = ?1 AND exec_id = ?2 \
-                   AND phase_name = ?3 AND phase_labels = ?4"),
-                params![session, exec_id as i64, phase_name, phase_labels],
-                |r| Ok(PhaseOutcomeRow {
-                    session:           session.to_string(),
-                    exec_id,
-                    phase_name:        phase_name.to_string(),
-                    phase_labels:      phase_labels.to_string(),
-                    status:            r.get(0)?,
-                    duration_secs:     r.get(1)?,
-                    started_at_nanos:  r.get(2)?,
-                    ended_at_nanos:    r.get(3)?,
-                    phase_hash:        r.get::<_, Option<String>>(4)?,
-                    reason_class:      r.get::<_, Option<String>>(5)?,
-                    params_consumed:   r.get::<_, Option<String>>(6)?,
-                    errors:            Vec::new(),
-                }),
-            ).ok()?;
-            row.errors = self.load_phase_errors(
-                session, exec_id, phase_name, phase_labels);
+                   AND phase_name = ?3 AND phase_labels = ?4"
+                    ),
+                    params![session, exec_id as i64, phase_name, phase_labels],
+                    |r| {
+                        Ok(PhaseOutcomeRow {
+                            session: session.to_string(),
+                            exec_id,
+                            phase_name: phase_name.to_string(),
+                            phase_labels: phase_labels.to_string(),
+                            status: r.get(0)?,
+                            duration_secs: r.get(1)?,
+                            started_at_nanos: r.get(2)?,
+                            ended_at_nanos: r.get(3)?,
+                            phase_hash: r.get::<_, Option<String>>(4)?,
+                            reason_class: r.get::<_, Option<String>>(5)?,
+                            params_consumed: r.get::<_, Option<String>>(6)?,
+                            errors: Vec::new(),
+                        })
+                    },
+                )
+                .ok()?;
+            row.errors = self.load_phase_errors(session, exec_id, phase_name, phase_labels);
             Some(row)
         }
 
@@ -1165,23 +1212,25 @@ mod inner {
                  FROM phase_errors \
                  WHERE session = ?1 AND exec_id = ?2 \
                    AND phase_name = ?3 AND phase_labels = ?4 \
-                 ORDER BY seq"
+                 ORDER BY seq",
             ) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
             let rows = stmt.query_map(
                 params![session, exec_id as i64, phase_name, phase_labels],
-                |r| Ok(PhaseErrorRow {
-                    class:       r.get(0)?,
-                    message:     r.get(1)?,
-                    op_name:     r.get(2)?,
-                    cycle:       r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
-                    op_template: r.get(4)?,
-                    op_resolved: r.get(5)?,
-                    at_nanos:    r.get(6)?,
-                    retryable:   r.get::<_, i64>(7)? != 0,
-                }),
+                |r| {
+                    Ok(PhaseErrorRow {
+                        class: r.get(0)?,
+                        message: r.get(1)?,
+                        op_name: r.get(2)?,
+                        cycle: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+                        op_template: r.get(4)?,
+                        op_resolved: r.get(5)?,
+                        at_nanos: r.get(6)?,
+                        retryable: r.get::<_, i64>(7)? != 0,
+                    })
+                },
             );
             match rows {
                 Ok(iter) => iter.filter_map(Result::ok).collect(),
@@ -1217,14 +1266,19 @@ mod inner {
                   rendered_at, body_ansi, body_plain) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    slot, exec_id as i64, subject_kind, subject_id, readout_name, lod,
-                    rendered_at_nanos, body_ansi, body_plain,
+                    slot,
+                    exec_id as i64,
+                    subject_kind,
+                    subject_id,
+                    readout_name,
+                    lod,
+                    rendered_at_nanos,
+                    body_ansi,
+                    body_plain,
                 ],
             );
             if let Err(e) = r {
-                crate::diag::warn(&format!(
-                    "warning: readout snapshot upsert failed: {e}"
-                ));
+                crate::diag::warn(&format!("warning: readout snapshot upsert failed: {e}"));
             }
         }
 
@@ -1236,22 +1290,22 @@ mod inner {
                 "SELECT slot, exec_id, subject_kind, subject_id, readout_name, lod, \
                         rendered_at, body_ansi, body_plain \
                  FROM readout_snapshots \
-                 ORDER BY rendered_at, slot, subject_kind, subject_id, readout_name"
+                 ORDER BY rendered_at, slot, subject_kind, subject_id, readout_name",
             ) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
             let rows = stmt.query_map([], |row| {
                 Ok(ReadoutSnapshotRow {
-                    slot:          row.get(0)?,
-                    exec_id:       row.get::<_, i64>(1)? as u64,
-                    subject_kind:  row.get(2)?,
-                    subject_id:    row.get(3)?,
-                    readout_name:  row.get(4)?,
-                    lod:           row.get(5)?,
-                    rendered_at:   row.get(6)?,
-                    body_ansi:     row.get(7)?,
-                    body_plain:    row.get(8)?,
+                    slot: row.get(0)?,
+                    exec_id: row.get::<_, i64>(1)? as u64,
+                    subject_kind: row.get(2)?,
+                    subject_id: row.get(3)?,
+                    readout_name: row.get(4)?,
+                    lod: row.get(5)?,
+                    rendered_at: row.get(6)?,
+                    body_ansi: row.get(7)?,
+                    body_plain: row.get(8)?,
                 })
             });
             match rows {
@@ -1272,25 +1326,28 @@ mod inner {
         ///
         /// `unit` is `None` when the family has no declared unit;
         /// the column is left NULL in that case.
-        fn get_or_insert_family(
-            &mut self,
-            name: &str,
-            typ: &str,
-            unit: Option<&str>,
-        ) -> i64 {
+        fn get_or_insert_family(&mut self, name: &str, typ: &str, unit: Option<&str>) -> i64 {
             let key = format!("{name}:{typ}");
             if let Some(&id) = self.family_cache.get(&key) {
                 return id;
             }
-            self.conn.execute(
-                "INSERT OR IGNORE INTO metric_family (name, type, unit) VALUES (?1, ?2, ?3)",
-                params![name, typ, unit],
-            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
-            let id: i64 = self.conn.query_row(
-                "SELECT id FROM metric_family WHERE name=?1 AND type=?2",
-                params![name, typ],
-                |row| row.get(0),
-            ).unwrap_or(0);
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO metric_family (name, type, unit) VALUES (?1, ?2, ?3)",
+                    params![name, typ, unit],
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag::warn(&format!("warning: sqlite write failed: {e}"));
+                    0
+                });
+            let id: i64 = self
+                .conn
+                .query_row(
+                    "SELECT id FROM metric_family WHERE name=?1 AND type=?2",
+                    params![name, typ],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
             self.family_cache.insert(key, id);
             id
         }
@@ -1304,7 +1361,9 @@ mod inner {
         fn canonical_labels(family_name: &str, raw: &Labels) -> Labels {
             let mut canonical = Labels::empty();
             for (k, v) in raw.iter() {
-                if k == "name" || k == "__name__" { continue; }
+                if k == "name" || k == "__name__" {
+                    continue;
+                }
                 canonical = canonical.with(k, v);
             }
             canonical.with("__name__", family_name)
@@ -1358,7 +1417,7 @@ mod inner {
                     "metric_instance insert rejected: \
                      session=\"latest\" is a reserved CLI \
                      qualifier and must be resolved to a \
-                     concrete session id before write."
+                     concrete session id before write.",
                 );
                 return 0;
             }
@@ -1368,7 +1427,7 @@ mod inner {
                     "metric_instance insert rejected: \
                      exec_id=\"latest\" is a reserved CLI \
                      qualifier and must be resolved to a \
-                     concrete integer before write."
+                     concrete integer before write.",
                 );
                 return 0;
             }
@@ -1397,43 +1456,55 @@ mod inner {
             // real verb/started_at/snapshots over the `pending`/0
             // placeholder (INSERT OR IGNORE never clobbers a row that
             // is already present, so a real row is left untouched).
-            self.conn.execute(
-                "INSERT OR IGNORE INTO executions \
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO executions \
                  (session, exec_id, verb, started_at_nanos) \
                  VALUES (?1, ?2, 'pending', 0)",
-                params![session, exec_id],
-            ).unwrap_or_else(|e| {
-                crate::diag::warn(&format!(
-                    "warning: executions FK-parent placeholder insert failed: {e}"));
-                0
-            });
-            self.conn.execute(
-                "INSERT OR IGNORE INTO metric_instance \
+                    params![session, exec_id],
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag::warn(&format!(
+                        "warning: executions FK-parent placeholder insert failed: {e}"
+                    ));
+                    0
+                });
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO metric_instance \
                  (family_id, spec, session, exec_id) VALUES (?1, ?2, ?3, ?4)",
-                params![family_id, &spec, session, exec_id],
-            ).unwrap_or_else(|e| {
-                crate::diag::warn(&format!("warning: metric_instance insert failed: {e}"));
-                0
-            });
-            let id: i64 = self.conn.query_row(
-                "SELECT id FROM metric_instance WHERE spec = ?1",
-                params![&spec], |row| row.get(0),
-            ).unwrap_or(0);
+                    params![family_id, &spec, session, exec_id],
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag::warn(&format!("warning: metric_instance insert failed: {e}"));
+                    0
+                });
+            let id: i64 = self
+                .conn
+                .query_row(
+                    "SELECT id FROM metric_instance WHERE spec = ?1",
+                    params![&spec],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
             if id != 0 {
                 // Write every label pair. PRIMARY KEY
                 // (instance_id, key) means re-inserts are
                 // INSERT OR IGNORE-safe — duplicate ticks
                 // never write twice.
                 for (k, v) in canonical.sorted_pairs() {
-                    self.conn.execute(
-                        "INSERT OR IGNORE INTO instance_label (instance_id, key, value) \
+                    self.conn
+                        .execute(
+                            "INSERT OR IGNORE INTO instance_label (instance_id, key, value) \
                          VALUES (?1, ?2, ?3)",
-                        params![id, k, v],
-                    ).unwrap_or_else(|e| {
-                        crate::diag::warn(&format!(
-                            "warning: instance_label insert failed: {e}"));
-                        0
-                    });
+                            params![id, k, v],
+                        )
+                        .unwrap_or_else(|e| {
+                            crate::diag::warn(&format!(
+                                "warning: instance_label insert failed: {e}"
+                            ));
+                            0
+                        });
                 }
                 // SRD-93 M3 — first storage sight of this spec IS
                 // the enter-scope event; this cache-miss branch is
@@ -1442,19 +1513,20 @@ mod inner {
                 // re-sight (SRD-44 resume / SRD-77 refine reopen) is
                 // a no-op via the (instance, exec, event) PK (A7).
                 let (at_utc, at_session) = self.clock_now();
-                self.conn.execute(
-                    "INSERT OR IGNORE INTO instance_scope_event \
+                self.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO instance_scope_event \
                      (instance_id, session, exec_id, event, reason, \
                       at_utc_nanos, at_session_nanos, spec) \
                      VALUES (?1, ?2, ?3, 'enter', 'first_sample', ?4, ?5, ?6)",
-                    params![id, session, exec_id, at_utc, at_session, &spec],
-                ).unwrap_or_else(|e| {
-                    crate::diag::warn(&format!(
-                        "warning: scope-event insert failed: {e}"));
-                    0
-                });
-                self.instance_meta.insert(
-                    id, (session.to_string(), exec_id, spec.clone()));
+                        params![id, session, exec_id, at_utc, at_session, &spec],
+                    )
+                    .unwrap_or_else(|e| {
+                        crate::diag::warn(&format!("warning: scope-event insert failed: {e}"));
+                        0
+                    });
+                self.instance_meta
+                    .insert(id, (session.to_string(), exec_id, spec.clone()));
                 self.batch_touched.insert(id);
                 self.instance_cache.insert(spec, id);
             }
@@ -1536,9 +1608,7 @@ mod inner {
                     let p99 = r.value_at_quantile(0.99) as f64;
                     let p999 = r.value_at_quantile(0.999) as f64;
 
-                    let created_ms = h.created.map(|t| {
-                        now_ms - t.elapsed().as_millis() as i64
-                    });
+                    let created_ms = h.created.map(|t| now_ms - t.elapsed().as_millis() as i64);
                     self.conn.execute(
                         "INSERT INTO sample_value \
                          (instance_id, timestamp_ms, interval_ms, count, sum, min, max, mean, stddev, \
@@ -1685,9 +1755,8 @@ mod inner {
             labels: &Labels,
             sample: &NativeSample,
         ) {
-            let family_id = self.get_or_insert_family(
-                family_name, family_type, sample.unit.as_deref(),
-            );
+            let family_id =
+                self.get_or_insert_family(family_name, family_type, sample.unit.as_deref());
             let instance_id = self.upsert_instance(family_id, family_name, labels);
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1811,25 +1880,29 @@ mod inner {
             // path wrote it, the cache returns the existing id.
             let family_id = self.get_or_insert_family(family_name, family_type, None);
             let instance_id = self.upsert_instance(family_id, family_name, instance_labels);
-            let labels_spec = exemplar.labels.iter()
+            let labels_spec = exemplar
+                .labels
+                .iter()
                 .map(|(k, v)| format!("{k}=\"{v}\""))
                 .collect::<Vec<_>>()
                 .join(",");
-            self.conn.execute(
-                "INSERT INTO exemplar \
+            self.conn
+                .execute(
+                    "INSERT INTO exemplar \
                  (instance_id, sample_timestamp_ms, value, timestamp_ms, labels_spec) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    instance_id, sample_timestamp_ms,
-                    exemplar.value, exemplar.timestamp_ms,
-                    labels_spec,
-                ],
-            ).unwrap_or_else(|e| {
-                crate::diag::warn(&format!(
-                    "warning: exemplar write failed: {e}",
-                ));
-                0
-            });
+                    params![
+                        instance_id,
+                        sample_timestamp_ms,
+                        exemplar.value,
+                        exemplar.timestamp_ms,
+                        labels_spec,
+                    ],
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag::warn(&format!("warning: exemplar write failed: {e}",));
+                    0
+                });
         }
     }
 
@@ -2027,11 +2100,7 @@ mod inner {
         /// Both formats share the same data-extraction pipeline
         /// (filters, gauge discovery, aggregates) — only the
         /// final stringify step differs.
-        pub fn format_summary_with_format(
-            &self,
-            config: &ReportConfig,
-            format: &str,
-        ) -> String {
+        pub fn format_summary_with_format(&self, config: &ReportConfig, format: &str) -> String {
             let Some((headers, grid)) = self.build_summary_grid(config) else {
                 return String::new();
             };
@@ -2063,14 +2132,18 @@ mod inner {
             let mut out = Vec::new();
             for entry in latest_execution_metadata_like(&self.conn, "report.%") {
                 let mut lines = entry.1.lines();
-                let head = match lines.next() { Some(h) => h, None => continue };
+                let head = match lines.next() {
+                    Some(h) => h,
+                    None => continue,
+                };
                 let name = match head.strip_prefix("table ") {
                     Some(rest) => rest.trim().to_string(),
                     None => continue,
                 };
                 let body: String = lines
                     .filter(|l| !l.starts_with("label ") && !l.starts_with("target "))
-                    .collect::<Vec<_>>().join("\n");
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 out.push((name, body));
             }
             out
@@ -2081,15 +2154,20 @@ mod inner {
         /// `config`. Returns `None` if there's nothing to
         /// render. Shared between every output-format renderer
         /// (`md`, `csv`, …).
-        fn build_summary_grid(&self, config: &ReportConfig)
-            -> Option<(Vec<String>, Vec<Vec<String>>)>
-        {
-            let row_patterns: Vec<regex::Regex> = config.row_filters.iter()
+        fn build_summary_grid(
+            &self,
+            config: &ReportConfig,
+        ) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+            let row_patterns: Vec<regex::Regex> = config
+                .row_filters
+                .iter()
                 .filter_map(|p| regex::Regex::new(p.trim()).ok())
                 .collect();
 
             let rows = self.query_all_activities(config.exec_id_filter);
-            if rows.is_empty() { return None; }
+            if rows.is_empty() {
+                return None;
+            }
 
             // Discover which optional column groups have data
             let has_latency = rows.iter().any(|r| r.latency_p50_ns.is_some());
@@ -2110,9 +2188,7 @@ mod inner {
             }
 
             // Build column headers
-            let mut headers: Vec<String> = vec![
-                "Activity".into(), "Cycles".into(), "Rate".into(),
-            ];
+            let mut headers: Vec<String> = vec!["Activity".into(), "Cycles".into(), "Rate".into()];
             if has_latency {
                 headers.extend(["p50".into(), "p99".into(), "mean".into()]);
             }
@@ -2133,16 +2209,16 @@ mod inner {
             }
 
             // Compute aggregate rows
-            let agg_rows = compute_aggregates(
-                &config.aggregates, &rows, has_latency, &gauge_names,
-            );
+            let agg_rows = compute_aggregates(&config.aggregates, &rows, has_latency, &gauge_names);
 
             // If details=hide, drop data rows and show only aggregates
             if !config.show_details {
                 grid.clear();
             }
 
-            if grid.is_empty() && agg_rows.is_empty() { return None; }
+            if grid.is_empty() && agg_rows.is_empty() {
+                return None;
+            }
 
             // Align label components within the Activity column (data rows only).
             align_activity_column(&mut grid);
@@ -2202,33 +2278,41 @@ mod inner {
             };
 
             let mut rows: Vec<(Vec<(String, String)>, ActivityRow)> = Vec::new();
-            let iter = stmt.query_map(
-                rusqlite::params_from_iter(params.iter()),
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            );
+            let iter = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            });
 
             if let Ok(iter) = iter {
                 for r in iter.filter_map(|r| r.ok()) {
                     let labels = Self::spec_labels(&r.0);
-                    if labels.is_empty() { continue; }
+                    if labels.is_empty() {
+                        continue;
+                    }
                     let display = extract_labels_display(&r.0);
                     let cycles = r.1 as u64;
 
                     let elapsed = self.query_elapsed_ms(labels);
-                    let rate = if elapsed > 0.0 { cycles as f64 * 1000.0 / elapsed } else { 0.0 };
+                    let rate = if elapsed > 0.0 {
+                        cycles as f64 * 1000.0 / elapsed
+                    } else {
+                        0.0
+                    };
                     let latency = self.query_latency(labels);
                     let gauges = self.query_gauges_for_labels(labels);
 
                     let sort_key = parse_label_pairs(labels);
-                    rows.push((sort_key, ActivityRow {
-                        activity: display,
-                        cycles,
-                        rate,
-                        latency_p50_ns: latency.map(|l| l.0),
-                        latency_p99_ns: latency.map(|l| l.1),
-                        latency_mean_ns: latency.map(|l| l.2),
-                        gauges,
-                    }));
+                    rows.push((
+                        sort_key,
+                        ActivityRow {
+                            activity: display,
+                            cycles,
+                            rate,
+                            latency_p50_ns: latency.map(|l| l.0),
+                            latency_p99_ns: latency.map(|l| l.1),
+                            latency_mean_ns: latency.map(|l| l.2),
+                            gauges,
+                        },
+                    ));
                 }
             }
 
@@ -2250,20 +2334,24 @@ mod inner {
         /// between capture intervals.
         fn query_latency(&self, label_part: &str) -> Option<(f64, f64, f64)> {
             let spec = format!("cycles_servicetime{{{label_part}}}");
-            self.conn.query_row(
-                "SELECT sv.p50, sv.p99, sv.mean
+            self.conn
+                .query_row(
+                    "SELECT sv.p50, sv.p99, sv.mean
                  FROM sample_value sv
                  JOIN metric_instance mi ON sv.instance_id = mi.id
                  WHERE mi.spec = ?1
                  ORDER BY sv.count DESC
                  LIMIT 1",
-                params![spec],
-                |row| Ok((
-                    row.get::<_, f64>(0)?,
-                    row.get::<_, f64>(1)?,
-                    row.get::<_, f64>(2)?,
-                )),
-            ).ok()
+                    params![spec],
+                    |row| {
+                        Ok((
+                            row.get::<_, f64>(0)?,
+                            row.get::<_, f64>(1)?,
+                            row.get::<_, f64>(2)?,
+                        ))
+                    },
+                )
+                .ok()
         }
 
         /// Query all gauge values matching a label set.
@@ -2281,7 +2369,7 @@ mod inner {
                  JOIN metric_family mf ON mi.family_id = mf.id
                  WHERE mf.type = 'gauge'
                    AND (mi.spec LIKE ?1 OR mi.spec LIKE ?2)
-                 ORDER BY mi.spec"
+                 ORDER BY mi.spec",
             ) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
@@ -2289,24 +2377,32 @@ mod inner {
             let mut seen = std::collections::HashSet::new();
             stmt.query_map(params![exact, extended], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-            }).ok()
-                .map(|r| r.filter_map(|r| r.ok())
+            })
+            .ok()
+            .map(|r| {
+                r.filter_map(|r| r.ok())
                     .filter_map(|(spec, val)| {
                         let name = spec.split('{').next().unwrap_or(&spec);
                         // Only collect .mean variants, strip the suffix
-                        if !name.ends_with("_mean") { return None; }
+                        if !name.ends_with("_mean") {
+                            return None;
+                        }
                         let short = name.strip_suffix("_mean").unwrap_or(name);
-                        if seen.contains(short) { return None; }
+                        if seen.contains(short) {
+                            return None;
+                        }
                         seen.insert(short.to_string());
                         Some((short.to_string(), val))
                     })
-                    .collect())
-                .unwrap_or_default()
+                    .collect()
+            })
+            .unwrap_or_default()
         }
 
         /// Extract the labels portion of a spec (everything inside {}).
         fn spec_labels(spec: &str) -> &str {
-            spec.split('{').nth(1)
+            spec.split('{')
+                .nth(1)
                 .and_then(|s| s.strip_suffix('}'))
                 .unwrap_or("")
         }
@@ -2362,19 +2458,31 @@ mod inner {
         let bytes = label_part.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
-            while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b',') { i += 1; }
-            if i >= bytes.len() { break; }
+            while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b',') {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
             let key_start = i;
-            while i < bytes.len() && bytes[i] != b'=' { i += 1; }
-            if i >= bytes.len() { break; }
+            while i < bytes.len() && bytes[i] != b'=' {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
             let key = label_part[key_start..i].trim().to_string();
             i += 1; // consume '='
             if i < bytes.len() && bytes[i] == b'"' {
                 i += 1;
                 let val_start = i;
-                while i < bytes.len() && bytes[i] != b'"' { i += 1; }
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += 1;
+                }
                 let val = label_part[val_start..i].to_string();
-                if i < bytes.len() { i += 1; }
+                if i < bytes.len() {
+                    i += 1;
+                }
                 out.push((key, val));
             } else {
                 let val_start = i;
@@ -2444,11 +2552,7 @@ mod inner {
         } else {
             "-".to_string()
         };
-        let mut cells: Vec<String> = vec![
-            row.activity.clone(),
-            row.cycles.to_string(),
-            rate_str,
-        ];
+        let mut cells: Vec<String> = vec![row.activity.clone(), row.cycles.to_string(), rate_str];
         if has_latency {
             if let (Some(p50), Some(p99), Some(mean)) =
                 (row.latency_p50_ns, row.latency_p99_ns, row.latency_mean_ns)
@@ -2461,7 +2565,9 @@ mod inner {
             }
         }
         for name in gauge_names {
-            let val = row.gauges.iter()
+            let val = row
+                .gauges
+                .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, v)| format!("{v:.4}"))
                 .unwrap_or_else(|| "-".to_string());
@@ -2488,20 +2594,27 @@ mod inner {
                 // Multi-key grouping: one aggregate row per
                 // distinct value-tuple across `group_by` keys.
                 agg_rows.extend(compute_grouped_aggregate(
-                    agg, rows, has_latency, gauge_names));
+                    agg,
+                    rows,
+                    has_latency,
+                    gauge_names,
+                ));
                 continue;
             }
 
             // Single-key filter form: filter rows by
             // `<label_key>~<pattern>`, emit one aggregate row.
-            let matching: Vec<&ActivityRow> = rows.iter()
+            let matching: Vec<&ActivityRow> = rows
+                .iter()
                 .filter(|r| {
                     // Look for key=value in the activity string where value contains pattern
                     for segment in r.activity.split(", ") {
                         if let Some((k, v)) = segment.split_once('=')
-                            && k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
-                                return true;
-                            }
+                            && k.trim() == agg.label_key
+                            && v.trim().contains(&agg.label_pattern)
+                        {
+                            return true;
+                        }
                     }
                     false
                 })
@@ -2514,8 +2627,8 @@ mod inner {
 
             let mut cells: Vec<String> = vec![
                 label,
-                "-".into(),  // Cycles
-                "-".into(),  // Rate
+                "-".into(), // Cycles
+                "-".into(), // Rate
             ];
 
             if has_latency {
@@ -2528,9 +2641,11 @@ mod inner {
                     continue;
                 }
                 // Collect all values for this gauge across matching rows
-                let values: Vec<f64> = matching.iter()
+                let values: Vec<f64> = matching
+                    .iter()
                     .filter_map(|r| {
-                        r.gauges.iter()
+                        r.gauges
+                            .iter()
                             .find(|(n, _)| n == gauge_name)
                             .map(|(_, v)| *v)
                     })
@@ -2569,7 +2684,8 @@ mod inner {
         use std::collections::BTreeMap;
         let mut groups: BTreeMap<String, Vec<&ActivityRow>> = BTreeMap::new();
         for row in rows {
-            let label_map: std::collections::HashMap<&str, &str> = row.activity
+            let label_map: std::collections::HashMap<&str, &str> = row
+                .activity
                 .split(", ")
                 .filter_map(|seg| seg.split_once('='))
                 .map(|(k, v)| (k.trim(), v.trim()))
@@ -2579,10 +2695,15 @@ mod inner {
             for key in &agg.group_by {
                 match label_map.get(key.as_str()) {
                     Some(v) => tuple_parts.push(format!("{key}={v}")),
-                    None => { all_present = false; break; }
+                    None => {
+                        all_present = false;
+                        break;
+                    }
                 }
             }
-            if !all_present { continue; }
+            if !all_present {
+                continue;
+            }
             let tuple_key = tuple_parts.join(", ");
             groups.entry(tuple_key).or_default().push(row);
         }
@@ -2595,15 +2716,21 @@ mod inner {
                 agg.function, agg.column_pattern, group_by_header,
             );
             let mut cells: Vec<String> = vec![label, "-".into(), "-".into()];
-            if has_latency { cells.extend(["-".into(), "-".into(), "-".into()]); }
+            if has_latency {
+                cells.extend(["-".into(), "-".into(), "-".into()]);
+            }
             for gauge_name in gauge_names {
                 if !gauge_name.contains(&agg.column_pattern) {
                     cells.push("-".into());
                     continue;
                 }
-                let values: Vec<f64> = group_rows.iter()
+                let values: Vec<f64> = group_rows
+                    .iter()
                     .filter_map(|r| {
-                        r.gauges.iter().find(|(n, _)| n == gauge_name).map(|(_, v)| *v)
+                        r.gauges
+                            .iter()
+                            .find(|(n, _)| n == gauge_name)
+                            .map(|(_, v)| *v)
                     })
                     .collect();
                 if values.is_empty() {
@@ -2626,14 +2753,19 @@ mod inner {
     /// Extract all labels from a spec string into a display-friendly format.
     /// Skips session and n (sample count) — shows the meaningful dimensions.
     fn extract_labels_display(spec: &str) -> String {
-        let labels_part = spec.split('{').nth(1)
+        let labels_part = spec
+            .split('{')
+            .nth(1)
             .and_then(|s| s.strip_suffix('}'))
             .unwrap_or("");
-        let parts: Vec<&str> = labels_part.split(',')
-            .filter(|p| !p.trim().starts_with("session=")
-                && !p.trim().starts_with("n=")
-                && !p.trim().starts_with("name=")
-                && !p.trim().starts_with("nosummary="))
+        let parts: Vec<&str> = labels_part
+            .split(',')
+            .filter(|p| {
+                !p.trim().starts_with("session=")
+                    && !p.trim().starts_with("n=")
+                    && !p.trim().starts_with("name=")
+                    && !p.trim().starts_with("nosummary=")
+            })
             .collect();
         parts.join(", ").replace('"', "")
     }
@@ -2646,16 +2778,23 @@ mod inner {
     /// the max `key=value` width for each key slot, and pads each row
     /// so that the same key starts at the same character position.
     fn align_activity_column(grid: &mut [Vec<String>]) {
-        if grid.is_empty() { return; }
+        if grid.is_empty() {
+            return;
+        }
 
         // Parse each activity into (key, "key=value") pairs
-        let parsed: Vec<Vec<(String, String)>> = grid.iter()
+        let parsed: Vec<Vec<(String, String)>> = grid
+            .iter()
             .map(|row| {
-                row[0].split(", ")
+                row[0]
+                    .split(", ")
                     .filter_map(|seg| {
                         let key = seg.split('=').next().unwrap_or("").to_string();
-                        if key.is_empty() { None }
-                        else { Some((key, seg.to_string())) }
+                        if key.is_empty() {
+                            None
+                        } else {
+                            Some((key, seg.to_string()))
+                        }
                     })
                     .collect()
             })
@@ -2687,7 +2826,9 @@ mod inner {
             for (i, key) in all_keys.iter().enumerate() {
                 if let Some((_, seg)) = row.iter().find(|(k, _)| k == key) {
                     let w = seg.chars().count();
-                    if w > slot_widths[i] { slot_widths[i] = w; }
+                    if w > slot_widths[i] {
+                        slot_widths[i] = w;
+                    }
                 }
             }
         }
@@ -2725,8 +2866,7 @@ mod inner {
         use std::fmt::Write as _;
         let mut out = String::new();
         let ncols = headers.len();
-        let mut widths: Vec<usize> = headers.iter()
-            .map(|h| h.chars().count()).collect();
+        let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
         for row in grid {
             for (i, cell) in row.iter().enumerate() {
                 let w = cell.chars().count();
@@ -2827,20 +2967,21 @@ mod inner {
             if let Some(reason) = exit_reason {
                 let (at_utc, at_session) = self.clock_now();
                 for id in self.batch_touched.iter() {
-                    let Some((session, exec_id, spec)) =
-                        self.instance_meta.get(id) else { continue };
-                    self.conn.execute(
-                        "INSERT OR IGNORE INTO instance_scope_event \
+                    let Some((session, exec_id, spec)) = self.instance_meta.get(id) else {
+                        continue;
+                    };
+                    self.conn
+                        .execute(
+                            "INSERT OR IGNORE INTO instance_scope_event \
                          (instance_id, session, exec_id, event, reason, \
                           at_utc_nanos, at_session_nanos, spec) \
                          VALUES (?1, ?2, ?3, 'exit', ?4, ?5, ?6, ?7)",
-                        params![*id, session, exec_id, reason,
-                                at_utc, at_session, spec],
-                    ).unwrap_or_else(|e| {
-                        crate::diag::warn(&format!(
-                            "warning: scope-event insert failed: {e}"));
-                        0
-                    });
+                            params![*id, session, exec_id, reason, at_utc, at_session, spec],
+                        )
+                        .unwrap_or_else(|e| {
+                            crate::diag::warn(&format!("warning: scope-event insert failed: {e}"));
+                            0
+                        });
                 }
             }
             self.batch_touched.clear();
@@ -2900,8 +3041,10 @@ mod inner {
             // the same clock as every other event.
             {
                 let (at_utc, at_session) = self.clock_now();
-                let _ = self.conn.execute(
-                    "INSERT OR IGNORE INTO instance_scope_event \
+                let _ = self
+                    .conn
+                    .execute(
+                        "INSERT OR IGNORE INTO instance_scope_event \
                      (instance_id, session, exec_id, event, reason, \
                       at_utc_nanos, at_session_nanos, spec) \
                      SELECT e.instance_id, e.session, e.exec_id, 'exit', \
@@ -2912,9 +3055,11 @@ mod inner {
                          WHERE x.instance_id = e.instance_id \
                            AND x.exec_id = e.exec_id \
                            AND x.event = 'exit')",
-                    params![at_utc, at_session],
-                ).map_err(|e| crate::diag::warn(&format!(
-                    "sqlite scope-event terminal sweep failed: {e}")));
+                        params![at_utc, at_session],
+                    )
+                    .map_err(|e| {
+                        crate::diag::warn(&format!("sqlite scope-event terminal sweep failed: {e}"))
+                    });
             }
             // Build the deferred read indexes before the final checkpoint so
             // the durable, externally-readable db is fully indexed (no-op if a
@@ -2957,11 +3102,9 @@ mod inner {
             if checkpoint_ok {
                 let _ = self
                     .conn
-                    .query_row(
-                        "PRAGMA journal_mode=DELETE",
-                        rusqlite::params![],
-                        |_row| Ok(()),
-                    )
+                    .query_row("PRAGMA journal_mode=DELETE", rusqlite::params![], |_row| {
+                        Ok(())
+                    })
                     .map_err(|e| {
                         crate::diag::warn(&format!(
                             "sqlite journal_mode=DELETE failed: {e} \
@@ -3030,9 +3173,7 @@ mod inner {
         /// Construct a guard wrapping the shared reporter
         /// handle. Cheap — no work happens until the guard
         /// drops.
-        pub fn new(
-            reporter: std::sync::Arc<std::sync::Mutex<Option<SqliteReporter>>>,
-        ) -> Self {
+        pub fn new(reporter: std::sync::Arc<std::sync::Mutex<Option<SqliteReporter>>>) -> Self {
             Self {
                 reporter,
                 consumed: std::sync::atomic::AtomicBool::new(false),
@@ -3052,13 +3193,17 @@ mod inner {
         /// active sinks) where the observer is no longer
         /// available.
         pub fn consume(&self) {
-            if self.consumed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .consumed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
                 return;
             }
             if let Ok(guard) = self.reporter.lock()
-                && let Some(ref r) = *guard {
-                    r.consolidate_wal();
-                }
+                && let Some(ref r) = *guard
+            {
+                r.consolidate_wal();
+            }
         }
     }
 
@@ -3074,9 +3219,10 @@ mod inner {
                 return;
             }
             if let Ok(guard) = self.reporter.lock()
-                && let Some(ref r) = *guard {
-                    r.shutdown_consolidate();
-                }
+                && let Some(ref r) = *guard
+            {
+                r.shutdown_consolidate();
+            }
         }
     }
 
@@ -3096,20 +3242,21 @@ mod inner {
         /// flavour pauses writers and zeroes the WAL file, and
         /// is appropriate only when no more writes are expected.
         pub fn passive_checkpoint(&self) {
-            let _ = self.conn.query_row(
-                "PRAGMA wal_checkpoint(PASSIVE)",
-                rusqlite::params![],
-                |_row| Ok(()),
-            ).map_err(|e| {
-                // Failure here is a soft event — the next
-                // checkpoint attempt will retry. Log at debug
-                // so we don't pollute the operator's stderr
-                // with periodic noise if (say) the disk is
-                // briefly full.
-                crate::diag::warn(&format!(
-                    "sqlite passive checkpoint failed: {e}"
-                ));
-            });
+            let _ = self
+                .conn
+                .query_row(
+                    "PRAGMA wal_checkpoint(PASSIVE)",
+                    rusqlite::params![],
+                    |_row| Ok(()),
+                )
+                .map_err(|e| {
+                    // Failure here is a soft event — the next
+                    // checkpoint attempt will retry. Log at debug
+                    // so we don't pollute the operator's stderr
+                    // with periodic noise if (say) the disk is
+                    // briefly full.
+                    crate::diag::warn(&format!("sqlite passive checkpoint failed: {e}"));
+                });
         }
     }
 
@@ -3124,20 +3271,27 @@ mod inner {
             let ansi: &[u8] = "\x1b[34m[setup]\x1b[0m 100% \x1b[32m✓\x1b[0m".as_bytes();
             let plain = "[setup] 100% ✓";
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "setup#1", "phase_outcome", "labeled",
-                1_000_000_000, Some(ansi), plain,
+                "on_phase_end",
+                1,
+                "phase",
+                "setup#1",
+                "phase_outcome",
+                "labeled",
+                1_000_000_000,
+                Some(ansi),
+                plain,
             );
             let rows = r.read_readout_snapshots();
             assert_eq!(rows.len(), 1);
             let row = &rows[0];
-            assert_eq!(row.slot,         "on_phase_end");
+            assert_eq!(row.slot, "on_phase_end");
             assert_eq!(row.subject_kind, "phase");
-            assert_eq!(row.subject_id,   "setup#1");
+            assert_eq!(row.subject_id, "setup#1");
             assert_eq!(row.readout_name, "phase_outcome");
-            assert_eq!(row.lod,          "labeled");
-            assert_eq!(row.rendered_at,  1_000_000_000);
+            assert_eq!(row.lod, "labeled");
+            assert_eq!(row.rendered_at, 1_000_000_000);
             assert_eq!(row.body_ansi.as_deref(), Some(ansi));
-            assert_eq!(row.body_plain,   plain);
+            assert_eq!(row.body_plain, plain);
         }
 
         #[test]
@@ -3152,8 +3306,7 @@ mod inner {
             r.set_execution_metadata("s", 1, "report.early", "plot early");
             r.set_execution_metadata("s", 2, "report.late", "plot late");
 
-            let (exec_id, rows) =
-                latest_execution_with_metadata_like(&r.conn, "report.%");
+            let (exec_id, rows) = latest_execution_with_metadata_like(&r.conn, "report.%");
             // The most recent execution's id, and ONLY its rows.
             assert_eq!(exec_id, Some(2));
             assert_eq!(
@@ -3170,8 +3323,7 @@ mod inner {
             // needed).
             let mut r = super::SqliteReporter::in_memory().unwrap();
             r.set_metadata("report.legacy", "plot legacy");
-            let (exec_id, rows) =
-                latest_execution_with_metadata_like(&r.conn, "report.%");
+            let (exec_id, rows) = latest_execution_with_metadata_like(&r.conn, "report.%");
             assert_eq!(exec_id, None);
             assert_eq!(
                 rows,
@@ -3185,15 +3337,33 @@ mod inner {
             // Two upserts with the same primary key — second
             // wins (latest body, latest timestamp).
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
-                1_000, None, "first",
+                "on_phase_end",
+                1,
+                "phase",
+                "setup",
+                "phase_outcome",
+                "labeled",
+                1_000,
+                None,
+                "first",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
-                2_000, None, "second",
+                "on_phase_end",
+                1,
+                "phase",
+                "setup",
+                "phase_outcome",
+                "labeled",
+                2_000,
+                None,
+                "second",
             );
             let rows = r.read_readout_snapshots();
-            assert_eq!(rows.len(), 1, "PK collision should overwrite, not duplicate");
+            assert_eq!(
+                rows.len(),
+                1,
+                "PK collision should overwrite, not duplicate"
+            );
             assert_eq!(rows[0].body_plain, "second");
             assert_eq!(rows[0].rendered_at, 2_000);
         }
@@ -3207,22 +3377,41 @@ mod inner {
             // silently losing one execution's render).
             let mut r = super::SqliteReporter::in_memory().unwrap();
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
-                1_000, None, "exec-1 render",
+                "on_phase_end",
+                1,
+                "phase",
+                "setup",
+                "phase_outcome",
+                "labeled",
+                1_000,
+                None,
+                "exec-1 render",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", 2, "phase", "setup", "phase_outcome", "labeled",
-                1_000, None, "exec-2 render",
+                "on_phase_end",
+                2,
+                "phase",
+                "setup",
+                "phase_outcome",
+                "labeled",
+                1_000,
+                None,
+                "exec-2 render",
             );
             let rows = r.read_readout_snapshots();
             assert_eq!(rows.len(), 2, "distinct exec_id must not upsert-collide");
-            let mut bodies: Vec<_> =
-                rows.iter().map(|x| (x.exec_id, x.body_plain.clone())).collect();
+            let mut bodies: Vec<_> = rows
+                .iter()
+                .map(|x| (x.exec_id, x.body_plain.clone()))
+                .collect();
             bodies.sort();
-            assert_eq!(bodies, vec![
-                (1, "exec-1 render".to_string()),
-                (2, "exec-2 render".to_string()),
-            ]);
+            assert_eq!(
+                bodies,
+                vec![
+                    (1, "exec-1 render".to_string()),
+                    (2, "exec-2 render".to_string()),
+                ]
+            );
         }
 
         // ── SRD-76 phase_outcomes / phase_errors ──────────────
@@ -3238,18 +3427,19 @@ mod inner {
                 status: "completed".into(),
                 duration_secs: 1.234,
                 started_at_nanos: 1_000_000,
-                ended_at_nanos:   1_001_234_000,
-                phase_hash: None, reason_class: None,
+                ended_at_nanos: 1_001_234_000,
+                phase_hash: None,
+                reason_class: None,
                 params_consumed: None,
                 errors: Vec::new(),
             };
             r.write_phase_outcome(&row);
             let read = r.read_phase_outcomes(None);
             assert_eq!(read.len(), 1);
-            assert_eq!(read[0].session,       "test-sess");
-            assert_eq!(read[0].exec_id,       1);
-            assert_eq!(read[0].phase_name,    "rampup");
-            assert_eq!(read[0].status,        "completed");
+            assert_eq!(read[0].session, "test-sess");
+            assert_eq!(read[0].exec_id, 1);
+            assert_eq!(read[0].phase_name, "rampup");
+            assert_eq!(read[0].status, "completed");
             assert_eq!(read[0].duration_secs, 1.234);
             assert!(read[0].errors.is_empty());
         }
@@ -3265,8 +3455,9 @@ mod inner {
                 status: "failed".into(),
                 duration_secs: 14400.0,
                 started_at_nanos: 0,
-                ended_at_nanos:   14400 * 1_000_000_000,
-                phase_hash: None, reason_class: None,
+                ended_at_nanos: 14400 * 1_000_000_000,
+                phase_hash: None,
+                reason_class: None,
                 params_consumed: None,
                 errors: vec![
                     super::PhaseErrorRow {
@@ -3292,9 +3483,9 @@ mod inner {
                 ],
             };
             r.write_phase_outcome(&row);
-            let read = r.read_phase_outcome(
-                "test-sess", 1, "ensure_compacted", "(k=10)",
-            ).expect("outcome present");
+            let read = r
+                .read_phase_outcome("test-sess", 1, "ensure_compacted", "(k=10)")
+                .expect("outcome present");
             assert_eq!(read.status, "failed");
             assert_eq!(read.errors.len(), 2);
             assert_eq!(read.errors[0].class, "poll_timeout");
@@ -3315,7 +3506,8 @@ mod inner {
                 duration_secs: 1.0,
                 started_at_nanos: 0,
                 ended_at_nanos: 1,
-                phase_hash: None, reason_class: None,
+                phase_hash: None,
+                reason_class: None,
                 params_consumed: None,
                 errors: vec![super::PhaseErrorRow {
                     class: "A".into(),
@@ -3334,8 +3526,10 @@ mod inner {
             r.write_phase_outcome(&row);
             let read = r.read_phase_outcome("s", 1, "p", "").unwrap();
             assert_eq!(read.status, "completed");
-            assert!(read.errors.is_empty(),
-                "rewrite must wipe the prior error list");
+            assert!(
+                read.errors.is_empty(),
+                "rewrite must wipe the prior error list"
+            );
         }
 
         #[test]
@@ -3346,22 +3540,26 @@ mod inner {
             let mut r = super::SqliteReporter::in_memory().unwrap();
             for exec_id in [1, 2] {
                 r.write_phase_outcome(&super::PhaseOutcomeRow {
-                    session: "s".into(), exec_id,
-                    phase_name: "p".into(), phase_labels: String::new(),
+                    session: "s".into(),
+                    exec_id,
+                    phase_name: "p".into(),
+                    phase_labels: String::new(),
                     status: "completed".into(),
                     duration_secs: 1.0,
                     started_at_nanos: exec_id as i64 * 1_000,
-                    ended_at_nanos:   exec_id as i64 * 1_000 + 1,
-                    phase_hash: None, reason_class: None,
+                    ended_at_nanos: exec_id as i64 * 1_000 + 1,
+                    phase_hash: None,
+                    reason_class: None,
                     params_consumed: None,
                     errors: Vec::new(),
                 });
             }
             let all = r.read_phase_outcomes(None);
-            assert_eq!(all.len(), 2,
-                "distinct exec_ids must produce distinct rows");
-            assert_eq!(all.iter().map(|o| o.exec_id).collect::<Vec<_>>(),
-                vec![1, 2]);
+            assert_eq!(all.len(), 2, "distinct exec_ids must produce distinct rows");
+            assert_eq!(
+                all.iter().map(|o| o.exec_id).collect::<Vec<_>>(),
+                vec![1, 2]
+            );
         }
 
         #[test]
@@ -3376,17 +3574,38 @@ mod inner {
             let mut r = super::SqliteReporter::in_memory().unwrap();
             // Same readout, different LOD → separate rows.
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "setup", "phase_outcome", "compact",
-                1_000, None, "compact form",
+                "on_phase_end",
+                1,
+                "phase",
+                "setup",
+                "phase_outcome",
+                "compact",
+                1_000,
+                None,
+                "compact form",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
-                1_000, None, "labeled form",
+                "on_phase_end",
+                1,
+                "phase",
+                "setup",
+                "phase_outcome",
+                "labeled",
+                1_000,
+                None,
+                "labeled form",
             );
             // Same readout, same LOD, different subject → separate.
             r.upsert_readout_snapshot(
-                "on_phase_end", 1, "phase", "load", "phase_outcome", "labeled",
-                1_000, None, "load form",
+                "on_phase_end",
+                1,
+                "phase",
+                "load",
+                "phase_outcome",
+                "labeled",
+                1_000,
+                None,
+                "load form",
             );
             assert_eq!(r.read_readout_snapshots().len(), 3);
         }
@@ -3420,9 +3639,7 @@ mod inner {
                 label_pattern: "label".into(),
                 group_by: Vec::new(),
             };
-            let result = compute_aggregates(
-                &[agg], &rows, false, &["recall_at_10".to_string()],
-            );
+            let result = compute_aggregates(&[agg], &rows, false, &["recall_at_10".to_string()]);
             assert_eq!(result.len(), 1);
             // Cells: [label, "-", "-", "0.9200"] (no latency)
             assert_eq!(result[0][3], "0.9200");
@@ -3437,22 +3654,28 @@ mod inner {
             let rows = vec![
                 build_activity_row(
                     "k=10, optimize_for=RECALL, profile=label_01",
-                    &[("recall_at_10", 0.90)]),
+                    &[("recall_at_10", 0.90)],
+                ),
                 build_activity_row(
                     "k=10, optimize_for=RECALL, profile=label_02",
-                    &[("recall_at_10", 0.92)]),
+                    &[("recall_at_10", 0.92)],
+                ),
                 build_activity_row(
                     "k=10, optimize_for=RECALL, profile=label_03",
-                    &[("recall_at_10", 0.94)]),
+                    &[("recall_at_10", 0.94)],
+                ),
                 build_activity_row(
                     "k=10, optimize_for=LATENCY, profile=label_01",
-                    &[("recall_at_10", 0.70)]),
+                    &[("recall_at_10", 0.70)],
+                ),
                 build_activity_row(
                     "k=10, optimize_for=LATENCY, profile=label_02",
-                    &[("recall_at_10", 0.74)]),
+                    &[("recall_at_10", 0.74)],
+                ),
                 build_activity_row(
                     "k=10, optimize_for=LATENCY, profile=label_03",
-                    &[("recall_at_10", 0.78)]),
+                    &[("recall_at_10", 0.78)],
+                ),
             ];
             let agg = ReportAggregate {
                 function: "mean".into(),
@@ -3461,17 +3684,19 @@ mod inner {
                 label_pattern: String::new(),
                 group_by: vec!["k".into(), "optimize_for".into()],
             };
-            let result = compute_aggregates(
-                &[agg], &rows, false, &["recall_at_10".to_string()],
-            );
+            let result = compute_aggregates(&[agg], &rows, false, &["recall_at_10".to_string()]);
             assert_eq!(result.len(), 2);
             // BTreeMap orders alphabetically by tuple key —
             // "k=10, optimize_for=LATENCY" sorts before
             // "k=10, optimize_for=RECALL".
-            assert_eq!(result[0][3], "0.7400",
-                "LATENCY group mean (0.70+0.74+0.78)/3 ≠ 0.74");
-            assert_eq!(result[1][3], "0.9200",
-                "RECALL group mean (0.90+0.92+0.94)/3 ≠ 0.92");
+            assert_eq!(
+                result[0][3], "0.7400",
+                "LATENCY group mean (0.70+0.74+0.78)/3 ≠ 0.74"
+            );
+            assert_eq!(
+                result[1][3], "0.9200",
+                "RECALL group mean (0.90+0.92+0.94)/3 ≠ 0.92"
+            );
         }
 
         #[test]
@@ -3489,9 +3714,7 @@ mod inner {
                 label_pattern: String::new(),
                 group_by: vec!["k".into()],
             };
-            let result = compute_aggregates(
-                &[agg], &rows, false, &["g".to_string()],
-            );
+            let result = compute_aggregates(&[agg], &rows, false, &["g".to_string()]);
             assert_eq!(result.len(), 2);
             assert_eq!(result[0][3], "0.5000", "k=10 min ≠ 0.5");
             assert_eq!(result[1][3], "0.3000", "k=20 min ≠ 0.3");
@@ -3512,9 +3735,7 @@ mod inner {
                 label_pattern: String::new(),
                 group_by: vec!["k".into()],
             };
-            let result = compute_aggregates(
-                &[agg], &rows, false, &["g".to_string()],
-            );
+            let result = compute_aggregates(&[agg], &rows, false, &["g".to_string()]);
             assert_eq!(result.len(), 2);
             assert_eq!(result[0][3], "0.7000", "k=10 max ≠ 0.7");
             assert_eq!(result[1][3], "0.9000", "k=20 max ≠ 0.9");
@@ -3526,10 +3747,11 @@ mod inner {
             // from groups (rather than silently grouping it with
             // a different tuple).
             let rows = vec![
-                build_activity_row("k=10, optimize_for=RECALL",
-                    &[("g", 0.9)]),
-                build_activity_row("k=10",  // missing optimize_for
-                    &[("g", 0.5)]),
+                build_activity_row("k=10, optimize_for=RECALL", &[("g", 0.9)]),
+                build_activity_row(
+                    "k=10", // missing optimize_for
+                    &[("g", 0.5)],
+                ),
             ];
             let agg = ReportAggregate {
                 function: "mean".into(),
@@ -3538,9 +3760,7 @@ mod inner {
                 label_pattern: String::new(),
                 group_by: vec!["k".into(), "optimize_for".into()],
             };
-            let result = compute_aggregates(
-                &[agg], &rows, false, &["g".to_string()],
-            );
+            let result = compute_aggregates(&[agg], &rows, false, &["g".to_string()]);
             assert_eq!(result.len(), 1, "row missing group label was excluded");
             assert_eq!(result[0][3], "0.9000");
         }
@@ -3548,10 +3768,14 @@ mod inner {
         #[test]
         fn sqlite_creates_schema() {
             let reporter = SqliteReporter::in_memory().unwrap();
-            let count: i64 = reporter.conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
-                [], |row| row.get(0),
-            ).unwrap();
+            let count: i64 = reporter
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert!(count >= 7, "expected 7+ tables, got {count}");
         }
 
@@ -3563,9 +3787,7 @@ mod inner {
         /// picking distinct `session_id`s, but the more common
         /// pattern (one in_memory per test) keeps tests
         /// independent.
-        fn test_session_setup(
-            r: &mut SqliteReporter, session_id: &str,
-        ) -> Labels {
+        fn test_session_setup(r: &mut SqliteReporter, session_id: &str) -> Labels {
             r.insert_execution_start(session_id, 1, "test", None, 0, "", "");
             Labels::of("session", session_id).with("exec_id", "1")
         }
@@ -3583,9 +3805,10 @@ mod inner {
             );
             reporter.report(&snapshot);
 
-            let count: i64 = reporter.conn.query_row(
-                "SELECT COUNT(*) FROM sample_value", [], |row| row.get(0),
-            ).unwrap();
+            let count: i64 = reporter
+                .conn
+                .query_row("SELECT COUNT(*) FROM sample_value", [], |row| row.get(0))
+                .unwrap();
             assert_eq!(count, 1);
         }
 
@@ -3594,7 +3817,9 @@ mod inner {
             let mut reporter = SqliteReporter::in_memory().unwrap();
             let qualifier = test_session_setup(&mut reporter, "test_inserts_timer");
             let mut h = hdrhistogram::Histogram::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
-            for i in 1..=100 { let _ = h.record(i * 1_000_000); }
+            for i in 1..=100 {
+                let _ = h.record(i * 1_000_000);
+            }
 
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_histogram(
@@ -3605,9 +3830,10 @@ mod inner {
             );
             reporter.report(&snapshot);
 
-            let p99: f64 = reporter.conn.query_row(
-                "SELECT p99 FROM sample_value", [], |row| row.get(0),
-            ).unwrap();
+            let p99: f64 = reporter
+                .conn
+                .query_row("SELECT p99 FROM sample_value", [], |row| row.get(0))
+                .unwrap();
             assert!(p99 > 0.0, "p99 should be recorded");
         }
 
@@ -3616,19 +3842,29 @@ mod inner {
             let mut reporter = SqliteReporter::in_memory().unwrap();
             let qualifier = test_session_setup(&mut reporter, "test_dedupe_families");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
-            snapshot.insert_counter("ops", qualifier.clone().with("activity", "a"), 1, Instant::now());
+            snapshot.insert_counter(
+                "ops",
+                qualifier.clone().with("activity", "a"),
+                1,
+                Instant::now(),
+            );
             snapshot.insert_counter("ops", qualifier.with("activity", "b"), 2, Instant::now());
             reporter.report(&snapshot);
 
-            let families: i64 = reporter.conn.query_row(
-                "SELECT COUNT(*) FROM metric_family", [], |row| row.get(0),
-            ).unwrap();
+            let families: i64 = reporter
+                .conn
+                .query_row("SELECT COUNT(*) FROM metric_family", [], |row| row.get(0))
+                .unwrap();
             assert_eq!(families, 1, "same metric name should be one family");
 
-            let instances: i64 = reporter.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance", [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(instances, 2, "different labels should be different instances");
+            let instances: i64 = reporter
+                .conn
+                .query_row("SELECT COUNT(*) FROM metric_instance", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                instances, 2,
+                "different labels should be different instances"
+            );
         }
 
         /// Regression guard for SRD-40b §1 / SRD-40a §4.3.
@@ -3657,24 +3893,34 @@ mod inner {
             // the canonical `with_unit` path. The single declaration
             // SHOULD produce both surfaces in sync — name becomes
             // `overscan_ratio` and the unit field carries `ratio`.
-            let mut family = MetricFamily::new("overscan", MetricType::Gauge)
-                .with_unit("ratio");
+            let mut family = MetricFamily::new("overscan", MetricType::Gauge).with_unit("ratio");
             family.insert(Metric::single(
-                Labels::of("activity", "search").with("session", "s").with("exec_id", "1"),
+                Labels::of("activity", "search")
+                    .with("session", "s")
+                    .with("exec_id", "1"),
                 MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(0.97))),
             ));
             snapshot.insert(family);
             reporter.report(&snapshot);
 
             // Both surfaces should be present and consistent.
-            let row: (String, Option<String>) = reporter.conn.query_row(
-                "SELECT name, unit FROM metric_family WHERE type = 'gauge'",
-                [], |r| Ok((r.get(0)?, r.get(1)?)),
-            ).unwrap();
-            assert_eq!(row.0, "overscan_ratio",
-                "OpenMetrics §4.4: unit MUST be a `_<unit>` suffix of family name");
-            assert_eq!(row.1.as_deref(), Some("ratio"),
-                "SRD-40a §4.3: unit MUST also land in metric_family.unit column");
+            let row: (String, Option<String>) = reporter
+                .conn
+                .query_row(
+                    "SELECT name, unit FROM metric_family WHERE type = 'gauge'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                row.0, "overscan_ratio",
+                "OpenMetrics §4.4: unit MUST be a `_<unit>` suffix of family name"
+            );
+            assert_eq!(
+                row.1.as_deref(),
+                Some("ratio"),
+                "SRD-40a §4.3: unit MUST also land in metric_family.unit column"
+            );
         }
 
         /// Counterpart for the no-op case: when the caller's family
@@ -3688,19 +3934,25 @@ mod inner {
             reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
 
-            let mut family = MetricFamily::new("memory_bytes", MetricType::Gauge)
-                .with_unit("bytes");
+            let mut family =
+                MetricFamily::new("memory_bytes", MetricType::Gauge).with_unit("bytes");
             family.insert(Metric::single(
-                Labels::of("activity", "load").with("session", "s").with("exec_id", "1"),
+                Labels::of("activity", "load")
+                    .with("session", "s")
+                    .with("exec_id", "1"),
                 MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(1024.0))),
             ));
             snapshot.insert(family);
             reporter.report(&snapshot);
 
-            let row: (String, Option<String>) = reporter.conn.query_row(
-                "SELECT name, unit FROM metric_family WHERE type = 'gauge'",
-                [], |r| Ok((r.get(0)?, r.get(1)?)),
-            ).unwrap();
+            let row: (String, Option<String>) = reporter
+                .conn
+                .query_row(
+                    "SELECT name, unit FROM metric_family WHERE type = 'gauge'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
             assert_eq!(row.0, "memory_bytes", "no double suffixing");
             assert_eq!(row.1.as_deref(), Some("bytes"));
         }
@@ -3716,17 +3968,26 @@ mod inner {
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
-                Labels::of("activity", "x").with("session", "s").with("exec_id", "1"),
-                1, Instant::now(),
+                Labels::of("activity", "x")
+                    .with("session", "s")
+                    .with("exec_id", "1"),
+                1,
+                Instant::now(),
             );
             reporter.report(&snapshot);
 
-            let unit: Option<String> = reporter.conn.query_row(
-                "SELECT unit FROM metric_family WHERE name = 'ops_total'",
-                [], |r| r.get(0),
-            ).unwrap();
-            assert!(unit.is_none(),
-                "no `with_unit` declaration → unit column must be NULL");
+            let unit: Option<String> = reporter
+                .conn
+                .query_row(
+                    "SELECT unit FROM metric_family WHERE name = 'ops_total'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                unit.is_none(),
+                "no `with_unit` declaration → unit column must be NULL"
+            );
         }
 
         /// Visual test: prints a summary table to stderr so you can
@@ -3739,8 +4000,8 @@ mod inner {
 
             // Helper: insert a counter + timer for a phase
             let mut inject = |labels: Labels, cycles: u64, mean_ns: f64| {
-                let mut h = hdrhistogram::Histogram::new_with_bounds(
-                    1, 3_600_000_000_000, 3).unwrap();
+                let mut h =
+                    hdrhistogram::Histogram::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
                 let _ = h.record(mean_ns as u64);
                 let mut snapshot = MetricSet::new(interval);
                 snapshot.insert_counter("cycles_total", labels.clone(), cycles, now);
@@ -3749,51 +4010,81 @@ mod inner {
             };
 
             let rampup = Labels::of("session", "test")
-                .with("profile", "label_00").with("phase", "rampup");
+                .with("profile", "label_00")
+                .with("phase", "rampup");
             inject(rampup, 82993, 146_000_000.0);
 
             let search_k10 = Labels::of("session", "test")
-                .with("profile", "label_00").with("k", "10")
+                .with("profile", "label_00")
+                .with("k", "10")
                 .with("phase", "search_pre_compaction");
             inject(search_k10, 100, 3_740_000.0);
 
             let search_k100_pre = Labels::of("session", "test")
-                .with("profile", "label_00").with("k", "100")
+                .with("profile", "label_00")
+                .with("k", "100")
                 .with("phase", "search_pre_compaction");
             inject(search_k100_pre, 100, 17_940_000.0);
 
             let await_idx = Labels::of("session", "test")
-                .with("profile", "label_00").with("phase", "await_index");
+                .with("profile", "label_00")
+                .with("phase", "await_index");
             inject(await_idx, 1, 550_000.0);
 
             let search_k10_post = Labels::of("session", "test")
-                .with("profile", "label_00").with("k", "10")
+                .with("profile", "label_00")
+                .with("k", "10")
                 .with("phase", "search_post_compaction");
             inject(search_k10_post, 100, 4_550_000.0);
 
             let search_k100_post = Labels::of("session", "test")
-                .with("profile", "label_00").with("k", "100")
+                .with("profile", "label_00")
+                .with("k", "100")
                 .with("phase", "search_post_compaction");
             inject(search_k100_post, 100, 17_580_000.0);
 
             // Gauges: recall for all search phases
             let mut gauges = MetricSet::new(interval);
-            gauges.insert_gauge("recall_at_10_mean",
-                Labels::of("session", "test").with("profile", "label_00").with("k", "10")
-                    .with("phase", "search_pre_compaction").with("n", "100"),
-                0.8410, now);
-            gauges.insert_gauge("recall_at_100_mean",
-                Labels::of("session", "test").with("profile", "label_00").with("k", "100")
-                    .with("phase", "search_pre_compaction").with("n", "100"),
-                0.9837, now);
-            gauges.insert_gauge("recall_at_10_mean",
-                Labels::of("session", "test").with("profile", "label_00").with("k", "10")
-                    .with("phase", "search_post_compaction").with("n", "100"),
-                0.8410, now);
-            gauges.insert_gauge("recall_at_100_mean",
-                Labels::of("session", "test").with("profile", "label_00").with("k", "100")
-                    .with("phase", "search_post_compaction").with("n", "100"),
-                0.9837, now);
+            gauges.insert_gauge(
+                "recall_at_10_mean",
+                Labels::of("session", "test")
+                    .with("profile", "label_00")
+                    .with("k", "10")
+                    .with("phase", "search_pre_compaction")
+                    .with("n", "100"),
+                0.8410,
+                now,
+            );
+            gauges.insert_gauge(
+                "recall_at_100_mean",
+                Labels::of("session", "test")
+                    .with("profile", "label_00")
+                    .with("k", "100")
+                    .with("phase", "search_pre_compaction")
+                    .with("n", "100"),
+                0.9837,
+                now,
+            );
+            gauges.insert_gauge(
+                "recall_at_10_mean",
+                Labels::of("session", "test")
+                    .with("profile", "label_00")
+                    .with("k", "10")
+                    .with("phase", "search_post_compaction")
+                    .with("n", "100"),
+                0.8410,
+                now,
+            );
+            gauges.insert_gauge(
+                "recall_at_100_mean",
+                Labels::of("session", "test")
+                    .with("profile", "label_00")
+                    .with("k", "100")
+                    .with("phase", "search_post_compaction")
+                    .with("n", "100"),
+                0.9837,
+                now,
+            );
             r.report(&gauges);
 
             eprintln!("--- summary output (all columns, no aggregates) ---");
@@ -3845,45 +4136,79 @@ mod inner {
             }
             // Sibling _sum and _count families.
             r.write_native_sample(
-                "request_latency_sum", "histogram",
+                "request_latency_sum",
+                "histogram",
                 &qualifier.clone().with("phase", "run"),
-                &NativeSample { interval_ms: 1000, sum: Some(123.4), ..NativeSample::default() },
+                &NativeSample {
+                    interval_ms: 1000,
+                    sum: Some(123.4),
+                    ..NativeSample::default()
+                },
             );
             r.write_native_sample(
-                "request_latency_count", "histogram",
+                "request_latency_count",
+                "histogram",
                 &qualifier.with("phase", "run"),
-                &NativeSample { interval_ms: 1000, count: Some(100), ..NativeSample::default() },
+                &NativeSample {
+                    interval_ms: 1000,
+                    count: Some(100),
+                    ..NativeSample::default()
+                },
             );
 
             // Verify via raw SQL — the read-side test in
             // nbrs-metricsql exercises the catalog adapter
             // separately.
-            let n_families: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_family WHERE type = 'histogram'",
-                [], |row| row.get(0)).unwrap();
-            assert_eq!(n_families, 3,
-                "expected 3 histogram families: bucket, sum, count");
+            let n_families: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_family WHERE type = 'histogram'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n_families, 3,
+                "expected 3 histogram families: bucket, sum, count"
+            );
 
-            let n_bucket_instances: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance mi \
+            let n_bucket_instances: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance mi \
                  JOIN metric_family mf ON mf.id = mi.family_id \
                  WHERE mf.name = 'request_latency'",
-                [], |row| row.get(0)).unwrap();
-            assert_eq!(n_bucket_instances, 3,
-                "expected one instance per `le` boundary");
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n_bucket_instances, 3,
+                "expected one instance per `le` boundary"
+            );
         }
 
         #[test]
         fn write_native_sample_round_trips_info_type() {
             let mut r = SqliteReporter::in_memory().unwrap();
             r.write_native_sample(
-                "build_info", "info",
+                "build_info",
+                "info",
                 &Labels::of("version", "1.2.3").with("commit", "abc123"),
-                &NativeSample { interval_ms: 0, count: Some(1), ..NativeSample::default() },
+                &NativeSample {
+                    interval_ms: 0,
+                    count: Some(1),
+                    ..NativeSample::default()
+                },
             );
-            let ty: String = r.conn.query_row(
-                "SELECT type FROM metric_family WHERE name = 'build_info'",
-                [], |row| row.get(0)).unwrap();
+            let ty: String = r
+                .conn
+                .query_row(
+                    "SELECT type FROM metric_family WHERE name = 'build_info'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(ty, "info");
         }
 
@@ -3894,16 +4219,26 @@ mod inner {
             // Three states with active/inactive per-state samples.
             for (state, on) in [("alpha", 1.0), ("beta", 0.0), ("gamma", 1.0)] {
                 r.write_native_sample(
-                    "feature_flags", "stateset",
+                    "feature_flags",
+                    "stateset",
                     &qualifier.clone().with("feature", state),
-                    &NativeSample { interval_ms: 0, mean: Some(on), ..NativeSample::default() },
+                    &NativeSample {
+                        interval_ms: 0,
+                        mean: Some(on),
+                        ..NativeSample::default()
+                    },
                 );
             }
-            let n: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance mi \
+            let n: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance mi \
                  JOIN metric_family mf ON mf.id = mi.family_id \
                  WHERE mf.name = 'feature_flags'",
-                [], |row| row.get(0)).unwrap();
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(n, 3, "one instance per state name");
         }
 
@@ -3911,13 +4246,23 @@ mod inner {
         fn write_native_sample_round_trips_gauge_histogram_type() {
             let mut r = SqliteReporter::in_memory().unwrap();
             r.write_native_sample(
-                "queue_size_buckets", "gaugehistogram",
+                "queue_size_buckets",
+                "gaugehistogram",
                 &Labels::of("le", "10"),
-                &NativeSample { interval_ms: 1000, count: Some(5), ..NativeSample::default() },
+                &NativeSample {
+                    interval_ms: 1000,
+                    count: Some(5),
+                    ..NativeSample::default()
+                },
             );
-            let ty: String = r.conn.query_row(
-                "SELECT type FROM metric_family WHERE name = 'queue_size_buckets'",
-                [], |row| row.get(0)).unwrap();
+            let ty: String = r
+                .conn
+                .query_row(
+                    "SELECT type FROM metric_family WHERE name = 'queue_size_buckets'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(ty, "gaugehistogram");
         }
 
@@ -3927,13 +4272,23 @@ mod inner {
             // OpenMetrics 'unknown' is reserved for
             // un-typed metrics; the writer accepts it.
             r.write_native_sample(
-                "ad_hoc", "unknown",
+                "ad_hoc",
+                "unknown",
                 &Labels::of("source", "external"),
-                &NativeSample { interval_ms: 1000, mean: Some(42.0), ..NativeSample::default() },
+                &NativeSample {
+                    interval_ms: 1000,
+                    mean: Some(42.0),
+                    ..NativeSample::default()
+                },
             );
-            let ty: String = r.conn.query_row(
-                "SELECT type FROM metric_family WHERE name = 'ad_hoc'",
-                [], |row| row.get(0)).unwrap();
+            let ty: String = r
+                .conn
+                .query_row(
+                    "SELECT type FROM metric_family WHERE name = 'ad_hoc'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(ty, "unknown");
         }
 
@@ -3946,22 +4301,38 @@ mod inner {
             let qualifier = test_session_setup(&mut r, "test_native_dedupes");
             for _ in 0..3 {
                 r.write_native_sample(
-                    "build_info", "info",
+                    "build_info",
+                    "info",
                     &qualifier.clone().with("version", "1.2.3"),
-                    &NativeSample { interval_ms: 0, count: Some(1), ..NativeSample::default() },
+                    &NativeSample {
+                        interval_ms: 0,
+                        count: Some(1),
+                        ..NativeSample::default()
+                    },
                 );
             }
-            let n_families: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_family WHERE name = 'build_info'",
-                [], |row| row.get(0)).unwrap();
-            let n_instances: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance mi \
+            let n_families: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_family WHERE name = 'build_info'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let n_instances: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance mi \
                  JOIN metric_family mf ON mf.id = mi.family_id \
                  WHERE mf.name = 'build_info'",
-                [], |row| row.get(0)).unwrap();
-            let n_samples: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM sample_value",
-                [], |row| row.get(0)).unwrap();
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let n_samples: i64 = r
+                .conn
+                .query_row("SELECT COUNT(*) FROM sample_value", [], |row| row.get(0))
+                .unwrap();
             assert_eq!(n_families, 1);
             assert_eq!(n_instances, 1);
             assert_eq!(n_samples, 3, "three sample rows on the single instance");
@@ -3978,42 +4349,60 @@ mod inner {
             use crate::scheduler::Reporter;
             use std::time::{Duration, Instant};
             let qualifier = test_session_setup(&mut r, "test_instance_identity");
-            let labels_a = qualifier.clone()
+            let labels_a = qualifier
+                .clone()
                 .with("phase", "ann_query")
-                .with("k", "1").with("optimize_for", "recall");
+                .with("k", "1")
+                .with("optimize_for", "recall");
             let labels_b = qualifier
                 .with("optimize_for", "recall")
-                .with("k", "1").with("phase", "ann_query");
+                .with("k", "1")
+                .with("phase", "ann_query");
             let mut snap = MetricSet::new(Duration::from_secs(1));
             snap.insert_counter("recall_mean", labels_a, 10, Instant::now());
             snap.insert_counter("recall_mean", labels_b, 5, Instant::now());
             r.report(&snap);
 
-            let n_instances: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance \
+            let n_instances: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance \
                  WHERE family_id = (SELECT id FROM metric_family WHERE name='recall_mean')",
-                [], |row| row.get(0)).unwrap();
-            assert_eq!(n_instances, 1,
-                "the same logical labels in two orders MUST resolve to one instance");
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n_instances, 1,
+                "the same logical labels in two orders MUST resolve to one instance"
+            );
 
             // Both code paths agree on the canonical spec.
-            let spec: String = r.conn.query_row(
-                "SELECT spec FROM metric_instance",
-                [], |row| row.get(0)).unwrap();
+            let spec: String = r
+                .conn
+                .query_row("SELECT spec FROM metric_instance", [], |row| row.get(0))
+                .unwrap();
             // OpenMetrics canonical form: metric name as
             // prefix, `__name__` excluded from the labels
             // block, the rest sorted by key.
             // Session + exec_id labels show up in the canonical
             // spec alongside the test-supplied labels (sorted
             // alphabetically per OpenMetrics).
-            assert_eq!(spec,
-                r#"recall_mean{exec_id="1",k="1",optimize_for="recall",phase="ann_query",session="test_instance_identity"}"#);
+            assert_eq!(
+                spec,
+                r#"recall_mean{exec_id="1",k="1",optimize_for="recall",phase="ann_query",session="test_instance_identity"}"#
+            );
 
             // `__name__` is stored alongside the other
             // labels so queries can filter on it uniformly.
-            let n_name_rows: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM instance_label WHERE key='__name__'",
-                [], |row| row.get(0)).unwrap();
+            let n_name_rows: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM instance_label WHERE key='__name__'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(n_name_rows, 1);
         }
 
@@ -4023,7 +4412,10 @@ mod inner {
         fn execution_insert_then_update_completes_cardinal_history() {
             let mut r = SqliteReporter::in_memory().unwrap();
             r.insert_execution_start(
-                "sess", 1, "run", None,
+                "sess",
+                1,
+                "run",
+                None,
                 1_000_000_000,
                 "phases: { schema: { ops: { noop: { op: x }}}}",
                 "cycles=10\nconcurrency=4",
@@ -4053,25 +4445,33 @@ mod inner {
         #[test]
         fn execution_insert_pk_collision_is_no_op_and_preserves_prior_row() {
             let mut r = SqliteReporter::in_memory().unwrap();
-            r.insert_execution_start(
-                "sess", 1, "run", None,
-                1_000, "first", "",
-            );
+            r.insert_execution_start("sess", 1, "run", None, 1_000, "first", "");
             // Second insert with the same PK — should be
             // logged at WARN inside `insert_execution_start`
             // and produce no row mutation.
             r.insert_execution_start(
-                "sess", 1, "refine", Some("missing"),
-                9_999, "DIFFERENT_PAYLOAD", "x=y",
+                "sess",
+                1,
+                "refine",
+                Some("missing"),
+                9_999,
+                "DIFFERENT_PAYLOAD",
+                "x=y",
             );
             let rows = r.read_executions(None);
             assert_eq!(rows.len(), 1, "collision must NOT have created a 2nd row");
-            assert_eq!(rows[0].verb, "run",
-                "prior row must remain intact (no overwrite)");
-            assert_eq!(rows[0].started_at_nanos, 1_000,
-                "prior timestamp must remain intact");
-            assert_eq!(rows[0].workload_yaml_snapshot, "first",
-                "prior workload yaml must remain intact");
+            assert_eq!(
+                rows[0].verb, "run",
+                "prior row must remain intact (no overwrite)"
+            );
+            assert_eq!(
+                rows[0].started_at_nanos, 1_000,
+                "prior timestamp must remain intact"
+            );
+            assert_eq!(
+                rows[0].workload_yaml_snapshot, "first",
+                "prior workload yaml must remain intact"
+            );
         }
 
         /// SRD-77 FK regression — a snapshot whose metrics reference a
@@ -4100,18 +4500,25 @@ mod inner {
                 Instant::now(),
             );
             r.report(&snap);
-            let samples: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM sample_value", [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(samples, 1,
+            let samples: i64 = r
+                .conn
+                .query_row("SELECT COUNT(*) FROM sample_value", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                samples, 1,
                 "metric for an execution with no start row MUST still commit \
-                 (FK-parent placeholder), not be dropped by a failed COMMIT");
+                 (FK-parent placeholder), not be dropped by a failed COMMIT"
+            );
             // A minimal placeholder executions row now backs the FK.
-            let placeholder: (String, i64, String, i64) = r.conn.query_row(
-                "SELECT session, exec_id, verb, started_at_nanos FROM executions \
+            let placeholder: (String, i64, String, i64) = r
+                .conn
+                .query_row(
+                    "SELECT session, exec_id, verb, started_at_nanos FROM executions \
                  WHERE session = 'no_exec_row' AND exec_id = 7",
-                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            ).unwrap();
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
             assert_eq!(placeholder, ("no_exec_row".into(), 7, "pending".into(), 0));
 
             // (b): a session-tier metric carrying `session` but NO
@@ -4125,11 +4532,14 @@ mod inner {
                 Instant::now(),
             );
             r2.report(&snap2);
-            let samples2: i64 = r2.conn.query_row(
-                "SELECT COUNT(*) FROM sample_value", [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(samples2, 1,
-                "session-tier metric (exec_id 0) MUST still commit");
+            let samples2: i64 = r2
+                .conn
+                .query_row("SELECT COUNT(*) FROM sample_value", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                samples2, 1,
+                "session-tier metric (exec_id 0) MUST still commit"
+            );
         }
 
         /// The FK-parent placeholder is COMPLETED — not collided-with —
@@ -4145,16 +4555,22 @@ mod inner {
             snap.insert_counter(
                 "ops_total",
                 Labels::of("session", "raced").with("exec_id", "2"),
-                5, Instant::now(),
+                5,
+                Instant::now(),
             );
             r.report(&snap);
             // Now the real start record lands and completes the row.
-            r.insert_execution_start(
-                "raced", 2, "run", None, 1_234, "yaml", "cli",
-            );
+            r.insert_execution_start("raced", 2, "run", None, 1_234, "yaml", "cli");
             let rows = r.read_executions(Some(2));
-            assert_eq!(rows.len(), 1, "placeholder must be completed in place, not duplicated");
-            assert_eq!(rows[0].verb, "run", "placeholder verb must be overwritten by the real one");
+            assert_eq!(
+                rows.len(),
+                1,
+                "placeholder must be completed in place, not duplicated"
+            );
+            assert_eq!(
+                rows[0].verb, "run",
+                "placeholder verb must be overwritten by the real one"
+            );
             assert_eq!(rows[0].started_at_nanos, 1_234);
             assert_eq!(rows[0].workload_yaml_snapshot, "yaml");
             assert_eq!(rows[0].cli_params_snapshot, "cli");
@@ -4173,10 +4589,16 @@ mod inner {
             // Must be a no-op because the row is already closed.
             r.update_execution_end("sess", 1, 300, "FAILURE");
             let rows = r.read_executions(None);
-            assert_eq!(rows[0].ended_at_nanos, Some(200),
-                "second update must NOT overwrite ended_at_nanos");
-            assert_eq!(rows[0].disposition.as_deref(), Some("SUCCESS"),
-                "second update must NOT overwrite disposition");
+            assert_eq!(
+                rows[0].ended_at_nanos,
+                Some(200),
+                "second update must NOT overwrite ended_at_nanos"
+            );
+            assert_eq!(
+                rows[0].disposition.as_deref(),
+                Some("SUCCESS"),
+                "second update must NOT overwrite disposition"
+            );
         }
 
         /// SRD-77 — `read_phase_outcomes(Some(n))` MUST filter at
@@ -4189,14 +4611,16 @@ mod inner {
             let mut r = SqliteReporter::in_memory().unwrap();
             for (exec_id, name) in [(1, "alpha"), (2, "beta"), (3, "gamma")] {
                 r.write_phase_outcome(&PhaseOutcomeRow {
-                    session: "s".into(), exec_id,
+                    session: "s".into(),
+                    exec_id,
                     phase_name: name.into(),
                     phase_labels: String::new(),
                     status: "completed".into(),
                     duration_secs: 1.0,
                     started_at_nanos: 0,
                     ended_at_nanos: exec_id as i64,
-                    phase_hash: None, reason_class: None,
+                    phase_hash: None,
+                    reason_class: None,
                     params_consumed: None,
                     errors: Vec::new(),
                 });
@@ -4214,21 +4638,26 @@ mod inner {
             let mut r = SqliteReporter::in_memory().unwrap();
             for exec_id in [1, 2, 3] {
                 r.write_phase_outcome(&PhaseOutcomeRow {
-                    session: "s".into(), exec_id,
+                    session: "s".into(),
+                    exec_id,
                     phase_name: "p".into(),
                     phase_labels: String::new(),
                     status: "completed".into(),
                     duration_secs: 1.0,
                     started_at_nanos: 0,
                     ended_at_nanos: exec_id as i64,
-                    phase_hash: None, reason_class: None,
+                    phase_hash: None,
+                    reason_class: None,
                     params_consumed: None,
                     errors: Vec::new(),
                 });
             }
             let all = r.read_phase_outcomes(None);
-            assert_eq!(all.len(), 3,
-                "None MUST aggregate across executions: {all:?}");
+            assert_eq!(
+                all.len(),
+                3,
+                "None MUST aggregate across executions: {all:?}"
+            );
             let ids: Vec<u64> = all.iter().map(|o| o.exec_id).collect();
             assert!(ids.contains(&1) && ids.contains(&2) && ids.contains(&3));
         }
@@ -4240,10 +4669,7 @@ mod inner {
         fn read_executions_filters_by_exec_id() {
             let mut r = SqliteReporter::in_memory().unwrap();
             for (exec_id, verb) in [(1, "run"), (2, "refine"), (3, "refine")] {
-                r.insert_execution_start(
-                    "s", exec_id, verb, None,
-                    exec_id as i64 * 100, "", "",
-                );
+                r.insert_execution_start("s", exec_id, verb, None, exec_id as i64 * 100, "", "");
             }
             let exec_2 = r.read_executions(Some(2));
             assert_eq!(exec_2.len(), 1);
@@ -4257,7 +4683,7 @@ mod inner {
         fn read_executions_none_returns_every_row_in_cardinal_order() {
             let mut r = SqliteReporter::in_memory().unwrap();
             r.insert_execution_start("s", 3, "refine", None, 300, "", "");
-            r.insert_execution_start("s", 1, "run",    None, 100, "", "");
+            r.insert_execution_start("s", 1, "run", None, 100, "", "");
             r.insert_execution_start("s", 2, "refine", None, 200, "", "");
             let all = r.read_executions(None);
             assert_eq!(all.len(), 3);
@@ -4281,20 +4707,25 @@ mod inner {
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
-                Labels::of("session", "latest")
-                    .with("exec_id", "1"),
+                Labels::of("session", "latest").with("exec_id", "1"),
                 42,
                 Instant::now(),
             );
             r.report(&snapshot);
-            let n: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance \
+            let n: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance \
                  WHERE session = 'latest'",
-                [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(n, 0,
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n, 0,
                 "metric_instance MUST refuse `session=\"latest\"`; \
-                 the reserved word should never land in storage");
+                 the reserved word should never land in storage"
+            );
         }
 
         #[test]
@@ -4304,19 +4735,21 @@ mod inner {
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
-                Labels::of("session", "real_sess")
-                    .with("exec_id", "latest"),
+                Labels::of("session", "real_sess").with("exec_id", "latest"),
                 42,
                 Instant::now(),
             );
             r.report(&snapshot);
-            let n: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance \
+            let n: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance \
                  WHERE session = 'real_sess'",
-                [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(n, 0,
-                "metric_instance MUST refuse `exec_id=\"latest\"`");
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "metric_instance MUST refuse `exec_id=\"latest\"`");
         }
 
         /// SRD-77 — the metric_instance FK stays ENFORCED
@@ -4345,30 +4778,37 @@ mod inner {
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
-                Labels::of("session", "nonexistent")
-                    .with("exec_id", "999"),
+                Labels::of("session", "nonexistent").with("exec_id", "999"),
                 42,
                 Instant::now(),
             );
             r.report(&snapshot);
-            let n_instances: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance",
-                [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(n_instances, 1,
+            let n_instances: i64 = r
+                .conn
+                .query_row("SELECT COUNT(*) FROM metric_instance", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                n_instances, 1,
                 "metric_instance MUST be captured — the reporter \
                  provisions the FK parent rather than dropping the \
-                 metric.");
+                 metric."
+            );
             // The FK is intact: every metric_instance references a
             // present executions row (the placeholder just created).
-            let orphans: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance mi \
+            let orphans: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance mi \
                  WHERE NOT EXISTS (SELECT 1 FROM executions e \
                      WHERE e.session = mi.session AND e.exec_id = mi.exec_id)",
-                [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(orphans, 0,
-                "no metric_instance may reference a missing executions row");
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                orphans, 0,
+                "no metric_instance may reference a missing executions row"
+            );
         }
 
         /// Mirror: when the executions row IS present, the
@@ -4381,21 +4821,26 @@ mod inner {
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
-                Labels::of("session", "real_sess")
-                    .with("exec_id", "1"),
+                Labels::of("session", "real_sess").with("exec_id", "1"),
                 42,
                 Instant::now(),
             );
             r.report(&snapshot);
-            let n_instances: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM metric_instance \
+            let n_instances: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM metric_instance \
                  WHERE session = 'real_sess' AND exec_id = 1",
-                [], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(n_instances, 1,
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n_instances, 1,
                 "metric_instance MUST have one row when its \
                  (session, exec_id) references an existing \
-                 executions row.");
+                 executions row."
+            );
         }
 
         /// `read_executions` returns rows ordered by
@@ -4426,14 +4871,19 @@ mod inner {
             // opens is always fully indexed.
             let r = SqliteReporter::in_memory().unwrap();
             let idx_count = |r: &SqliteReporter| -> i64 {
-                r.conn.query_row(
-                    "SELECT count(*) FROM sqlite_master \
+                r.conn
+                    .query_row(
+                        "SELECT count(*) FROM sqlite_master \
                      WHERE type='index' AND name LIKE 'idx_%'",
-                    [], |row| row.get(0),
-                ).unwrap()
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
             };
             let user_version = |r: &SqliteReporter| -> i64 {
-                r.conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap()
+                r.conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap()
             };
             // Write time: tables only.
             assert_eq!(user_version(&r), SqliteReporter::SCHEMA_VERSION);
@@ -4450,14 +4900,23 @@ mod inner {
         // ── SRD-93 stages 2 + 4 — session clock + scope lifecycle ──
 
         fn scope_events(r: &SqliteReporter) -> Vec<(String, String, i64, i64)> {
-            let mut stmt = r.conn.prepare(
-                "SELECT event, reason, at_utc_nanos, at_session_nanos \
+            let mut stmt = r
+                .conn
+                .prepare(
+                    "SELECT event, reason, at_utc_nanos, at_session_nanos \
                  FROM instance_scope_event ORDER BY event, at_utc_nanos",
-            ).unwrap();
-            let rows = stmt.query_map([], |row| Ok((
-                row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?, row.get::<_, i64>(3)?,
-            ))).unwrap();
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .unwrap();
             rows.flatten().collect()
         }
 
@@ -4486,29 +4945,41 @@ mod inner {
             r.report(&labeled_snapshot(1));
             let ev = scope_events(&r);
             assert_eq!(ev.len(), 1, "first sight = one enter event");
-            assert_eq!((ev[0].0.as_str(), ev[0].1.as_str()),
-                ("enter", "first_sample"));
+            assert_eq!(
+                (ev[0].0.as_str(), ev[0].1.as_str()),
+                ("enter", "first_sample")
+            );
 
             let mut closing = labeled_snapshot(2);
             closing.mark_close(crate::snapshot::CloseReason::ScopeClose);
             r.report(&closing);
             let ev = scope_events(&r);
             assert_eq!(ev.len(), 2, "scope-close batch adds the exit");
-            assert_eq!((ev[1].0.as_str(), ev[1].1.as_str()),
-                ("exit", "scope_close"));
+            assert_eq!(
+                (ev[1].0.as_str(), ev[1].1.as_str()),
+                ("exit", "scope_close")
+            );
 
             // Idempotent under a repeated close and a re-sight.
             r.report(&closing);
             r.report(&labeled_snapshot(3));
             assert_eq!(scope_events(&r).len(), 2);
 
-            let epoch: i64 = r.conn.query_row(
-                "SELECT CAST(value AS INTEGER) FROM session_metadata \
+            let epoch: i64 = r
+                .conn
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM session_metadata \
                  WHERE key = 'session_epoch_utc_nanos'",
-                [], |row| row.get(0)).unwrap();
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             for (event, _, utc, session) in scope_events(&r) {
-                assert_eq!(utc - session, epoch,
-                    "{event}: utc − session must equal the durable epoch");
+                assert_eq!(
+                    utc - session,
+                    epoch,
+                    "{event}: utc − session must equal the durable epoch"
+                );
             }
         }
 
@@ -4539,35 +5010,50 @@ mod inner {
 
             // Instance A enters and exits mid-run via scope_close.
             let mut a = MetricSet::new(Duration::from_secs(1));
-            a.insert_counter("a_total",
-                Labels::of("session", "s").with("exec_id", "1"), 1,
-                Instant::now());
+            a.insert_counter(
+                "a_total",
+                Labels::of("session", "s").with("exec_id", "1"),
+                1,
+                Instant::now(),
+            );
             a.mark_close(crate::snapshot::CloseReason::ScopeClose);
             r.report(&a);
             // Instance B only enters.
             let mut b = MetricSet::new(Duration::from_secs(1));
-            b.insert_counter("b_total",
-                Labels::of("session", "s").with("exec_id", "1"), 1,
-                Instant::now());
+            b.insert_counter(
+                "b_total",
+                Labels::of("session", "s").with("exec_id", "1"),
+                1,
+                Instant::now(),
+            );
             r.report(&b);
 
             r.consolidate_wal();
 
             let by_reason = |reason: &str| -> i64 {
-                r.conn.query_row(
-                    "SELECT COUNT(*) FROM instance_scope_event \
+                r.conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM instance_scope_event \
                      WHERE event = 'exit' AND reason = ?1",
-                    [reason], |row| row.get(0)).unwrap()
+                        [reason],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
             };
             assert_eq!(by_reason("scope_close"), 1, "A keeps its reason");
             assert_eq!(by_reason("shutdown"), 1, "B swept at shutdown");
-            let unpaired: i64 = r.conn.query_row(
-                "SELECT COUNT(*) FROM instance_scope_event e \
+            let unpaired: i64 = r
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM instance_scope_event e \
                  WHERE e.event = 'enter' AND NOT EXISTS ( \
                      SELECT 1 FROM instance_scope_event x \
                      WHERE x.instance_id = e.instance_id \
                        AND x.exec_id = e.exec_id AND x.event = 'exit')",
-                [], |row| row.get(0)).unwrap();
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert_eq!(unpaired, 0, "clean shutdown pairs everything");
         }
 
@@ -4577,20 +5063,20 @@ mod inner {
         #[test]
         fn session_epoch_survives_reopen() {
             let dir = std::env::temp_dir().join(format!(
-                "nbrs-epoch-{}-{}", std::process::id(),
+                "nbrs-epoch-{}-{}",
+                std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap().as_nanos()));
+                    .unwrap()
+                    .as_nanos()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let db = dir.join("metrics.db");
 
-            let first = SqliteReporter::new(&db).unwrap()
-                .session_epoch_utc_nanos;
+            let first = SqliteReporter::new(&db).unwrap().session_epoch_utc_nanos;
             std::thread::sleep(Duration::from_millis(10));
-            let second = SqliteReporter::new(&db).unwrap()
-                .session_epoch_utc_nanos;
-            assert_eq!(first, second,
-                "the epoch must never move once set");
+            let second = SqliteReporter::new(&db).unwrap().session_epoch_utc_nanos;
+            assert_eq!(first, second, "the epoch must never move once set");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -4601,10 +5087,9 @@ pub use inner::SqliteReporter;
 pub use inner::SqliteShutdownGuard;
 #[cfg(feature = "sqlite")]
 pub use inner::{
-    ReportConfig, ReportAggregate, NativeSample, ExemplarRow,
-    PhaseOutcomeRow, PhaseErrorRow,
-    latest_execution_metadata_like, latest_execution_with_metadata_like,
-    latest_execution_metadata_value,
+    ExemplarRow, NativeSample, PhaseErrorRow, PhaseOutcomeRow, ReportAggregate, ReportConfig,
+    latest_execution_metadata_like, latest_execution_metadata_value,
+    latest_execution_with_metadata_like,
 };
 
 /// Split a summary name into `(basename, format)`.

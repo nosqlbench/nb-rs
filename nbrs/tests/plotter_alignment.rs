@@ -134,7 +134,6 @@ fn plot_config(workload: &Path, sessions: &Path, width: u16, height: u16) -> Con
     }
 }
 
-
 fn is_braille(c: char) -> bool {
     ('\u{2800}'..='\u{28FF}').contains(&c)
 }
@@ -144,8 +143,18 @@ fn is_braille(c: char) -> bool {
 /// with the run's log/summary (main thread) on the terminal.
 fn looks_like_diagnostic(line: &str) -> bool {
     const MARKERS: &[&str] = &[
-        "│", "phases:", "logs:", "session:", "metrics:", "[ok]", "completed",
-        "failed", "shutting", "consolidat", "done.", "warning",
+        "│",
+        "phases:",
+        "logs:",
+        "session:",
+        "metrics:",
+        "[ok]",
+        "completed",
+        "failed",
+        "shutting",
+        "consolidat",
+        "done.",
+        "warning",
     ];
     MARKERS.iter().any(|m| line.contains(m))
 }
@@ -186,7 +195,10 @@ async fn default_draw_renders_cleanly_on_a_tty() {
     let screen = stepper.screen_as_string().expect("screen");
     let lines: Vec<&str> = screen.lines().collect();
 
-    assert!(screen.chars().any(is_braille), "no braille rendered:\n{screen}");
+    assert!(
+        screen.chars().any(is_braille),
+        "no braille rendered:\n{screen}"
+    );
 
     // (1) No line mixes braille with diagnostic text (shutdown-race interleave).
     for (i, line) in lines.iter().enumerate() {
@@ -200,7 +212,10 @@ async fn default_draw_renders_cleanly_on_a_tty() {
 
     // (2) The title starts at column 0 — a raw-mode '\n'-only stagger pushes
     //     it (and every following row) rightward.
-    let title = lines.iter().find(|l| l.contains("histogram:")).expect("title on screen");
+    let title = lines
+        .iter()
+        .find(|l| l.contains("histogram:"))
+        .expect("title on screen");
     let title_lead = title.chars().take_while(|&c| c == ' ').count();
     assert!(
         title_lead <= 2,
@@ -211,9 +226,11 @@ async fn default_draw_renders_cleanly_on_a_tty() {
     let reaches_left = lines.iter().any(|l| {
         l.chars().any(is_braille) && l.chars().take_while(|&c| !is_braille(c)).count() <= 2
     });
-    assert!(reaches_left, "no plot row reaches the left edge — rows are staggered:\n{screen}");
+    assert!(
+        reaches_left,
+        "no plot row reaches the left edge — rows are staggered:\n{screen}"
+    );
 }
-
 
 /// Shared assertions: the title rendered intact and exactly once, braille
 /// content drew, no grid row exceeds the width, and — the real
@@ -234,7 +251,10 @@ fn assert_plot_aligned(screen: &str, title_needle: &str, width: u16, plot_h: u16
 
     // The title rendered intact, exactly once (a wrap would split it).
     let n_title = lines.iter().filter(|l| l.contains(title_needle)).count();
-    assert_eq!(n_title, 1, "title {title_needle:?} should render once:\n{screen}");
+    assert_eq!(
+        n_title, 1,
+        "title {title_needle:?} should render once:\n{screen}"
+    );
     let title_idx = lines.iter().position(|l| l.contains(title_needle)).unwrap();
 
     // Braille content actually drew.
@@ -249,7 +269,10 @@ fn assert_plot_aligned(screen: &str, title_needle: &str, width: u16, plot_h: u16
         .iter()
         .filter(|l| l.chars().any(is_braille))
         .count();
-    assert!(braille_after > 0, "no braille rows below the title:\n{screen}");
+    assert!(
+        braille_after > 0,
+        "no braille rows below the title:\n{screen}"
+    );
     assert!(
         braille_after <= plot_h as usize + 1,
         "{braille_after} braille rows below the title exceeds budget {plot_h} (+1) — wrap/stagger:\n{screen}",

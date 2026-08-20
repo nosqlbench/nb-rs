@@ -28,8 +28,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct Metric;
 
 impl Readout for Metric {
-    fn name(&self) -> &'static str { "metric" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+    fn name(&self) -> &'static str {
+        "metric"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Phase]
+    }
 
     fn render(
         &self,
@@ -116,8 +120,7 @@ fn glob_match_bytes(pat: &[u8], s: &[u8]) -> bool {
     match (pat.first(), s.first()) {
         (None, None) => true,
         (Some(b'*'), _) => {
-            glob_match_bytes(&pat[1..], s)
-                || (!s.is_empty() && glob_match_bytes(pat, &s[1..]))
+            glob_match_bytes(&pat[1..], s) || (!s.is_empty() && glob_match_bytes(pat, &s[1..]))
         }
         (Some(b'?'), Some(_)) => glob_match_bytes(&pat[1..], &s[1..]),
         (Some(p), Some(c)) if p == c => glob_match_bytes(&pat[1..], &s[1..]),
@@ -130,76 +133,142 @@ mod tests {
     use super::*;
     use crate::readouts::buf::StringBuf;
 
-    struct Ctx { chips: String }
+    struct Ctx {
+        chips: String,
+    }
     impl ReadoutContext for Ctx {
-        fn subject_name(&self) -> &str { "x" }
-        fn subject_seq(&self) -> Option<(usize, usize)> { None }
-        fn subject_labels(&self) -> &str { "" }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { self.chips.clone() }
-        fn depth_indent(&self) -> &str { "" }
-        fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::Update }
+        fn subject_name(&self) -> &str {
+            "x"
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            None
+        }
+        fn subject_labels(&self) -> &str {
+            ""
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            self.chips.clone()
+        }
+        fn depth_indent(&self) -> &str {
+            ""
+        }
+        fn use_color(&self) -> bool {
+            false
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::Update
+        }
     }
 
     #[test]
     fn renders_chips_string() {
-        let ctx = Ctx { chips: " recall_at_10:79.62% latency_p99:1.23ms".into() };
+        let ctx = Ctx {
+            chips: " recall_at_10:79.62% latency_p99:1.23ms".into(),
+        };
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        let n = Metric.render(&ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf);
+        let n = Metric.render(
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         assert!(n > 0);
         assert_eq!(s, " recall_at_10:79.62% latency_p99:1.23ms");
     }
 
     #[test]
     fn empty_chips_renders_zero() {
-        let ctx = Ctx { chips: String::new() };
+        let ctx = Ctx {
+            chips: String::new(),
+        };
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        let n = Metric.render(&ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf);
+        let n = Metric.render(
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         assert_eq!(n, 0);
         assert!(s.is_empty());
     }
 
     #[test]
     fn explanation_mode_emits_descriptor_when_chips_present() {
-        let ctx = Ctx { chips: " latency_p99:1ms".into() };
+        let ctx = Ctx {
+            chips: " latency_p99:1ms".into(),
+        };
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        let n = Metric.render(&ctx, Lod::Labeled, ContentMode::Explanation,
-            &ReadoutOptions::new(), &mut buf);
+        let n = Metric.render(
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Explanation,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         assert!(n > 0);
-        assert!(s.contains("live aggregates"),
-            "expected descriptor, got {s}");
+        assert!(
+            s.contains("live aggregates"),
+            "expected descriptor, got {s}"
+        );
     }
 
     #[test]
     fn explanation_mode_zero_when_no_chips() {
-        let ctx = Ctx { chips: String::new() };
+        let ctx = Ctx {
+            chips: String::new(),
+        };
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        let n = Metric.render(&ctx, Lod::Labeled, ContentMode::Explanation,
-            &ReadoutOptions::new(), &mut buf);
+        let n = Metric.render(
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Explanation,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         assert_eq!(n, 0);
     }
 
     #[test]
     fn pattern_filter_keeps_only_matching_chips() {
         let ctx = Ctx {
-            chips: " recall_at_10:79.62% latency_p99:1.23ms recall_at_1:42.00% latency_max:5ms".into(),
+            chips: " recall_at_10:79.62% latency_p99:1.23ms recall_at_1:42.00% latency_max:5ms"
+                .into(),
         };
         let mut opts = ReadoutOptions::new();
-        opts.set("pattern", super::super::super::OptionValue::Str("recall*".into()));
+        opts.set(
+            "pattern",
+            super::super::super::OptionValue::Str("recall*".into()),
+        );
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         Metric.render(&ctx, Lod::Labeled, ContentMode::Value, &opts, &mut buf);
@@ -212,7 +281,10 @@ mod tests {
             chips: " recall_at_10:79.62% latency_p50:1ms latency_p99:2ms".into(),
         };
         let mut opts = ReadoutOptions::new();
-        opts.set("pattern", super::super::super::OptionValue::Str("latency*".into()));
+        opts.set(
+            "pattern",
+            super::super::super::OptionValue::Str("latency*".into()),
+        );
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         Metric.render(&ctx, Lod::Labeled, ContentMode::Value, &opts, &mut buf);
@@ -225,7 +297,10 @@ mod tests {
             chips: " recall_at_10:79.62% recall_at_1:42.00%".into(),
         };
         let mut opts = ReadoutOptions::new();
-        opts.set("pattern", super::super::super::OptionValue::Str("recall_at_1".into()));
+        opts.set(
+            "pattern",
+            super::super::super::OptionValue::Str("recall_at_1".into()),
+        );
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         Metric.render(&ctx, Lod::Labeled, ContentMode::Value, &opts, &mut buf);
@@ -240,7 +315,10 @@ mod tests {
             chips: " recall_at_10:79.62%".into(),
         };
         let mut opts = ReadoutOptions::new();
-        opts.set("pattern", super::super::super::OptionValue::Str("nonexistent*".into()));
+        opts.set(
+            "pattern",
+            super::super::super::OptionValue::Str("nonexistent*".into()),
+        );
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         let n = Metric.render(&ctx, Lod::Labeled, ContentMode::Value, &opts, &mut buf);
@@ -255,8 +333,13 @@ mod tests {
         };
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        Metric.render(&ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf);
+        Metric.render(
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         // Bare `metric` (no pattern) preserves the
         // backwards-compatible Push 3 behaviour.
         assert_eq!(s, " recall_at_10:79.62% latency_p99:1ms");

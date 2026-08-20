@@ -95,26 +95,27 @@ impl ResumePlan {
         candidates: &[(PhaseIdentity, bool)],
         current_params: &HashMap<String, String>,
     ) -> Self {
-        let saved_index: HashMap<String, &super::storage::PhaseEntry> =
-            saved.phases.iter()
-                .map(|e| (identity_key(&e.identity), e))
-                .collect();
+        let saved_index: HashMap<String, &super::storage::PhaseEntry> = saved
+            .phases
+            .iter()
+            .map(|e| (identity_key(&e.identity), e))
+            .collect();
 
         let mut actions = HashMap::with_capacity(candidates.len());
         for (cand, declared_idempotent) in candidates {
             let key = identity_key(cand);
             let action = match saved_index.get(&key) {
                 None => ResumeAction::ReRun,
-                Some(saved_entry) => classify(
-                    cand,
-                    saved_entry,
-                    *declared_idempotent,
-                    current_params,
-                ),
+                Some(saved_entry) => {
+                    classify(cand, saved_entry, *declared_idempotent, current_params)
+                }
             };
             actions.insert(key, action);
         }
-        Self { actions, is_resume: true }
+        Self {
+            actions,
+            is_resume: true,
+        }
     }
 
     /// Look up the action for a given phase identity. Returns
@@ -122,19 +123,24 @@ impl ResumePlan {
     /// pre-map drift can never cause a phase to silently skip.
     pub fn action_for(&self, identity: &PhaseIdentity) -> ResumeAction {
         let key = identity_key(identity);
-        self.actions.get(&key).cloned().unwrap_or(ResumeAction::ReRun)
+        self.actions
+            .get(&key)
+            .cloned()
+            .unwrap_or(ResumeAction::ReRun)
     }
 
     /// Number of phases the plan classifies as `Skip`.
     pub fn skip_count(&self) -> usize {
-        self.actions.values()
+        self.actions
+            .values()
             .filter(|a| matches!(a, ResumeAction::Skip))
             .count()
     }
 
     /// Number of phases the plan classifies as `CursorResume`.
     pub fn cursor_resume_count(&self) -> usize {
-        self.actions.values()
+        self.actions
+            .values()
             .filter(|a| matches!(a, ResumeAction::CursorResume { .. }))
             .count()
     }
@@ -144,7 +150,8 @@ impl ResumePlan {
     /// operators can tell at a glance whether their YAML edit
     /// invalidated phases they thought were stable.
     pub fn mismatch_count(&self) -> usize {
-        self.actions.values()
+        self.actions
+            .values()
             .filter(|a| matches!(a, ResumeAction::IdentityMismatch { .. }))
             .count()
     }
@@ -183,9 +190,9 @@ fn classify(
             // blocker names the param. A base-matching entry
             // without the stored map is incomparable (mid-upgrade
             // oddity) → conservative re-run.
-            if let Err(mismatch) = saved_params_still_valid(
-                saved.params_consumed.as_deref(), current_params,
-            ) {
+            if let Err(mismatch) =
+                saved_params_still_valid(saved.params_consumed.as_deref(), current_params)
+            {
                 return ResumeAction::IdentityMismatch {
                     reason: format!(
                         "phase '{}': {mismatch} since this phase last ran",
@@ -203,14 +210,12 @@ fn classify(
             }
             ResumeAction::Skip
         }
-        PhaseStatus::Running => {
-            match &saved.cursor_state {
-                Some(cs) => ResumeAction::CursorResume {
-                    cursor_state: cs.clone(),
-                },
-                None => ResumeAction::ReRun,
-            }
-        }
+        PhaseStatus::Running => match &saved.cursor_state {
+            Some(cs) => ResumeAction::CursorResume {
+                cursor_state: cs.clone(),
+            },
+            None => ResumeAction::ReRun,
+        },
         // Pending: never started in the prior invocation.
         // Failed: errors cascade decides whether to retry; from
         //   the planner's perspective, a Failed phase always
@@ -231,12 +236,13 @@ fn saved_params_still_valid(
     let Some(json) = stored_json else {
         return Err("saved entry carries no consumed-params record".into());
     };
-    let Ok(stored) = serde_json::from_str::<
-        std::collections::BTreeMap<String, String>>(json) else {
+    let Ok(stored) = serde_json::from_str::<std::collections::BTreeMap<String, String>>(json)
+    else {
         return Err("saved consumed-params record is unreadable".into());
     };
     for (name, stored_digest) in stored {
-        let current = current_params.get(&name)
+        let current = current_params
+            .get(&name)
             .map(|v| crate::checkpoint::params_scope::value_digest(v));
         if current.as_deref() != Some(stored_digest.as_str()) {
             return Err(format!("param '{name}' changed"));
@@ -248,14 +254,14 @@ fn saved_params_still_valid(
 /// Reuse the writer's identity-key shape so both sides agree on
 /// equality semantics.
 fn identity_key(identity: &PhaseIdentity) -> String {
-    let path_json = serde_json::to_string(&identity.yaml_path)
-        .unwrap_or_else(|_| String::new());
+    let path_json = serde_json::to_string(&identity.yaml_path).unwrap_or_else(|_| String::new());
     format!("{path_json}\x1f{}", identity.coords)
 }
 
 fn phase_label(yaml_path: &[super::identity::PathSegment]) -> String {
     use super::identity::PathSegment;
-    yaml_path.iter()
+    yaml_path
+        .iter()
         .filter_map(|seg| match seg {
             PathSegment::Phase(n) => Some(n.clone()),
             _ => None,
@@ -267,13 +273,12 @@ fn phase_label(yaml_path: &[super::identity::PathSegment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkpoint::{PathSegment, storage::{OpCounts, PhaseEntry}};
+    use crate::checkpoint::{
+        PathSegment,
+        storage::{OpCounts, PhaseEntry},
+    };
 
-    fn ident_with_hash(
-        name: &str,
-        coords: &str,
-        hash: Option<[u8; 32]>,
-    ) -> PhaseIdentity {
+    fn ident_with_hash(name: &str, coords: &str, hash: Option<[u8; 32]>) -> PhaseIdentity {
         PhaseIdentity {
             yaml_path: vec![
                 PathSegment::Scenario("s".into()),
@@ -284,11 +289,7 @@ mod tests {
         }
     }
 
-    fn entry(
-        identity: PhaseIdentity,
-        status: PhaseStatus,
-        skip_eligible: bool,
-    ) -> PhaseEntry {
+    fn entry(identity: PhaseIdentity, status: PhaseStatus, skip_eligible: bool) -> PhaseEntry {
         PhaseEntry {
             identity,
             skip_eligible,
@@ -340,13 +341,13 @@ mod tests {
 
         let mut params = HashMap::new();
         params.insert("dataset".to_string(), "sift10m".to_string());
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id.clone(), true)], &params,
-        );
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &params);
         match plan.action_for(&id) {
             ResumeAction::IdentityMismatch { reason } => {
-                assert!(reason.contains("param 'dataset' changed"),
-                    "reason must name the param: {reason}");
+                assert!(
+                    reason.contains("param 'dataset' changed"),
+                    "reason must name the param: {reason}"
+                );
             }
             other => panic!("expected IdentityMismatch, got {other:?}"),
         }
@@ -369,24 +370,19 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("dataset".to_string(), "sift1m".to_string());
         params.insert("suite_k".to_string(), "100".to_string());
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id.clone(), true)], &params,
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &params);
+        assert!(
+            matches!(plan.action_for(&id), ResumeAction::Skip),
+            "an unconsumed param's change must not invalidate"
         );
-        assert!(matches!(plan.action_for(&id), ResumeAction::Skip),
-            "an unconsumed param's change must not invalidate");
     }
 
     #[test]
     fn completed_idempotent_with_matching_hash_skips() {
         let h = [0xab; 32];
         let id = ident_with_hash("schema", "", Some(h));
-        let saved = checkpoint_with(vec![
-            entry(id.clone(), PhaseStatus::Completed, true),
-        ]);
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id.clone(), true)],
-            &HashMap::new(),
-        );
+        let saved = checkpoint_with(vec![entry(id.clone(), PhaseStatus::Completed, true)]);
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &HashMap::new());
         assert!(matches!(plan.action_for(&id), ResumeAction::Skip));
         assert_eq!(plan.skip_count(), 1);
     }
@@ -397,13 +393,8 @@ mod tests {
         let h_new = [0x02; 32];
         let id_saved = ident_with_hash("schema", "", Some(h_old));
         let id_now = ident_with_hash("schema", "", Some(h_new));
-        let saved = checkpoint_with(vec![
-            entry(id_saved.clone(), PhaseStatus::Completed, true),
-        ]);
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id_now.clone(), true)],
-            &HashMap::new(),
-        );
+        let saved = checkpoint_with(vec![entry(id_saved.clone(), PhaseStatus::Completed, true)]);
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id_now.clone(), true)], &HashMap::new());
         match plan.action_for(&id_now) {
             ResumeAction::IdentityMismatch { reason } => {
                 assert!(reason.contains("schema"), "reason: {reason}");
@@ -416,13 +407,8 @@ mod tests {
     #[test]
     fn declared_none_always_reruns_even_if_completed() {
         let id = ident_with_hash("schema", "", None);
-        let saved = checkpoint_with(vec![
-            entry(id.clone(), PhaseStatus::Completed, false),
-        ]);
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id.clone(), false)],
-            &HashMap::new(),
-        );
+        let saved = checkpoint_with(vec![entry(id.clone(), PhaseStatus::Completed, false)]);
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), false)], &HashMap::new());
         assert!(matches!(plan.action_for(&id), ResumeAction::ReRun));
     }
 
@@ -432,10 +418,7 @@ mod tests {
         let mut e = entry(id.clone(), PhaseStatus::Running, true);
         e.cursor_state = Some(serde_json::json!({"next_cycle": 12345}));
         let saved = checkpoint_with(vec![e]);
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id.clone(), true)],
-            &HashMap::new(),
-        );
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &HashMap::new());
         match plan.action_for(&id) {
             ResumeAction::CursorResume { cursor_state } => {
                 assert_eq!(cursor_state["next_cycle"], 12345);
@@ -448,13 +431,8 @@ mod tests {
     #[test]
     fn running_without_cursor_state_reruns() {
         let id = ident_with_hash("rampup", "", None);
-        let saved = checkpoint_with(vec![
-            entry(id.clone(), PhaseStatus::Running, true),
-        ]);
-        let plan = ResumePlan::from_checkpoint(
-            &saved, &[(id.clone(), true)],
-            &HashMap::new(),
-        );
+        let saved = checkpoint_with(vec![entry(id.clone(), PhaseStatus::Running, true)]);
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &HashMap::new());
         assert!(matches!(plan.action_for(&id), ResumeAction::ReRun));
     }
 

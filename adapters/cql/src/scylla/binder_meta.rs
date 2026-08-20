@@ -62,19 +62,19 @@ pub fn cql_to_polydat(typ: &ColumnType<'_>) -> Mapping {
     match typ {
         ColumnType::Native(n) => match n {
             // Exact mappings — no warning.
-            NativeType::Boolean  => (PortType::Bool, None),
-            NativeType::Int      => (PortType::I32,  None),
-            NativeType::BigInt   => (PortType::I64,  None),
-            NativeType::Counter  => (PortType::I64,  None),
-            NativeType::Float    => (PortType::F32,  None),
-            NativeType::Double   => (PortType::F64,  None),
-            NativeType::Ascii    => (PortType::Str,  None),
-            NativeType::Text     => (PortType::Str,  None),
-            NativeType::Blob     => (PortType::Bytes, None),
+            NativeType::Boolean => (PortType::Bool, None),
+            NativeType::Int => (PortType::I32, None),
+            NativeType::BigInt => (PortType::I64, None),
+            NativeType::Counter => (PortType::I64, None),
+            NativeType::Float => (PortType::F32, None),
+            NativeType::Double => (PortType::F64, None),
+            NativeType::Ascii => (PortType::Str, None),
+            NativeType::Text => (PortType::Str, None),
+            NativeType::Blob => (PortType::Bytes, None),
             // Widened mappings — represented natively as a wider
             // polydat type but the semantics line up; no warning.
             NativeType::SmallInt => (PortType::I32, None),
-            NativeType::TinyInt  => (PortType::I32, None),
+            NativeType::TinyInt => (PortType::I32, None),
             // Long-tail native types: precise polydat mappings
             // not yet wired. Fallback → Str with a warning so the
             // operator can see which slots lost typed checking.
@@ -85,7 +85,7 @@ pub fn cql_to_polydat(typ: &ColumnType<'_>) -> Mapping {
         // vector<bigint>, etc. once workloads need them).
         ColumnType::Vector { typ, dimensions } => match typ.as_ref() {
             ColumnType::Native(NativeType::Float) => (PortType::VecF32, None),
-            ColumnType::Native(NativeType::Int)   => (PortType::VecI32, None),
+            ColumnType::Native(NativeType::Int) => (PortType::VecI32, None),
             other_elem => (
                 PortType::Str,
                 Some(format!("Vector<{other_elem:?}, {dimensions}>")),
@@ -93,12 +93,15 @@ pub fn cql_to_polydat(typ: &ColumnType<'_>) -> Mapping {
         },
         // Collections / UDTs / tuples have no current polydat
         // typed equivalent. Str fallback per module-doc policy.
-        ColumnType::Collection { typ, .. } =>
-            (PortType::Str, Some(format!("Collection<{typ:?}>"))),
-        ColumnType::UserDefinedType { definition, .. } =>
-            (PortType::Str, Some(format!("UserDefinedType<{}>", definition.name))),
-        ColumnType::Tuple(elems) =>
-            (PortType::Str, Some(format!("Tuple<{} elements>", elems.len()))),
+        ColumnType::Collection { typ, .. } => (PortType::Str, Some(format!("Collection<{typ:?}>"))),
+        ColumnType::UserDefinedType { definition, .. } => (
+            PortType::Str,
+            Some(format!("UserDefinedType<{}>", definition.name)),
+        ),
+        ColumnType::Tuple(elems) => (
+            PortType::Str,
+            Some(format!("Tuple<{} elements>", elems.len())),
+        ),
         // `ColumnType` is `#[non_exhaustive]`; future-added
         // variants land here. Str fallback keeps verification
         // working until a precise mapping is added.

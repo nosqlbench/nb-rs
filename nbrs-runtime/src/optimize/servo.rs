@@ -103,7 +103,12 @@ async fn retarget(
         ));
     };
     erased
-        .set_f64(value, ControlOrigin::Api { source: "optimizer".into() })
+        .set_f64(
+            value,
+            ControlOrigin::Api {
+                source: "optimizer".into(),
+            },
+        )
         .await
         .map(|_rev| ())
         .map_err(|e| format!("optimizer retarget '{control}' = {value}: {e}"))
@@ -170,9 +175,13 @@ pub async fn servo(
             // flag absorbs the settle's own stop verdict so it does NOT end the
             // phase (the servo owns the phase stop, on budget exhaustion).
             let settle_done = Arc::new(AtomicBool::new(false));
-            let Some(handle) =
-                start_settle(&parent, &phase_kernel, &spec.objective, &reporter, settle_done)
-            else {
+            let Some(handle) = start_settle(
+                &parent,
+                &phase_kernel,
+                &spec.objective,
+                &reporter,
+                settle_done,
+            ) else {
                 err = Some(format!(
                     "optimizer objective '{}' is not a windowed metric — a Control-class \
                      sweep settles the live windowed objective per setting; use \
@@ -206,7 +215,10 @@ pub async fn servo(
     }
 
     spec.result.store(Arc::new(ServoOutcome {
-        best: best_coord.map(|coord| ServoBest { coord, value: best_value }),
+        best: best_coord.map(|coord| ServoBest {
+            coord,
+            value: best_value,
+        }),
         evals,
     }));
     // End the continuous phase (read at its next cycle boundary).

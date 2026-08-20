@@ -124,10 +124,7 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                 // multi-line CQL maps where the opening `{` sits on its
                 // own line). If so, skip just the opening brace and
                 // continue scanning — inner {name} refs are still valid.
-                let next_nonspace = chars[i + 1..]
-                    .iter()
-                    .find(|c| !c.is_whitespace())
-                    .copied();
+                let next_nonspace = chars[i + 1..].iter().find(|c| !c.is_whitespace()).copied();
                 if matches!(next_nonspace, Some(c) if is_literal_start(c)) {
                     // CQL map literal: {'key': '{value}'} — skip the opening {
                     // but continue scanning so inner bind points are found.
@@ -139,8 +136,15 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                 let start = i;
                 let mut depth = 1u32;
                 while i < chars.len() {
-                    if chars[i] == '{' { depth += 1; }
-                    if chars[i] == '}' { depth -= 1; if depth == 0 { break; } }
+                    if chars[i] == '{' {
+                        depth += 1;
+                    }
+                    if chars[i] == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
                     i += 1;
                 }
                 if i < chars.len() {
@@ -166,7 +170,11 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                         // supported (the lvalue-spec detector only
                         // matches when `name_part` is a bare identifier).
                         let (qualifier, name) = parse_qualified_ref(name_part);
-                        points.push(BindPoint::Reference { name, qualifier, lvalue_spec: Some(spec) });
+                        points.push(BindPoint::Reference {
+                            name,
+                            qualifier,
+                            lvalue_spec: Some(spec),
+                        });
                         i += 1;
                     } else if is_expression(raw) {
                         // Content has operators/parens — treat as inline expression
@@ -175,7 +183,11 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                     } else {
                         // Simple identifier — reference bind point
                         let (qualifier, name) = parse_qualified_ref(raw);
-                        points.push(BindPoint::Reference { name, qualifier, lvalue_spec: None });
+                        points.push(BindPoint::Reference {
+                            name,
+                            qualifier,
+                            lvalue_spec: None,
+                        });
                         i += 1;
                     }
                 }
@@ -254,9 +266,10 @@ fn extract_lvalue_spec(raw: &str) -> Option<(&str, LvalueSpec)> {
     // here. Composition (`{capture:meta:type}`) is not currently
     // supported; punt on it cleanly by declining.
     let lower = name_part.to_lowercase();
-    if matches!(lower.as_str(),
-        "input" | "coord" | "coordinate" | "bind" | "capture")
-    {
+    if matches!(
+        lower.as_str(),
+        "input" | "coord" | "coordinate" | "bind" | "capture"
+    ) {
         return None;
     }
     if spec_part == "*" {
@@ -287,10 +300,20 @@ fn extract_lvalue_spec(raw: &str) -> Option<(&str, LvalueSpec)> {
 /// `polydat::ast::PortType::from_str`, which the workload-side
 /// adapter `map_op` calls when it encounters an `Explicit` spec.
 fn is_polydat_type_name(s: &str) -> bool {
-    matches!(s,
-        "u64" | "f64" | "u32" | "i32" | "i64" | "f32"
-        | "bool" | "str" | "bytes" | "json"
-        | "vec_f32" | "vec_i32"
+    matches!(
+        s,
+        "u64"
+            | "f64"
+            | "u32"
+            | "i32"
+            | "i64"
+            | "f32"
+            | "bool"
+            | "str"
+            | "bytes"
+            | "json"
+            | "vec_f32"
+            | "vec_i32"
     )
 }
 
@@ -533,16 +556,24 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
             // `[...]` from being silently consumed.
 
             // Skip whitespace
-            while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
 
             // Optional type cast: (Type)
             let cast_type = if i < chars.len() && chars[i] == '(' {
                 i += 1;
                 let cast_start = i;
-                while i < chars.len() && chars[i] != ')' { i += 1; }
+                while i < chars.len() && chars[i] != ')' {
+                    i += 1;
+                }
                 let cast: String = chars[cast_start..i].iter().collect();
-                if i < chars.len() { i += 1; } // skip ')'
-                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                if i < chars.len() {
+                    i += 1;
+                } // skip ')'
+                while i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
                 Some(cast.trim().to_string())
             } else {
                 None
@@ -555,7 +586,9 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
             // column-reference text.
             let slurp = if i < chars.len() && chars[i] == '@' {
                 i += 1;
-                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                while i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
                 true
             } else {
                 false
@@ -571,9 +604,7 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
             let name_start = i;
             if i < chars.len() {
                 let first = chars[i];
-                let is_valid_first = first.is_ascii_alphabetic()
-                    || first == '_'
-                    || first == '*';
+                let is_valid_first = first.is_ascii_alphabetic() || first == '_' || first == '*';
                 if !is_valid_first {
                     // Not a capture-point opening — emit `[` and
                     // resume one char in.
@@ -582,7 +613,13 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
                     continue;
                 }
             }
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-' || chars[i] == '.' || chars[i] == '*') {
+            while i < chars.len()
+                && (chars[i].is_alphanumeric()
+                    || chars[i] == '_'
+                    || chars[i] == '-'
+                    || chars[i] == '.'
+                    || chars[i] == '*')
+            {
                 i += 1;
             }
             let source_name: String = chars[name_start..i].iter().collect();
@@ -595,16 +632,25 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
             }
 
             // Optional "as alias"
-            while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
             let as_name = if i + 2 < chars.len()
                 && (chars[i] == 'a' || chars[i] == 'A')
-                && (chars[i+1] == 's' || chars[i+1] == 'S')
-                && chars[i+2].is_whitespace()
+                && (chars[i + 1] == 's' || chars[i + 1] == 'S')
+                && chars[i + 2].is_whitespace()
             {
                 i += 2; // skip "as"
-                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                while i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
                 let alias_start = i;
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-' || chars[i] == '.') {
+                while i < chars.len()
+                    && (chars[i].is_alphanumeric()
+                        || chars[i] == '_'
+                        || chars[i] == '-'
+                        || chars[i] == '.')
+                {
                     i += 1;
                 }
                 let alias: String = chars[alias_start..i].iter().collect();
@@ -614,7 +660,9 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
             };
 
             // Skip whitespace and closing bracket
-            while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
             if i < chars.len() && chars[i] == ']' {
                 i += 1;
                 captures.push(CapturePoint {
@@ -645,7 +693,10 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
         }
     }
 
-    CaptureParseResult { raw_template: raw, captures }
+    CaptureParseResult {
+        raw_template: raw,
+        captures,
+    }
 }
 
 #[cfg(test)]
@@ -694,7 +745,10 @@ mod tests {
 
     #[test]
     fn pure_bind_ref() {
-        assert_eq!(classify_field("{userid}"), FieldType::BindRef("userid".into()));
+        assert_eq!(
+            classify_field("{userid}"),
+            FieldType::BindRef("userid".into())
+        );
     }
 
     #[test]
@@ -703,8 +757,22 @@ mod tests {
         match ft {
             FieldType::Template(points) => {
                 assert_eq!(points.len(), 2);
-                assert_eq!(points[0], BindPoint::Reference { name: "id".into(), qualifier: BindQualifier::None, lvalue_spec: None });
-                assert_eq!(points[1], BindPoint::Reference { name: "name".into(), qualifier: BindQualifier::None, lvalue_spec: None });
+                assert_eq!(
+                    points[0],
+                    BindPoint::Reference {
+                        name: "id".into(),
+                        qualifier: BindQualifier::None,
+                        lvalue_spec: None
+                    }
+                );
+                assert_eq!(
+                    points[1],
+                    BindPoint::Reference {
+                        name: "name".into(),
+                        qualifier: BindQualifier::None,
+                        lvalue_spec: None
+                    }
+                );
             }
             _ => panic!("expected Template"),
         }
@@ -745,33 +813,42 @@ mod tests {
     fn qualified_coord() {
         let points = extract_bind_points("{coord:cycle}");
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0], BindPoint::Reference {
-            name: "cycle".into(),
-            qualifier: BindQualifier::Input,
-            lvalue_spec: None,
-        });
+        assert_eq!(
+            points[0],
+            BindPoint::Reference {
+                name: "cycle".into(),
+                qualifier: BindQualifier::Input,
+                lvalue_spec: None,
+            }
+        );
     }
 
     #[test]
     fn qualified_capture() {
         let points = extract_bind_points("{capture:balance}");
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0], BindPoint::Reference {
-            name: "balance".into(),
-            qualifier: BindQualifier::Capture,
-            lvalue_spec: None,
-        });
+        assert_eq!(
+            points[0],
+            BindPoint::Reference {
+                name: "balance".into(),
+                qualifier: BindQualifier::Capture,
+                lvalue_spec: None,
+            }
+        );
     }
 
     #[test]
     fn qualified_bind() {
         let points = extract_bind_points("{bind:user_id}");
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0], BindPoint::Reference {
-            name: "user_id".into(),
-            qualifier: BindQualifier::Bind,
-            lvalue_spec: None,
-        });
+        assert_eq!(
+            points[0],
+            BindPoint::Reference {
+                name: "user_id".into(),
+                qualifier: BindQualifier::Bind,
+                lvalue_spec: None,
+            }
+        );
     }
 
     #[test]
@@ -779,21 +856,27 @@ mod tests {
         // "port" is not a recognized qualifier — treated as unqualified
         let points = extract_bind_points("{port:auth_token}");
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0], BindPoint::Reference {
-            name: "port:auth_token".into(),
-            qualifier: BindQualifier::None,
-            lvalue_spec: None,
-        });
+        assert_eq!(
+            points[0],
+            BindPoint::Reference {
+                name: "port:auth_token".into(),
+                qualifier: BindQualifier::None,
+                lvalue_spec: None,
+            }
+        );
     }
 
     #[test]
     fn unqualified_still_works() {
         let points = extract_bind_points("{user_id}");
-        assert_eq!(points[0], BindPoint::Reference {
-            name: "user_id".into(),
-            qualifier: BindQualifier::None,
-            lvalue_spec: None,
-        });
+        assert_eq!(
+            points[0],
+            BindPoint::Reference {
+                name: "user_id".into(),
+                qualifier: BindQualifier::None,
+                lvalue_spec: None,
+            }
+        );
     }
 
     #[test]
@@ -805,11 +888,14 @@ mod tests {
     #[test]
     fn coordinate_long_form() {
         let points = extract_bind_points("{coordinate:row}");
-        assert_eq!(points[0], BindPoint::Reference {
-            name: "row".into(),
-            qualifier: BindQualifier::Input,
-            lvalue_spec: None,
-        });
+        assert_eq!(
+            points[0],
+            BindPoint::Reference {
+                name: "row".into(),
+                qualifier: BindQualifier::Input,
+                lvalue_spec: None,
+            }
+        );
     }
 
     // --- Capture point tests ---
@@ -820,7 +906,10 @@ mod tests {
         assert_eq!(result.captures.len(), 1);
         assert_eq!(result.captures[0].source_name, "username");
         assert_eq!(result.captures[0].as_name, "username");
-        assert_eq!(result.raw_template, "select username from users where id={id}");
+        assert_eq!(
+            result.raw_template,
+            "select username from users where id={id}"
+        );
     }
 
     #[test]
@@ -855,8 +944,11 @@ mod tests {
         // `"arguments":["foo",[]]` which became `"arguments":["foo",]`
         // (invalid JSON, JMX op gets 1 arg instead of 2).
         let result = parse_capture_points(r#"{"arguments":["foo",[]]}"#);
-        assert!(result.captures.is_empty(),
-            "no capture should be extracted: {:?}", result.captures);
+        assert!(
+            result.captures.is_empty(),
+            "no capture should be extracted: {:?}",
+            result.captures
+        );
         assert_eq!(result.raw_template, r#"{"arguments":["foo",[]]}"#);
     }
 
@@ -865,11 +957,13 @@ mod tests {
         // JNI array signature `[Ljava.lang.String;` opens with `[`
         // but is not a capture point (no closing `]` follows the
         // identifier chunk). The parser must not consume anything.
-        let template =
-            r#""operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)""#;
+        let template = r#""operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)""#;
         let result = parse_capture_points(template);
-        assert!(result.captures.is_empty(),
-            "JNI signature should not parse as capture: {:?}", result.captures);
+        assert!(
+            result.captures.is_empty(),
+            "JNI signature should not parse as capture: {:?}",
+            result.captures
+        );
         assert_eq!(result.raw_template, template);
     }
 
@@ -921,7 +1015,8 @@ mod tests {
 
     #[test]
     fn capture_mixed_with_bind_points() {
-        let result = parse_capture_points("select [name], [age as user_age] from users where id={userid}");
+        let result =
+            parse_capture_points("select [name], [age as user_age] from users where id={userid}");
         assert_eq!(result.captures.len(), 2);
         // Bind point {userid} should remain in the raw template
         assert!(result.raw_template.contains("{userid}"));

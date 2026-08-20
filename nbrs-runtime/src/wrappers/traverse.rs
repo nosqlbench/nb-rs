@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
-use nbrs_workload::bindpoints;
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
+use nbrs_workload::bindpoints;
 
 /// SRD-32a wrapper name. Innermost layer; always present.
 pub const NAME: WrapperName = WrapperName::new("traverse");
@@ -20,11 +20,15 @@ pub const NAME: WrapperName = WrapperName::new("traverse");
 /// Trigger: always — every op gets a traversal layer so result
 /// bodies are consumed (and per-row metrics record element /
 /// byte counts) even if the workload didn't ask for anything.
-fn triggers(s: WrapperSubject) -> bool { s.op().is_some() }
+fn triggers(s: WrapperSubject) -> bool {
+    s.op().is_some()
+}
 
 /// No per-op assignment text — the wrapper has no operator-
 /// configurable knobs.
-fn describe_assignment(_: WrapperSubject) -> Option<String> { None }
+fn describe_assignment(_: WrapperSubject) -> Option<String> {
+    None
+}
 
 inventory::submit! {
     WrapperRegistration {
@@ -159,9 +163,10 @@ fn extract_captures_rooted(
         if spec.slurp {
             // Slurp form: collect across all rows.
             let collected = slurp_column(&json, &spec.source_name);
-            captures.insert(spec.as_name.clone(), polydat::ast::Value::Json(
-                std::sync::Arc::new(serde_json::Value::Array(collected)),
-            ));
+            captures.insert(
+                spec.as_name.clone(),
+                polydat::ast::Value::Json(std::sync::Arc::new(serde_json::Value::Array(collected))),
+            );
             continue;
         }
         // Single form.
@@ -169,8 +174,9 @@ fn extract_captures_rooted(
             // Wildcard: capture every top-level field. Falls
             // through to scalar-form per field.
             let target = match &json {
-                serde_json::Value::Array(rows) => rows.first().cloned()
-                    .unwrap_or(serde_json::Value::Null),
+                serde_json::Value::Array(rows) => {
+                    rows.first().cloned().unwrap_or(serde_json::Value::Null)
+                }
                 other => other.clone(),
             };
             if let serde_json::Value::Object(map) = target {
@@ -199,13 +205,18 @@ fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
     match v {
         serde_json::Value::Array(a) => a.len() as u64,
         serde_json::Value::Object(m) => m.len() as u64,
-        serde_json::Value::Number(n) => {
-            n.as_u64()
-                .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
-                .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
-                .unwrap_or(0)
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
+            .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
+            .unwrap_or(0),
+        serde_json::Value::Bool(b) => {
+            if *b {
+                1
+            } else {
+                0
+            }
         }
-        serde_json::Value::Bool(b) => if *b { 1 } else { 0 },
         serde_json::Value::String(s) if s.is_empty() => 0,
         serde_json::Value::String(_) => 1,
         serde_json::Value::Null => 0,
@@ -259,9 +270,7 @@ fn captures_for_empty_result(
         } else {
             match &spec.agg {
                 Some(CaptureAgg::Sum(_)) => polydat::ast::Value::U64(0),
-                Some(CaptureAgg::Min(_)) | Some(CaptureAgg::Max(_)) => {
-                    polydat::ast::Value::None
-                }
+                Some(CaptureAgg::Min(_)) | Some(CaptureAgg::Max(_)) => polydat::ast::Value::None,
                 None => polydat::ast::Value::None,
             }
         };
@@ -274,11 +283,7 @@ fn captures_for_empty_result(
 /// `Value::None` reset marker (an empty min/max fold, or a plain capture
 /// that resolved to nothing) RESTORES the wire to its declared initial
 /// value. No path parks a raw `None` on a typed wire.
-fn publish_capture(
-    ctx: &crate::adapter::ExecCtx<'_>,
-    name: &str,
-    value: polydat::ast::Value,
-) {
+fn publish_capture(ctx: &crate::adapter::ExecCtx<'_>, name: &str, value: polydat::ast::Value) {
     if matches!(value, polydat::ast::Value::None) {
         let _ = ctx.wires.reset(name);
     } else {
@@ -306,14 +311,17 @@ fn aggregate_rows(
     // quantities. Compared as strings so it works on any scalar column
     // without the capture layer needing the column's type.
     let keep = |row: &serde_json::Value| -> bool {
-        let Some((k, want)) = row_filter else { return true };
+        let Some((k, want)) = row_filter else {
+            return true;
+        };
         match row.get(k.as_str()) {
             Some(serde_json::Value::String(s)) => s == want,
             Some(other) => other.to_string().trim_matches('"') == want,
             None => false,
         }
     };
-    let nums: Vec<&serde_json::Number> = rows.iter()
+    let nums: Vec<&serde_json::Number> = rows
+        .iter()
         .filter(|row| keep(row))
         .filter_map(|row| row.get(field))
         .filter_map(|v| v.as_number())
@@ -344,7 +352,10 @@ fn aggregate_rows(
             let want_min = matches!(agg, CaptureAgg::Min(_));
             let mut best = nums[0];
             for n in &nums[1..] {
-                let (a, b) = (n.as_f64().unwrap_or(f64::NAN), best.as_f64().unwrap_or(f64::NAN));
+                let (a, b) = (
+                    n.as_f64().unwrap_or(f64::NAN),
+                    best.as_f64().unwrap_or(f64::NAN),
+                );
                 if (want_min && a < b) || (!want_min && a > b) {
                     best = n;
                 }
@@ -379,11 +390,11 @@ fn first_row_field(json: &serde_json::Value, name: &str) -> Option<serde_json::V
 /// non-array bodies produce an empty list.
 fn slurp_column(json: &serde_json::Value, name: &str) -> Vec<serde_json::Value> {
     match json {
-        serde_json::Value::Array(rows) => rows.iter()
+        serde_json::Value::Array(rows) => rows
+            .iter()
             .filter_map(|row| row.get(name).cloned())
             .collect(),
-        serde_json::Value::Object(_) => json.get(name).map(|v| vec![v.clone()])
-            .unwrap_or_default(),
+        serde_json::Value::Object(_) => json.get(name).map(|v| vec![v.clone()]).unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -420,14 +431,19 @@ impl OpDispenser for TraversingDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Execute the inner dispenser
             let result = self.inner.execute(cycle, ctx).await?;
 
             // Traverse: count elements and bytes
             if let Some(body) = &result.body {
-                self.stats.metrics.result_elements.inc_by(body.element_count());
+                self.stats
+                    .metrics
+                    .result_elements
+                    .inc_by(body.element_count());
                 if let Some(bytes) = body.byte_count() {
                     self.stats.metrics.result_bytes.inc_by(bytes);
                 }
@@ -447,56 +463,59 @@ impl OpDispenser for TraversingDispenser {
                 }
             }
             if !self.captures.is_empty()
-                && let Some(body) = &result.body {
-                    let base = self.spec.as_ref().and_then(|s| s.path.as_deref());
-                    let extracted = extract_captures_rooted(
-                        body.as_ref(), &self.captures, base);
-                    // `on_missing:` — a capture that resolved to nothing reads
-                    // exactly like one that measured an absence, which is how a
-                    // renamed column or a changed schema hides. Default stays
-                    // `ignore` so existing workloads are unaffected.
-                    let policy = self.spec.as_ref()
-                        .map(|s| s.on_missing)
-                        .unwrap_or_default();
-                    if !matches!(policy, nbrs_workload::model::OnMissing::Ignore) {
-                        for cp in &self.captures {
-                            let missing = match extracted.get(&cp.as_name) {
-                                None => true,
-                                Some(polydat::ast::Value::None) => true,
-                                Some(_) => false,
-                            };
-                            if !missing { continue; }
-                            let detail = format!(
-                                "op capture '{}' resolved to nothing{}",
-                                cp.as_name,
-                                match base {
-                                    Some(b) => format!(" (traverse path '{b}')"),
-                                    None => String::new(),
-                                });
-                            match policy {
-                                nbrs_workload::model::OnMissing::Warn => crate::diag!(
-                                    crate::observer::LogLevel::Warn, "{detail}"),
-                                nbrs_workload::model::OnMissing::Error => {
-                                    return Err(ExecutionError::Op(
-                                        crate::adapter::AdapterError {
-                                            error_name: "capture_missing".into(),
-                                            message: detail,
-                                            retryable: false,
-                                        }));
-                                }
-                                nbrs_workload::model::OnMissing::Ignore => {}
+                && let Some(body) = &result.body
+            {
+                let base = self.spec.as_ref().and_then(|s| s.path.as_deref());
+                let extracted = extract_captures_rooted(body.as_ref(), &self.captures, base);
+                // `on_missing:` — a capture that resolved to nothing reads
+                // exactly like one that measured an absence, which is how a
+                // renamed column or a changed schema hides. Default stays
+                // `ignore` so existing workloads are unaffected.
+                let policy = self.spec.as_ref().map(|s| s.on_missing).unwrap_or_default();
+                if !matches!(policy, nbrs_workload::model::OnMissing::Ignore) {
+                    for cp in &self.captures {
+                        let missing = match extracted.get(&cp.as_name) {
+                            None => true,
+                            Some(polydat::ast::Value::None) => true,
+                            Some(_) => false,
+                        };
+                        if !missing {
+                            continue;
+                        }
+                        let detail = format!(
+                            "op capture '{}' resolved to nothing{}",
+                            cp.as_name,
+                            match base {
+                                Some(b) => format!(" (traverse path '{b}')"),
+                                None => String::new(),
                             }
+                        );
+                        match policy {
+                            nbrs_workload::model::OnMissing::Warn => {
+                                crate::diag!(crate::observer::LogLevel::Warn, "{detail}")
+                            }
+                            nbrs_workload::model::OnMissing::Error => {
+                                return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                                    error_name: "capture_missing".into(),
+                                    message: detail,
+                                    retryable: false,
+                                }));
+                            }
+                            nbrs_workload::model::OnMissing::Ignore => {}
                         }
                     }
-                    for (name, value) in extracted {
-                        publish_capture(&ctx, &name, value);
-                    }
                 }
+                for (name, value) in extracted {
+                    publish_capture(&ctx, &name, value);
+                }
+            }
 
             Ok(result)
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -504,8 +523,11 @@ mod tests {
     use super::*;
     use crate::adapter::ResultBody;
 
-    fn agg_cap(alias: &str, agg: Option<bindpoints::CaptureAgg>, count: bool)
-        -> bindpoints::CapturePoint {
+    fn agg_cap(
+        alias: &str,
+        agg: Option<bindpoints::CaptureAgg>,
+        count: bool,
+    ) -> bindpoints::CapturePoint {
         bindpoints::CapturePoint {
             row_filter: None,
             source_name: alias.into(),
@@ -531,10 +553,16 @@ mod tests {
             agg_cap("s", Some(bindpoints::CaptureAgg::Sum("x".into())), false),
         ];
         let out = super::captures_for_empty_result(&specs);
-        assert!(matches!(out.get("n"), Some(polydat::ast::Value::U64(0))),
-            "counting nothing is 0, not 'leave the old count': {:?}", out.get("n"));
-        assert!(matches!(out.get("s"), Some(polydat::ast::Value::U64(0))),
-            "summing nothing is 0: {:?}", out.get("s"));
+        assert!(
+            matches!(out.get("n"), Some(polydat::ast::Value::U64(0))),
+            "counting nothing is 0, not 'leave the old count': {:?}",
+            out.get("n")
+        );
+        assert!(
+            matches!(out.get("s"), Some(polydat::ast::Value::U64(0))),
+            "summing nothing is 0: {:?}",
+            out.get("s")
+        );
     }
 
     /// min/max of nothing has NO honest value, so they publish None — which
@@ -548,10 +576,16 @@ mod tests {
             agg_cap("hi", Some(bindpoints::CaptureAgg::Max("x".into())), false),
         ];
         let out = super::captures_for_empty_result(&specs);
-        assert!(matches!(out.get("lo"), Some(polydat::ast::Value::None)),
-            "min of nothing must not invent 0: {:?}", out.get("lo"));
-        assert!(matches!(out.get("hi"), Some(polydat::ast::Value::None)),
-            "max of nothing must not invent 0: {:?}", out.get("hi"));
+        assert!(
+            matches!(out.get("lo"), Some(polydat::ast::Value::None)),
+            "min of nothing must not invent 0: {:?}",
+            out.get("lo")
+        );
+        assert!(
+            matches!(out.get("hi"), Some(polydat::ast::Value::None)),
+            "max of nothing must not invent 0: {:?}",
+            out.get("hi")
+        );
     }
 
     /// A plain (non-aggregate) capture over an empty result is simply absent.
@@ -576,14 +610,23 @@ mod tests {
         // raw None on a typed wire, and no path leaves a stale reading.
         let rows = serde_json::json!([{"other": 1}, {"other": 2}]);
         let v = super::aggregate_rows(
-            Some(&rows), &bindpoints::CaptureAgg::Sum("missing".into()), None);
-        assert!(matches!(v, polydat::ast::Value::U64(0)),
-            "sum-of-nothing is its identity 0: {v:?}");
-        for agg in [bindpoints::CaptureAgg::Min("missing".into()),
-                    bindpoints::CaptureAgg::Max("missing".into())] {
+            Some(&rows),
+            &bindpoints::CaptureAgg::Sum("missing".into()),
+            None,
+        );
+        assert!(
+            matches!(v, polydat::ast::Value::U64(0)),
+            "sum-of-nothing is its identity 0: {v:?}"
+        );
+        for agg in [
+            bindpoints::CaptureAgg::Min("missing".into()),
+            bindpoints::CaptureAgg::Max("missing".into()),
+        ] {
             let v = super::aggregate_rows(Some(&rows), &agg, None);
-            assert!(matches!(v, polydat::ast::Value::None),
-                "min/max-of-nothing is the reset marker: {v:?}");
+            assert!(
+                matches!(v, polydat::ast::Value::None),
+                "min/max-of-nothing is the reset marker: {v:?}"
+            );
         }
     }
 
@@ -602,9 +645,8 @@ mod tests {
 
     #[test]
     fn parse_captures_from_template() {
-        let parsed = bindpoints::parse_capture_points(
-            "SELECT [username], [age as user_age] FROM users"
-        );
+        let parsed =
+            bindpoints::parse_capture_points("SELECT [username], [age as user_age] FROM users");
         assert_eq!(parsed.captures.len(), 2);
         assert_eq!(parsed.captures[0].source_name, "username");
         assert_eq!(parsed.captures[0].as_name, "username");
@@ -626,8 +668,12 @@ mod tests {
     #[derive(Debug)]
     struct JsonBody(serde_json::Value);
     impl ResultBody for JsonBody {
-        fn to_json(&self) -> serde_json::Value { self.0.clone() }
-        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn to_json(&self) -> serde_json::Value {
+            self.0.clone()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     #[test]
@@ -637,10 +683,7 @@ mod tests {
             "name": "alice",
             "balance": 99.5
         }));
-        let specs = vec![
-            cap("user_id", "uid", false),
-            cap("name", "name", false),
-        ];
+        let specs = vec![cap("user_id", "uid", false), cap("name", "name", false)];
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 2);
         assert_eq!(captures["uid"].as_u64(), 42);
@@ -725,13 +768,11 @@ mod tests {
             row_filter: None,
         };
         // Without the base, the capture must carry the whole prefix.
-        let long = extract_captures_rooted(
-            &body, &[spec("p", "/value/0/progress")], None);
+        let long = extract_captures_rooted(&body, &[spec("p", "/value/0/progress")], None);
         assert_eq!(long["p"].as_u64(), 7);
 
         // With it, the same value is addressed relative to `/value`.
-        let short = extract_captures_rooted(
-            &body, &[spec("p", "/0/progress")], Some("/value"));
+        let short = extract_captures_rooted(&body, &[spec("p", "/0/progress")], Some("/value"));
         assert_eq!(short["p"].as_u64(), 7);
     }
 
@@ -781,9 +822,9 @@ mod tests {
             }
         }
         let specs = vec![
-            cap_filtered("all",   "progress", None),
+            cap_filtered("all", "progress", None),
             cap_filtered("index", "progress", Some(("kind", "secondary index build"))),
-            cap_filtered("data",  "progress", Some(("kind", "compaction"))),
+            cap_filtered("data", "progress", Some(("kind", "compaction"))),
         ];
         let caps = extract_captures_from_json(&body, &specs);
         let num = |k: &str| caps[k].as_u64();
@@ -817,7 +858,8 @@ mod tests {
         // the two paths used to disagree (0 vs a stale-prone None).
         assert!(
             matches!(caps["x"], polydat::ast::Value::U64(0)),
-            "a filtered-empty sum folds to its identity 0; got {:?}", caps["x"]
+            "a filtered-empty sum folds to its identity 0; got {:?}",
+            caps["x"]
         );
     }
 
@@ -844,9 +886,15 @@ mod tests {
             }
         }
         let specs = vec![
-            cap_agg("completion_ratio", bindpoints::CaptureAgg::Min("completion_ratio".into())),
-            cap_agg("max_ratio",        bindpoints::CaptureAgg::Max("completion_ratio".into())),
-            cap_agg("progress",         bindpoints::CaptureAgg::Sum("progress".into())),
+            cap_agg(
+                "completion_ratio",
+                bindpoints::CaptureAgg::Min("completion_ratio".into()),
+            ),
+            cap_agg(
+                "max_ratio",
+                bindpoints::CaptureAgg::Max("completion_ratio".into()),
+            ),
+            cap_agg("progress", bindpoints::CaptureAgg::Sum("progress".into())),
         ];
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures["completion_ratio"].as_f64(), 0.4);
@@ -866,7 +914,7 @@ mod tests {
             {"value": 0,       "status": 200},
         ]));
         let specs = vec![
-            cap_path("sstables",       "/0/value", false),
+            cap_path("sstables", "/0/value", false),
             cap_path("pending_for_cf", "/2/value", false),
         ];
         let captures = extract_captures_from_json(&body, &specs);
@@ -881,8 +929,8 @@ mod tests {
         ]));
         let specs = vec![cap_path("pending_for_cf", "/0/value", false)];
         let captures = extract_captures_from_json(&body, &specs);
-        assert!(matches!(captures["pending_for_cf"],
-            polydat::ast::Value::None),
+        assert!(
+            matches!(captures["pending_for_cf"], polydat::ast::Value::None),
             "JSON null at path should yield Value::None, got {:?}",
             captures["pending_for_cf"],
         );
@@ -895,7 +943,9 @@ mod tests {
         ]));
         let specs = vec![cap_path("pending_for_cf", "/0/value", true)];
         let captures = extract_captures_from_json(&body, &specs);
-        assert_eq!(captures["pending_for_cf"].as_u64(), 0,
+        assert_eq!(
+            captures["pending_for_cf"].as_u64(),
+            0,
             "`:count` on resolved-null should return 0, got {:?}",
             captures["pending_for_cf"],
         );
@@ -920,7 +970,8 @@ mod tests {
         let body = JsonBody(serde_json::json!({"value": 7}));
         let specs = vec![cap_path("not_there", "/missing/path", false)];
         let captures = extract_captures_from_json(&body, &specs);
-        assert!(matches!(captures["not_there"], polydat::ast::Value::None),
+        assert!(
+            matches!(captures["not_there"], polydat::ast::Value::None),
             "expected Value::None for unresolvable JSON-Pointer, got {:?}",
             captures["not_there"],
         );
@@ -943,10 +994,8 @@ mod tests {
         let captures = extract_captures_from_json(&body, &specs);
         match &captures["state"] {
             polydat::ast::Value::Json(arc) => {
-                assert_eq!(arc.get("keyspace").and_then(|v| v.as_str()),
-                    Some("ks"));
-                assert_eq!(arc.get("ssTables").and_then(|v| v.as_u64()),
-                    Some(3));
+                assert_eq!(arc.get("keyspace").and_then(|v| v.as_str()), Some("ks"));
+                assert_eq!(arc.get("ssTables").and_then(|v| v.as_u64()), Some(3));
             }
             other => panic!("expected Value::Json, got {other:?}"),
         }

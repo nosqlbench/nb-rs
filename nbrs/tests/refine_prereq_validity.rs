@@ -31,8 +31,10 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-refprereq-{tag}-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "nbrs-refprereq-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -44,11 +46,7 @@ impl Drop for Sandbox {
     }
 }
 
-fn invoke(
-    verb: &str,
-    sandbox: &Sandbox,
-    extra: &[&str],
-) -> (String, String, bool) {
+fn invoke(verb: &str, sandbox: &Sandbox, extra: &[&str]) -> (String, String, bool) {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let workload = workspace_root.join(WORKLOAD);
     let session = sandbox.dir.join("session");
@@ -70,8 +68,7 @@ fn invoke(
         cmd.arg(a);
     }
     let out = cmd.output().expect("run nbrs");
-    let session_log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
     evidence.push_str(&session_log);
@@ -99,16 +96,27 @@ fn valid_prereq_skips_and_selection_runs() {
 
     let (stdout, evidence, ok) = invoke("refine", &sandbox, &["phases=measure_a"]);
     assert!(ok, "refine must complete; evidence:\n{evidence}");
-    assert_eq!(ticks(&stdout, "A_TICK"), 2,
+    assert_eq!(
+        ticks(&stdout, "A_TICK"),
+        2,
         "the selected measurement must RE-RUN under refine (selection \
-         is intent to run)");
-    assert_eq!(ticks(&stdout, "PREP_TICK"), 0,
-        "the valid prereq must skip (prior completed outcome, hash unchanged)");
-    assert_eq!(ticks(&stdout, "SIDE_PREP_TICK"), 0,
-        "the unselected section stays elided under refine");
-    assert!(evidence.contains("prior completed outcome, hash unchanged"),
+         is intent to run)"
+    );
+    assert_eq!(
+        ticks(&stdout, "PREP_TICK"),
+        0,
+        "the valid prereq must skip (prior completed outcome, hash unchanged)"
+    );
+    assert_eq!(
+        ticks(&stdout, "SIDE_PREP_TICK"),
+        0,
+        "the unselected section stays elided under refine"
+    );
+    assert!(
+        evidence.contains("prior completed outcome, hash unchanged"),
         "the prereq skip must go through the DEFERRED hash gate; \
-         evidence:\n{evidence}");
+         evidence:\n{evidence}"
+    );
 }
 
 /// A CONSUMED param's change invalidates the prereq's provenance:
@@ -120,16 +128,20 @@ fn hash_flip_reruns_the_prereq() {
     let (_stdout, evidence, ok) = invoke("run", &sandbox, &[]);
     assert!(ok, "baseline run must complete; evidence:\n{evidence}");
 
-    let (stdout, evidence, ok) =
-        invoke("refine", &sandbox, &["phases=measure_a", "run_tag=b"]);
+    let (stdout, evidence, ok) = invoke("refine", &sandbox, &["phases=measure_a", "run_tag=b"]);
     assert!(ok, "refine must complete; evidence:\n{evidence}");
-    assert_eq!(ticks(&stdout, "PREP_TICK"), 1,
+    assert_eq!(
+        ticks(&stdout, "PREP_TICK"),
+        1,
         "a consumed-param flip invalidates the prereq's provenance — \
-         it must re-run");
+         it must re-run"
+    );
     assert_eq!(ticks(&stdout, "A_TICK"), 2, "the selection runs");
-    assert!(evidence.contains("param 'run_tag' changed"),
+    assert!(
+        evidence.contains("param 'run_tag' changed"),
         "the re-run diagnostic must NAME the changed param; \
-         evidence:\n{evidence}");
+         evidence:\n{evidence}"
+    );
 }
 
 /// SRD-107's headline: a param the prereq does NOT consume may
@@ -142,17 +154,24 @@ fn unconsumed_param_flip_still_skips_the_prereq() {
     let (_stdout, evidence, ok) = invoke("run", &sandbox, &[]);
     assert!(ok, "baseline run must complete; evidence:\n{evidence}");
 
-    let (stdout, evidence, ok) =
-        invoke("refine", &sandbox, &["phases=measure_a", "probe_tag=y"]);
+    let (stdout, evidence, ok) = invoke("refine", &sandbox, &["phases=measure_a", "probe_tag=y"]);
     assert!(ok, "refine must complete; evidence:\n{evidence}");
-    assert_eq!(ticks(&stdout, "PREP_TICK"), 0,
+    assert_eq!(
+        ticks(&stdout, "PREP_TICK"),
+        0,
         "an unconsumed param's change must NOT invalidate the prereq; \
-         evidence:\n{evidence}");
-    assert_eq!(ticks(&stdout, "A_TICK"), 2,
-        "the selected measurement re-runs (selection is intent to run)");
-    assert!(evidence.contains("prior completed outcome, hash unchanged"),
+         evidence:\n{evidence}"
+    );
+    assert_eq!(
+        ticks(&stdout, "A_TICK"),
+        2,
+        "the selected measurement re-runs (selection is intent to run)"
+    );
+    assert!(
+        evidence.contains("prior completed outcome, hash unchanged"),
         "the prereq skip still routes through the hash gate; \
-         evidence:\n{evidence}");
+         evidence:\n{evidence}"
+    );
 }
 
 /// Unfiltered refine keeps SRD-77 semantics: everything with a prior
@@ -167,8 +186,13 @@ fn unfiltered_refine_skips_everything_completed() {
     let (stdout, evidence, ok) = invoke("refine", &sandbox, &[]);
     assert!(ok, "plain refine must complete; evidence:\n{evidence}");
     assert_eq!(
-        (ticks(&stdout, "PREP_TICK"), ticks(&stdout, "A_TICK"),
-         ticks(&stdout, "SIDE_PREP_TICK"), ticks(&stdout, "B_TICK")),
+        (
+            ticks(&stdout, "PREP_TICK"),
+            ticks(&stdout, "A_TICK"),
+            ticks(&stdout, "SIDE_PREP_TICK"),
+            ticks(&stdout, "B_TICK")
+        ),
         (0, 0, 0, 0),
-        "SRD-77: a fully-completed session refines to no re-work");
+        "SRD-77: a fully-completed session refines to no re-work"
+    );
 }

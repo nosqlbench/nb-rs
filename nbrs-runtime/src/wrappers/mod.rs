@@ -54,8 +54,8 @@
 // there is no dispenser type to re-export.
 // The one predicate mechanism, shared by `if:` / `while:` / `poll:`.
 pub mod condition;
-pub mod interval;
 pub mod dryrun;
+pub mod interval;
 pub use dryrun::DryRunWrapper;
 pub mod memo;
 pub use memo::MemoDispenser;
@@ -80,7 +80,7 @@ pub use result::ResultDispenser;
 pub mod metrics;
 pub use metrics::MetricsDispenser;
 pub mod traverse;
-pub use traverse::{TraversingDispenser, TraversalStats};
+pub use traverse::{TraversalStats, TraversingDispenser};
 pub mod tries;
 pub use tries::TriesDispenser;
 pub mod errors;
@@ -89,4 +89,3 @@ pub use errors::ErrorHandlerDispenser;
 // All wrappers now live in their own submodules:
 //   if / throttle.rs / poll / result.rs /
 //   metrics.rs / fields.rs / memo.rs / dryrun / traverse.
-

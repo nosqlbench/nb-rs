@@ -39,16 +39,21 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use nbrs_runtime::adapter::{
-    DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields,
-};
-use polydat::ast::Value;
+use nbrs_runtime::adapter::{DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields};
 use nbrs_workload::model::ParsedOp;
+use polydat::ast::Value;
 
 const PALETTE: [(u8, u8, u8); 10] = [
-    (86, 180, 233), (230, 159, 0), (0, 158, 115), (240, 228, 66),
-    (0, 114, 178), (213, 94, 0), (204, 121, 167), (100, 100, 100),
-    (140, 86, 75), (148, 103, 189),
+    (86, 180, 233),
+    (230, 159, 0),
+    (0, 158, 115),
+    (240, 228, 66),
+    (0, 114, 178),
+    (213, 94, 0),
+    (204, 121, 167),
+    (100, 100, 100),
+    (140, 86, 75),
+    (148, 103, 189),
 ];
 
 pub struct PlotterConfig {
@@ -102,16 +107,20 @@ impl RenderRequest {
             "live" => Ok(RenderRequest::Live(DEFAULT_HZ)),
             other => {
                 let num = other.strip_suffix("hz").unwrap_or(other);
-                let hz: f32 = num.trim().parse().map_err(|_| format!(
-                    "unknown render='{other}' (use: auto, single, live, \
-                     or a refresh rate like 5 or 5hz)"))?;
+                let hz: f32 = num.trim().parse().map_err(|_| {
+                    format!(
+                        "unknown render='{other}' (use: auto, single, live, \
+                     or a refresh rate like 5 or 5hz)"
+                    )
+                })?;
                 if hz <= 0.0 {
                     return Err(format!("render={other}: refresh rate must be positive"));
                 }
                 if hz > 60.0 {
                     return Err(format!(
                         "render={other}: refresh rates above 60hz are disallowed \
-                         (no terminal can redraw that fast)"));
+                         (no terminal can redraw that fast)"
+                    ));
                 }
                 if hz > 10.0 {
                     // SRD-87 A1: diagnostics go through the log channel (→ the
@@ -136,24 +145,34 @@ impl RenderRequest {
 impl Default for PlotterConfig {
     fn default() -> Self {
         Self {
-            mode: "auto".into(), width: 0, height: 0, no_color: false,
-            fade: 0.0, lanes: Vec::new(), render: RenderRequest::Auto,
+            mode: "auto".into(),
+            width: 0,
+            height: 0,
+            no_color: false,
+            fade: 0.0,
+            lanes: Vec::new(),
+            render: RenderRequest::Auto,
         }
     }
 }
 
 // ─── Name-driven mode inference ────────────────────────────────
 
-const POLAR_R_NAMES: &[&str]     = &["r", "radius", "rho"];
+const POLAR_R_NAMES: &[&str] = &["r", "radius", "rho"];
 const POLAR_THETA_NAMES: &[&str] = &["theta", "angle", "phi"];
 
 /// Resolve `mode` against the in-scope field names. `auto` inspects
 /// the names (polar pair wins over `x`/`y`); any explicit mode is
 /// returned unchanged.
 fn resolve_mode<'a>(mode: &'a str, ordered: &[String]) -> &'a str {
-    if mode != "auto" { return mode; }
-    let has = |set: &[&str]| ordered.iter()
-        .any(|n| set.iter().any(|w| n.eq_ignore_ascii_case(w)));
+    if mode != "auto" {
+        return mode;
+    }
+    let has = |set: &[&str]| {
+        ordered
+            .iter()
+            .any(|n| set.iter().any(|w| n.eq_ignore_ascii_case(w)))
+    };
     let has1 = |w: &str| ordered.iter().any(|n| n.eq_ignore_ascii_case(w));
     if has(POLAR_R_NAMES) && has(POLAR_THETA_NAMES) {
         "polar"
@@ -172,7 +191,8 @@ fn pick_field<'a>(
     wanted: &[&str],
     fallback_idx: usize,
 ) -> Option<&'a Vec<f64>> {
-    ordered.iter()
+    ordered
+        .iter()
         .find(|n| wanted.iter().any(|w| n.eq_ignore_ascii_case(w)))
         .or_else(|| ordered.get(fallback_idx))
         .and_then(|n| numeric.get(n))
@@ -181,23 +201,51 @@ fn pick_field<'a>(
 // ─── Cell & FrameBuffer ────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-struct Cell { dots: u8, r: u8, g: u8, b: u8, bright: f32 }
+struct Cell {
+    dots: u8,
+    r: u8,
+    g: u8,
+    b: u8,
+    bright: f32,
+}
 
 impl Cell {
-    fn empty() -> Self { Cell { dots: 0, r: 0, g: 0, b: 0, bright: 0.0 } }
+    fn empty() -> Self {
+        Cell {
+            dots: 0,
+            r: 0,
+            g: 0,
+            b: 0,
+            bright: 0.0,
+        }
+    }
 
     fn set_dot(&mut self, dx: usize, dy: usize, r: u8, g: u8, b: u8) {
         let bit = match (dx, dy) {
-            (0,0)=>0,(1,0)=>3,(0,1)=>1,(1,1)=>4,(0,2)=>2,(1,2)=>5,(0,3)=>6,(1,3)=>7,_=>return
+            (0, 0) => 0,
+            (1, 0) => 3,
+            (0, 1) => 1,
+            (1, 1) => 4,
+            (0, 2) => 2,
+            (1, 2) => 5,
+            (0, 3) => 6,
+            (1, 3) => 7,
+            _ => return,
         };
         self.dots |= 1 << bit;
-        self.r = r; self.g = g; self.b = b; self.bright = 1.0;
+        self.r = r;
+        self.g = g;
+        self.b = b;
+        self.bright = 1.0;
     }
 
     fn to_char(self) -> char {
-        if self.bright < 0.01 { ' ' } else { char::from_u32(0x2800 + self.dots as u32).unwrap_or(' ') }
+        if self.bright < 0.01 {
+            ' '
+        } else {
+            char::from_u32(0x2800 + self.dots as u32).unwrap_or(' ')
+        }
     }
-
 }
 
 struct FrameBuffer {
@@ -208,7 +256,11 @@ struct FrameBuffer {
 
 impl FrameBuffer {
     fn new(w: usize, h: usize) -> Self {
-        Self { cells: vec![vec![Cell::empty(); w]; h], width: w, height: h }
+        Self {
+            cells: vec![vec![Cell::empty(); w]; h],
+            width: w,
+            height: h,
+        }
     }
 
     fn set_dot(&mut self, px: usize, py: usize, r: u8, g: u8, b: u8) {
@@ -268,7 +320,6 @@ impl FrameBuffer {
         }
         line
     }
-
 }
 
 /// Paint the framebuffer to the terminal once, where the cursor sits — the
@@ -279,8 +330,11 @@ impl FrameBuffer {
 /// colour-on-change `render_row` keeps the whole write small enough to clear
 /// the terminal's PTY buffer in one go.
 fn paint(fb: &FrameBuffer, title: &str, is_tty: bool, use_color: bool) {
-    let (cr, clear, eol): (&str, &str, &str) =
-        if is_tty { ("\r", "\x1b[2K", "\r\n") } else { ("", "", "\n") };
+    let (cr, clear, eol): (&str, &str, &str) = if is_tty {
+        ("\r", "\x1b[2K", "\r\n")
+    } else {
+        ("", "", "\n")
+    };
     let mut buf = format!("{cr}{clear}─── {title} ───{eol}");
     for y in 0..fb.height {
         buf.push_str(clear);
@@ -305,8 +359,11 @@ fn paint_lanes(
     is_tty: bool,
     use_color: bool,
 ) {
-    let (cr, clear, eol): (&str, &str, &str) =
-        if is_tty { ("\r", "\x1b[2K", "\r\n") } else { ("", "", "\n") };
+    let (cr, clear, eol): (&str, &str, &str) = if is_tty {
+        ("\r", "\x1b[2K", "\r\n")
+    } else {
+        ("", "", "\n")
+    };
     // The banner is the mode word (`plot: a, b` → `plot`); the lanes name the
     // fields, so repeating the full field list up top would be redundant.
     let banner = title.split(':').next().unwrap_or(title).trim();
@@ -333,13 +390,29 @@ struct PlotData {
 }
 
 impl PlotData {
-    fn new() -> Self { Self { numeric: HashMap::new(), field_order: Vec::new(), new_since_render: false } }
+    fn new() -> Self {
+        Self {
+            numeric: HashMap::new(),
+            field_order: Vec::new(),
+            new_since_render: false,
+        }
+    }
     fn record(&mut self, fields: &ResolvedFields) {
         for (i, name) in fields.names.iter().enumerate() {
-            if !self.field_order.contains(name) { self.field_order.push(name.clone()); }
+            if !self.field_order.contains(name) {
+                self.field_order.push(name.clone());
+            }
             let f = match &fields.values[i] {
-                Value::U64(v) => *v as f64, Value::F64(v) => *v,
-                Value::Bool(v) => if *v { 1.0 } else { 0.0 }, _ => continue,
+                Value::U64(v) => *v as f64,
+                Value::F64(v) => *v,
+                Value::Bool(v) => {
+                    if *v {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                _ => continue,
             };
             self.numeric.entry(name.clone()).or_default().push(f);
         }
@@ -377,7 +450,9 @@ impl Default for PlotterAdapter {
 }
 
 impl PlotterAdapter {
-    pub fn new() -> Self { Self::with_config(PlotterConfig::default()) }
+    pub fn new() -> Self {
+        Self::with_config(PlotterConfig::default())
+    }
 
     pub fn with_config(config: PlotterConfig) -> Self {
         let data = Arc::new(Mutex::new(PlotData::new()));
@@ -387,9 +462,16 @@ impl PlotterAdapter {
         let term_w = if config.width > 0 {
             config.width
         } else {
-            terminal_width().map(|w| w.saturating_sub(1)).unwrap_or(120).max(1)
+            terminal_width()
+                .map(|w| w.saturating_sub(1))
+                .unwrap_or(120)
+                .max(1)
         };
-        let term_h = if config.height > 0 { config.height } else { terminal_height().unwrap_or(30) };
+        let term_h = if config.height > 0 {
+            config.height
+        } else {
+            terminal_height().unwrap_or(30)
+        };
         let is_tty = atty_stdout();
         let cfg = RenderCfg {
             term_w,
@@ -410,8 +492,12 @@ impl PlotterAdapter {
 /// and there is no other thread to rendezvous with.
 fn draw_final_plot(data: &Mutex<PlotData>, cfg: &RenderCfg) {
     let d = data.lock().unwrap();
-    let ordered: Vec<String> = d.field_order.iter()
-        .filter(|n| d.numeric.contains_key(*n)).cloned().collect();
+    let ordered: Vec<String> = d
+        .field_order
+        .iter()
+        .filter(|n| d.numeric.contains_key(*n))
+        .cloned()
+        .collect();
     let title = frame_title(&cfg.mode, &ordered);
     let mut fb = FrameBuffer::new(cfg.term_w, cfg.plot_h);
     if !ordered.is_empty() {
@@ -448,17 +534,23 @@ fn draw_final_plot(data: &Mutex<PlotData>, cfg: &RenderCfg) {
 }
 
 impl DriverAdapter for PlotterAdapter {
-    fn name(&self) -> &str { "plotter" }
+    fn name(&self) -> &str {
+        "plotter"
+    }
 
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
         parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // SRD-68 Push 5: snapshot the op-field templates at map_op.
             // Each entry is resolved through `wires` per cycle.
-            let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            let op_fields: Vec<(String, serde_json::Value)> = template
+                .op
+                .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             Ok(Box::new(PlotterDispenser {
@@ -507,19 +599,28 @@ impl OpDispenser for PlotterDispenser {
         Some(&self.canonical_kernel)
     }
 
-    fn execute<'a>(&'a self, _cycle: u64, ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>
-    {
+    fn execute<'a>(
+        &'a self,
+        _cycle: u64,
+        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             let resolved = nbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
-                .map_err(|msg| ExecutionError::Op(nbrs_runtime::adapter::AdapterError {
-                    error_name: "BindError".into(),
-                    message: msg,
-                    retryable: false,
-                }))?;
+                .map_err(|msg| {
+                    ExecutionError::Op(nbrs_runtime::adapter::AdapterError {
+                        error_name: "BindError".into(),
+                        message: msg,
+                        retryable: false,
+                    })
+                })?;
             self.data.lock().unwrap().record(&resolved);
-            Ok(OpResult { body: None, skipped: false })
+            Ok(OpResult {
+                body: None,
+                skipped: false,
+            })
         })
     }
 }
@@ -619,9 +720,14 @@ fn draw_frame(
 fn frame_title(mode: &str, ordered: &[String]) -> String {
     match resolve_mode(mode, ordered) {
         "parametric" | "xy" if ordered.len() >= 2 => {
-            let pick = |w: &str, i: usize| ordered.iter()
-                .find(|n| n.eq_ignore_ascii_case(w))
-                .map(String::as_str).unwrap_or(ordered[i].as_str()).to_string();
+            let pick = |w: &str, i: usize| {
+                ordered
+                    .iter()
+                    .find(|n| n.eq_ignore_ascii_case(w))
+                    .map(String::as_str)
+                    .unwrap_or(ordered[i].as_str())
+                    .to_string()
+            };
             format!("parametric: {} × {}", pick("x", 0), pick("y", 1))
         }
         "polar" if ordered.len() >= 2 => "polar (r, θ)".to_string(),
@@ -633,7 +739,9 @@ fn frame_title(mode: &str, ordered: &[String]) -> String {
 
 fn plot_xy(fb: &mut FrameBuffer, xv: &[f64], yv: &[f64], from: usize, ci: usize) {
     let n = xv.len().min(yv.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     let (xmin, xmax) = minmax(&xv[..n]);
     let (ymin, ymax) = minmax(&yv[..n]);
     let xr = safe_range(xmin, xmax);
@@ -643,13 +751,15 @@ fn plot_xy(fb: &mut FrameBuffer, xv: &[f64], yv: &[f64], from: usize, ci: usize)
     for i in from..n {
         let px = ((xv[i] - xmin) / xr * (pw - 1) as f64) as usize;
         let py = ((yv[i] - ymin) / yr * (ph - 1) as f64) as usize;
-        fb.set_dot_idx(px.min(pw-1), (ph-1).saturating_sub(py), ci);
+        fb.set_dot_idx(px.min(pw - 1), (ph - 1).saturating_sub(py), ci);
     }
 }
 
 fn plot_polar(fb: &mut FrameBuffer, rv: &[f64], tv: &[f64], from: usize, ci: usize) {
     let n = rv.len().min(tv.len());
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     // Convert polar to cartesian, centered in the framebuffer
     let rmax = rv[..n].iter().cloned().fold(0.0f64, f64::max).max(0.001);
     let pw = fb.width * 2;
@@ -668,16 +778,18 @@ fn plot_polar(fb: &mut FrameBuffer, rv: &[f64], tv: &[f64], from: usize, ci: usi
 }
 
 fn plot_line(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, ci: usize, from: usize) {
-    if vals.is_empty() { return; }
+    if vals.is_empty() {
+        return;
+    }
     let (mn, mx) = minmax(vals);
     let range = safe_range(mn, mx);
     let pw = fb.width * 2;
     let ph = bh * 4;
     let n = vals.len();
     for (i, &v) in vals.iter().enumerate().skip(from) {
-        let px = (i as f64 / n as f64 * (pw-1) as f64) as usize;
-        let py = ((v - mn) / range * (ph-1) as f64) as usize;
-        fb.set_dot_idx(px.min(pw-1), y_off * 4 + (ph-1).saturating_sub(py), ci);
+        let px = (i as f64 / n as f64 * (pw - 1) as f64) as usize;
+        let py = ((v - mn) / range * (ph - 1) as f64) as usize;
+        fb.set_dot_idx(px.min(pw - 1), y_off * 4 + (ph - 1).saturating_sub(py), ci);
     }
 }
 
@@ -688,12 +800,16 @@ fn plot_line(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, ci: us
 /// Re-bins the full series each call (not incremental), so it wants a full
 /// redraw per frame (the default `fade=0` path clears first).
 fn plot_histogram(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, ci: usize) {
-    if vals.is_empty() { return; }
+    if vals.is_empty() {
+        return;
+    }
     let (mn, mx) = minmax(vals);
     let range = safe_range(mn, mx);
     let pw = fb.width * 2;
     let ph = bh * 4;
-    if pw == 0 || ph == 0 { return; }
+    if pw == 0 || ph == 0 {
+        return;
+    }
     let mut bins = vec![0u32; pw];
     for &v in vals {
         let b = ((v - mn) / range * (pw - 1) as f64) as usize;
@@ -702,7 +818,9 @@ fn plot_histogram(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, c
     let maxc = bins.iter().copied().max().unwrap_or(1).max(1);
     let base = y_off * 4 + (ph - 1); // bottom pixel-row of this lane
     for (x, &c) in bins.iter().enumerate() {
-        if c == 0 { continue; }
+        if c == 0 {
+            continue;
+        }
         let h = (c as f64 / maxc as f64 * (ph - 1) as f64).round() as usize;
         for dy in 0..=h {
             fb.set_dot_idx(x, base - dy, ci);
@@ -717,7 +835,11 @@ fn minmax(v: &[f64]) -> (f64, f64) {
 }
 
 fn safe_range(mn: f64, mx: f64) -> f64 {
-    if (mx - mn).abs() < 1e-10 { 1.0 } else { mx - mn }
+    if (mx - mn).abs() < 1e-10 {
+        1.0
+    } else {
+        mx - mn
+    }
 }
 
 #[allow(dead_code)]
@@ -815,15 +937,27 @@ mod tests {
     #[test]
     fn render_parse_basic_forms() {
         assert_eq!(RenderRequest::parse("auto").unwrap(), RenderRequest::Auto);
-        assert_eq!(RenderRequest::parse("single").unwrap(), RenderRequest::Single);
-        assert_eq!(RenderRequest::parse("snapshot").unwrap(), RenderRequest::Single);
-        assert!(matches!(RenderRequest::parse("live").unwrap(), RenderRequest::Live(_)));
+        assert_eq!(
+            RenderRequest::parse("single").unwrap(),
+            RenderRequest::Single
+        );
+        assert_eq!(
+            RenderRequest::parse("snapshot").unwrap(),
+            RenderRequest::Single
+        );
+        assert!(matches!(
+            RenderRequest::parse("live").unwrap(),
+            RenderRequest::Live(_)
+        ));
     }
 
     #[test]
     fn render_hz_and_hz_suffix_are_equivalent() {
         assert_eq!(RenderRequest::parse("5").unwrap(), RenderRequest::Live(5.0));
-        assert_eq!(RenderRequest::parse("5hz").unwrap(), RenderRequest::Live(5.0));
+        assert_eq!(
+            RenderRequest::parse("5hz").unwrap(),
+            RenderRequest::Live(5.0)
+        );
     }
 
     #[test]
@@ -835,8 +969,14 @@ mod tests {
     #[test]
     fn render_above_10hz_allowed_up_to_60() {
         // Warns to stderr, but accepted.
-        assert_eq!(RenderRequest::parse("30").unwrap(), RenderRequest::Live(30.0));
-        assert_eq!(RenderRequest::parse("60").unwrap(), RenderRequest::Live(60.0));
+        assert_eq!(
+            RenderRequest::parse("30").unwrap(),
+            RenderRequest::Live(30.0)
+        );
+        assert_eq!(
+            RenderRequest::parse("60").unwrap(),
+            RenderRequest::Live(60.0)
+        );
     }
 
     #[test]

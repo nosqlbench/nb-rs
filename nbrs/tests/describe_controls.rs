@@ -16,12 +16,19 @@ fn describe_controls_lists_core_controls_with_conditions() {
         .args(["describe", "controls"])
         .output()
         .expect("run `nbrs describe controls`");
-    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // Both core controls are listed regardless of whether a workload declares
     // them — that is the whole point of the capability tier.
-    assert!(stdout.contains("concurrency"), "concurrency missing:\n{stdout}");
+    assert!(
+        stdout.contains("concurrency"),
+        "concurrency missing:\n{stdout}"
+    );
     assert!(stdout.contains("rate"), "rate missing:\n{stdout}");
 
     // The *condition* is surfaced — concurrency is always there, rate only when
@@ -42,9 +49,16 @@ fn describe_control_detail_shows_servo_form() {
         .args(["describe", "controls", "rate"])
         .output()
         .expect("run `nbrs describe controls rate`");
-    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Control: rate"), "no detail header:\n{stdout}");
+    assert!(
+        stdout.contains("Control: rate"),
+        "no detail header:\n{stdout}"
+    );
     // The detail view points at the SRD-86 servoing surface for the control.
     assert!(
         stdout.contains("servo: rate"),
@@ -68,5 +82,8 @@ fn describe_unknown_control_is_rejected_with_the_listing() {
         "unknown control must be rejected:\n{combined}"
     );
     // ...and it falls back to the full listing so the user sees the real names.
-    assert!(combined.contains("concurrency"), "no fallback listing:\n{combined}");
+    assert!(
+        combined.contains("concurrency"),
+        "no fallback listing:\n{combined}"
+    );
 }

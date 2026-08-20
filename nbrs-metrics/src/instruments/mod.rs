@@ -13,7 +13,7 @@
 //! [`crate::summaries`] module.
 
 pub mod counter;
-pub mod histogram;
-pub mod timer;
-pub mod outcome;
 pub mod gauge;
+pub mod histogram;
+pub mod outcome;
+pub mod timer;

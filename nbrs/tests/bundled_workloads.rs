@@ -69,23 +69,41 @@ fn bundled_impl_implements_resolves_sibling_blueprint() {
     // sibling-by-filename idiom `extends:` already honors
     // (SRD-85). Both invocation forms bind and run.
     let sb = Sandbox::new("ns-implements");
-    let (stdout, stderr, ok) = nbrs_in(&sb, &[
-        "run", "workload=examples/composition/reported_impl_testkit",
-        "tui=off",
-    ]);
-    assert!(ok, "catalog impl must pull its sibling blueprint:\n{stdout}\n{stderr}");
-    assert!(format!("{stdout}{stderr}").contains("4 completed, 0 failed"),
-        "both phases complete:\n{stdout}\n{stderr}");
+    let (stdout, stderr, ok) = nbrs_in(
+        &sb,
+        &[
+            "run",
+            "workload=examples/composition/reported_impl_testkit",
+            "tui=off",
+        ],
+    );
+    assert!(
+        ok,
+        "catalog impl must pull its sibling blueprint:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("4 completed, 0 failed"),
+        "both phases complete:\n{stdout}\n{stderr}"
+    );
 
     let sb = Sandbox::new("ns-implements-2");
-    let (stdout, stderr, ok) = nbrs_in(&sb, &[
-        "run", "workload=examples/composition/reported_blueprint",
-        "impl=examples/composition/reported_impl_testkit",
-        "tui=off",
-    ]);
-    assert!(ok, "catalog blueprint + impl= must bind:\n{stdout}\n{stderr}");
-    assert!(format!("{stdout}{stderr}").contains("4 completed, 0 failed"),
-        "both phases complete:\n{stdout}\n{stderr}");
+    let (stdout, stderr, ok) = nbrs_in(
+        &sb,
+        &[
+            "run",
+            "workload=examples/composition/reported_blueprint",
+            "impl=examples/composition/reported_impl_testkit",
+            "tui=off",
+        ],
+    );
+    assert!(
+        ok,
+        "catalog blueprint + impl= must bind:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("4 completed, 0 failed"),
+        "both phases complete:\n{stdout}\n{stderr}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -95,13 +113,14 @@ fn bundled_impl_implements_resolves_sibling_blueprint() {
 #[test]
 fn bundled_example_runs_from_bare_directory() {
     let sb = Sandbox::new("example-run");
-    let (stdout, stderr, ok) =
-        nbrs_in(&sb, &["run", "workload=examples/signals/lfsr"]);
+    let (stdout, stderr, ok) = nbrs_in(&sb, &["run", "workload=examples/signals/lfsr"]);
     assert!(ok, "bundled example failed: {stderr}");
     // The catalog name is the session's workload identity.
     let combined = format!("{stdout}\n{stderr}");
-    assert!(combined.contains("examples/signals/lfsr"),
-        "catalog name should be the workload identity:\n{combined}");
+    assert!(
+        combined.contains("examples/signals/lfsr"),
+        "catalog name should be the workload identity:\n{combined}"
+    );
 }
 
 #[test]
@@ -110,8 +129,10 @@ fn curated_selfcheck_runs_green() {
     let (stdout, stderr, ok) = nbrs_in(&sb, &["run", "workload=selfcheck"]);
     assert!(ok, "selfcheck failed: {stderr}");
     let combined = format!("{stdout}\n{stderr}");
-    assert!(combined.contains("5 completed, 0 failed"),
-        "selfcheck should complete all 5 phases:\n{combined}");
+    assert!(
+        combined.contains("5 completed, 0 failed"),
+        "selfcheck should complete all 5 phases:\n{combined}"
+    );
 }
 
 #[test]
@@ -140,12 +161,13 @@ fn local_child_extends_bundled_parent() {
         "extends: capacity_probe\nparams:\n  ops_per_step: \"50\"\n",
     )
     .unwrap();
-    let (stdout, stderr, ok) =
-        nbrs_in(&sb, &["run", "workload=./mini_probe.yaml"]);
+    let (stdout, stderr, ok) = nbrs_in(&sb, &["run", "workload=./mini_probe.yaml"]);
     assert!(ok, "extends-from-bundled failed: {stderr}");
     let combined = format!("{stdout}\n{stderr}");
-    assert!(combined.contains("3 completed, 0 failed"),
-        "inherited sweep should run all 3 steps:\n{combined}");
+    assert!(
+        combined.contains("3 completed, 0 failed"),
+        "inherited sweep should run all 3 steps:\n{combined}"
+    );
 }
 
 #[test]
@@ -165,8 +187,10 @@ fn bundled_sibling_extends_resolves_in_namespace() {
     let (stdout, stderr, ok) =
         nbrs_in(&sb, &["describe", "workloads", "cql/full_cql_vector_sweep"]);
     assert!(ok, "namespace-relative extends merge failed: {stderr}");
-    assert!(stdout.contains("Parameter-space sweep sibling"),
-        "child description should survive the merge:\n{stdout}");
+    assert!(
+        stdout.contains("Parameter-space sweep sibling"),
+        "child description should survive the merge:\n{stdout}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -180,23 +204,35 @@ fn describe_workloads_tiers() {
     let (stdout, stderr, ok) = nbrs_in(&sb, &["describe", "workloads"]);
     assert!(ok, "describe workloads failed: {stderr}");
     assert!(stdout.contains("selfcheck"), "curated listing:\n{stdout}");
-    assert!(stdout.contains("capacity_probe"), "curated listing:\n{stdout}");
-    assert!(!stdout.contains("examples/"),
-        "examples tier must be hidden by default:\n{stdout}");
-    assert!(stdout.contains("--all"),
-        "default listing should point at the hidden tier:\n{stdout}");
+    assert!(
+        stdout.contains("capacity_probe"),
+        "curated listing:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("examples/"),
+        "examples tier must be hidden by default:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--all"),
+        "default listing should point at the hidden tier:\n{stdout}"
+    );
 
     // --all reveals the examples tier.
     let (stdout, _, ok) = nbrs_in(&sb, &["describe", "workloads", "--all"]);
     assert!(ok);
-    assert!(stdout.contains("examples/signals/lfsr"), "--all listing:\n{stdout}");
+    assert!(
+        stdout.contains("examples/signals/lfsr"),
+        "--all listing:\n{stdout}"
+    );
 
     // `examples` subtopic: examples only.
     let (stdout, _, ok) = nbrs_in(&sb, &["describe", "workloads", "examples"]);
     assert!(ok);
     assert!(stdout.contains("examples/cursors/timeboxed_partition_sweep"));
-    assert!(!stdout.contains("selfcheck"),
-        "examples listing must not carry curated entries:\n{stdout}");
+    assert!(
+        !stdout.contains("selfcheck"),
+        "examples listing must not carry curated entries:\n{stdout}"
+    );
 }
 
 #[test]
@@ -206,16 +242,22 @@ fn curated_lint_every_entry_described_and_introspectable() {
     let sb = Sandbox::new("lint");
     let (stdout, stderr, ok) = nbrs_in(&sb, &["describe", "workloads", "--json"]);
     assert!(ok, "json listing failed: {stderr}");
-    let items: Vec<serde_json::Value> =
-        serde_json::from_str(&stdout).expect("valid json listing");
-    assert!(!items.is_empty(), "curated tier must not be empty (SRD-85 P1)");
+    let items: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid json listing");
+    assert!(
+        !items.is_empty(),
+        "curated tier must not be empty (SRD-85 P1)"
+    );
     for item in &items {
         let name = item["name"].as_str().unwrap();
         assert_eq!(item["tier"].as_str().unwrap(), "curated");
-        assert!(item["described"].as_bool().unwrap(),
-            "curated workload `{name}` is missing a `description:` field");
-        assert!(!item["summary"].as_str().unwrap().is_empty(),
-            "curated workload `{name}` has an empty summary");
+        assert!(
+            item["described"].as_bool().unwrap(),
+            "curated workload `{name}` is missing a `description:` field"
+        );
+        assert!(
+            !item["summary"].as_str().unwrap().is_empty(),
+            "curated workload `{name}` has an empty summary"
+        );
         let (_, dstderr, dok) = nbrs_in(&sb, &["describe", "workloads", name]);
         assert!(dok, "detail view failed for `{name}`: {dstderr}");
     }
@@ -224,14 +266,22 @@ fn curated_lint_every_entry_described_and_introspectable() {
 #[test]
 fn describe_workloads_detail_renders_run_and_copy_hints() {
     let sb = Sandbox::new("detail");
-    let (stdout, stderr, ok) =
-        nbrs_in(&sb, &["describe", "workloads", "capacity_probe"]);
+    let (stdout, stderr, ok) = nbrs_in(&sb, &["describe", "workloads", "capacity_probe"]);
     assert!(ok, "detail failed: {stderr}");
     assert!(stdout.contains("tier:     curated"), "{stdout}");
     assert!(stdout.contains("Concurrency-vs-throughput"), "{stdout}");
-    assert!(stdout.contains("ops_per_step"), "params with defaults:\n{stdout}");
-    assert!(stdout.contains("run:      nbrs run workload=capacity_probe"), "{stdout}");
-    assert!(stdout.contains("copy:     nbrs copy capacity_probe"), "{stdout}");
+    assert!(
+        stdout.contains("ops_per_step"),
+        "params with defaults:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("run:      nbrs run workload=capacity_probe"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("copy:     nbrs copy capacity_probe"),
+        "{stdout}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -245,10 +295,15 @@ fn copy_stamps_provenance_and_refuses_overwrite() {
     assert!(ok, "copy failed: {stderr}");
     assert!(stdout.contains("selfcheck.yaml"), "{stdout}");
     let copied = std::fs::read_to_string(sb.path().join("selfcheck.yaml")).unwrap();
-    assert!(copied.starts_with("# Copied from bundled workload `selfcheck`"),
-        "provenance header missing:\n{}", &copied[..120.min(copied.len())]);
-    assert!(copied.contains("extends: selfcheck"),
-        "provenance should mention the extends alternative");
+    assert!(
+        copied.starts_with("# Copied from bundled workload `selfcheck`"),
+        "provenance header missing:\n{}",
+        &copied[..120.min(copied.len())]
+    );
+    assert!(
+        copied.contains("extends: selfcheck"),
+        "provenance should mention the extends alternative"
+    );
     // Refuses to overwrite.
     let (_, stderr, ok) = nbrs_in(&sb, &["copy", "selfcheck"]);
     assert!(!ok, "second copy must refuse");

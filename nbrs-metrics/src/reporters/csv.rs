@@ -24,9 +24,11 @@ pub struct CsvReporter {
 impl CsvReporter {
     pub fn new(dir: impl AsRef<Path>) -> Result<Self, String> {
         let dir = dir.as_ref().to_path_buf();
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("failed to create CSV dir {:?}: {e}", dir))?;
-        Ok(Self { dir, files: HashMap::new() })
+        fs::create_dir_all(&dir).map_err(|e| format!("failed to create CSV dir {:?}: {e}", dir))?;
+        Ok(Self {
+            dir,
+            files: HashMap::new(),
+        })
     }
 
     fn ensure_file(&mut self, name: &str, header: &str) -> &mut File {
@@ -34,7 +36,10 @@ impl CsvReporter {
             let path = self.dir.join(format!("{name}.csv"));
             let file = File::create(&path)
                 .unwrap_or_else(|e| panic!("failed to create CSV {:?}: {e}", path));
-            CsvFile { file, header_written: false }
+            CsvFile {
+                file,
+                header_written: false,
+            }
         });
         if !entry.header_written {
             if let Err(e) = writeln!(entry.file, "{header}") {
@@ -56,28 +61,41 @@ impl Reporter for CsvReporter {
         for family in snapshot.families() {
             let name = family.name().to_string();
             for metric in family.metrics() {
-                let Some(point) = metric.point() else { continue };
+                let Some(point) = metric.point() else {
+                    continue;
+                };
                 match point.value() {
                     MetricValue::Counter(c) => {
                         let file = self.ensure_file(&name, "timestamp_ms,count");
                         if let Err(e) = writeln!(file, "{now_ms},{}", c.cumulative) {
-                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                            crate::diag::warn(&format!(
+                                "warning: CSV write failed for {name}: {e}"
+                            ));
                         }
                     }
                     MetricValue::Gauge(g) => {
                         let file = self.ensure_file(&name, "timestamp_ms,value");
                         if let Err(e) = writeln!(file, "{now_ms},{}", g.value) {
-                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                            crate::diag::warn(&format!(
+                                "warning: CSV write failed for {name}: {e}"
+                            ));
                         }
                     }
                     MetricValue::Histogram(h) => {
-                        let file = self.ensure_file(&name,
-                            "timestamp_ms,count,min,max,mean,stddev,p50,p75,p90,p95,p98,p99,p999");
+                        let file = self.ensure_file(
+                            &name,
+                            "timestamp_ms,count,min,max,mean,stddev,p50,p75,p90,p95,p98,p99,p999",
+                        );
                         let r = &h.reservoir;
-                        if let Err(e) = writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{}",
-                            now_ms, r.len(),
-                            r.min(), r.max(),
-                            r.mean(), r.stdev(),
+                        if let Err(e) = writeln!(
+                            file,
+                            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                            now_ms,
+                            r.len(),
+                            r.min(),
+                            r.max(),
+                            r.mean(),
+                            r.stdev(),
                             r.value_at_quantile(0.50),
                             r.value_at_quantile(0.75),
                             r.value_at_quantile(0.90),
@@ -86,7 +104,9 @@ impl Reporter for CsvReporter {
                             r.value_at_quantile(0.99),
                             r.value_at_quantile(0.999),
                         ) {
-                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                            crate::diag::warn(&format!(
+                                "warning: CSV write failed for {name}: {e}"
+                            ));
                         }
                     }
                     MetricValue::BucketedHistogram(h) => {
@@ -95,10 +115,14 @@ impl Reporter for CsvReporter {
                         for (le, count) in &h.buckets {
                             let le_str = match le {
                                 crate::snapshot::BucketBound::Finite(v) => v.to_string(),
-                                crate::snapshot::BucketBound::PositiveInfinity => "+Inf".to_string(),
+                                crate::snapshot::BucketBound::PositiveInfinity => {
+                                    "+Inf".to_string()
+                                }
                             };
                             if let Err(e) = writeln!(file, "{now_ms},{le_str},{count}") {
-                                crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                                crate::diag::warn(&format!(
+                                    "warning: CSV write failed for {name}: {e}"
+                                ));
                             }
                         }
                     }
@@ -108,7 +132,9 @@ impl Reporter for CsvReporter {
                         // file exists.
                         let file = self.ensure_file(&name, "timestamp_ms,value");
                         if let Err(e) = writeln!(file, "{now_ms},1") {
-                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                            crate::diag::warn(&format!(
+                                "warning: CSV write failed for {name}: {e}"
+                            ));
                         }
                     }
                     MetricValue::StateSet(s) => {
@@ -116,7 +142,9 @@ impl Reporter for CsvReporter {
                         for (state_name, active) in &s.states {
                             let v = if *active { 1 } else { 0 };
                             if let Err(e) = writeln!(file, "{now_ms},{state_name},{v}") {
-                                crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                                crate::diag::warn(&format!(
+                                    "warning: CSV write failed for {name}: {e}"
+                                ));
                             }
                         }
                     }

@@ -32,18 +32,20 @@ use std::process::Command;
 fn nbrs() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd
 }
 
 fn write_workload(label: &str, body: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
-    dir.push(format!("nbrs_phase_metrics_{label}_{}.yaml", std::process::id()));
-    let mut f = std::fs::File::create(&dir)
-        .unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
+    dir.push(format!(
+        "nbrs_phase_metrics_{label}_{}.yaml",
+        std::process::id()
+    ));
+    let mut f = std::fs::File::create(&dir).unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
     f.write_all(body.as_bytes())
         .unwrap_or_else(|e| panic!("write {dir:?}: {e}"));
     dir
@@ -57,7 +59,9 @@ fn run_with_session(workload: &Path, extra: &[&str]) -> (PathBuf, String, String
         "nbrs-phase-metrics-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -93,7 +97,8 @@ fn read_gauge(db: &Path, family: &str) -> Option<f64> {
          ORDER BY sv.timestamp_ms DESC LIMIT 1",
         [family],
         |row| row.get::<_, f64>(0),
-    ).ok()
+    )
+    .ok()
 }
 
 /// Single phase that does ~200ms of testkit "work" (5 cycles ×
@@ -119,46 +124,60 @@ scenarios:
 #[test]
 fn phase_metric_time_to_index_matches_phase_duration() {
     let wl = write_workload("ttidx", TIME_TO_INDEX);
-    let (session_path, _stdout, stderr, ok) = run_with_session(&wl, &[
-        "adapter=testkit",
-    ]);
+    let (session_path, _stdout, stderr, ok) = run_with_session(&wl, &["adapter=testkit"]);
     assert!(ok, "run should succeed; stderr:\n{stderr}");
 
     let db_path = session_path.join("metrics.db");
-    assert!(db_path.exists(),
-        "metrics.db not produced at {}; stderr:\n{stderr}", db_path.display());
+    assert!(
+        db_path.exists(),
+        "metrics.db not produced at {}; stderr:\n{stderr}",
+        db_path.display()
+    );
 
     // Ground truth: the phase's wall-clock duration recorded by the
     // executor (monotonic Instant) in the phase_outcomes table.
     let reporter =
-        nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db_path)
-            .expect("open metrics.db");
+        nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db_path).expect("open metrics.db");
     let outcomes = reporter.read_phase_outcomes(None);
-    let build = outcomes.iter()
+    let build = outcomes
+        .iter()
         .find(|o| o.phase_name == "build_index")
-        .unwrap_or_else(|| panic!(
-            "no build_index phase outcome; rows: {:?}\nstderr:\n{stderr}", outcomes));
+        .unwrap_or_else(|| {
+            panic!(
+                "no build_index phase outcome; rows: {:?}\nstderr:\n{stderr}",
+                outcomes
+            )
+        });
     let duration_ms = build.duration_secs * 1000.0;
 
     // The phase did real work — sanity-check the ground truth so a
     // broken testkit-latency path can't make the comparison vacuous.
-    assert!(duration_ms > 120.0,
+    assert!(
+        duration_ms > 120.0,
         "phase should take >120ms (5×40ms work) but duration_secs={} ; stderr:\n{stderr}",
-        build.duration_secs);
+        build.duration_secs
+    );
 
     // The phase-level metric, emitted from `phase_elapsed(phase_start)`.
-    let ttidx = read_gauge(&db_path, "time_to_index").unwrap_or_else(|| panic!(
-        "time_to_index gauge not found in metrics.db; stderr:\n{stderr}"));
+    let ttidx = read_gauge(&db_path, "time_to_index").unwrap_or_else(|| {
+        panic!("time_to_index gauge not found in metrics.db; stderr:\n{stderr}")
+    });
 
     // Accurate: the clock-read metric (epoch millis) must track the
     // executor's monotonic duration. The metric is pulled just before
     // the duration is computed, so it lands a hair under; allow a
     // generous absolute slack for scheduler jitter.
-    assert!(ttidx > 100.0,
-        "time_to_index should reflect the ~200ms of phase work, got {ttidx}ms; stderr:\n{stderr}");
+    assert!(
+        ttidx > 100.0,
+        "time_to_index should reflect the ~200ms of phase work, got {ttidx}ms; stderr:\n{stderr}"
+    );
     let diff = (ttidx - duration_ms).abs();
-    eprintln!("[ttidx] time_to_index={ttidx:.1}ms  phase_duration={duration_ms:.1}ms  diff={diff:.1}ms");
-    assert!(diff < 75.0,
+    eprintln!(
+        "[ttidx] time_to_index={ttidx:.1}ms  phase_duration={duration_ms:.1}ms  diff={diff:.1}ms"
+    );
+    assert!(
+        diff < 75.0,
         "time_to_index ({ttidx}ms) must match the phase duration ({duration_ms}ms) \
-         within 75ms; diff={diff}ms; stderr:\n{stderr}");
+         within 75ms; diff={diff}ms; stderr:\n{stderr}"
+    );
 }

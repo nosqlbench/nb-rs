@@ -23,10 +23,10 @@
 //! the tokio runtime *after* parsing and only when the matched
 //! handler is async. Synchronous commands never touch tokio.
 
-pub mod walker;
 pub mod completion;
 pub mod help;
 pub mod root;
+pub mod walker;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -42,8 +42,7 @@ pub type SyncHandler = fn(ParsedCommand) -> Result<(), String>;
 /// regardless of their concrete future type. main.rs builds
 /// the tokio runtime lazily — only when an `Async` handler is
 /// matched does the runtime start.
-pub type AsyncHandler =
-    fn(ParsedCommand) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
+pub type AsyncHandler = fn(ParsedCommand) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
 
 /// Provider of context-sensitive option tokens for a command,
 /// taking the current word and the prior tokens on the line and
@@ -247,7 +246,10 @@ pub struct ParsedCommand {
 impl ParsedCommand {
     /// First value for a flag, if present.
     pub fn flag(&self, name: &str) -> Option<&str> {
-        self.flags.get(name).and_then(|v| v.first()).map(|s| s.as_str())
+        self.flags
+            .get(name)
+            .and_then(|v| v.first())
+            .map(|s| s.as_str())
     }
     /// All values for a (repeatable) flag, in argv order.
     pub fn flag_all(&self, name: &str) -> &[String] {

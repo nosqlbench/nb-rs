@@ -63,7 +63,9 @@
 //!   monitoring use streaming. Don't compare them digit-for-
 //!   digit.
 
-use crate::ast::{AggrModifier, AggrModifierOp, BinaryOp, Expr, FuncExpr, MetricExpr, NumberExpr, RollupExpr};
+use crate::ast::{
+    AggrModifier, AggrModifierOp, BinaryOp, Expr, FuncExpr, MetricExpr, NumberExpr, RollupExpr,
+};
 use crate::eval::{Matcher, MatcherOp, Sample, Series};
 use std::collections::BTreeMap;
 
@@ -138,13 +140,17 @@ impl Reducer for SumReducer {
     type Acc = KahanAcc;
 
     fn ingest(&self, acc: &mut KahanAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
+        if sample.value.is_nan() {
+            return;
+        }
         kahan_add(acc, sample.value);
         acc.has_data = true;
     }
 
     fn merge(&self, into: &mut KahanAcc, other: KahanAcc) {
-        if !other.has_data { return; }
+        if !other.has_data {
+            return;
+        }
         // Add `other.total` with the existing compensation,
         // then fold in `other.compensation` separately. This
         // keeps the merge order-independent within tolerance
@@ -155,7 +161,9 @@ impl Reducer for SumReducer {
     }
 
     fn snapshot(&self, acc: &KahanAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
         acc.total
     }
 }
@@ -214,7 +222,9 @@ impl Reducer for MinReducer {
     type Acc = MinAcc;
 
     fn ingest(&self, acc: &mut MinAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
+        if sample.value.is_nan() {
+            return;
+        }
         if !acc.has_data || sample.value < acc.value {
             acc.value = sample.value;
         }
@@ -222,7 +232,9 @@ impl Reducer for MinReducer {
     }
 
     fn merge(&self, into: &mut MinAcc, other: MinAcc) {
-        if !other.has_data { return; }
+        if !other.has_data {
+            return;
+        }
         if !into.has_data || other.value < into.value {
             into.value = other.value;
         }
@@ -230,7 +242,9 @@ impl Reducer for MinReducer {
     }
 
     fn snapshot(&self, acc: &MinAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
         acc.value
     }
 }
@@ -248,7 +262,9 @@ impl Reducer for MaxReducer {
     type Acc = MaxAcc;
 
     fn ingest(&self, acc: &mut MaxAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
+        if sample.value.is_nan() {
+            return;
+        }
         if !acc.has_data || sample.value > acc.value {
             acc.value = sample.value;
         }
@@ -256,7 +272,9 @@ impl Reducer for MaxReducer {
     }
 
     fn merge(&self, into: &mut MaxAcc, other: MaxAcc) {
-        if !other.has_data { return; }
+        if !other.has_data {
+            return;
+        }
         if !into.has_data || other.value > into.value {
             into.value = other.value;
         }
@@ -264,7 +282,9 @@ impl Reducer for MaxReducer {
     }
 
     fn snapshot(&self, acc: &MaxAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
         acc.value
     }
 }
@@ -322,7 +342,9 @@ impl Reducer for AvgReducer {
     type Acc = AvgAcc;
 
     fn ingest(&self, acc: &mut AvgAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
+        if sample.value.is_nan() {
+            return;
+        }
         kahan_add(&mut acc.sum, sample.value);
         acc.sum.has_data = true;
         acc.count += 1;
@@ -335,7 +357,9 @@ impl Reducer for AvgReducer {
     }
 
     fn snapshot(&self, acc: &AvgAcc) -> f64 {
-        if acc.count == 0 { return f64::NAN; }
+        if acc.count == 0 {
+            return f64::NAN;
+        }
         acc.sum.total / acc.count as f64
     }
 }
@@ -354,7 +378,9 @@ pub struct WelfordAcc {
 }
 
 fn welford_ingest(acc: &mut WelfordAcc, value: f64) {
-    if value.is_nan() { return; }
+    if value.is_nan() {
+        return;
+    }
     acc.count += 1;
     let delta = value - acc.mean;
     acc.mean += delta / acc.count as f64;
@@ -363,7 +389,9 @@ fn welford_ingest(acc: &mut WelfordAcc, value: f64) {
 }
 
 fn welford_merge(into: &mut WelfordAcc, other: WelfordAcc) {
-    if other.count == 0 { return; }
+    if other.count == 0 {
+        return;
+    }
     if into.count == 0 {
         *into = other;
         return;
@@ -371,11 +399,11 @@ fn welford_merge(into: &mut WelfordAcc, other: WelfordAcc) {
     // Chan-Golub-LeVeque 1979 parallel variance.
     let delta = other.mean - into.mean;
     let combined_count = into.count + other.count;
-    let new_mean = (into.count as f64 * into.mean
-        + other.count as f64 * other.mean) / combined_count as f64;
-    let new_m2 = into.m2 + other.m2
-        + delta * delta * (into.count as f64 * other.count as f64)
-            / combined_count as f64;
+    let new_mean =
+        (into.count as f64 * into.mean + other.count as f64 * other.mean) / combined_count as f64;
+    let new_m2 = into.m2
+        + other.m2
+        + delta * delta * (into.count as f64 * other.count as f64) / combined_count as f64;
     into.count = combined_count;
     into.mean = new_mean;
     into.m2 = new_m2;
@@ -398,7 +426,9 @@ impl Reducer for StddevReducer {
     }
 
     fn snapshot(&self, acc: &WelfordAcc) -> f64 {
-        if acc.count == 0 { return f64::NAN; }
+        if acc.count == 0 {
+            return f64::NAN;
+        }
         (acc.m2 / acc.count as f64).sqrt()
     }
 }
@@ -420,7 +450,9 @@ impl Reducer for StdvarReducer {
     }
 
     fn snapshot(&self, acc: &WelfordAcc) -> f64 {
-        if acc.count == 0 { return f64::NAN; }
+        if acc.count == 0 {
+            return f64::NAN;
+        }
         acc.m2 / acc.count as f64
     }
 }
@@ -440,7 +472,9 @@ pub struct FirstLastAcc {
 }
 
 fn first_last_ingest(acc: &mut FirstLastAcc, sample: &Sample) {
-    if sample.value.is_nan() { return; }
+    if sample.value.is_nan() {
+        return;
+    }
     if !acc.has_data {
         acc.first_value = sample.value;
         acc.first_ts = sample.timestamp_ms;
@@ -460,7 +494,9 @@ fn first_last_ingest(acc: &mut FirstLastAcc, sample: &Sample) {
 }
 
 fn first_last_merge(into: &mut FirstLastAcc, other: FirstLastAcc) {
-    if !other.has_data { return; }
+    if !other.has_data {
+        return;
+    }
     if !into.has_data {
         *into = other;
         return;
@@ -494,7 +530,9 @@ impl Reducer for IncreaseReducer {
     }
 
     fn snapshot(&self, acc: &FirstLastAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
         acc.last_value - acc.first_value
     }
 }
@@ -521,8 +559,12 @@ impl Reducer for RateReducer {
     }
 
     fn snapshot(&self, acc: &FirstLastAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
-        if self.window_ms <= 0 { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
+        if self.window_ms <= 0 {
+            return f64::NAN;
+        }
         (acc.last_value - acc.first_value) / (self.window_ms as f64 / 1000.0)
     }
 }
@@ -558,21 +600,29 @@ pub struct HdrAcc {
 
 impl Default for HdrAcc {
     fn default() -> Self {
-        let hist = hdrhistogram::Histogram::<u64>::new_with_bounds(
-            HDR_LOW, HDR_HIGH, HDR_SIGFIGS,
-        ).expect("HDR construction with valid bounds");
+        let hist = hdrhistogram::Histogram::<u64>::new_with_bounds(HDR_LOW, HDR_HIGH, HDR_SIGFIGS)
+            .expect("HDR construction with valid bounds");
         Self { hist }
     }
 }
 
 impl Clone for HdrAcc {
-    fn clone(&self) -> Self { Self { hist: self.hist.clone() } }
+    fn clone(&self) -> Self {
+        Self {
+            hist: self.hist.clone(),
+        }
+    }
 }
 
 impl std::fmt::Debug for HdrAcc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HdrAcc(count={}, min={}, max={})",
-            self.hist.len(), self.hist.min(), self.hist.max())
+        write!(
+            f,
+            "HdrAcc(count={}, min={}, max={})",
+            self.hist.len(),
+            self.hist.min(),
+            self.hist.max()
+        )
     }
 }
 
@@ -587,8 +637,12 @@ impl Reducer for QuantileOverTimeReducer {
     type Acc = HdrAcc;
 
     fn ingest(&self, acc: &mut HdrAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
-        if sample.value < 0.0 { return; }
+        if sample.value.is_nan() {
+            return;
+        }
+        if sample.value < 0.0 {
+            return;
+        }
         let v = sample.value.floor().min(HDR_HIGH as f64) as u64;
         let v = v.max(HDR_LOW);
         let _ = acc.hist.record(v);
@@ -604,7 +658,9 @@ impl Reducer for QuantileOverTimeReducer {
     }
 
     fn snapshot(&self, acc: &HdrAcc) -> f64 {
-        if acc.hist.is_empty() { return f64::NAN; }
+        if acc.hist.is_empty() {
+            return f64::NAN;
+        }
         acc.hist.value_at_quantile(self.quantile) as f64
     }
 }
@@ -638,7 +694,9 @@ impl Reducer for FirstOverTimeReducer {
     type Acc = FirstAcc;
 
     fn ingest(&self, acc: &mut FirstAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
+        if sample.value.is_nan() {
+            return;
+        }
         if !acc.has_data || sample.timestamp_ms < acc.timestamp_ms {
             acc.value = sample.value;
             acc.timestamp_ms = sample.timestamp_ms;
@@ -647,7 +705,9 @@ impl Reducer for FirstOverTimeReducer {
     }
 
     fn merge(&self, into: &mut FirstAcc, other: FirstAcc) {
-        if !other.has_data { return; }
+        if !other.has_data {
+            return;
+        }
         if !into.has_data || other.timestamp_ms < into.timestamp_ms {
             into.value = other.value;
             into.timestamp_ms = other.timestamp_ms;
@@ -656,7 +716,9 @@ impl Reducer for FirstOverTimeReducer {
     }
 
     fn snapshot(&self, acc: &FirstAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
         acc.value
     }
 }
@@ -675,7 +737,9 @@ impl Reducer for LastOverTimeReducer {
     type Acc = LastAcc;
 
     fn ingest(&self, acc: &mut LastAcc, sample: &Sample) {
-        if sample.value.is_nan() { return; }
+        if sample.value.is_nan() {
+            return;
+        }
         if !acc.has_data || sample.timestamp_ms > acc.timestamp_ms {
             acc.value = sample.value;
             acc.timestamp_ms = sample.timestamp_ms;
@@ -684,7 +748,9 @@ impl Reducer for LastOverTimeReducer {
     }
 
     fn merge(&self, into: &mut LastAcc, other: LastAcc) {
-        if !other.has_data { return; }
+        if !other.has_data {
+            return;
+        }
         if !into.has_data || other.timestamp_ms > into.timestamp_ms {
             into.value = other.value;
             into.timestamp_ms = other.timestamp_ms;
@@ -693,7 +759,9 @@ impl Reducer for LastOverTimeReducer {
     }
 
     fn snapshot(&self, acc: &LastAcc) -> f64 {
-        if !acc.has_data { return f64::NAN; }
+        if !acc.has_data {
+            return f64::NAN;
+        }
         acc.value
     }
 }
@@ -722,7 +790,6 @@ impl Reducer for LastOverTimeReducer {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ReducerKind {
     // ---- distributive ----
-
     /// `sum(...)` and `sum_over_time(...[w])` — same reducer,
     /// the plan pipeline binds it differently.
     Sum,
@@ -740,7 +807,6 @@ pub enum ReducerKind {
     LastOverTime,
 
     // ---- algebraic ----
-
     /// `avg(...)` and `avg_over_time(...[w])`.
     Avg,
     /// `stddev(...)` and `stddev_over_time(...[w])`.
@@ -760,7 +826,6 @@ pub enum ReducerKind {
     Rate { window_ms: i64 },
 
     // ---- holistic (HDR-sketch backed) ----
-
     /// `quantile_over_time(phi, ...[w])` — phi-quantile of
     /// the values in the window. Bounded memory, bounded
     /// relative error; mergeable.
@@ -798,85 +863,105 @@ impl ReducerKind {
     /// be a programmer error.
     pub fn empty(self) -> AccCell {
         match self {
-            ReducerKind::Sum            => AccCell::Sum(KahanAcc::default()),
-            ReducerKind::Count          => AccCell::Count(CountAcc::default()),
-            ReducerKind::Min            => AccCell::Min(MinAcc::default()),
-            ReducerKind::Max            => AccCell::Max(MaxAcc::default()),
-            ReducerKind::Group          => AccCell::Group(GroupAcc::default()),
-            ReducerKind::FirstOverTime  => AccCell::First(FirstAcc::default()),
-            ReducerKind::LastOverTime   => AccCell::Last(LastAcc::default()),
-            ReducerKind::Avg            => AccCell::Avg(AvgAcc::default()),
-            ReducerKind::Stddev         => AccCell::Welford(WelfordAcc::default()),
-            ReducerKind::Stdvar         => AccCell::Welford(WelfordAcc::default()),
-            ReducerKind::Increase       => AccCell::FirstLast(FirstLastAcc::default()),
-            ReducerKind::Delta          => AccCell::FirstLast(FirstLastAcc::default()),
-            ReducerKind::Rate { .. }    => AccCell::FirstLast(FirstLastAcc::default()),
+            ReducerKind::Sum => AccCell::Sum(KahanAcc::default()),
+            ReducerKind::Count => AccCell::Count(CountAcc::default()),
+            ReducerKind::Min => AccCell::Min(MinAcc::default()),
+            ReducerKind::Max => AccCell::Max(MaxAcc::default()),
+            ReducerKind::Group => AccCell::Group(GroupAcc::default()),
+            ReducerKind::FirstOverTime => AccCell::First(FirstAcc::default()),
+            ReducerKind::LastOverTime => AccCell::Last(LastAcc::default()),
+            ReducerKind::Avg => AccCell::Avg(AvgAcc::default()),
+            ReducerKind::Stddev => AccCell::Welford(WelfordAcc::default()),
+            ReducerKind::Stdvar => AccCell::Welford(WelfordAcc::default()),
+            ReducerKind::Increase => AccCell::FirstLast(FirstLastAcc::default()),
+            ReducerKind::Delta => AccCell::FirstLast(FirstLastAcc::default()),
+            ReducerKind::Rate { .. } => AccCell::FirstLast(FirstLastAcc::default()),
             ReducerKind::QuantileOverTime { .. } => AccCell::Hdr(HdrAcc::default()),
         }
     }
 
     pub fn ingest(self, acc: &mut AccCell, sample: &Sample) {
         match (self, acc) {
-            (ReducerKind::Sum,           AccCell::Sum(a))       => SumReducer.ingest(a, sample),
-            (ReducerKind::Count,         AccCell::Count(a))     => CountReducer.ingest(a, sample),
-            (ReducerKind::Min,           AccCell::Min(a))       => MinReducer.ingest(a, sample),
-            (ReducerKind::Max,           AccCell::Max(a))       => MaxReducer.ingest(a, sample),
-            (ReducerKind::Group,         AccCell::Group(a))     => GroupReducer.ingest(a, sample),
-            (ReducerKind::FirstOverTime, AccCell::First(a))     => FirstOverTimeReducer.ingest(a, sample),
-            (ReducerKind::LastOverTime,  AccCell::Last(a))      => LastOverTimeReducer.ingest(a, sample),
-            (ReducerKind::Avg,           AccCell::Avg(a))       => AvgReducer.ingest(a, sample),
-            (ReducerKind::Stddev,        AccCell::Welford(a))   => StddevReducer.ingest(a, sample),
-            (ReducerKind::Stdvar,        AccCell::Welford(a))   => StdvarReducer.ingest(a, sample),
-            (ReducerKind::Increase,      AccCell::FirstLast(a)) => IncreaseReducer.ingest(a, sample),
-            (ReducerKind::Delta,         AccCell::FirstLast(a)) => IncreaseReducer.ingest(a, sample),
-            (ReducerKind::Rate { window_ms }, AccCell::FirstLast(a))
-                => RateReducer { window_ms }.ingest(a, sample),
-            (ReducerKind::QuantileOverTime { quantile }, AccCell::Hdr(a))
-                => QuantileOverTimeReducer { quantile }.ingest(a, sample),
+            (ReducerKind::Sum, AccCell::Sum(a)) => SumReducer.ingest(a, sample),
+            (ReducerKind::Count, AccCell::Count(a)) => CountReducer.ingest(a, sample),
+            (ReducerKind::Min, AccCell::Min(a)) => MinReducer.ingest(a, sample),
+            (ReducerKind::Max, AccCell::Max(a)) => MaxReducer.ingest(a, sample),
+            (ReducerKind::Group, AccCell::Group(a)) => GroupReducer.ingest(a, sample),
+            (ReducerKind::FirstOverTime, AccCell::First(a)) => {
+                FirstOverTimeReducer.ingest(a, sample)
+            }
+            (ReducerKind::LastOverTime, AccCell::Last(a)) => LastOverTimeReducer.ingest(a, sample),
+            (ReducerKind::Avg, AccCell::Avg(a)) => AvgReducer.ingest(a, sample),
+            (ReducerKind::Stddev, AccCell::Welford(a)) => StddevReducer.ingest(a, sample),
+            (ReducerKind::Stdvar, AccCell::Welford(a)) => StdvarReducer.ingest(a, sample),
+            (ReducerKind::Increase, AccCell::FirstLast(a)) => IncreaseReducer.ingest(a, sample),
+            (ReducerKind::Delta, AccCell::FirstLast(a)) => IncreaseReducer.ingest(a, sample),
+            (ReducerKind::Rate { window_ms }, AccCell::FirstLast(a)) => {
+                RateReducer { window_ms }.ingest(a, sample)
+            }
+            (ReducerKind::QuantileOverTime { quantile }, AccCell::Hdr(a)) => {
+                QuantileOverTimeReducer { quantile }.ingest(a, sample)
+            }
             _ => unreachable!("ReducerKind/AccCell mismatch — `empty()` produces matched pairs"),
         }
     }
 
     pub fn merge(self, into: &mut AccCell, other: AccCell) {
         match (self, into, other) {
-            (ReducerKind::Sum,            AccCell::Sum(a),       AccCell::Sum(b))       => SumReducer.merge(a, b),
-            (ReducerKind::Count,          AccCell::Count(a),     AccCell::Count(b))     => CountReducer.merge(a, b),
-            (ReducerKind::Min,            AccCell::Min(a),       AccCell::Min(b))       => MinReducer.merge(a, b),
-            (ReducerKind::Max,            AccCell::Max(a),       AccCell::Max(b))       => MaxReducer.merge(a, b),
-            (ReducerKind::Group,          AccCell::Group(a),     AccCell::Group(b))     => GroupReducer.merge(a, b),
-            (ReducerKind::FirstOverTime,  AccCell::First(a),     AccCell::First(b))     => FirstOverTimeReducer.merge(a, b),
-            (ReducerKind::LastOverTime,   AccCell::Last(a),      AccCell::Last(b))      => LastOverTimeReducer.merge(a, b),
-            (ReducerKind::Avg,            AccCell::Avg(a),       AccCell::Avg(b))       => AvgReducer.merge(a, b),
-            (ReducerKind::Stddev,         AccCell::Welford(a),   AccCell::Welford(b))   => StddevReducer.merge(a, b),
-            (ReducerKind::Stdvar,         AccCell::Welford(a),   AccCell::Welford(b))   => StdvarReducer.merge(a, b),
-            (ReducerKind::Increase,       AccCell::FirstLast(a), AccCell::FirstLast(b)) => IncreaseReducer.merge(a, b),
-            (ReducerKind::Delta,          AccCell::FirstLast(a), AccCell::FirstLast(b)) => IncreaseReducer.merge(a, b),
-            (ReducerKind::Rate { window_ms }, AccCell::FirstLast(a), AccCell::FirstLast(b))
-                => RateReducer { window_ms }.merge(a, b),
-            (ReducerKind::QuantileOverTime { quantile }, AccCell::Hdr(a), AccCell::Hdr(b))
-                => QuantileOverTimeReducer { quantile }.merge(a, b),
+            (ReducerKind::Sum, AccCell::Sum(a), AccCell::Sum(b)) => SumReducer.merge(a, b),
+            (ReducerKind::Count, AccCell::Count(a), AccCell::Count(b)) => CountReducer.merge(a, b),
+            (ReducerKind::Min, AccCell::Min(a), AccCell::Min(b)) => MinReducer.merge(a, b),
+            (ReducerKind::Max, AccCell::Max(a), AccCell::Max(b)) => MaxReducer.merge(a, b),
+            (ReducerKind::Group, AccCell::Group(a), AccCell::Group(b)) => GroupReducer.merge(a, b),
+            (ReducerKind::FirstOverTime, AccCell::First(a), AccCell::First(b)) => {
+                FirstOverTimeReducer.merge(a, b)
+            }
+            (ReducerKind::LastOverTime, AccCell::Last(a), AccCell::Last(b)) => {
+                LastOverTimeReducer.merge(a, b)
+            }
+            (ReducerKind::Avg, AccCell::Avg(a), AccCell::Avg(b)) => AvgReducer.merge(a, b),
+            (ReducerKind::Stddev, AccCell::Welford(a), AccCell::Welford(b)) => {
+                StddevReducer.merge(a, b)
+            }
+            (ReducerKind::Stdvar, AccCell::Welford(a), AccCell::Welford(b)) => {
+                StdvarReducer.merge(a, b)
+            }
+            (ReducerKind::Increase, AccCell::FirstLast(a), AccCell::FirstLast(b)) => {
+                IncreaseReducer.merge(a, b)
+            }
+            (ReducerKind::Delta, AccCell::FirstLast(a), AccCell::FirstLast(b)) => {
+                IncreaseReducer.merge(a, b)
+            }
+            (ReducerKind::Rate { window_ms }, AccCell::FirstLast(a), AccCell::FirstLast(b)) => {
+                RateReducer { window_ms }.merge(a, b)
+            }
+            (ReducerKind::QuantileOverTime { quantile }, AccCell::Hdr(a), AccCell::Hdr(b)) => {
+                QuantileOverTimeReducer { quantile }.merge(a, b)
+            }
             _ => unreachable!("ReducerKind/AccCell mismatch in merge"),
         }
     }
 
     pub fn snapshot(self, acc: &AccCell) -> f64 {
         match (self, acc) {
-            (ReducerKind::Sum,            AccCell::Sum(a))       => SumReducer.snapshot(a),
-            (ReducerKind::Count,          AccCell::Count(a))     => CountReducer.snapshot(a),
-            (ReducerKind::Min,            AccCell::Min(a))       => MinReducer.snapshot(a),
-            (ReducerKind::Max,            AccCell::Max(a))       => MaxReducer.snapshot(a),
-            (ReducerKind::Group,          AccCell::Group(a))     => GroupReducer.snapshot(a),
-            (ReducerKind::FirstOverTime,  AccCell::First(a))     => FirstOverTimeReducer.snapshot(a),
-            (ReducerKind::LastOverTime,   AccCell::Last(a))      => LastOverTimeReducer.snapshot(a),
-            (ReducerKind::Avg,            AccCell::Avg(a))       => AvgReducer.snapshot(a),
-            (ReducerKind::Stddev,         AccCell::Welford(a))   => StddevReducer.snapshot(a),
-            (ReducerKind::Stdvar,         AccCell::Welford(a))   => StdvarReducer.snapshot(a),
-            (ReducerKind::Increase,       AccCell::FirstLast(a)) => IncreaseReducer.snapshot(a),
-            (ReducerKind::Delta,          AccCell::FirstLast(a)) => IncreaseReducer.snapshot(a),
-            (ReducerKind::Rate { window_ms }, AccCell::FirstLast(a))
-                => RateReducer { window_ms }.snapshot(a),
-            (ReducerKind::QuantileOverTime { quantile }, AccCell::Hdr(a))
-                => QuantileOverTimeReducer { quantile }.snapshot(a),
+            (ReducerKind::Sum, AccCell::Sum(a)) => SumReducer.snapshot(a),
+            (ReducerKind::Count, AccCell::Count(a)) => CountReducer.snapshot(a),
+            (ReducerKind::Min, AccCell::Min(a)) => MinReducer.snapshot(a),
+            (ReducerKind::Max, AccCell::Max(a)) => MaxReducer.snapshot(a),
+            (ReducerKind::Group, AccCell::Group(a)) => GroupReducer.snapshot(a),
+            (ReducerKind::FirstOverTime, AccCell::First(a)) => FirstOverTimeReducer.snapshot(a),
+            (ReducerKind::LastOverTime, AccCell::Last(a)) => LastOverTimeReducer.snapshot(a),
+            (ReducerKind::Avg, AccCell::Avg(a)) => AvgReducer.snapshot(a),
+            (ReducerKind::Stddev, AccCell::Welford(a)) => StddevReducer.snapshot(a),
+            (ReducerKind::Stdvar, AccCell::Welford(a)) => StdvarReducer.snapshot(a),
+            (ReducerKind::Increase, AccCell::FirstLast(a)) => IncreaseReducer.snapshot(a),
+            (ReducerKind::Delta, AccCell::FirstLast(a)) => IncreaseReducer.snapshot(a),
+            (ReducerKind::Rate { window_ms }, AccCell::FirstLast(a)) => {
+                RateReducer { window_ms }.snapshot(a)
+            }
+            (ReducerKind::QuantileOverTime { quantile }, AccCell::Hdr(a)) => {
+                QuantileOverTimeReducer { quantile }.snapshot(a)
+            }
             _ => unreachable!("ReducerKind/AccCell mismatch in snapshot"),
         }
     }
@@ -1070,21 +1155,36 @@ impl Pipeline {
                 let key = canonical_labels(labels);
                 per_series.entry(key).or_default().push(*sample);
             }
-            Pipeline::Aggregate { reducer, grouping, groups } => {
+            Pipeline::Aggregate {
+                reducer,
+                grouping,
+                groups,
+            } => {
                 let key = group_key(labels, grouping);
                 let ts_map = groups.entry(key).or_default();
-                let acc = ts_map.entry(sample.timestamp_ms)
+                let acc = ts_map
+                    .entry(sample.timestamp_ms)
                     .or_insert_with(|| reducer.empty());
                 reducer.ingest(acc, sample);
             }
-            Pipeline::Window { reducer, per_series, .. } => {
+            Pipeline::Window {
+                reducer,
+                per_series,
+                ..
+            } => {
                 let key = series_key(labels);
                 let acc = per_series.entry(key).or_insert_with(|| reducer.empty());
                 reducer.ingest(acc, sample);
             }
-            Pipeline::WindowedAggregate { window_reducer, per_series, .. } => {
+            Pipeline::WindowedAggregate {
+                window_reducer,
+                per_series,
+                ..
+            } => {
                 let key = series_key(labels);
-                let acc = per_series.entry(key).or_insert_with(|| window_reducer.empty());
+                let acc = per_series
+                    .entry(key)
+                    .or_insert_with(|| window_reducer.empty());
                 window_reducer.ingest(acc, sample);
             }
         }
@@ -1133,7 +1233,8 @@ impl Pipeline {
 /// samples whose labels don't satisfy the leaf's matchers.
 fn matches_against(matchers: &[Matcher], labels: &[(String, String)]) -> bool {
     matchers.iter().all(|m| {
-        let v = labels.iter()
+        let v = labels
+            .iter()
             .find(|(k, _)| k == &m.label)
             .map(|(_, v)| v.as_str())
             .unwrap_or("");
@@ -1158,7 +1259,9 @@ impl StreamingPlan {
     /// Convenience batch form — ingest a full series
     /// (one label set, many samples).
     pub fn ingest_series(&mut self, labels: &[(String, String)], samples: &[Sample]) {
-        for s in samples { self.ingest_sample(labels, s); }
+        for s in samples {
+            self.ingest_sample(labels, s);
+        }
     }
 
     /// Convenience: ingest a slice of `Series`. Each series's
@@ -1222,55 +1325,83 @@ impl Node {
 impl Pipeline {
     fn snapshot(&self, anchor_ms: i64) -> Vec<Series> {
         match self {
-            Pipeline::Bare { per_series } => {
-                per_series.iter().map(|(labels, samples)| Series {
+            Pipeline::Bare { per_series } => per_series
+                .iter()
+                .map(|(labels, samples)| Series {
                     labels: labels.clone(),
                     samples: samples.clone(),
-                }).collect()
-            }
-            Pipeline::Aggregate { reducer, groups, .. } => {
+                })
+                .collect(),
+            Pipeline::Aggregate {
+                reducer, groups, ..
+            } => {
                 let mut out = Vec::with_capacity(groups.len());
                 for (labels, ts_map) in groups {
-                    let samples: Vec<Sample> = ts_map.iter()
+                    let samples: Vec<Sample> = ts_map
+                        .iter()
                         .map(|(ts, acc)| Sample {
                             timestamp_ms: *ts,
                             value: reducer.snapshot(acc),
                         })
                         .collect();
-                    out.push(Series { labels: labels.clone(), samples });
+                    out.push(Series {
+                        labels: labels.clone(),
+                        samples,
+                    });
                 }
                 let _ = anchor_ms;
                 out
             }
-            Pipeline::Window { reducer, per_series, .. } => {
+            Pipeline::Window {
+                reducer,
+                per_series,
+                ..
+            } => {
                 let mut out = Vec::with_capacity(per_series.len());
                 for (labels, acc) in per_series {
                     let value = reducer.snapshot(acc);
                     out.push(Series {
                         labels: labels.clone(),
-                        samples: vec![Sample { timestamp_ms: anchor_ms, value }],
+                        samples: vec![Sample {
+                            timestamp_ms: anchor_ms,
+                            value,
+                        }],
                     });
                 }
                 out
             }
-            Pipeline::WindowedAggregate { window_reducer, per_series, outer_reducer, grouping, .. } => {
+            Pipeline::WindowedAggregate {
+                window_reducer,
+                per_series,
+                outer_reducer,
+                grouping,
+                ..
+            } => {
                 let mut groups: BTreeMap<Vec<(String, String)>, AccCell> = BTreeMap::new();
                 for (labels, w_acc) in per_series {
                     let inner_value = window_reducer.snapshot(w_acc);
-                    if inner_value.is_nan() { continue; }
+                    if inner_value.is_nan() {
+                        continue;
+                    }
                     let key = group_key(labels, grouping);
                     let entry = groups.entry(key).or_insert_with(|| outer_reducer.empty());
-                    outer_reducer.ingest(entry, &Sample {
-                        timestamp_ms: anchor_ms,
-                        value: inner_value,
-                    });
+                    outer_reducer.ingest(
+                        entry,
+                        &Sample {
+                            timestamp_ms: anchor_ms,
+                            value: inner_value,
+                        },
+                    );
                 }
                 let mut out = Vec::with_capacity(groups.len());
                 for (labels, acc) in groups {
                     let value = outer_reducer.snapshot(&acc);
                     out.push(Series {
                         labels,
-                        samples: vec![Sample { timestamp_ms: anchor_ms, value }],
+                        samples: vec![Sample {
+                            timestamp_ms: anchor_ms,
+                            value,
+                        }],
                     });
                 }
                 out
@@ -1295,11 +1426,24 @@ impl Node {
                 }
                 out
             }
-            Node::Binary { op, bool_modifier, group_modifier, join_modifier, left, right } => {
+            Node::Binary {
+                op,
+                bool_modifier,
+                group_modifier,
+                join_modifier,
+                left,
+                right,
+            } => {
                 let l = left.snapshot(anchor_ms);
                 let r = right.snapshot(anchor_ms);
-                combine_binary_streaming(*op, *bool_modifier,
-                    group_modifier.as_ref(), join_modifier.as_ref(), &l, &r)
+                combine_binary_streaming(
+                    *op,
+                    *bool_modifier,
+                    group_modifier.as_ref(),
+                    join_modifier.as_ref(),
+                    &l,
+                    &r,
+                )
             }
         }
     }
@@ -1338,11 +1482,9 @@ fn combine_binary_streaming(
         }
         return crate::eval::combine_set_op(op, left, right, group_modifier);
     }
-    let combine = |l: f64, r: f64|
-        crate::eval::eval_binary_value(op, l, r, bool_modifier);
-    let mut out = crate::eval::combine_vectors_modified(
-        left, right, group_modifier, join_modifier, &combine,
-    );
+    let combine = |l: f64, r: f64| crate::eval::eval_binary_value(op, l, r, bool_modifier);
+    let mut out =
+        crate::eval::combine_vectors_modified(left, right, group_modifier, join_modifier, &combine);
     if crate::eval::is_cmp_op(op) && !bool_modifier {
         out = prune_nan_samples_streaming(out);
     }
@@ -1350,13 +1492,24 @@ fn combine_binary_streaming(
 }
 
 fn prune_nan_samples_streaming(input: Vec<Series>) -> Vec<Series> {
-    input.into_iter().filter_map(|s| {
-        let kept: Vec<Sample> = s.samples.into_iter()
-            .filter(|sm| !sm.value.is_nan())
-            .collect();
-        if kept.is_empty() { None }
-        else { Some(Series { labels: s.labels, samples: kept }) }
-    }).collect()
+    input
+        .into_iter()
+        .filter_map(|s| {
+            let kept: Vec<Sample> = s
+                .samples
+                .into_iter()
+                .filter(|sm| !sm.value.is_nan())
+                .collect();
+            if kept.is_empty() {
+                None
+            } else {
+                Some(Series {
+                    labels: s.labels,
+                    samples: kept,
+                })
+            }
+        })
+        .collect()
 }
 
 /// Apply a scalar postprocess to one sample value. Mirrors
@@ -1379,7 +1532,13 @@ fn apply_scalar_post(post: ScalarPost, v: f64) -> f64 {
         Mul => l * r,
         Div => l / r,
         Mod => l % r,
-        Pow => if l.is_nan() { f64::NAN } else { l.powf(r) },
+        Pow => {
+            if l.is_nan() {
+                f64::NAN
+            } else {
+                l.powf(r)
+            }
+        }
         Atan2 => l.atan2(r),
         Eq | Ne | Lt | Le | Gt | Ge => {
             let cmp = match post.op {
@@ -1393,23 +1552,51 @@ fn apply_scalar_post(post: ScalarPost, v: f64) -> f64 {
             };
             if post.bool_modifier {
                 if cmp { 1.0 } else { 0.0 }
-            } else if cmp { l } else { f64::NAN }
+            } else if cmp {
+                l
+            } else {
+                f64::NAN
+            }
         }
-        Default => if l.is_nan() { r } else { l },
-        If      => if r.is_nan() { f64::NAN } else { l },
-        IfNot   => if r.is_nan() { l } else { f64::NAN },
+        Default => {
+            if l.is_nan() {
+                r
+            } else {
+                l
+            }
+        }
+        If => {
+            if r.is_nan() {
+                f64::NAN
+            } else {
+                l
+            }
+        }
+        IfNot => {
+            if r.is_nan() {
+                l
+            } else {
+                f64::NAN
+            }
+        }
         And | Or | Unless => f64::NAN, // set ops are vec/vec, never reach here
     }
 }
 
 fn bin_eq_post(l: f64, r: f64) -> bool {
-    if l.is_nan() { return r.is_nan(); }
+    if l.is_nan() {
+        return r.is_nan();
+    }
     l == r
 }
 
 fn bin_neq_post(l: f64, r: f64) -> bool {
-    if l.is_nan() { return !r.is_nan(); }
-    if r.is_nan() { return true; }
+    if l.is_nan() {
+        return !r.is_nan();
+    }
+    if r.is_nan() {
+        return true;
+    }
     l != r
 }
 
@@ -1427,7 +1614,8 @@ fn canonical_labels(labels: &[(String, String)]) -> Vec<(String, String)> {
 /// `__name__`, sorted by key for stable hashing across
 /// arrival orders.
 fn series_key(labels: &[(String, String)]) -> Vec<(String, String)> {
-    let mut out: Vec<_> = labels.iter()
+    let mut out: Vec<_> = labels
+        .iter()
         .filter(|(k, _)| k != "__name__")
         .cloned()
         .collect();
@@ -1442,11 +1630,13 @@ fn series_key(labels: &[(String, String)]) -> Vec<(String, String)> {
 fn group_key(labels: &[(String, String)], grouping: &Grouping) -> Vec<(String, String)> {
     let mut out: Vec<_> = match grouping {
         Grouping::All => Vec::new(),
-        Grouping::By(keep) => labels.iter()
+        Grouping::By(keep) => labels
+            .iter()
             .filter(|(k, _)| keep.iter().any(|w| w == k))
             .cloned()
             .collect(),
-        Grouping::Without(drop) => labels.iter()
+        Grouping::Without(drop) => labels
+            .iter()
             .filter(|(k, _)| k != "__name__" && !drop.iter().any(|w| w == k))
             .cloned()
             .collect(),
@@ -1488,20 +1678,28 @@ fn compile_node(expr: &Expr) -> Result<Node, CompileError> {
         // (`(rate * 100) / 60`) walk recursively.
         if let Some(scalar) = numeric_value(&b.left) {
             let mut inner = compile_node(&b.right)?;
-            push_scalar_postprocess(&mut inner, ScalarPost {
-                op: b.op, scalar,
-                scalar_on_left: true,
-                bool_modifier: b.bool_modifier,
-            })?;
+            push_scalar_postprocess(
+                &mut inner,
+                ScalarPost {
+                    op: b.op,
+                    scalar,
+                    scalar_on_left: true,
+                    bool_modifier: b.bool_modifier,
+                },
+            )?;
             return Ok(inner);
         }
         if let Some(scalar) = numeric_value(&b.right) {
             let mut inner = compile_node(&b.left)?;
-            push_scalar_postprocess(&mut inner, ScalarPost {
-                op: b.op, scalar,
-                scalar_on_left: false,
-                bool_modifier: b.bool_modifier,
-            })?;
+            push_scalar_postprocess(
+                &mut inner,
+                ScalarPost {
+                    op: b.op,
+                    scalar,
+                    scalar_on_left: false,
+                    bool_modifier: b.bool_modifier,
+                },
+            )?;
             return Ok(inner);
         }
         // Vector/vector.
@@ -1542,12 +1740,15 @@ fn compile_leaf_node(expr: &Expr) -> Result<Node, CompileError> {
         Expr::Func(f) => compile_func_leaf(f),
         Expr::Metric(m) => Ok(Node::Leaf(LeafState {
             matchers: matchers_for(m)?,
-            pipeline: Pipeline::Bare { per_series: BTreeMap::new() },
+            pipeline: Pipeline::Bare {
+                per_series: BTreeMap::new(),
+            },
             scalar_postprocesses: Vec::new(),
         })),
         other => Err(CompileError::Unsupported(format!(
             "leaf expression {:?} not supported in streaming plans",
-            short_kind(other)))),
+            short_kind(other)
+        ))),
     }
 }
 
@@ -1579,60 +1780,79 @@ fn compile_func_leaf(f: &FuncExpr) -> Result<Node, CompileError> {
     }
     if f.args.len() != 1 {
         return Err(CompileError::InvalidShape(format!(
-            "streaming function {:?} expects 1 argument, got {}", f.name, f.args.len())));
+            "streaming function {:?} expects 1 argument, got {}",
+            f.name,
+            f.args.len()
+        )));
     }
     let outer_kind = AggKind::classify(&f.name);
     let inner = &f.args[0];
     match outer_kind {
-        AggKind::Aggregate(outer_reducer) => {
-            match inner {
-                Expr::Metric(m) => Ok(leaf(matchers_for(m)?, Pipeline::Aggregate {
+        AggKind::Aggregate(outer_reducer) => match inner {
+            Expr::Metric(m) => Ok(leaf(
+                matchers_for(m)?,
+                Pipeline::Aggregate {
                     reducer: outer_reducer,
                     grouping: grouping_for(f.modifier.as_ref()),
                     groups: BTreeMap::new(),
-                })),
-                Expr::Func(inner_f) => {
-                    let AggKind::Window(inner_reducer) = AggKind::classify(&inner_f.name) else {
-                        return Err(CompileError::Unsupported(format!(
-                            "aggregate {:?} cannot wrap non-rollup function {:?}",
-                            f.name, inner_f.name)));
-                    };
-                    if inner_f.args.len() != 1 {
-                        return Err(CompileError::InvalidShape(format!(
-                            "rollup function {:?} expects 1 argument", inner_f.name)));
-                    }
-                    let (matchers, window_ms) = matchers_and_window(&inner_f.args[0])?;
-                    let inner_reducer = inner_reducer.bind_window(window_ms);
-                    Ok(leaf(matchers, Pipeline::WindowedAggregate {
+                },
+            )),
+            Expr::Func(inner_f) => {
+                let AggKind::Window(inner_reducer) = AggKind::classify(&inner_f.name) else {
+                    return Err(CompileError::Unsupported(format!(
+                        "aggregate {:?} cannot wrap non-rollup function {:?}",
+                        f.name, inner_f.name
+                    )));
+                };
+                if inner_f.args.len() != 1 {
+                    return Err(CompileError::InvalidShape(format!(
+                        "rollup function {:?} expects 1 argument",
+                        inner_f.name
+                    )));
+                }
+                let (matchers, window_ms) = matchers_and_window(&inner_f.args[0])?;
+                let inner_reducer = inner_reducer.bind_window(window_ms);
+                Ok(leaf(
+                    matchers,
+                    Pipeline::WindowedAggregate {
                         window_reducer: inner_reducer,
                         window_ms,
                         per_series: BTreeMap::new(),
                         outer_reducer,
                         grouping: grouping_for(f.modifier.as_ref()),
-                    }))
-                }
-                other => Err(CompileError::Unsupported(format!(
-                    "aggregate {:?} over {:?} not supported in streaming plans",
-                    f.name, short_kind(other)))),
+                    },
+                ))
             }
-        }
+            other => Err(CompileError::Unsupported(format!(
+                "aggregate {:?} over {:?} not supported in streaming plans",
+                f.name,
+                short_kind(other)
+            ))),
+        },
         AggKind::Window(window_reducer) => {
             let (matchers, window_ms) = matchers_and_window(inner)?;
             let reducer = window_reducer.bind_window(window_ms);
-            Ok(leaf(matchers, Pipeline::Window {
-                reducer, window_ms,
-                per_series: BTreeMap::new(),
-            }))
+            Ok(leaf(
+                matchers,
+                Pipeline::Window {
+                    reducer,
+                    window_ms,
+                    per_series: BTreeMap::new(),
+                },
+            ))
         }
         AggKind::Unsupported => Err(CompileError::Unsupported(format!(
-            "function {:?} not supported in streaming plans this push", f.name))),
+            "function {:?} not supported in streaming plans this push",
+            f.name
+        ))),
     }
 }
 
 /// Build a leaf node with empty postprocess chain.
 fn leaf(matchers: Vec<Matcher>, pipeline: Pipeline) -> Node {
     Node::Leaf(LeafState {
-        matchers, pipeline,
+        matchers,
+        pipeline,
         scalar_postprocesses: Vec::new(),
     })
 }
@@ -1645,22 +1865,29 @@ fn leaf(matchers: Vec<Matcher>, pipeline: Pipeline) -> Node {
 fn compile_quantile_over_time_leaf(f: &FuncExpr) -> Result<Node, CompileError> {
     if f.args.len() != 2 {
         return Err(CompileError::InvalidShape(format!(
-            "quantile_over_time expects 2 args (phi, range_vec), got {}", f.args.len())));
+            "quantile_over_time expects 2 args (phi, range_vec), got {}",
+            f.args.len()
+        )));
     }
     let Some(quantile) = numeric_value(&f.args[0]) else {
         return Err(CompileError::InvalidShape(
-            "quantile_over_time first arg must be a numeric quantile (0..=1)".into()));
+            "quantile_over_time first arg must be a numeric quantile (0..=1)".into(),
+        ));
     };
     if !(0.0..=1.0).contains(&quantile) {
         return Err(CompileError::InvalidShape(format!(
-            "quantile_over_time phi must be in [0, 1], got {quantile}")));
+            "quantile_over_time phi must be in [0, 1], got {quantile}"
+        )));
     }
     let (matchers, window_ms) = matchers_and_window(&f.args[1])?;
-    Ok(leaf(matchers, Pipeline::Window {
-        reducer: ReducerKind::QuantileOverTime { quantile },
-        window_ms,
-        per_series: BTreeMap::new(),
-    }))
+    Ok(leaf(
+        matchers,
+        Pipeline::Window {
+            reducer: ReducerKind::QuantileOverTime { quantile },
+            window_ms,
+            per_series: BTreeMap::new(),
+        },
+    ))
 }
 
 /// Classification of a function name into aggregate vs.
@@ -1678,29 +1905,29 @@ impl AggKind {
     fn classify(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             // Distributive cross-series aggregates.
-            "sum"   => Self::Aggregate(ReducerKind::Sum),
+            "sum" => Self::Aggregate(ReducerKind::Sum),
             "count" => Self::Aggregate(ReducerKind::Count),
-            "min"   => Self::Aggregate(ReducerKind::Min),
-            "max"   => Self::Aggregate(ReducerKind::Max),
+            "min" => Self::Aggregate(ReducerKind::Min),
+            "max" => Self::Aggregate(ReducerKind::Max),
             "group" => Self::Aggregate(ReducerKind::Group),
             // Algebraic cross-series aggregates.
-            "avg"    => Self::Aggregate(ReducerKind::Avg),
+            "avg" => Self::Aggregate(ReducerKind::Avg),
             "stddev" => Self::Aggregate(ReducerKind::Stddev),
             "stdvar" => Self::Aggregate(ReducerKind::Stdvar),
             // Distributive per-series rollups.
-            "sum_over_time"   => Self::Window(ReducerKind::Sum),
+            "sum_over_time" => Self::Window(ReducerKind::Sum),
             "count_over_time" => Self::Window(ReducerKind::Count),
-            "min_over_time"   => Self::Window(ReducerKind::Min),
-            "max_over_time"   => Self::Window(ReducerKind::Max),
+            "min_over_time" => Self::Window(ReducerKind::Min),
+            "max_over_time" => Self::Window(ReducerKind::Max),
             "first_over_time" => Self::Window(ReducerKind::FirstOverTime),
-            "last_over_time"  => Self::Window(ReducerKind::LastOverTime),
+            "last_over_time" => Self::Window(ReducerKind::LastOverTime),
             // Algebraic per-series rollups.
-            "avg_over_time"    => Self::Window(ReducerKind::Avg),
+            "avg_over_time" => Self::Window(ReducerKind::Avg),
             "stddev_over_time" => Self::Window(ReducerKind::Stddev),
             "stdvar_over_time" => Self::Window(ReducerKind::Stdvar),
             // Algebraic counter / gauge rollups.
             "increase" => Self::Window(ReducerKind::Increase),
-            "delta"    => Self::Window(ReducerKind::Delta),
+            "delta" => Self::Window(ReducerKind::Delta),
             // Rate's window is bound at compile-time (see
             // `compile_func`); placeholder `0` here is
             // overwritten before the kind reaches the plan.
@@ -1711,7 +1938,9 @@ impl AggKind {
 }
 
 fn grouping_for(modifier: Option<&AggrModifier>) -> Grouping {
-    let Some(m) = modifier else { return Grouping::All; };
+    let Some(m) = modifier else {
+        return Grouping::All;
+    };
     match m.op {
         AggrModifierOp::By => Grouping::By(m.args.clone()),
         AggrModifierOp::Without => Grouping::Without(m.args.clone()),
@@ -1722,7 +1951,8 @@ fn matchers_for(m: &MetricExpr) -> Result<Vec<Matcher>, CompileError> {
     use crate::ast::LabelFilterOp;
     if m.label_filterss.len() > 1 {
         return Err(CompileError::Unsupported(
-            "selectors with `or` filter groups not supported in streaming plans this push".into()));
+            "selectors with `or` filter groups not supported in streaming plans this push".into(),
+        ));
     }
     let group = m.label_filterss.first().cloned().unwrap_or_default();
     let mut out = Vec::with_capacity(group.len());
@@ -1730,7 +1960,8 @@ fn matchers_for(m: &MetricExpr) -> Result<Vec<Matcher>, CompileError> {
         if lf.is_template_ref || lf.value_expr.is_some() {
             return Err(CompileError::InvalidShape(format!(
                 "unexpanded WITH template ref on filter {:?} — call `parse` not `parse_for_prettify`",
-                lf.label)));
+                lf.label
+            )));
         }
         out.push(Matcher {
             label: lf.label,
@@ -1753,14 +1984,17 @@ fn matchers_for(m: &MetricExpr) -> Result<Vec<Matcher>, CompileError> {
 fn matchers_and_window(arg: &Expr) -> Result<(Vec<Matcher>, i64), CompileError> {
     let Expr::Rollup(re) = arg else {
         return Err(CompileError::InvalidShape(
-            "rollup function argument must be `<selector>[<window>]`".into()));
+            "rollup function argument must be `<selector>[<window>]`".into(),
+        ));
     };
     let Some(win) = &re.window else {
         return Err(CompileError::InvalidShape(
-            "rollup function requires an explicit `[<window>]` argument".into()));
+            "rollup function requires an explicit `[<window>]` argument".into(),
+        ));
     };
-    let window_ms = parse_window_ms(&win.value).map_err(|e|
-        CompileError::InvalidShape(format!("bad rollup window {:?}: {e}", win.value)))?;
+    let window_ms = parse_window_ms(&win.value).map_err(|e| {
+        CompileError::InvalidShape(format!("bad rollup window {:?}: {e}", win.value))
+    })?;
     let inner = re_inner_metric(re)?;
     let matchers = matchers_for(inner)?;
     Ok((matchers, window_ms))
@@ -1770,7 +2004,9 @@ fn re_inner_metric(re: &RollupExpr) -> Result<&MetricExpr, CompileError> {
     match &*re.expr {
         Expr::Metric(m) => Ok(m),
         other => Err(CompileError::Unsupported(format!(
-            "rollup over {:?} (expected bare selector)", short_kind(other)))),
+            "rollup over {:?} (expected bare selector)",
+            short_kind(other)
+        ))),
     }
 }
 
@@ -1784,19 +2020,27 @@ fn parse_window_ms(s: &str) -> Result<i64, String> {
     let mut i = 0;
     while i < bytes.len() {
         let start = i;
-        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') { i += 1; }
-        if i == start { return Err("expected number".into()); }
-        let n: f64 = s[start..i].parse().map_err(|e| format!("number parse: {e}"))?;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+            i += 1;
+        }
+        if i == start {
+            return Err("expected number".into());
+        }
+        let n: f64 = s[start..i]
+            .parse()
+            .map_err(|e| format!("number parse: {e}"))?;
         let unit_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_alphabetic() { i += 1; }
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
         let unit = &s[unit_start..i];
         let mult = match unit {
             "ms" => 1.0,
-            "s"  => 1_000.0,
-            "m"  => 60_000.0,
-            "h"  => 3_600_000.0,
-            "d"  => 86_400_000.0,
-            ""   => return Err("missing unit".into()),
+            "s" => 1_000.0,
+            "m" => 60_000.0,
+            "h" => 3_600_000.0,
+            "d" => 86_400_000.0,
+            "" => return Err("missing unit".into()),
             other => return Err(format!("unknown unit {other:?}")),
         };
         total = total.saturating_add((n * mult) as i64);
@@ -1806,15 +2050,15 @@ fn parse_window_ms(s: &str) -> Result<i64, String> {
 
 fn short_kind(e: &Expr) -> &'static str {
     match e {
-        Expr::Metric(_)   => "Metric",
-        Expr::Number(_)   => "Number",
-        Expr::String(_)   => "String",
+        Expr::Metric(_) => "Metric",
+        Expr::Number(_) => "Number",
+        Expr::String(_) => "String",
         Expr::Duration(_) => "Duration",
-        Expr::Func(_)     => "Func",
-        Expr::Binary(_)   => "Binary",
-        Expr::Rollup(_)   => "Rollup",
-        Expr::Paren(_)    => "Paren",
-        Expr::With(_)     => "With",
+        Expr::Func(_) => "Func",
+        Expr::Binary(_) => "Binary",
+        Expr::Rollup(_) => "Rollup",
+        Expr::Paren(_) => "Paren",
+        Expr::With(_) => "With",
     }
 }
 
@@ -1823,7 +2067,10 @@ mod tests {
     use super::*;
 
     fn s(t: i64, v: f64) -> Sample {
-        Sample { timestamp_ms: t, value: v }
+        Sample {
+            timestamp_ms: t,
+            value: v,
+        }
     }
 
     /// Build an accumulator from a slice of samples by
@@ -1831,7 +2078,9 @@ mod tests {
     /// tests as a one-step "make me an accumulator" helper.
     fn build<R: Reducer>(r: &R, samples: &[Sample]) -> R::Acc {
         let mut acc = R::Acc::default();
-        for sm in samples { r.ingest(&mut acc, sm); }
+        for sm in samples {
+            r.ingest(&mut acc, sm);
+        }
         acc
     }
 
@@ -1882,10 +2131,14 @@ mod tests {
         let yv = r.snapshot(y);
         // NaN-aware equality so identity-on-empty doesn't
         // fail the test (NaN != NaN normally).
-        if xv.is_nan() && yv.is_nan() { return; }
+        if xv.is_nan() && yv.is_nan() {
+            return;
+        }
         let tol = 1e-9_f64.max(xv.abs() * 1e-12);
-        assert!((xv - yv).abs() <= tol,
-            "{why}: snapshots diverged: {xv} vs {yv}");
+        assert!(
+            (xv - yv).abs() <= tol,
+            "{why}: snapshots diverged: {xv} vs {yv}"
+        );
     }
 
     #[test]
@@ -2009,9 +2262,9 @@ mod tests {
     fn pipeline_kind(plan: &StreamingPlan) -> &'static str {
         match &plan.root {
             Node::Leaf(leaf) => match &leaf.pipeline {
-                Pipeline::Bare { .. }              => "Bare",
-                Pipeline::Aggregate { .. }         => "Aggregate",
-                Pipeline::Window { .. }            => "Window",
+                Pipeline::Bare { .. } => "Bare",
+                Pipeline::Aggregate { .. } => "Aggregate",
+                Pipeline::Window { .. } => "Window",
                 Pipeline::WindowedAggregate { .. } => "WindowedAggregate",
             },
             Node::Binary { .. } => "Binary",
@@ -2040,7 +2293,9 @@ mod tests {
         let plan = compile("sum(cpu)").expect("compile");
         assert_eq!(pipeline_kind(&plan), "Aggregate");
         match leaf_pipeline(&plan) {
-            Pipeline::Aggregate { reducer, grouping, .. } => {
+            Pipeline::Aggregate {
+                reducer, grouping, ..
+            } => {
                 assert_eq!(*reducer, ReducerKind::Sum);
                 assert!(matches!(grouping, Grouping::All));
             }
@@ -2052,7 +2307,9 @@ mod tests {
     fn compile_aggregate_with_by_modifier() {
         let plan = compile("max(cpu) by (host, zone)").expect("compile");
         match leaf_pipeline(&plan) {
-            Pipeline::Aggregate { reducer, grouping, .. } => {
+            Pipeline::Aggregate {
+                reducer, grouping, ..
+            } => {
                 assert_eq!(*reducer, ReducerKind::Max);
                 match grouping {
                     Grouping::By(labels) => assert_eq!(labels, &["host", "zone"]),
@@ -2067,7 +2324,9 @@ mod tests {
     fn compile_aggregate_with_without_modifier() {
         let plan = compile("min(cpu) without (instance)").expect("compile");
         match leaf_pipeline(&plan) {
-            Pipeline::Aggregate { reducer, grouping, .. } => {
+            Pipeline::Aggregate {
+                reducer, grouping, ..
+            } => {
                 assert_eq!(*reducer, ReducerKind::Min);
                 match grouping {
                     Grouping::Without(labels) => assert_eq!(labels, &["instance"]),
@@ -2082,7 +2341,9 @@ mod tests {
     fn compile_pure_window() {
         let plan = compile("max_over_time(cpu[5m])").expect("compile");
         match leaf_pipeline(&plan) {
-            Pipeline::Window { reducer, window_ms, .. } => {
+            Pipeline::Window {
+                reducer, window_ms, ..
+            } => {
                 assert_eq!(*reducer, ReducerKind::Max);
                 assert_eq!(*window_ms, 5 * 60 * 1000);
             }
@@ -2094,7 +2355,13 @@ mod tests {
     fn compile_windowed_aggregate() {
         let plan = compile("sum(sum_over_time(cpu[1m])) by (host)").expect("compile");
         match leaf_pipeline(&plan) {
-            Pipeline::WindowedAggregate { window_reducer, outer_reducer, window_ms, grouping, .. } => {
+            Pipeline::WindowedAggregate {
+                window_reducer,
+                outer_reducer,
+                window_ms,
+                grouping,
+                ..
+            } => {
                 assert_eq!(*window_reducer, ReducerKind::Sum);
                 assert_eq!(*outer_reducer, ReducerKind::Sum);
                 assert_eq!(*window_ms, 60_000);
@@ -2103,7 +2370,10 @@ mod tests {
                     _ => panic!("expected By"),
                 }
             }
-            _ => panic!("expected WindowedAggregate pipeline, got {:?}", pipeline_kind(&plan)),
+            _ => panic!(
+                "expected WindowedAggregate pipeline, got {:?}",
+                pipeline_kind(&plan)
+            ),
         }
     }
 
@@ -2157,7 +2427,9 @@ mod tests {
     fn vector_vector_binary_compiles_to_node_tree() {
         let plan = compile("a + b").expect("compile");
         match &plan.root {
-            Node::Binary { op, left, right, .. } => {
+            Node::Binary {
+                op, left, right, ..
+            } => {
                 assert!(matches!(op, BinaryOp::Add));
                 assert!(matches!(**left, Node::Leaf(_)));
                 assert!(matches!(**right, Node::Leaf(_)));
@@ -2171,7 +2443,10 @@ mod tests {
         let mut plan = compile("a + b").expect("compile");
         plan.ingest(&[
             series(&[("__name__", "a"), ("host", "h1")], &[(0, 1.0), (10, 2.0)]),
-            series(&[("__name__", "b"), ("host", "h1")], &[(0, 10.0), (10, 20.0)]),
+            series(
+                &[("__name__", "b"), ("host", "h1")],
+                &[(0, 10.0), (10, 20.0)],
+            ),
             series(&[("__name__", "a"), ("host", "h2")], &[(0, 5.0)]),
         ]);
         let got = plan.snapshot(0);
@@ -2188,8 +2463,14 @@ mod tests {
     fn vector_vector_binary_with_on_modifier() {
         let mut plan = compile("a * on(zone) b").expect("compile");
         plan.ingest(&[
-            series(&[("__name__", "a"), ("zone", "z1"), ("host", "h1")], &[(0, 2.0)]),
-            series(&[("__name__", "b"), ("zone", "z1"), ("host", "h99")], &[(0, 3.0)]),
+            series(
+                &[("__name__", "a"), ("zone", "z1"), ("host", "h1")],
+                &[(0, 2.0)],
+            ),
+            series(
+                &[("__name__", "b"), ("zone", "z1"), ("host", "h99")],
+                &[(0, 3.0)],
+            ),
         ]);
         let got = plan.snapshot(0);
         assert_eq!(got.len(), 1);
@@ -2200,9 +2481,18 @@ mod tests {
     fn vector_vector_binary_with_group_left_carries_extras() {
         let mut plan = compile("a * on(zone) group_left(tier) b").expect("compile");
         plan.ingest(&[
-            series(&[("__name__", "a"), ("zone", "z1"), ("host", "h1")], &[(0, 10.0)]),
-            series(&[("__name__", "a"), ("zone", "z1"), ("host", "h2")], &[(0, 20.0)]),
-            series(&[("__name__", "b"), ("zone", "z1"), ("tier", "prod")], &[(0, 2.0)]),
+            series(
+                &[("__name__", "a"), ("zone", "z1"), ("host", "h1")],
+                &[(0, 10.0)],
+            ),
+            series(
+                &[("__name__", "a"), ("zone", "z1"), ("host", "h2")],
+                &[(0, 20.0)],
+            ),
+            series(
+                &[("__name__", "b"), ("zone", "z1"), ("tier", "prod")],
+                &[(0, 2.0)],
+            ),
         ]);
         let got = plan.snapshot(0);
         assert_eq!(got.len(), 2);
@@ -2276,8 +2566,11 @@ mod tests {
     #[test]
     fn algebraic_rollup_compiles() {
         for q in [
-            "rate(cpu[5m])", "increase(cpu[5m])", "delta(cpu[5m])",
-            "avg_over_time(cpu[5m])", "stddev_over_time(cpu[5m])",
+            "rate(cpu[5m])",
+            "increase(cpu[5m])",
+            "delta(cpu[5m])",
+            "avg_over_time(cpu[5m])",
+            "stddev_over_time(cpu[5m])",
         ] {
             let plan = compile(q).expect("compile");
             assert_eq!(pipeline_kind(&plan), "Window", "query {q:?}");
@@ -2290,7 +2583,8 @@ mod tests {
         match leaf_pipeline(&plan) {
             Pipeline::Window {
                 reducer: ReducerKind::QuantileOverTime { quantile },
-                window_ms, ..
+                window_ms,
+                ..
             } => {
                 assert_eq!(*quantile, 0.99);
                 assert_eq!(*window_ms, 5 * 60 * 1000);
@@ -2301,8 +2595,10 @@ mod tests {
 
     #[test]
     fn quantile_over_time_rejects_invalid_phi() {
-        for q in ["quantile_over_time(2.0, cpu[5m])",
-                  "quantile_over_time(-0.1, cpu[5m])"] {
+        for q in [
+            "quantile_over_time(2.0, cpu[5m])",
+            "quantile_over_time(-0.1, cpu[5m])",
+        ] {
             let err = compile(q).expect_err("expected compile error");
             assert!(matches!(err, CompileError::InvalidShape(_)));
         }
@@ -2318,20 +2614,28 @@ mod tests {
             ("host".to_string(), "h1".to_string()),
         ];
         for i in 1..=100i64 {
-            plan.ingest_sample(&labels, &Sample { timestamp_ms: i * 100, value: i as f64 });
+            plan.ingest_sample(
+                &labels,
+                &Sample {
+                    timestamp_ms: i * 100,
+                    value: i as f64,
+                },
+            );
         }
         let got = plan.snapshot(20_000);
         assert_eq!(got.len(), 1);
         let v = got[0].samples[0].value;
-        assert!((v - 50.0).abs() <= 1.0,
-            "expected p50 ≈ 50, got {v}");
+        assert!((v - 50.0).abs() <= 1.0, "expected p50 ≈ 50, got {v}");
     }
 
     #[test]
     fn rate_window_is_bound_at_compile_time() {
         let plan = compile("rate(cpu[3m])").expect("compile");
         match leaf_pipeline(&plan) {
-            Pipeline::Window { reducer: ReducerKind::Rate { window_ms }, .. } => {
+            Pipeline::Window {
+                reducer: ReducerKind::Rate { window_ms },
+                ..
+            } => {
                 assert_eq!(*window_ms, 3 * 60 * 1000);
             }
             _ => panic!("expected Window with Rate reducer carrying 3m window"),
@@ -2344,13 +2648,15 @@ mod tests {
         // arity check fires before classification, but the
         // result is still a clean rejection.
         let err = compile("quantile(0.9, cpu)").expect_err("expected compile error");
-        assert!(matches!(err, CompileError::Unsupported(_) | CompileError::InvalidShape(_)));
+        assert!(matches!(
+            err,
+            CompileError::Unsupported(_) | CompileError::InvalidShape(_)
+        ));
     }
 
     #[test]
     fn reject_or_filter_groups() {
-        let err = compile(r#"cpu{host="a" or host="b"}"#)
-            .expect_err("expected compile error");
+        let err = compile(r#"cpu{host="a" or host="b"}"#).expect_err("expected compile error");
         assert!(matches!(err, CompileError::Unsupported(_)));
     }
 
@@ -2373,13 +2679,25 @@ mod tests {
 
     fn series(labels: &[(&str, &str)], samples: &[(i64, f64)]) -> Series {
         Series {
-            labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            samples: samples.iter().map(|(t, v)| Sample { timestamp_ms: *t, value: *v }).collect(),
+            labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            samples: samples
+                .iter()
+                .map(|(t, v)| Sample {
+                    timestamp_ms: *t,
+                    value: *v,
+                })
+                .collect(),
         }
     }
 
     fn lookup<'a>(s: &'a Series, key: &str) -> Option<&'a str> {
-        s.labels.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        s.labels
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     #[test]
@@ -2388,9 +2706,18 @@ mod tests {
         // Two timestamps, three series → output should have
         // ONE group with TWO samples, one per timestamp.
         plan.ingest(&[
-            series(&[("__name__", "cpu"), ("host", "a")], &[(0, 1.0), (10, 10.0)]),
-            series(&[("__name__", "cpu"), ("host", "b")], &[(0, 2.0), (10, 20.0)]),
-            series(&[("__name__", "cpu"), ("host", "c")], &[(0, 4.0), (10, 40.0)]),
+            series(
+                &[("__name__", "cpu"), ("host", "a")],
+                &[(0, 1.0), (10, 10.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("host", "b")],
+                &[(0, 2.0), (10, 20.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("host", "c")],
+                &[(0, 4.0), (10, 40.0)],
+            ),
         ]);
         let got = plan.snapshot(0);
         assert_eq!(got.len(), 1);
@@ -2408,12 +2735,25 @@ mod tests {
     fn ingest_aggregate_by_groups_distinct_label_values() {
         let mut plan = compile("sum(cpu) by (zone)").expect("compile");
         plan.ingest(&[
-            series(&[("__name__", "cpu"), ("zone", "z1"), ("host", "a")], &[(0, 1.0)]),
-            series(&[("__name__", "cpu"), ("zone", "z1"), ("host", "b")], &[(0, 2.0)]),
-            series(&[("__name__", "cpu"), ("zone", "z2"), ("host", "c")], &[(0, 4.0)]),
+            series(
+                &[("__name__", "cpu"), ("zone", "z1"), ("host", "a")],
+                &[(0, 1.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("zone", "z1"), ("host", "b")],
+                &[(0, 2.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("zone", "z2"), ("host", "c")],
+                &[(0, 4.0)],
+            ),
         ]);
         let mut got = plan.snapshot(0);
-        got.sort_by(|a, b| lookup(a, "zone").unwrap_or("").cmp(lookup(b, "zone").unwrap_or("")));
+        got.sort_by(|a, b| {
+            lookup(a, "zone")
+                .unwrap_or("")
+                .cmp(lookup(b, "zone").unwrap_or(""))
+        });
         assert_eq!(got.len(), 2);
         assert_eq!(lookup(&got[0], "zone"), Some("z1"));
         assert_eq!(got[0].samples[0].value, 3.0);
@@ -2425,11 +2765,18 @@ mod tests {
     fn ingest_window_holds_per_series_state() {
         let mut plan = compile("sum_over_time(cpu[1m])").expect("compile");
         plan.ingest(&[
-            series(&[("__name__", "cpu"), ("host", "a")], &[(0, 1.0), (10, 2.0), (20, 4.0)]),
+            series(
+                &[("__name__", "cpu"), ("host", "a")],
+                &[(0, 1.0), (10, 2.0), (20, 4.0)],
+            ),
             series(&[("__name__", "cpu"), ("host", "b")], &[(0, 8.0)]),
         ]);
         let mut got = plan.snapshot(100);
-        got.sort_by(|a, b| lookup(a, "host").unwrap_or("").cmp(lookup(b, "host").unwrap_or("")));
+        got.sort_by(|a, b| {
+            lookup(a, "host")
+                .unwrap_or("")
+                .cmp(lookup(b, "host").unwrap_or(""))
+        });
         assert_eq!(got.len(), 2);
         // host=a: 1+2+4 = 7
         assert_eq!(got[0].samples[0].value, 7.0);
@@ -2441,12 +2788,25 @@ mod tests {
     fn ingest_windowed_aggregate_two_stage_reduces() {
         let mut plan = compile("sum(sum_over_time(cpu[1m])) by (zone)").expect("compile");
         plan.ingest(&[
-            series(&[("__name__", "cpu"), ("zone", "z1"), ("host", "a")], &[(0, 1.0), (10, 2.0)]),
-            series(&[("__name__", "cpu"), ("zone", "z1"), ("host", "b")], &[(0, 4.0)]),
-            series(&[("__name__", "cpu"), ("zone", "z2"), ("host", "c")], &[(0, 100.0), (10, 200.0)]),
+            series(
+                &[("__name__", "cpu"), ("zone", "z1"), ("host", "a")],
+                &[(0, 1.0), (10, 2.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("zone", "z1"), ("host", "b")],
+                &[(0, 4.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("zone", "z2"), ("host", "c")],
+                &[(0, 100.0), (10, 200.0)],
+            ),
         ]);
         let mut got = plan.snapshot(0);
-        got.sort_by(|a, b| lookup(a, "zone").unwrap_or("").cmp(lookup(b, "zone").unwrap_or("")));
+        got.sort_by(|a, b| {
+            lookup(a, "zone")
+                .unwrap_or("")
+                .cmp(lookup(b, "zone").unwrap_or(""))
+        });
         assert_eq!(got.len(), 2);
         // z1: per-series sums (1+2) + 4 = 7
         assert_eq!(got[0].samples[0].value, 7.0);
@@ -2456,9 +2816,10 @@ mod tests {
 
     #[test]
     fn ingest_first_last_over_time_pick_by_timestamp() {
-        let samples = [
-            series(&[("__name__", "v"), ("host", "h1")], &[(20, 2.0), (10, 1.0), (30, 3.0)]),
-        ];
+        let samples = [series(
+            &[("__name__", "v"), ("host", "h1")],
+            &[(20, 2.0), (10, 1.0), (30, 3.0)],
+        )];
         let mut p_first = compile("first_over_time(v[1m])").expect("compile");
         p_first.ingest(&samples);
         assert_eq!(p_first.snapshot(0)[0].samples[0].value, 1.0);
@@ -2497,11 +2858,15 @@ mod tests {
 
     /// Tiny xorshift64 PRNG so the property test reproduces
     /// failures with a fixed seed and doesn't pull in a dep.
-    struct XorShift64 { state: u64 }
+    struct XorShift64 {
+        state: u64,
+    }
     impl XorShift64 {
         fn new(seed: u64) -> Self {
             // xorshift requires non-zero seed.
-            Self { state: if seed == 0 { 0xC0FFEE } else { seed } }
+            Self {
+                state: if seed == 0 { 0xC0FFEE } else { seed },
+            }
         }
         fn next_u64(&mut self) -> u64 {
             let mut x = self.state;
@@ -2541,34 +2906,134 @@ mod tests {
     fn supported_shapes() -> Vec<Shape> {
         vec![
             // Distributive cross-series.
-            Shape { query: "sum(cpu)",                              cardinality: 6, samples_per_series: 4, non_negative_values: false },
-            Shape { query: "min(cpu)",                              cardinality: 5, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "max(cpu)",                              cardinality: 5, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "count(cpu)",                            cardinality: 5, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "group(cpu)",                            cardinality: 5, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "sum(cpu) by (zone)",                    cardinality: 8, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "max(cpu) without (host)",               cardinality: 8, samples_per_series: 3, non_negative_values: false },
+            Shape {
+                query: "sum(cpu)",
+                cardinality: 6,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "min(cpu)",
+                cardinality: 5,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "max(cpu)",
+                cardinality: 5,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "count(cpu)",
+                cardinality: 5,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "group(cpu)",
+                cardinality: 5,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "sum(cpu) by (zone)",
+                cardinality: 8,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "max(cpu) without (host)",
+                cardinality: 8,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
             // Algebraic cross-series.
-            Shape { query: "avg(cpu)",                              cardinality: 6, samples_per_series: 4, non_negative_values: false },
-            Shape { query: "avg(cpu) by (zone)",                    cardinality: 8, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "stddev(cpu)",                           cardinality: 6, samples_per_series: 4, non_negative_values: false },
-            Shape { query: "stdvar(cpu) by (zone)",                 cardinality: 8, samples_per_series: 4, non_negative_values: false },
+            Shape {
+                query: "avg(cpu)",
+                cardinality: 6,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "avg(cpu) by (zone)",
+                cardinality: 8,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "stddev(cpu)",
+                cardinality: 6,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "stdvar(cpu) by (zone)",
+                cardinality: 8,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
             // Distributive per-series rollups.
-            Shape { query: "sum_over_time(cpu[1m])",                cardinality: 4, samples_per_series: 5, non_negative_values: false },
-            Shape { query: "max_over_time(cpu[1m])",                cardinality: 4, samples_per_series: 5, non_negative_values: false },
-            Shape { query: "first_over_time(cpu[1m])",              cardinality: 4, samples_per_series: 5, non_negative_values: false },
-            Shape { query: "last_over_time(cpu[1m])",               cardinality: 4, samples_per_series: 5, non_negative_values: false },
+            Shape {
+                query: "sum_over_time(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "max_over_time(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "first_over_time(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "last_over_time(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
             // Algebraic per-series rollups.
-            Shape { query: "avg_over_time(cpu[1m])",                cardinality: 4, samples_per_series: 5, non_negative_values: false },
-            Shape { query: "stddev_over_time(cpu[1m])",             cardinality: 4, samples_per_series: 5, non_negative_values: false },
+            Shape {
+                query: "avg_over_time(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "stddev_over_time(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
             // Composition.
-            Shape { query: "sum(sum_over_time(cpu[1m])) by (zone)", cardinality: 8, samples_per_series: 4, non_negative_values: false },
-            Shape { query: "avg(avg_over_time(cpu[1m])) by (zone)", cardinality: 8, samples_per_series: 4, non_negative_values: false },
+            Shape {
+                query: "sum(sum_over_time(cpu[1m])) by (zone)",
+                cardinality: 8,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "avg(avg_over_time(cpu[1m])) by (zone)",
+                cardinality: 8,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
             // Gauge delta — both batch and streaming compute
             // `last - first` with no edge extrapolation or
             // counter-reset detection. Stays in the
             // equivalence set.
-            Shape { query: "delta(cpu[1m])",                        cardinality: 4, samples_per_series: 5, non_negative_values: false },
+            Shape {
+                query: "delta(cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 5,
+                non_negative_values: false,
+            },
             // NOTE: `rate` and `increase` are deliberately
             // EXCLUDED from this equivalence test. Batch
             // applies PromQL counter-reset adjustment and
@@ -2580,14 +3045,39 @@ mod tests {
             // tests `rate_streaming_simple_window` and
             // `increase_streaming_simple_window`.
             // Scalar / vector binary ops.
-            Shape { query: "sum(cpu) * 2",                          cardinality: 6, samples_per_series: 4, non_negative_values: false },
-            Shape { query: "100 - max(cpu)",                        cardinality: 5, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "(sum(cpu) + 10) / 2",                   cardinality: 6, samples_per_series: 4, non_negative_values: false },
+            Shape {
+                query: "sum(cpu) * 2",
+                cardinality: 6,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "100 - max(cpu)",
+                cardinality: 5,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "(sum(cpu) + 10) / 2",
+                cardinality: 6,
+                samples_per_series: 4,
+                non_negative_values: false,
+            },
             // Holistic (HDR-sketch). Both batch and streaming
             // route through the same HDR config — values
             // must be non-negative for HDR to record them.
-            Shape { query: "quantile_over_time(0.5, cpu[1m])",      cardinality: 4, samples_per_series: 8, non_negative_values: true },
-            Shape { query: "quantile_over_time(0.99, cpu[1m])",     cardinality: 4, samples_per_series: 8, non_negative_values: true },
+            Shape {
+                query: "quantile_over_time(0.5, cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 8,
+                non_negative_values: true,
+            },
+            Shape {
+                query: "quantile_over_time(0.99, cpu[1m])",
+                cardinality: 4,
+                samples_per_series: 8,
+                non_negative_values: true,
+            },
         ]
     }
 
@@ -2597,15 +3087,55 @@ mod tests {
     /// space (host) for matching.
     fn vec_vec_supported_shapes() -> Vec<Shape> {
         vec![
-            Shape { query: "a + b",                         cardinality: 4, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "a * b",                         cardinality: 4, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "a / b",                         cardinality: 4, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "a + on(host) b",                cardinality: 4, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "a + ignoring(zone) b",          cardinality: 4, samples_per_series: 3, non_negative_values: false },
+            Shape {
+                query: "a + b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "a * b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "a / b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "a + on(host) b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "a + ignoring(zone) b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
             // Set ops — series-level membership, not per-sample compute.
-            Shape { query: "a and b",                       cardinality: 4, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "a or b",                        cardinality: 4, samples_per_series: 3, non_negative_values: false },
-            Shape { query: "a unless b",                    cardinality: 4, samples_per_series: 3, non_negative_values: false },
+            Shape {
+                query: "a and b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "a or b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
+            Shape {
+                query: "a unless b",
+                cardinality: 4,
+                samples_per_series: 3,
+                non_negative_values: false,
+            },
         ]
     }
 
@@ -2621,16 +3151,28 @@ mod tests {
                 let ts = (j as i64) * 100;
                 let va = rng.f64() * 1000.0 - 500.0;
                 let vb = rng.f64() * 1000.0 - 500.0;
-                samples_a.push(Sample { timestamp_ms: ts, value: va });
-                samples_b.push(Sample { timestamp_ms: ts, value: vb });
+                samples_a.push(Sample {
+                    timestamp_ms: ts,
+                    value: va,
+                });
+                samples_b.push(Sample {
+                    timestamp_ms: ts,
+                    value: vb,
+                });
             }
             out.push(series(
                 &[("__name__", "a"), ("host", host.as_str()), ("zone", zone)],
-                &samples_a.iter().map(|s| (s.timestamp_ms, s.value)).collect::<Vec<_>>(),
+                &samples_a
+                    .iter()
+                    .map(|s| (s.timestamp_ms, s.value))
+                    .collect::<Vec<_>>(),
             ));
             out.push(series(
                 &[("__name__", "b"), ("host", host.as_str()), ("zone", zone)],
-                &samples_b.iter().map(|s| (s.timestamp_ms, s.value)).collect::<Vec<_>>(),
+                &samples_b
+                    .iter()
+                    .map(|s| (s.timestamp_ms, s.value))
+                    .collect::<Vec<_>>(),
             ));
         }
         out
@@ -2644,9 +3186,7 @@ mod tests {
     /// values to `[0, 1000)` — required for HDR-backed
     /// reducers (quantile_over_time) which drop negative
     /// samples.
-    fn random_input_with(
-        rng: &mut XorShift64, shape: &Shape, non_negative: bool,
-    ) -> Vec<Series> {
+    fn random_input_with(rng: &mut XorShift64, shape: &Shape, non_negative: bool) -> Vec<Series> {
         let zones = ["z1", "z2", "z3"];
         let mut out = Vec::with_capacity(shape.cardinality);
         for i in 0..shape.cardinality {
@@ -2660,11 +3200,17 @@ mod tests {
                 } else {
                     rng.f64() * 1000.0 - 500.0
                 };
-                samples.push(Sample { timestamp_ms: ts, value });
+                samples.push(Sample {
+                    timestamp_ms: ts,
+                    value,
+                });
             }
             out.push(series(
                 &[("__name__", "cpu"), ("host", host.as_str()), ("zone", zone)],
-                &samples.iter().map(|s| (s.timestamp_ms, s.value)).collect::<Vec<_>>(),
+                &samples
+                    .iter()
+                    .map(|s| (s.timestamp_ms, s.value))
+                    .collect::<Vec<_>>(),
             ));
         }
         out
@@ -2712,31 +3258,49 @@ mod tests {
     /// match. Runs against an in-memory data source built
     /// from the test input.
     fn batch_result(query: &str, input: &[Series], anchor_ms: i64) -> Vec<Series> {
-        struct Mem { series: Vec<Series> }
+        struct Mem {
+            series: Vec<Series>,
+        }
         impl crate::eval::MetricAccess for Mem {
-            fn select_range(&self, matchers: &[Matcher], _start: i64, _end: i64)
-                -> Result<crate::eval::Vector, crate::eval::DataSourceError>
-            {
-                Ok(self.series.iter()
-                    .filter(|s| matchers.iter().all(|m| {
-                        let v = s.labels.iter()
-                            .find(|(k, _)| k == &m.label)
-                            .map(|(_, v)| v.as_str())
-                            .unwrap_or("");
-                        match m.op {
-                            MatcherOp::Eq => v == m.value,
-                            MatcherOp::Ne => v != m.value,
-                            _ => v == m.value,
-                        }
-                    }))
-                    .cloned().collect())
+            fn select_range(
+                &self,
+                matchers: &[Matcher],
+                _start: i64,
+                _end: i64,
+            ) -> Result<crate::eval::Vector, crate::eval::DataSourceError> {
+                Ok(self
+                    .series
+                    .iter()
+                    .filter(|s| {
+                        matchers.iter().all(|m| {
+                            let v = s
+                                .labels
+                                .iter()
+                                .find(|(k, _)| k == &m.label)
+                                .map(|(_, v)| v.as_str())
+                                .unwrap_or("");
+                            match m.op {
+                                MatcherOp::Eq => v == m.value,
+                                MatcherOp::Ne => v != m.value,
+                                _ => v == m.value,
+                            }
+                        })
+                    })
+                    .cloned()
+                    .collect())
             }
         }
-        let ds = Mem { series: input.to_vec() };
+        let ds = Mem {
+            series: input.to_vec(),
+        };
         let ctx = crate::eval::EvalContext {
-            data: &ds, start_ms: 0, end_ms: anchor_ms, step_ms: 1,
+            data: &ds,
+            start_ms: 0,
+            end_ms: anchor_ms,
+            step_ms: 1,
             lookback_ms: None,
-            query_start_ms: None, query_end_ms: None,
+            query_start_ms: None,
+            query_end_ms: None,
         };
         let expr = parse(query).expect("parse");
         crate::eval::evaluate(&ctx, &expr).expect("evaluate")
@@ -2762,7 +3326,9 @@ mod tests {
     /// summation order drift within a small bound. Tightness
     /// matches Kahan's expected behaviour (~1 ulp per op).
     fn approx_eq(a: f64, b: f64) -> bool {
-        if a.is_nan() && b.is_nan() { return true; }
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
         let scale = a.abs().max(b.abs()).max(1.0);
         (a - b).abs() <= scale * 1e-9
     }
@@ -2778,7 +3344,9 @@ mod tests {
 
         let single_vec = supported_shapes();
         let vec_vec = vec_vec_supported_shapes();
-        let all_shapes: Vec<(&Shape, bool)> = single_vec.iter().map(|s| (s, false))
+        let all_shapes: Vec<(&Shape, bool)> = single_vec
+            .iter()
+            .map(|s| (s, false))
             .chain(vec_vec.iter().map(|s| (s, true)))
             .collect();
         for (shape, is_vec_vec) in all_shapes {
@@ -2798,8 +3366,8 @@ mod tests {
                 let pairs = flatten(&input);
                 let batches = random_partition(&mut rng, &pairs, k);
 
-                let mut plan = compile_streaming(&parse(shape.query).expect("parse"))
-                    .expect("compile");
+                let mut plan =
+                    compile_streaming(&parse(shape.query).expect("parse")).expect("compile");
                 for batch_pairs in &batches {
                     for (labels, sample) in batch_pairs {
                         plan.ingest_sample(labels, sample);
@@ -2811,7 +3379,9 @@ mod tests {
                 if batch_idx.len() != stream_idx.len() {
                     panic!(
                         "shape {:?}: result cardinality differs — batch={} stream={}\n  batch keys: {:?}\n  stream keys: {:?}",
-                        shape.query, batch_idx.len(), stream_idx.len(),
+                        shape.query,
+                        batch_idx.len(),
+                        stream_idx.len(),
                         batch_idx.keys().collect::<Vec<_>>(),
                         stream_idx.keys().collect::<Vec<_>>(),
                     );
@@ -2848,8 +3418,10 @@ mod tests {
         let rv = r.snapshot(&right);
         // Kahan keeps both within ~1 ulp; naive f64 would
         // diverge by ~1000.
-        assert!((lv - rv).abs() < 2.0,
-            "kahan order drift too large: {lv} vs {rv}");
+        assert!(
+            (lv - rv).abs() < 2.0,
+            "kahan order drift too large: {lv} vs {rv}"
+        );
         // And both are within 1 of the true total `1e16 + 1000`.
         let truth = 1e16 + 1000.0;
         assert!((lv - truth).abs() <= 1.0);

@@ -6,8 +6,8 @@
 //! All YAML shorthand forms normalize to this model. This is what
 //! driver adapters consume.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A complete workload definition after normalization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,8 +180,7 @@ impl Workload {
         // op-count interpretation; without this, a 2-op
         // stanza with `cycles=4` would run 8 ops instead of
         // the historical 4.
-        let cycles = self.params.get("cycles")
-            .map(|c| format!("==ops:{c}"));
+        let cycles = self.params.get("cycles").map(|c| format!("==ops:{c}"));
         let concurrency = self.params.get("concurrency").cloned();
         let rate = self.params.get("rate").cloned();
         // Move GK-syntax workload-root bindings DOWN onto the
@@ -297,14 +296,14 @@ impl ReadoutsBindings {
     pub fn get(&self, slot_name: &str) -> &[String] {
         match slot_name {
             "on_session_start" => &self.on_session_start,
-            "on_session_end"   => &self.on_session_end,
-            "on_phase_start"   => &self.on_phase_start,
-            "on_phase_end"     => &self.on_phase_end,
-            "on_each_start"    => &self.on_each_start,
-            "on_each_end"      => &self.on_each_end,
-            "on_scope_start"   => &self.on_scope_start,
-            "on_scope_end"     => &self.on_scope_end,
-            "on_update"        => &self.on_update,
+            "on_session_end" => &self.on_session_end,
+            "on_phase_start" => &self.on_phase_start,
+            "on_phase_end" => &self.on_phase_end,
+            "on_each_start" => &self.on_each_start,
+            "on_each_end" => &self.on_each_end,
+            "on_scope_start" => &self.on_scope_start,
+            "on_scope_end" => &self.on_scope_end,
+            "on_update" => &self.on_update,
             _ => &[],
         }
     }
@@ -454,10 +453,13 @@ impl SummaryConfig {
         // forms can coexist during migration.
         let mut residual_lines: Vec<String> = Vec::new();
         for line in cleaned.lines().map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some(rest) = line.strip_prefix("group_by:").map(str::trim)
+            if let Some(rest) = line
+                .strip_prefix("group_by:")
+                .map(str::trim)
                 .or_else(|| line.strip_prefix("group-by:").map(str::trim))
             {
-                group_by = rest.split(',')
+                group_by = rest
+                    .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
@@ -491,10 +493,8 @@ impl SummaryConfig {
                     if let Some((col, expr)) = split_named_query(after_colon) {
                         metricsql_columns.push((col, expr));
                     } else {
-                        metricsql_columns.push((
-                            "value".to_string(),
-                            after_colon.trim().to_string(),
-                        ));
+                        metricsql_columns
+                            .push(("value".to_string(), after_colon.trim().to_string()));
                     }
                     continue;
                 }
@@ -527,7 +527,11 @@ impl SummaryConfig {
                 // keyword and `*` (the bare-`--summary` user
                 // mental model — `nbrs --summary '*'` means
                 // "default summary of all metrics").
-                for col in directive.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                for col in directive
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
                     if col != "all" && col != "*" {
                         columns.push(col.to_string());
                     }
@@ -538,7 +542,10 @@ impl SummaryConfig {
         }
 
         SummaryConfig {
-            columns, row_filters, aggregates, show_details,
+            columns,
+            row_filters,
+            aggregates,
+            show_details,
             raw: raw.to_string(),
             metricsql_columns,
             group_by,
@@ -552,7 +559,9 @@ impl SummaryConfig {
     fn parse_aggregate(s: &str) -> Option<AggregateExpr> {
         let paren_open = s.find('(')?;
         let paren_close = s.find(')')?;
-        if paren_close <= paren_open { return None; }
+        if paren_close <= paren_open {
+            return None;
+        }
 
         let func_name = s[..paren_open].trim();
         let function = match func_name {
@@ -575,19 +584,27 @@ impl SummaryConfig {
             let label_key = over_rest[..tilde].trim().to_string();
             let label_pattern = over_rest[tilde + 1..].trim().to_string();
             return Some(AggregateExpr {
-                function, column_pattern,
-                label_key, label_pattern,
+                function,
+                column_pattern,
+                label_key,
+                label_pattern,
                 group_by: Vec::new(),
             });
         }
 
         // Multi-key grouping form: comma-separated label keys.
-        let group_by: Vec<String> = over_rest.split(',')
-            .map(str::trim).filter(|s| !s.is_empty())
-            .map(|s| s.to_string()).collect();
-        if group_by.is_empty() { return None; }
+        let group_by: Vec<String> = over_rest
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if group_by.is_empty() {
+            return None;
+        }
         Some(AggregateExpr {
-            function, column_pattern,
+            function,
+            column_pattern,
             label_key: String::new(),
             label_pattern: String::new(),
             group_by,
@@ -618,7 +635,9 @@ fn split_named_query(text: &str) -> Option<(String, String)> {
         } else {
             b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
         };
-        if !ok { break; }
+        if !ok {
+            break;
+        }
         i += 1;
     }
     if i == 0 {
@@ -651,20 +670,37 @@ fn strip_hash_line_comments(s: &str) -> String {
         let mut cut: Option<usize> = None;
         for (i, ch) in line.char_indices() {
             match quote {
-                Some(q) if ch == q => { quote = None; prev_ws = false; }
-                Some(_) => { prev_ws = false; }
-                None => match ch {
-                    '"' | '\'' => { quote = Some(ch); prev_ws = false; }
-                    '#' if prev_ws => { cut = Some(i); break; }
-                    c if c.is_whitespace() => { prev_ws = true; }
-                    _ => { prev_ws = false; }
+                Some(q) if ch == q => {
+                    quote = None;
+                    prev_ws = false;
                 }
+                Some(_) => {
+                    prev_ws = false;
+                }
+                None => match ch {
+                    '"' | '\'' => {
+                        quote = Some(ch);
+                        prev_ws = false;
+                    }
+                    '#' if prev_ws => {
+                        cut = Some(i);
+                        break;
+                    }
+                    c if c.is_whitespace() => {
+                        prev_ws = true;
+                    }
+                    _ => {
+                        prev_ws = false;
+                    }
+                },
             }
         }
         match cut {
             Some(idx) => {
                 out.push_str(&line[..idx]);
-                if line.ends_with('\n') { out.push('\n'); }
+                if line.ends_with('\n') {
+                    out.push('\n');
+                }
             }
             None => out.push_str(line),
         }
@@ -678,9 +714,7 @@ mod summary_config_tests {
 
     #[test]
     fn parses_multi_key_grouping() {
-        let cfg = SummaryConfig::parse(
-            "recall; mean(recall) over k,limit,optimize_for"
-        );
+        let cfg = SummaryConfig::parse("recall; mean(recall) over k,limit,optimize_for");
         assert_eq!(cfg.aggregates.len(), 1, "got: {:?}", cfg.aggregates);
         let agg = &cfg.aggregates[0];
         assert_eq!(agg.group_by, vec!["k", "limit", "optimize_for"]);
@@ -855,7 +889,11 @@ pub struct ContinueIfSpec {
     /// Canonical key `per:`; `each:` accepted as an alias. (For a
     /// `continue_if` gate this level is both detection and action — the
     /// full `per:`/`at:` split for gates is a later step.)
-    #[serde(default = "default_continue_if_each", deserialize_with = "de_each", alias = "per")]
+    #[serde(
+        default = "default_continue_if_each",
+        deserialize_with = "de_each",
+        alias = "per"
+    )]
     pub each: Vec<ScopeLevel>,
 }
 
@@ -1124,7 +1162,11 @@ pub struct WorkloadPhase {
     /// with every other field defaulted (`method: sweep`, no `servo:`) — so
     /// `optimize: "0 - err_rate"` ≡ `optimize: { objective: "0 - err_rate" }`.
     /// See [`de_optimize`].
-    #[serde(default, deserialize_with = "de_optimize", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "de_optimize",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub optimize: Option<OptimizeBlock>,
 }
 
@@ -1461,7 +1503,8 @@ impl<'de> serde::Deserialize<'de> for Checkpoint {
             }
 
             fn visit_map<M>(self, mut map: M) -> Result<Checkpoint, M::Error>
-            where M: serde::de::MapAccess<'de>
+            where
+                M: serde::de::MapAccess<'de>,
             {
                 let mut idempotent = true;
                 let mut hashed = true;
@@ -1479,7 +1522,11 @@ impl<'de> serde::Deserialize<'de> for Checkpoint {
                         }
                     }
                 }
-                Ok(Checkpoint { idempotent, hashed, verify })
+                Ok(Checkpoint {
+                    idempotent,
+                    hashed,
+                    verify,
+                })
             }
         }
         deserializer.deserialize_any(CheckpointVisitor)
@@ -1544,9 +1591,17 @@ pub enum ScenarioNode {
         continue_if: Option<ContinueIfSpec>,
     },
     /// Execute children while condition is true (test after).
-    DoWhile { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
+    DoWhile {
+        condition: String,
+        counter: Option<String>,
+        children: Vec<ScenarioNode>,
+    },
     /// Execute children until condition becomes true (test after).
-    DoUntil { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
+    DoUntil {
+        condition: String,
+        counter: Option<String>,
+        children: Vec<ScenarioNode>,
+    },
     /// Logical inclusion of another scenario by name.
     ///
     /// Wherever this node appears (top-level of a scenario, inside
@@ -1575,7 +1630,10 @@ pub enum ScenarioNode {
     ///         - scenario: smoke
     ///         - search
     /// ```
-    IncludedScenario { name: String, children: Vec<ScenarioNode> },
+    IncludedScenario {
+        name: String,
+        children: Vec<ScenarioNode>,
+    },
     /// Scenario-tree-level Polydat bindings block — the canonical way
     /// to introduce a scope-local layer of bound names anywhere
     /// in the scenario tree.
@@ -1638,7 +1696,10 @@ pub enum ScenarioNode {
     ///       phases:
     ///         - scenario: load_test
     /// ```
-    Bindings { source: String, children: Vec<ScenarioNode> },
+    Bindings {
+        source: String,
+        children: Vec<ScenarioNode>,
+    },
 }
 
 /// Legacy alias.
@@ -1689,7 +1750,9 @@ impl BindingsDef {
     /// Insert a key-value pair (legacy map mode). Converts PolydatSource to Map.
     pub fn insert(&mut self, key: String, value: String) {
         match self {
-            BindingsDef::Map(m) => { m.insert(key, value); }
+            BindingsDef::Map(m) => {
+                m.insert(key, value);
+            }
             _ => {
                 let mut m = HashMap::new();
                 m.insert(key, value);
@@ -1894,14 +1957,12 @@ pub struct ParsedOp {
 /// `Disabled` is the default — the op runs on the cycle-pool
 /// fiber inline like everything else. `MaxFibers(N)` opts in
 /// to daemon-fiber dispatch with a per-op-name cap of N.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaemonSpec {
     #[default]
     Disabled,
     MaxFibers(u32),
 }
-
 
 impl DaemonSpec {
     pub fn is_disabled(&self) -> bool {
@@ -1979,7 +2040,7 @@ pub fn parse_daemon_spec_value(v: &serde_json::Value) -> Result<DaemonSpec, Stri
             }
         }
         serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-            "true" | "on"  => Ok(DaemonSpec::MaxFibers(1)),
+            "true" | "on" => Ok(DaemonSpec::MaxFibers(1)),
             "false" | "off" => Ok(DaemonSpec::Disabled),
             other => Err(format!(
                 "daemon: \"{other}\" — unknown string form. \
@@ -1987,9 +2048,9 @@ pub fn parse_daemon_spec_value(v: &serde_json::Value) -> Result<DaemonSpec, Stri
                  or use a boolean / non-negative integer directly.",
             )),
         },
-        serde_json::Value::Null => Err(
-            "daemon: null is not a valid value. Use false to disable.".into(),
-        ),
+        serde_json::Value::Null => {
+            Err("daemon: null is not a valid value. Use false to disable.".into())
+        }
         other => Err(format!(
             "daemon: {other:?} — only boolean, integer, or string forms \
              are accepted.",
@@ -2038,8 +2099,12 @@ impl DelaySpec {
             DelaySpec::Before(n) => vec![n.as_str()],
             DelaySpec::BeforeAfter { before, after } => {
                 let mut out = Vec::with_capacity(2);
-                if let Some(b) = before.as_deref() { out.push(b); }
-                if let Some(a) = after.as_deref() { out.push(a); }
+                if let Some(b) = before.as_deref() {
+                    out.push(b);
+                }
+                if let Some(a) = after.as_deref() {
+                    out.push(a);
+                }
                 out
             }
         }
@@ -2053,8 +2118,12 @@ impl serde::Serialize for DelaySpec {
             DelaySpec::Before(name) => s.serialize_str(name),
             DelaySpec::BeforeAfter { before, after } => {
                 let mut m = s.serialize_map(None)?;
-                if let Some(b) = before { m.serialize_entry("before", b)?; }
-                if let Some(a) = after { m.serialize_entry("after", a)?; }
+                if let Some(b) = before {
+                    m.serialize_entry("before", b)?;
+                }
+                if let Some(a) = after {
+                    m.serialize_entry("after", a)?;
+                }
                 m.end()
             }
         }
@@ -2103,13 +2172,17 @@ pub fn parse_delay_spec_value(v: &serde_json::Value) -> Result<DelaySpec, String
                                 let t = s.trim();
                                 if t.is_empty() {
                                     return Err(
-                                        "delay.before: empty string is not a valid binding name".into());
+                                        "delay.before: empty string is not a valid binding name"
+                                            .into(),
+                                    );
                                 }
                                 Some(t.to_string())
                             }
-                            other => return Err(format!(
-                                "delay.before: expected string, got {other:?}",
-                            )),
+                            other => {
+                                return Err(format!(
+                                    "delay.before: expected string, got {other:?}",
+                                ));
+                            }
                         };
                     }
                     "after" => {
@@ -2118,18 +2191,24 @@ pub fn parse_delay_spec_value(v: &serde_json::Value) -> Result<DelaySpec, String
                                 let t = s.trim();
                                 if t.is_empty() {
                                     return Err(
-                                        "delay.after: empty string is not a valid binding name".into());
+                                        "delay.after: empty string is not a valid binding name"
+                                            .into(),
+                                    );
                                 }
                                 Some(t.to_string())
                             }
-                            other => return Err(format!(
-                                "delay.after: expected string, got {other:?}",
-                            )),
+                            other => {
+                                return Err(
+                                    format!("delay.after: expected string, got {other:?}",),
+                                );
+                            }
                         };
                     }
-                    other => return Err(format!(
-                        "delay: unknown key `{other}` — accepted: `before`, `after`",
-                    )),
+                    other => {
+                        return Err(format!(
+                            "delay: unknown key `{other}` — accepted: `before`, `after`",
+                        ));
+                    }
                 }
             }
             if before.is_none() && after.is_none() {
@@ -2138,9 +2217,9 @@ pub fn parse_delay_spec_value(v: &serde_json::Value) -> Result<DelaySpec, String
                 Ok(DelaySpec::BeforeAfter { before, after })
             }
         }
-        serde_json::Value::Null => Err(
-            "delay: null is not a valid value. Omit the field instead.".into(),
-        ),
+        serde_json::Value::Null => {
+            Err("delay: null is not a valid value. Omit the field instead.".into())
+        }
         other => Err(format!(
             "delay: {other:?} — accepted forms are a binding-name string or \
              a map `{{ before: <name>, after: <name> }}`",
@@ -2169,29 +2248,39 @@ mod delay_spec_tests {
     fn parse_map_with_both() {
         let spec = parse_delay_spec_value(&json!({
             "before": "pre", "after": "post"
-        })).unwrap();
-        assert_eq!(spec, DelaySpec::BeforeAfter {
-            before: Some("pre".into()),
-            after:  Some("post".into()),
-        });
+        }))
+        .unwrap();
+        assert_eq!(
+            spec,
+            DelaySpec::BeforeAfter {
+                before: Some("pre".into()),
+                after: Some("post".into()),
+            }
+        );
     }
 
     #[test]
     fn parse_map_before_only() {
         let spec = parse_delay_spec_value(&json!({ "before": "pre" })).unwrap();
-        assert_eq!(spec, DelaySpec::BeforeAfter {
-            before: Some("pre".into()),
-            after: None,
-        });
+        assert_eq!(
+            spec,
+            DelaySpec::BeforeAfter {
+                before: Some("pre".into()),
+                after: None,
+            }
+        );
     }
 
     #[test]
     fn parse_map_after_only() {
         let spec = parse_delay_spec_value(&json!({ "after": "post" })).unwrap();
-        assert_eq!(spec, DelaySpec::BeforeAfter {
-            before: None,
-            after: Some("post".into()),
-        });
+        assert_eq!(
+            spec,
+            DelaySpec::BeforeAfter {
+                before: None,
+                after: Some("post".into()),
+            }
+        );
     }
 
     #[test]
@@ -2209,7 +2298,8 @@ mod delay_spec_tests {
     fn parse_rejects_unknown_key() {
         let e = parse_delay_spec_value(&json!({
             "before": "pre", "during": "mid"
-        })).unwrap_err();
+        }))
+        .unwrap_err();
         assert!(e.contains("during"));
     }
 
@@ -2253,7 +2343,8 @@ mod delay_spec_tests {
     #[test]
     fn round_trip_map_serializes_as_object() {
         let spec = DelaySpec::BeforeAfter {
-            before: Some("pre".into()), after: Some("post".into()),
+            before: Some("pre".into()),
+            after: Some("post".into()),
         };
         let v = serde_json::to_value(&spec).unwrap();
         assert_eq!(v.get("before"), Some(&json!("pre")));
@@ -2266,11 +2357,13 @@ mod delay_spec_tests {
     fn names_returns_all_referenced() {
         assert_eq!(DelaySpec::Before("x".into()).names(), vec!["x"]);
         let spec = DelaySpec::BeforeAfter {
-            before: Some("a".into()), after: Some("b".into()),
+            before: Some("a".into()),
+            after: Some("b".into()),
         };
         assert_eq!(spec.names(), vec!["a", "b"]);
         let only_before = DelaySpec::BeforeAfter {
-            before: Some("a".into()), after: None,
+            before: Some("a".into()),
+            after: None,
         };
         assert_eq!(only_before.names(), vec!["a"]);
     }
@@ -2281,7 +2374,8 @@ mod delay_spec_tests {
         assert_eq!(s.before(), Some("x"));
         assert_eq!(s.after(), None);
         let s = DelaySpec::BeforeAfter {
-            before: Some("a".into()), after: Some("b".into()),
+            before: Some("a".into()),
+            after: Some("b".into()),
         };
         assert_eq!(s.before(), Some("a"));
         assert_eq!(s.after(), Some("b"));
@@ -2293,62 +2387,116 @@ mod daemon_spec_tests {
     use super::*;
     use serde_json::json;
 
-    #[test] fn bool_true_is_max_1() {
-        assert_eq!(parse_daemon_spec_value(&json!(true)).unwrap(), DaemonSpec::MaxFibers(1));
+    #[test]
+    fn bool_true_is_max_1() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!(true)).unwrap(),
+            DaemonSpec::MaxFibers(1)
+        );
     }
-    #[test] fn bool_false_is_disabled() {
-        assert_eq!(parse_daemon_spec_value(&json!(false)).unwrap(), DaemonSpec::Disabled);
+    #[test]
+    fn bool_false_is_disabled() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!(false)).unwrap(),
+            DaemonSpec::Disabled
+        );
     }
-    #[test] fn int_0_is_disabled() {
-        assert_eq!(parse_daemon_spec_value(&json!(0)).unwrap(), DaemonSpec::Disabled);
+    #[test]
+    fn int_0_is_disabled() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!(0)).unwrap(),
+            DaemonSpec::Disabled
+        );
     }
-    #[test] fn int_1_is_max_1() {
-        assert_eq!(parse_daemon_spec_value(&json!(1)).unwrap(), DaemonSpec::MaxFibers(1));
+    #[test]
+    fn int_1_is_max_1() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!(1)).unwrap(),
+            DaemonSpec::MaxFibers(1)
+        );
     }
-    #[test] fn int_n_is_max_n() {
-        assert_eq!(parse_daemon_spec_value(&json!(10)).unwrap(), DaemonSpec::MaxFibers(10));
+    #[test]
+    fn int_n_is_max_n() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!(10)).unwrap(),
+            DaemonSpec::MaxFibers(10)
+        );
     }
-    #[test] fn str_on_is_max_1() {
-        assert_eq!(parse_daemon_spec_value(&json!("on")).unwrap(), DaemonSpec::MaxFibers(1));
-        assert_eq!(parse_daemon_spec_value(&json!("true")).unwrap(), DaemonSpec::MaxFibers(1));
-        assert_eq!(parse_daemon_spec_value(&json!("ON")).unwrap(), DaemonSpec::MaxFibers(1));
+    #[test]
+    fn str_on_is_max_1() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!("on")).unwrap(),
+            DaemonSpec::MaxFibers(1)
+        );
+        assert_eq!(
+            parse_daemon_spec_value(&json!("true")).unwrap(),
+            DaemonSpec::MaxFibers(1)
+        );
+        assert_eq!(
+            parse_daemon_spec_value(&json!("ON")).unwrap(),
+            DaemonSpec::MaxFibers(1)
+        );
     }
-    #[test] fn str_off_is_disabled() {
-        assert_eq!(parse_daemon_spec_value(&json!("off")).unwrap(), DaemonSpec::Disabled);
-        assert_eq!(parse_daemon_spec_value(&json!("false")).unwrap(), DaemonSpec::Disabled);
-        assert_eq!(parse_daemon_spec_value(&json!("OFF")).unwrap(), DaemonSpec::Disabled);
+    #[test]
+    fn str_off_is_disabled() {
+        assert_eq!(
+            parse_daemon_spec_value(&json!("off")).unwrap(),
+            DaemonSpec::Disabled
+        );
+        assert_eq!(
+            parse_daemon_spec_value(&json!("false")).unwrap(),
+            DaemonSpec::Disabled
+        );
+        assert_eq!(
+            parse_daemon_spec_value(&json!("OFF")).unwrap(),
+            DaemonSpec::Disabled
+        );
     }
-    #[test] fn negative_int_rejected() {
+    #[test]
+    fn negative_int_rejected() {
         assert!(parse_daemon_spec_value(&json!(-1)).is_err());
         assert!(parse_daemon_spec_value(&json!(-100)).is_err());
     }
-    #[test] fn float_rejected() {
+    #[test]
+    fn float_rejected() {
         assert!(parse_daemon_spec_value(&json!(1.5)).is_err());
     }
-    #[test] fn unknown_string_rejected() {
+    #[test]
+    fn unknown_string_rejected() {
         assert!(parse_daemon_spec_value(&json!("garbage")).is_err());
         assert!(parse_daemon_spec_value(&json!("yes")).is_err());
     }
-    #[test] fn null_rejected() {
+    #[test]
+    fn null_rejected() {
         assert!(parse_daemon_spec_value(&json!(null)).is_err());
     }
-    #[test] fn array_object_rejected() {
+    #[test]
+    fn array_object_rejected() {
         assert!(parse_daemon_spec_value(&json!([1, 2])).is_err());
         assert!(parse_daemon_spec_value(&json!({"max": 5})).is_err());
     }
-    #[test] fn round_trip_disabled() {
+    #[test]
+    fn round_trip_disabled() {
         let s = serde_json::to_value(DaemonSpec::Disabled).unwrap();
         assert_eq!(parse_daemon_spec_value(&s).unwrap(), DaemonSpec::Disabled);
     }
-    #[test] fn round_trip_max_1_serialises_as_bool() {
+    #[test]
+    fn round_trip_max_1_serialises_as_bool() {
         let s = serde_json::to_value(DaemonSpec::MaxFibers(1)).unwrap();
         assert_eq!(s, json!(true));
-        assert_eq!(parse_daemon_spec_value(&s).unwrap(), DaemonSpec::MaxFibers(1));
+        assert_eq!(
+            parse_daemon_spec_value(&s).unwrap(),
+            DaemonSpec::MaxFibers(1)
+        );
     }
-    #[test] fn round_trip_max_n_serialises_as_int() {
+    #[test]
+    fn round_trip_max_n_serialises_as_int() {
         let s = serde_json::to_value(DaemonSpec::MaxFibers(5)).unwrap();
         assert_eq!(s, json!(5));
-        assert_eq!(parse_daemon_spec_value(&s).unwrap(), DaemonSpec::MaxFibers(5));
+        assert_eq!(
+            parse_daemon_spec_value(&s).unwrap(),
+            DaemonSpec::MaxFibers(5)
+        );
     }
 }
 
@@ -2477,7 +2625,9 @@ pub enum MetricKind {
 impl Default for MetricKind {
     /// SRD-40b §1: gauge is the default — synthetic values are
     /// most often current-state observations.
-    fn default() -> Self { MetricKind::Gauge }
+    fn default() -> Self {
+        MetricKind::Gauge
+    }
 }
 
 /// SRD-66 result-bindings declaration. Vari-structured to
@@ -2601,7 +2751,10 @@ impl ParsedOp {
     /// Create a minimal ParsedOp with just a name and stmt.
     pub fn simple(name: &str, stmt: &str) -> Self {
         let mut op = HashMap::new();
-        op.insert("stmt".to_string(), serde_json::Value::String(stmt.to_string()));
+        op.insert(
+            "stmt".to_string(),
+            serde_json::Value::String(stmt.to_string()),
+        );
         Self {
             traverse: None,
             name: name.to_string(),

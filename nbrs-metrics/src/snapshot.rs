@@ -154,43 +154,64 @@ impl MetricSet {
     /// Construct an empty snapshot stamped with an explicit
     /// `captured_at` (e.g., for tests reproducing a known instant).
     pub fn at(captured_at: Instant, interval: Duration) -> Self {
-        Self { captured_at, interval, partial: false, close: None, scheduled_ts: None, families: Vec::new() }
+        Self {
+            captured_at,
+            interval,
+            partial: false,
+            close: None,
+            scheduled_ts: None,
+            families: Vec::new(),
+        }
     }
 
-    pub fn captured_at(&self) -> Instant { self.captured_at }
+    pub fn captured_at(&self) -> Instant {
+        self.captured_at
+    }
 
     /// The *actual* instant this snapshot fired/was captured (alias of
     /// [`captured_at`](Self::captured_at), named for the SRD-102
     /// scheduled/actual timestamp pair).
-    pub fn actual_ts(&self) -> Instant { self.captured_at }
+    pub fn actual_ts(&self) -> Instant {
+        self.captured_at
+    }
 
     /// The nominal cadence deadline this snapshot was scheduled for, if
     /// produced by the cadence scheduler (SRD-102 §6). `None` for
     /// event-driven snapshots.
-    pub fn scheduled_ts(&self) -> Option<Instant> { self.scheduled_ts }
+    pub fn scheduled_ts(&self) -> Option<Instant> {
+        self.scheduled_ts
+    }
 
     /// Stamp the nominal cadence deadline (the scheduler sets this after
     /// coalescing a tick's component snapshots).
     pub fn set_scheduled_ts(&mut self, scheduled: Instant) {
         self.scheduled_ts = Some(scheduled);
     }
-    pub fn interval(&self) -> Duration { self.interval }
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
 
     /// True if this snapshot represents a partial cadence window
     /// (sealed before the window naturally closed — typically a
     /// `scope_close` flush at component teardown). See SRD-42
     /// §"Component lifecycle: scope_close flush" for the
     /// semantics.
-    pub fn is_partial(&self) -> bool { self.partial }
+    pub fn is_partial(&self) -> bool {
+        self.partial
+    }
 
     /// Mark this snapshot as a partial-window contribution.
     /// Idempotent. Once set, `coalesce` carries the flag forward —
     /// any output that includes this snapshot will be partial too.
-    pub fn mark_partial(&mut self) { self.partial = true; }
+    pub fn mark_partial(&mut self) {
+        self.partial = true;
+    }
 
     /// SRD-93 M4 — the lifecycle reason this window was sealed, if a
     /// boundary (rather than the cadence) sealed it.
-    pub fn close_reason(&self) -> Option<CloseReason> { self.close }
+    pub fn close_reason(&self) -> Option<CloseReason> {
+        self.close
+    }
 
     /// Stamp the lifecycle close reason. Monotone by severity: a
     /// stronger reason overwrites a weaker one, never the reverse
@@ -216,8 +237,12 @@ impl MetricSet {
     }
 
     /// Number of families in this set.
-    pub fn len(&self) -> usize { self.families.len() }
-    pub fn is_empty(&self) -> bool { self.families.is_empty() }
+    pub fn len(&self) -> usize {
+        self.families.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.families.is_empty()
+    }
 
     /// True if this set carries any HDR-reservoir distribution family
     /// (`Histogram` / `GaugeHistogram`) — the memory-heavy part of a snapshot.
@@ -229,7 +254,10 @@ impl MetricSet {
     /// horizon while distributions are kept only over a short one.
     pub fn has_distributions(&self) -> bool {
         self.families.iter().any(|f| {
-            matches!(f.r#type(), MetricType::Histogram | MetricType::GaugeHistogram)
+            matches!(
+                f.r#type(),
+                MetricType::Histogram | MetricType::GaugeHistogram
+            )
         })
     }
 
@@ -250,7 +278,10 @@ impl MetricSet {
                 .families
                 .iter()
                 .filter(|f| {
-                    !matches!(f.r#type(), MetricType::Histogram | MetricType::GaugeHistogram)
+                    !matches!(
+                        f.r#type(),
+                        MetricType::Histogram | MetricType::GaugeHistogram
+                    )
                 })
                 .cloned()
                 .collect(),
@@ -320,7 +351,14 @@ impl MetricSet {
         // SRD-93 M4 — the strongest lifecycle reason across inputs
         // survives the fold (severity order on the enum).
         let close = snapshots.iter().filter_map(|s| s.close).max();
-        let mut out = MetricSet { captured_at, interval, partial, close, scheduled_ts, families: Vec::new() };
+        let mut out = MetricSet {
+            captured_at,
+            interval,
+            partial,
+            close,
+            scheduled_ts,
+            families: Vec::new(),
+        };
 
         // Family identity is `name`. For each unique family name
         // across inputs, fold its metrics in identity order.
@@ -336,7 +374,8 @@ impl MetricSet {
         for fname in seen_family {
             let mut acc: Option<MetricFamily> = None;
             // Total interval used as denominator for weighted gauges.
-            let total_seconds: f64 = snapshots.iter()
+            let total_seconds: f64 = snapshots
+                .iter()
                 .filter(|s| s.families.iter().any(|f| f.name == fname))
                 .map(|s| s.interval.as_secs_f64())
                 .sum();
@@ -344,7 +383,9 @@ impl MetricSet {
             let mut gauge_acc: Vec<(Labels, f64, f64)> = Vec::new();
 
             for s in snapshots {
-                let Some(src_family) = s.families.iter().find(|f| f.name == fname) else { continue };
+                let Some(src_family) = s.families.iter().find(|f| f.name == fname) else {
+                    continue;
+                };
                 if acc.is_none() {
                     let mut seed = MetricFamily {
                         name: src_family.name.clone(),
@@ -361,10 +402,11 @@ impl MetricSet {
                         // Seed gauge_acc from this snapshot's gauge points.
                         for m in &src_family.metrics {
                             if let Some(point) = m.points.first()
-                                && let MetricValue::Gauge(g) = &point.value {
-                                    let weight = s.interval.as_secs_f64();
-                                    gauge_acc.push((m.labels.clone(), g.value * weight, weight));
-                                }
+                                && let MetricValue::Gauge(g) = &point.value
+                            {
+                                let weight = s.interval.as_secs_f64();
+                                gauge_acc.push((m.labels.clone(), g.value * weight, weight));
+                            }
                         }
                     }
                     continue;
@@ -373,22 +415,27 @@ impl MetricSet {
                 if dst.r#type == MetricType::Gauge {
                     for m in &src_family.metrics {
                         if let Some(point) = m.points.first()
-                            && let MetricValue::Gauge(g) = &point.value {
-                                let weight = s.interval.as_secs_f64();
-                                if let Some(entry) = gauge_acc.iter_mut().find(|(l, _, _)| l == &m.labels) {
-                                    entry.1 += g.value * weight;
-                                    entry.2 += weight;
-                                } else {
-                                    gauge_acc.push((m.labels.clone(), g.value * weight, weight));
-                                }
+                            && let MetricValue::Gauge(g) = &point.value
+                        {
+                            let weight = s.interval.as_secs_f64();
+                            if let Some(entry) =
+                                gauge_acc.iter_mut().find(|(l, _, _)| l == &m.labels)
+                            {
+                                entry.1 += g.value * weight;
+                                entry.2 += weight;
+                            } else {
+                                gauge_acc.push((m.labels.clone(), g.value * weight, weight));
                             }
+                        }
                     }
                 } else {
                     for m in &src_family.metrics {
                         let dst_metric = dst.metrics.iter_mut().find(|d| d.labels == m.labels);
                         match dst_metric {
                             Some(dm) => {
-                                let (Some(dp), Some(sp)) = (dm.points.first_mut(), m.points.first()) else {
+                                let (Some(dp), Some(sp)) =
+                                    (dm.points.first_mut(), m.points.first())
+                                else {
                                     continue;
                                 };
                                 combine_into(dp, sp, mode).expect("matching identity must combine");
@@ -415,13 +462,18 @@ impl MetricSet {
                         let value = if weight > 0.0 {
                             weighted_sum / weight
                         } else {
-                            snapshots.iter().rev()
+                            snapshots
+                                .iter()
+                                .rev()
                                 .filter_map(|s| {
-                                    s.families.iter()
+                                    s.families
+                                        .iter()
                                         .find(|f| f.name == family.name)?
-                                        .metrics.iter()
+                                        .metrics
+                                        .iter()
                                         .find(|m| m.labels == labels)?
-                                        .points.first()
+                                        .points
+                                        .first()
                                         .and_then(|p| match &p.value {
                                             MetricValue::Gauge(g) => Some(g.value),
                                             _ => None,
@@ -430,14 +482,18 @@ impl MetricSet {
                                 .next()
                                 .unwrap_or(0.0)
                         };
-                        let last_ts = snapshots.iter()
+                        let last_ts = snapshots
+                            .iter()
                             .rev()
                             .filter_map(|s| {
-                                s.families.iter()
+                                s.families
+                                    .iter()
                                     .find(|f| f.name == family.name)?
-                                    .metrics.iter()
+                                    .metrics
+                                    .iter()
                                     .find(|m| m.labels == labels)?
-                                    .points.first()
+                                    .points
+                                    .first()
                                     .and_then(|p| p.timestamp)
                             })
                             .next()
@@ -518,18 +574,30 @@ impl MetricFamily {
         self
     }
 
-    pub fn name(&self) -> &str { &self.name }
-    pub fn r#type(&self) -> MetricType { self.r#type }
-    pub fn unit(&self) -> Option<&str> { self.unit.as_deref() }
-    pub fn help(&self) -> Option<&str> { self.help.as_deref() }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn r#type(&self) -> MetricType {
+        self.r#type
+    }
+    pub fn unit(&self) -> Option<&str> {
+        self.unit.as_deref()
+    }
+    pub fn help(&self) -> Option<&str> {
+        self.help.as_deref()
+    }
 
     /// Iterator over the family's series.
     pub fn metrics(&self) -> impl Iterator<Item = &Metric> {
         self.metrics.iter()
     }
 
-    pub fn len(&self) -> usize { self.metrics.len() }
-    pub fn is_empty(&self) -> bool { self.metrics.is_empty() }
+    pub fn len(&self) -> usize {
+        self.metrics.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.metrics.is_empty()
+    }
 
     /// Look up the series with the given LabelSet, if any. Identity
     /// per spec §4.5.1: `(family.name, label_set)`.
@@ -544,7 +612,8 @@ impl MetricFamily {
         assert!(
             !self.metrics.iter().any(|m| m.labels() == metric.labels()),
             "MetricFamily '{}' already contains a Metric with labels {:?} — LabelSets must be unique (OpenMetrics §4.5)",
-            self.name, metric.labels(),
+            self.name,
+            metric.labels(),
         );
         self.metrics.push(metric);
     }
@@ -568,14 +637,14 @@ impl MetricType {
     /// The exposition-format token for this type (spec §4.4).
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Counter        => "counter",
-            Self::Gauge          => "gauge",
-            Self::Histogram      => "histogram",
+            Self::Counter => "counter",
+            Self::Gauge => "gauge",
+            Self::Histogram => "histogram",
             Self::GaugeHistogram => "gaugehistogram",
-            Self::Summary        => "summary",
-            Self::Info           => "info",
-            Self::StateSet       => "stateset",
-            Self::Unknown        => "unknown",
+            Self::Summary => "summary",
+            Self::Info => "info",
+            Self::StateSet => "stateset",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -603,10 +672,15 @@ impl Metric {
 
     /// Convenience for the common single-point case.
     pub fn single(labels: Labels, point: MetricPoint) -> Self {
-        Self { labels, points: vec![point] }
+        Self {
+            labels,
+            points: vec![point],
+        }
     }
 
-    pub fn labels(&self) -> &Labels { &self.labels }
+    pub fn labels(&self) -> &Labels {
+        &self.labels
+    }
 
     /// Iterator over the series' points.
     pub fn points(&self) -> impl Iterator<Item = &MetricPoint> {
@@ -617,7 +691,9 @@ impl Metric {
     /// Returns `None` if the series is empty (which violates the
     /// spec but is permitted at construction time so consumers
     /// don't have to handle Result).
-    pub fn point(&self) -> Option<&MetricPoint> { self.points.first() }
+    pub fn point(&self) -> Option<&MetricPoint> {
+        self.points.first()
+    }
 }
 
 // =========================================================================
@@ -640,18 +716,28 @@ pub struct MetricPoint {
 
 impl MetricPoint {
     pub fn new(value: MetricValue, timestamp: Instant) -> Self {
-        Self { value, timestamp: Some(timestamp) }
+        Self {
+            value,
+            timestamp: Some(timestamp),
+        }
     }
 
     /// Construct without a timestamp — for cases (typically tests)
     /// where the timestamp is unknown or irrelevant. Production
     /// snapshots always set one.
     pub fn untimed(value: MetricValue) -> Self {
-        Self { value, timestamp: None }
+        Self {
+            value,
+            timestamp: None,
+        }
     }
 
-    pub fn value(&self) -> &MetricValue { &self.value }
-    pub fn timestamp(&self) -> Option<Instant> { self.timestamp }
+    pub fn value(&self) -> &MetricValue {
+        &self.value
+    }
+    pub fn timestamp(&self) -> Option<Instant> {
+        self.timestamp
+    }
 }
 
 /// The typed value carried by a [`MetricPoint`]. Variants mirror
@@ -710,7 +796,11 @@ pub struct CounterValue {
 impl CounterValue {
     /// A counter point at the given cumulative running total.
     pub fn new(cumulative: u64) -> Self {
-        Self { cumulative, created: None, exemplar: None }
+        Self {
+            cumulative,
+            created: None,
+            exemplar: None,
+        }
     }
 
     pub fn with_created(mut self, t: Instant) -> Self {
@@ -733,7 +823,9 @@ pub struct GaugeValue {
 }
 
 impl GaugeValue {
-    pub fn new(value: f64) -> Self { Self { value } }
+    pub fn new(value: f64) -> Self {
+        Self { value }
+    }
 }
 
 // ---- HistogramValue (§5.3.1) -------------------------------------------
@@ -948,7 +1040,9 @@ impl BucketedHistogramValue {
 pub struct InfoValue;
 
 impl InfoValue {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 // ---- StateSetValue (§5.7) -----------------------------------------------
@@ -1002,7 +1096,11 @@ pub struct Exemplar {
 
 impl Exemplar {
     pub fn new(labels: Labels, value: f64) -> Self {
-        Self { labels, value, timestamp: None }
+        Self {
+            labels,
+            value,
+            timestamp: None,
+        }
     }
 
     pub fn with_timestamp(mut self, t: Instant) -> Self {
@@ -1060,7 +1158,10 @@ pub fn combine_into(
             a.cumulative = match mode {
                 CombineMode::Coalesce => {
                     let take_src = dst.timestamp.is_none()
-                        || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false);
+                        || src
+                            .timestamp
+                            .map(|s| Some(s) >= dst.timestamp)
+                            .unwrap_or(false);
                     if take_src { b.cumulative } else { a.cumulative }
                 }
                 CombineMode::Aggregate => a.cumulative.saturating_add(b.cumulative),
@@ -1071,14 +1172,19 @@ pub fn combine_into(
                 (None, None) => None,
             };
             a.exemplar = pick_more_recent_exemplar(
-                a.exemplar.take(), b.exemplar.clone(),
-                dst.timestamp, src.timestamp,
+                a.exemplar.take(),
+                b.exemplar.clone(),
+                dst.timestamp,
+                src.timestamp,
             );
         }
         (MetricValue::Gauge(a), MetricValue::Gauge(b)) => {
             // Most-recent-wins by timestamp; same-or-missing → src.
             if dst.timestamp.is_none()
-                || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false)
+                || src
+                    .timestamp
+                    .map(|s| Some(s) >= dst.timestamp)
+                    .unwrap_or(false)
             {
                 a.value = b.value;
             }
@@ -1094,8 +1200,15 @@ pub fn combine_into(
             a.cumulative_count = match mode {
                 CombineMode::Coalesce => {
                     let take_src = dst.timestamp.is_none()
-                        || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false);
-                    if take_src { b.cumulative_count } else { a.cumulative_count }
+                        || src
+                            .timestamp
+                            .map(|s| Some(s) >= dst.timestamp)
+                            .unwrap_or(false);
+                    if take_src {
+                        b.cumulative_count
+                    } else {
+                        a.cumulative_count
+                    }
                 }
                 CombineMode::Aggregate => a.cumulative_count.saturating_add(b.cumulative_count),
             };
@@ -1105,8 +1218,10 @@ pub fn combine_into(
                 (None, None) => None,
             };
             combine_bucket_exemplars(
-                &mut a.bucket_exemplars, &b.bucket_exemplars,
-                dst.timestamp, src.timestamp,
+                &mut a.bucket_exemplars,
+                &b.bucket_exemplars,
+                dst.timestamp,
+                src.timestamp,
             );
         }
         (MetricValue::BucketedHistogram(a), MetricValue::BucketedHistogram(b)) => {
@@ -1116,7 +1231,9 @@ pub fn combine_into(
             // responsible for emitting consistent buckets per
             // series).
             if a.buckets.len() != b.buckets.len()
-                || a.buckets.iter().zip(b.buckets.iter())
+                || a.buckets
+                    .iter()
+                    .zip(b.buckets.iter())
                     .any(|((la, _), (lb, _))| la != lb)
             {
                 return Err(CombineError::TypeMismatch);
@@ -1133,8 +1250,15 @@ pub fn combine_into(
             a.cumulative_count = match mode {
                 CombineMode::Coalesce => {
                     let take_src = dst.timestamp.is_none()
-                        || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false);
-                    if take_src { b.cumulative_count } else { a.cumulative_count }
+                        || src
+                            .timestamp
+                            .map(|s| Some(s) >= dst.timestamp)
+                            .unwrap_or(false);
+                    if take_src {
+                        b.cumulative_count
+                    } else {
+                        a.cumulative_count
+                    }
                 }
                 CombineMode::Aggregate => a.cumulative_count.saturating_add(b.cumulative_count),
             };
@@ -1149,8 +1273,10 @@ pub fn combine_into(
                 (None, None) => None,
             };
             combine_bucket_exemplars(
-                &mut a.bucket_exemplars, &b.bucket_exemplars,
-                dst.timestamp, src.timestamp,
+                &mut a.bucket_exemplars,
+                &b.bucket_exemplars,
+                dst.timestamp,
+                src.timestamp,
             );
         }
         (MetricValue::Info(_), MetricValue::Info(_)) => {
@@ -1202,7 +1328,11 @@ fn pick_more_recent_exemplar(
     match (a, b) {
         (None, x) | (x, None) => x,
         (Some(ax), Some(bx)) => {
-            if b_ts.map(|s| Some(s) >= a_ts).unwrap_or(false) { Some(bx) } else { Some(ax) }
+            if b_ts.map(|s| Some(s) >= a_ts).unwrap_or(false) {
+                Some(bx)
+            } else {
+                Some(ax)
+            }
         }
     }
 }
@@ -1266,7 +1396,8 @@ pub const QUANTILES: &[f64] = &[0.5, 0.75, 0.90, 0.95, 0.98, 0.99, 0.999];
 /// Panics if `name` is missing — every metric MUST have a family
 /// name per OpenMetrics §4.4.
 pub fn split_name_label(labels: &Labels) -> (String, Labels) {
-    let name = labels.get("name")
+    let name = labels
+        .get("name")
         .map(|s| s.to_string())
         .expect("every metric must have a 'name' label");
     let mut residual = Labels::default();
@@ -1362,7 +1493,9 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric(
-            family_name, MetricType::Counter, labels,
+            family_name,
+            MetricType::Counter,
+            labels,
             MetricValue::Counter(CounterValue::new(cumulative)),
             timestamp,
         );
@@ -1380,7 +1513,10 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric_with_unit(
-            family_name, MetricType::Counter, unit, labels,
+            family_name,
+            MetricType::Counter,
+            unit,
+            labels,
             MetricValue::Counter(CounterValue::new(cumulative)),
             timestamp,
         );
@@ -1395,7 +1531,9 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric(
-            family_name, MetricType::Gauge, labels,
+            family_name,
+            MetricType::Gauge,
+            labels,
             MetricValue::Gauge(GaugeValue::new(value)),
             timestamp,
         );
@@ -1411,7 +1549,10 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric_with_unit(
-            family_name, MetricType::Gauge, unit, labels,
+            family_name,
+            MetricType::Gauge,
+            unit,
+            labels,
             MetricValue::Gauge(GaugeValue::new(value)),
             timestamp,
         );
@@ -1428,7 +1569,9 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric(
-            family_name, MetricType::Histogram, labels,
+            family_name,
+            MetricType::Histogram,
+            labels,
             MetricValue::Histogram(HistogramValue::from_hdr(reservoir)),
             timestamp,
         );
@@ -1444,7 +1587,10 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric_with_unit(
-            family_name, MetricType::Histogram, unit, labels,
+            family_name,
+            MetricType::Histogram,
+            unit,
+            labels,
             MetricValue::Histogram(HistogramValue::from_hdr(reservoir)),
             timestamp,
         );
@@ -1466,7 +1612,10 @@ impl MetricSet {
         timestamp: Instant,
     ) {
         self.insert_metric_with_unit(
-            family_name, MetricType::Histogram, unit, labels,
+            family_name,
+            MetricType::Histogram,
+            unit,
+            labels,
             MetricValue::Histogram(
                 HistogramValue::from_hdr(reservoir).with_cumulative_count(cumulative_count),
             ),
@@ -1528,7 +1677,10 @@ pub fn histogram_family(
     let mut f = MetricFamily::new(name, MetricType::Histogram);
     f.insert(Metric::single(
         labels,
-        MetricPoint::new(MetricValue::Histogram(HistogramValue::from_hdr(reservoir)), timestamp),
+        MetricPoint::new(
+            MetricValue::Histogram(HistogramValue::from_hdr(reservoir)),
+            timestamp,
+        ),
     ));
     f
 }
@@ -1541,8 +1693,12 @@ pub fn histogram_family(
 mod tests {
     use super::*;
 
-    fn ts() -> Instant { Instant::now() }
-    fn empty_set() -> MetricSet { MetricSet::new(Duration::from_secs(1)) }
+    fn ts() -> Instant {
+        Instant::now()
+    }
+    fn empty_set() -> MetricSet {
+        MetricSet::new(Duration::from_secs(1))
+    }
 
     #[test]
     fn metric_set_is_empty_by_default() {
@@ -1556,8 +1712,18 @@ mod tests {
     #[test]
     fn metric_set_inserts_and_looks_up_by_name() {
         let mut m = empty_set();
-        m.insert(counter_family("cycles", Labels::of("phase", "load"), 100, ts()));
-        m.insert(gauge_family("temp", Labels::of("phase", "load"), 42.0, ts()));
+        m.insert(counter_family(
+            "cycles",
+            Labels::of("phase", "load"),
+            100,
+            ts(),
+        ));
+        m.insert(gauge_family(
+            "temp",
+            Labels::of("phase", "load"),
+            42.0,
+            ts(),
+        ));
 
         assert_eq!(m.len(), 2);
         assert!(m.family("cycles").is_some());
@@ -1575,21 +1741,38 @@ mod tests {
 
     fn make_counter_set(interval: Duration, value: u64) -> MetricSet {
         let mut s = MetricSet::new(interval);
-        s.insert(counter_family("cycles", Labels::of("name", "ops"), value, Instant::now()));
+        s.insert(counter_family(
+            "cycles",
+            Labels::of("name", "ops"),
+            value,
+            Instant::now(),
+        ));
         s
     }
 
     fn make_histogram_set(interval: Duration, values: &[u64]) -> MetricSet {
         let mut h = HdrHistogram::<u64>::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
-        for v in values { h.record(*v).unwrap(); }
+        for v in values {
+            h.record(*v).unwrap();
+        }
         let mut s = MetricSet::new(interval);
-        s.insert(histogram_family("latency", Labels::of("name", "rt"), h, Instant::now()));
+        s.insert(histogram_family(
+            "latency",
+            Labels::of("name", "rt"),
+            h,
+            Instant::now(),
+        ));
         s
     }
 
     fn make_gauge_set(interval: Duration, value: f64) -> MetricSet {
         let mut s = MetricSet::new(interval);
-        s.insert(gauge_family("temp", Labels::of("name", "x"), value, Instant::now()));
+        s.insert(gauge_family(
+            "temp",
+            Labels::of("name", "x"),
+            value,
+            Instant::now(),
+        ));
         s
     }
 
@@ -1623,8 +1806,16 @@ mod tests {
             make_counter_set(Duration::from_secs(1), 42),
         ]);
         assert_eq!(merged.interval(), Duration::from_secs(3));
-        let cumulative = match merged.family("cycles").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let cumulative = match merged
+            .family("cycles")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Counter(c) => c.cumulative,
             _ => panic!("wrong type"),
         };
@@ -1637,8 +1828,16 @@ mod tests {
             make_histogram_set(Duration::from_secs(1), &[1_000, 2_000, 3_000]),
             make_histogram_set(Duration::from_secs(1), &[4_000, 5_000]),
         ]);
-        let hv = match merged.family("latency").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let hv = match merged
+            .family("latency")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Histogram(h) => h.clone(),
             _ => panic!("wrong type"),
         };
@@ -1654,27 +1853,47 @@ mod tests {
             make_gauge_set(Duration::from_secs(1), 10.0),
             make_gauge_set(Duration::from_secs(2), 20.0),
         ]);
-        let v = match merged.family("temp").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let v = match merged
+            .family("temp")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Gauge(g) => g.value,
             _ => panic!("wrong type"),
         };
-        assert!((v - 50.0/3.0).abs() < 0.01, "weighted gauge avg = {v}");
+        assert!((v - 50.0 / 3.0).abs() < 0.01, "weighted gauge avg = {v}");
     }
 
     #[test]
     fn coalesce_disjoint_label_sets_appended() {
         // Same family name, different LabelSets — should NOT combine.
         let mut a = MetricSet::new(Duration::from_secs(1));
-        a.insert(counter_family("cycles", Labels::of("phase", "load"), 100, ts()));
+        a.insert(counter_family(
+            "cycles",
+            Labels::of("phase", "load"),
+            100,
+            ts(),
+        ));
         let mut b = MetricSet::new(Duration::from_secs(1));
-        b.insert(counter_family("cycles", Labels::of("phase", "verify"), 50, ts()));
+        b.insert(counter_family(
+            "cycles",
+            Labels::of("phase", "verify"),
+            50,
+            ts(),
+        ));
 
         let merged = MetricSet::coalesce(&[a, b]);
         let f = merged.family("cycles").unwrap();
         assert_eq!(f.len(), 2);
         let load = f.metric_with_labels(&Labels::of("phase", "load")).unwrap();
-        let verify = f.metric_with_labels(&Labels::of("phase", "verify")).unwrap();
+        let verify = f
+            .metric_with_labels(&Labels::of("phase", "verify"))
+            .unwrap();
         match load.point().unwrap().value() {
             MetricValue::Counter(c) => assert_eq!(c.cumulative, 100),
             _ => panic!(),
@@ -1704,8 +1923,7 @@ mod tests {
     fn with_unit_preserves_name_when_suffix_already_present() {
         // No double-suffixing: if the caller already wrote the
         // canonical name, `with_unit` is a no-op for the name.
-        let f = MetricFamily::new("memory_bytes", MetricType::Gauge)
-            .with_unit("bytes");
+        let f = MetricFamily::new("memory_bytes", MetricType::Gauge).with_unit("bytes");
         assert_eq!(f.name(), "memory_bytes");
         assert_eq!(f.unit(), Some("bytes"));
     }
@@ -1751,19 +1969,22 @@ mod tests {
             MetricValue::Counter(c) => assert_eq!(c.cumulative, 10),
             _ => panic!("wrong type"),
         }
-        assert!(f.metric_with_labels(&Labels::of("phase", "missing")).is_none());
+        assert!(
+            f.metric_with_labels(&Labels::of("phase", "missing"))
+                .is_none()
+        );
     }
 
     #[test]
     fn metric_type_strings_match_open_metrics_spec() {
-        assert_eq!(MetricType::Counter.as_str(),        "counter");
-        assert_eq!(MetricType::Gauge.as_str(),          "gauge");
-        assert_eq!(MetricType::Histogram.as_str(),      "histogram");
+        assert_eq!(MetricType::Counter.as_str(), "counter");
+        assert_eq!(MetricType::Gauge.as_str(), "gauge");
+        assert_eq!(MetricType::Histogram.as_str(), "histogram");
         assert_eq!(MetricType::GaugeHistogram.as_str(), "gaugehistogram");
-        assert_eq!(MetricType::Summary.as_str(),        "summary");
-        assert_eq!(MetricType::Info.as_str(),           "info");
-        assert_eq!(MetricType::StateSet.as_str(),       "stateset");
-        assert_eq!(MetricType::Unknown.as_str(),        "unknown");
+        assert_eq!(MetricType::Summary.as_str(), "summary");
+        assert_eq!(MetricType::Info.as_str(), "info");
+        assert_eq!(MetricType::StateSet.as_str(), "stateset");
+        assert_eq!(MetricType::Unknown.as_str(), "unknown");
     }
 
     #[test]
@@ -1784,7 +2005,10 @@ mod tests {
         combine_into(&mut a, &b, CombineMode::Aggregate).unwrap();
         match a.value() {
             MetricValue::Counter(c) => {
-                assert_eq!(c.cumulative, 35, "aggregate sums cumulative across components");
+                assert_eq!(
+                    c.cumulative, 35,
+                    "aggregate sums cumulative across components"
+                );
                 assert_eq!(c.created, Some(t0), "earliest created wins");
             }
             _ => panic!("wrong type"),
@@ -1802,8 +2026,10 @@ mod tests {
         let b = MetricPoint::new(MetricValue::Counter(CounterValue::new(113)), t2);
         combine_into(&mut a, &b, CombineMode::Coalesce).unwrap();
         match a.value() {
-            MetricValue::Counter(c) =>
-                assert_eq!(c.cumulative, 113, "coalesce keeps the latest cumulative (no summing)"),
+            MetricValue::Counter(c) => assert_eq!(
+                c.cumulative, 113,
+                "coalesce keeps the latest cumulative (no summing)"
+            ),
             _ => panic!("wrong type"),
         }
     }

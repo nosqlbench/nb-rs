@@ -34,9 +34,9 @@
 //!    line + tree, then exits with an appropriate status from
 //!    [`unreached_phase_exit_code`].
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -80,26 +80,59 @@ struct ScopeRowContext {
 
 impl ScopeRowContext {
     fn new(name: &str, use_color: bool) -> Self {
-        Self { name: name.to_string(), use_color }
+        Self {
+            name: name.to_string(),
+            use_color,
+        }
     }
 }
 
 impl ro::ReadoutContext for ScopeRowContext {
-    fn subject_name(&self) -> &str { &self.name }
-    fn subject_seq(&self) -> Option<(usize, usize)> { None }
-    fn subject_labels(&self) -> &str { "" }
-    fn cycles_completed(&self) -> u64 { 0 }
-    fn cycles_total(&self) -> u64 { 0 }
-    fn ops_ok(&self) -> u64 { 0 }
-    fn errors(&self) -> u64 { 0 }
-    fn retries(&self) -> u64 { 0 }
-    fn concurrency(&self) -> usize { 0 }
-    fn elapsed_secs(&self) -> f64 { 0.0 }
-    fn consumed(&self) -> u64 { 0 }
-    fn status_metric_chips(&self) -> String { String::new() }
-    fn depth_indent(&self) -> &str { "" }
-    fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> EventType { EventType::EachStart }
+    fn subject_name(&self) -> &str {
+        &self.name
+    }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        None
+    }
+    fn subject_labels(&self) -> &str {
+        ""
+    }
+    fn cycles_completed(&self) -> u64 {
+        0
+    }
+    fn cycles_total(&self) -> u64 {
+        0
+    }
+    fn ops_ok(&self) -> u64 {
+        0
+    }
+    fn errors(&self) -> u64 {
+        0
+    }
+    fn retries(&self) -> u64 {
+        0
+    }
+    fn concurrency(&self) -> usize {
+        0
+    }
+    fn elapsed_secs(&self) -> f64 {
+        0.0
+    }
+    fn consumed(&self) -> u64 {
+        0
+    }
+    fn status_metric_chips(&self) -> String {
+        String::new()
+    }
+    fn depth_indent(&self) -> &str {
+        ""
+    }
+    fn use_color(&self) -> bool {
+        self.use_color
+    }
+    fn event(&self) -> EventType {
+        EventType::EachStart
+    }
 }
 
 /// `ReadoutContext` for the post-run summary's session-scope
@@ -118,24 +151,54 @@ struct SessionSummaryContext {
 }
 
 impl ro::ReadoutContext for SessionSummaryContext {
-    fn subject_name(&self) -> &str { "session" }
-    fn subject_id(&self) -> String { "session".to_string() }
-    fn event(&self) -> EventType { EventType::SessionEnd }
-    fn session_scenario_name(&self) -> &str { &self.scenario_name }
-    fn session_workload_file(&self) -> &str { &self.workload_file }
-    fn session_phases_completed(&self) -> usize { self.completed }
-    fn session_phases_failed(&self) -> usize { self.failed }
-    fn session_phases_pending(&self) -> usize { self.pending }
-    fn session_phases_total(&self) -> usize { self.total }
+    fn subject_name(&self) -> &str {
+        "session"
+    }
+    fn subject_id(&self) -> String {
+        "session".to_string()
+    }
+    fn event(&self) -> EventType {
+        EventType::SessionEnd
+    }
+    fn session_scenario_name(&self) -> &str {
+        &self.scenario_name
+    }
+    fn session_workload_file(&self) -> &str {
+        &self.workload_file
+    }
+    fn session_phases_completed(&self) -> usize {
+        self.completed
+    }
+    fn session_phases_failed(&self) -> usize {
+        self.failed
+    }
+    fn session_phases_pending(&self) -> usize {
+        self.pending
+    }
+    fn session_phases_total(&self) -> usize {
+        self.total
+    }
 }
 
 impl ro::ReadoutContext for SummaryRowContext {
-    fn subject_name(&self) -> &str { &self.name }
-    fn subject_seq(&self) -> Option<(usize, usize)> { self.seq }
-    fn subject_labels(&self) -> &str { &self.labels }
-    fn elapsed_secs(&self) -> f64 { self.duration_secs }
-    fn event(&self) -> EventType { EventType::PhaseEnd }
-    fn subject_state(&self) -> ro::LifecycleState { self.state.clone() }
+    fn subject_name(&self) -> &str {
+        &self.name
+    }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        self.seq
+    }
+    fn subject_labels(&self) -> &str {
+        &self.labels
+    }
+    fn elapsed_secs(&self) -> f64 {
+        self.duration_secs
+    }
+    fn event(&self) -> EventType {
+        EventType::PhaseEnd
+    }
+    fn subject_state(&self) -> ro::LifecycleState {
+        self.state.clone()
+    }
 }
 
 /// Convert a TUI-side [`LogSeverity`] back to the activity-side
@@ -146,8 +209,8 @@ impl ro::ReadoutContext for SummaryRowContext {
 fn log_severity_to_level(s: LogSeverity) -> nbrs_runtime::observer::LogLevel {
     match s {
         LogSeverity::Debug => nbrs_runtime::observer::LogLevel::Debug,
-        LogSeverity::Info  => nbrs_runtime::observer::LogLevel::Info,
-        LogSeverity::Warn  => nbrs_runtime::observer::LogLevel::Warn,
+        LogSeverity::Info => nbrs_runtime::observer::LogLevel::Info,
+        LogSeverity::Warn => nbrs_runtime::observer::LogLevel::Warn,
         LogSeverity::Error => nbrs_runtime::observer::LogLevel::Error,
     }
 }
@@ -219,10 +282,7 @@ impl TuiObserver {
     /// mirror and the post-TUI stderr fallback emit. Has no
     /// effect on what the TUI's in-app log panel shows — that
     /// is filtered by the panel's own LOD knobs.
-    pub fn with_min_level(
-        mut self,
-        min_level: nbrs_runtime::observer::LogLevel,
-    ) -> Self {
+    pub fn with_min_level(mut self, min_level: nbrs_runtime::observer::LogLevel) -> Self {
         self.min_level = min_level;
         self
     }
@@ -290,17 +350,27 @@ impl TuiObserver {
 }
 
 impl nbrs_runtime::observer::RunObserver for TuiObserver {
-    fn op_measure(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
-                  op_name: &str, text: &str) {
-        self.state.send(crate::run_state_actor::RunStateCmd::OpMeasure {
-            parent: parent_phase, op_name: op_name.to_string(), text: text.to_string() });
+    fn op_measure(
+        &self,
+        parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: &str,
+        text: &str,
+    ) {
+        self.state
+            .send(crate::run_state_actor::RunStateCmd::OpMeasure {
+                parent: parent_phase,
+                op_name: op_name.to_string(),
+                text: text.to_string(),
+            });
     }
 
     fn session_dir_ready(&self, dir: &std::path::Path) {
         // Opens <dir>/transcript.log in the actor and flushes everything
         // buffered since actor start.
-        self.state.send(crate::run_state_actor::RunStateCmd::OpenTranscript(
-            dir.join("transcript.log")));
+        self.state
+            .send(crate::run_state_actor::RunStateCmd::OpenTranscript(
+                dir.join("transcript.log"),
+            ));
     }
 
     fn sysmon_update(&self, sample: &nbrs_runtime::sysmon::SysmonSample) {
@@ -308,7 +378,15 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         self.state.send(RunStateCmd::Sysmon(sample.clone()));
     }
 
-    fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
+    fn phase_starting(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        op_templates: usize,
+        total_cycles: u64,
+        concurrency: usize,
+    ) {
         self.ensure_tui_started();
         self.state.send(RunStateCmd::PhaseStarting {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
@@ -324,7 +402,11 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         // the TUI is suppressing stderr. Same `[name] (root-first
         // coords): …` shape the terminal-mode observer emits, so
         // the archived log reads identically to stderr.
-        let template_word = if op_templates == 1 { "op template" } else { "op templates" };
+        let template_word = if op_templates == 1 {
+            "op template"
+        } else {
+            "op templates"
+        };
         let cycle_word = if total_cycles == 1 { "cycle" } else { "cycles" };
         let coords_part = if labels.is_empty() {
             String::new()
@@ -333,10 +415,19 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         };
         nbrs_runtime::observer::log(
             nbrs_runtime::observer::LogLevel::Info,
-            &format!("[{name}]{coords_part}: {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
+            &format!(
+                "[{name}]{coords_part}: {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"
+            ),
+        );
     }
 
-    fn phase_completed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_completed(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        duration_secs: f64,
+    ) {
         self.state.send(RunStateCmd::PhaseCompleted {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
             scene_node_id,
@@ -356,7 +447,13 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         }
     }
 
-    fn phase_failed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
+    fn phase_failed(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        error: &str,
+    ) {
         self.state.send(RunStateCmd::PhaseFailed {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
             scene_node_id,
@@ -377,7 +474,12 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         });
     }
 
-    fn op_completed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, duration_secs: f64) {
+    fn op_completed(
+        &self,
+        parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: &str,
+        duration_secs: f64,
+    ) {
         self.state.send(RunStateCmd::OpCompleted {
             parent: parent_phase,
             op_name: op_name.to_string(),
@@ -385,7 +487,12 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         });
     }
 
-    fn op_failed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, error: &str) {
+    fn op_failed(
+        &self,
+        parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: &str,
+        error: &str,
+    ) {
         self.state.send(RunStateCmd::OpFailed {
             parent: parent_phase,
             op_name: op_name.to_string(),
@@ -410,7 +517,10 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
 
     fn log(&self, level: nbrs_runtime::observer::LogLevel, message: &str) {
         self.log_categorized(
-            level, nbrs_runtime::observer::LogCategory::Diagnostic, message);
+            level,
+            nbrs_runtime::observer::LogCategory::Diagnostic,
+            message,
+        );
     }
 
     fn log_categorized(
@@ -438,9 +548,7 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         // `min_level` filter `StderrObserver` uses, otherwise
         // the post-`q` console gets Debug-level fiber-exit
         // chatter that the operator doesn't want.
-        if !self.tui_active.load(Ordering::Acquire)
-            && level >= self.min_level
-        {
+        if !self.tui_active.load(Ordering::Acquire) && level >= self.min_level {
             eprintln!("{message}");
         }
     }
@@ -464,8 +572,13 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
 
     fn reporters(&self) -> Vec<(Duration, Box<dyn nbrs_metrics::scheduler::Reporter>)> {
         let mut guard = self.reporter.lock();
-        let Some(r) = guard.take() else { return Vec::new(); };
-        vec![(Duration::from_secs(1), Box::new(r) as Box<dyn nbrs_metrics::scheduler::Reporter>)]
+        let Some(r) = guard.take() else {
+            return Vec::new();
+        };
+        vec![(
+            Duration::from_secs(1),
+            Box::new(r) as Box<dyn nbrs_metrics::scheduler::Reporter>,
+        )]
     }
 
     fn cadences(&self) -> Option<Cadences> {
@@ -504,18 +617,23 @@ pub fn print_post_run_summary(
 
     // Count phases only (scope headers are visual, not
     // executable).
-    let phases_only: Vec<&PhaseEntry> = s.phases.iter()
+    let phases_only: Vec<&PhaseEntry> = s
+        .phases
+        .iter()
         .filter(|p| p.kind == EntryKind::Phase)
         .collect();
-    let completed = phases_only.iter().filter(|p| {
-        matches!(p.status, PhaseStatus::Completed)
-    }).count();
-    let failed = phases_only.iter().filter(|p| {
-        matches!(p.status, PhaseStatus::Failed(_))
-    }).count();
-    let pending = phases_only.iter().filter(|p| {
-        matches!(p.status, PhaseStatus::Pending)
-    }).count();
+    let completed = phases_only
+        .iter()
+        .filter(|p| matches!(p.status, PhaseStatus::Completed))
+        .count();
+    let failed = phases_only
+        .iter()
+        .filter(|p| matches!(p.status, PhaseStatus::Failed(_)))
+        .count();
+    let pending = phases_only
+        .iter()
+        .filter(|p| matches!(p.status, PhaseStatus::Pending))
+        .count();
 
     // SRD-63 Push 9d: route the opening banner + the
     // `phases:  X completed, Y failed, …` rollup through
@@ -586,23 +704,26 @@ pub fn print_post_run_summary(
         // correct trade against corrupting a real run. Only the write is skipped
         // — the failures inset below still prints.
         if let Some(tree_dir) = session_dir {
-        let tree_path = tree_dir.join("scenario_tree.txt");
-        match std::fs::write(&tree_path, &tree) {
-            Ok(()) => {
-                eprintln!("scenario tree: nbrs replay --format=tree");
+            let tree_path = tree_dir.join("scenario_tree.txt");
+            match std::fs::write(&tree_path, &tree) {
+                Ok(()) => {
+                    eprintln!("scenario tree: nbrs replay --format=tree");
+                }
+                Err(e) => {
+                    // Best-effort: a write failure must not crash the
+                    // post-run summary or hide the useful header. Note
+                    // it (not silently) and carry on without the
+                    // pointer, since the artifact it points at is
+                    // missing.
+                    nbrs_runtime::observer::log(
+                        nbrs_runtime::observer::LogLevel::Warn,
+                        &format!(
+                            "could not persist scenario tree to {}: {e}",
+                            tree_path.display()
+                        ),
+                    );
+                }
             }
-            Err(e) => {
-                // Best-effort: a write failure must not crash the
-                // post-run summary or hide the useful header. Note
-                // it (not silently) and carry on without the
-                // pointer, since the artifact it points at is
-                // missing.
-                nbrs_runtime::observer::log(
-                    nbrs_runtime::observer::LogLevel::Warn,
-                    &format!("could not persist scenario tree to {}: {e}",
-                        tree_path.display()));
-            }
-        }
         }
     }
 
@@ -613,9 +734,11 @@ pub fn print_post_run_summary(
     // failure without having to open the full scenario tree
     // (now persisted to `scenario_tree.txt` rather than printed
     // inline).
-    let failed: Vec<(usize, &PhaseEntry)> = s.phases.iter().enumerate()
-        .filter(|(_, p)| p.kind == EntryKind::Phase
-            && matches!(p.status, PhaseStatus::Failed(_)))
+    let failed: Vec<(usize, &PhaseEntry)> = s
+        .phases
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.kind == EntryKind::Phase && matches!(p.status, PhaseStatus::Failed(_)))
         .collect();
     if !failed.is_empty() {
         eprintln!();
@@ -706,7 +829,9 @@ pub fn print_post_run_summary(
         // `loglevel=debug` (or set the env var) — same
         // knob as the live path.
         let display_min = nbrs_runtime::observer::display_level();
-        let recent: Vec<&LogEntry> = s.log_messages.iter()
+        let recent: Vec<&LogEntry> = s
+            .log_messages
+            .iter()
             .rev()
             .filter(|e| log_severity_to_level(e.severity) >= display_min)
             .take(20)
@@ -718,25 +843,31 @@ pub fn print_post_run_summary(
         }
         eprintln!();
         eprintln!("--- recent log messages ---");
-        eprintln!("  (elapsed-seconds since session start at {} UTC)",
-            nbrs_runtime::session::format_log_timestamp(s.started_at_utc));
+        eprintln!(
+            "  (elapsed-seconds since session start at {} UTC)",
+            nbrs_runtime::session::format_log_timestamp(s.started_at_utc)
+        );
         for entry in recent.into_iter().rev() {
-            let elapsed = entry.at.duration_since(s.started_at_utc)
+            let elapsed = entry
+                .at
+                .duration_since(s.started_at_utc)
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0);
             let ts = format_elapsed_seconds(elapsed);
             let level = log_severity_to_level(entry.severity);
             let lvl_tag = match entry.severity {
                 crate::state::LogSeverity::Debug => "DBG",
-                crate::state::LogSeverity::Info  => "INF",
-                crate::state::LogSeverity::Warn  => "WRN",
+                crate::state::LogSeverity::Info => "INF",
+                crate::state::LogSeverity::Warn => "WRN",
                 crate::state::LogSeverity::Error => "ERR",
             };
             // Color the entire line by severity so the
             // dump matches the live console look.
             let line = format!("  {ts} {lvl_tag} {}", entry.message);
-            eprintln!("{}",
-                nbrs_runtime::observer::colorize_log_line(level, &line));
+            eprintln!(
+                "{}",
+                nbrs_runtime::observer::colorize_log_line(level, &line)
+            );
         }
         eprintln!("---");
     }
@@ -765,9 +896,7 @@ fn render_scenario_tree(phases: &[PhaseEntry]) -> String {
     use std::fmt::Write as _;
     // `total` for the `[n/total]` sequence chip counts
     // executable phases only (scope headers are visual).
-    let total = phases.iter()
-        .filter(|p| p.kind == EntryKind::Phase)
-        .count();
+    let total = phases.iter().filter(|p| p.kind == EntryKind::Phase).count();
     let mut out = String::with_capacity(total * 48);
     for phase in phases.iter() {
         let indent = " ".repeat(phase.depth);
@@ -803,9 +932,9 @@ fn render_scenario_tree(phases: &[PhaseEntry]) -> String {
             seq: phase.seq.map(|sq| (sq, total)),
             duration_secs: phase.duration_secs.unwrap_or(0.0),
             state: match &phase.status {
-                PhaseStatus::Completed   => ro::LifecycleState::Completed,
-                PhaseStatus::Running     => ro::LifecycleState::Running,
-                PhaseStatus::Pending     => ro::LifecycleState::Pending,
+                PhaseStatus::Completed => ro::LifecycleState::Completed,
+                PhaseStatus::Running => ro::LifecycleState::Running,
+                PhaseStatus::Pending => ro::LifecycleState::Pending,
                 PhaseStatus::Failed(err) => ro::LifecycleState::Failed(err.clone()),
             },
         };
@@ -844,9 +973,9 @@ fn render_scenario_tree(phases: &[PhaseEntry]) -> String {
 fn format_elapsed_seconds(elapsed_secs: f64) -> String {
     let s = elapsed_secs.max(0.0);
     if s < 10.0 {
-        format!("{s:.5}")          // 0.00000 → 9.99999  (7 chars)
+        format!("{s:.5}") // 0.00000 → 9.99999  (7 chars)
     } else if s < 100.0 {
-        format!("{s:.4}")          // 10.0000 → 99.9999 (7 chars)
+        format!("{s:.4}") // 10.0000 → 99.9999 (7 chars)
     } else {
         // 100.0+ : 3 fractional digits fixed; the integer part widens
         // (7 chars over 100–999.999, 8+ from 1000.000 on).
@@ -859,7 +988,9 @@ fn format_elapsed_seconds(elapsed_secs: f64) -> String {
 /// the target collecting the nearest scope at each
 /// strictly-shallower depth.
 fn scope_ancestors(phases: &[PhaseEntry], target_idx: usize) -> Vec<usize> {
-    if target_idx >= phases.len() { return Vec::new(); }
+    if target_idx >= phases.len() {
+        return Vec::new();
+    }
     let mut needed_depth = phases[target_idx].depth;
     let mut ancestors: Vec<usize> = Vec::new();
     for i in (0..target_idx).rev() {
@@ -867,7 +998,9 @@ fn scope_ancestors(phases: &[PhaseEntry], target_idx: usize) -> Vec<usize> {
         if p.kind == EntryKind::Scope && p.depth < needed_depth {
             ancestors.push(i);
             needed_depth = p.depth;
-            if needed_depth == 0 { break; }
+            if needed_depth == 0 {
+                break;
+            }
         }
     }
     ancestors.reverse();
@@ -883,16 +1016,17 @@ fn scope_ancestors(phases: &[PhaseEntry], target_idx: usize) -> Vec<usize> {
 /// has no data — that phase still transitions Pending → Running
 /// → Completed. What this catches is phases the executor should
 /// have visited but didn't.
-pub fn unreached_phase_exit_code(
-    run_state: &RunStateHandle,
-) -> Option<i32> {
+pub fn unreached_phase_exit_code(run_state: &RunStateHandle) -> Option<i32> {
     let s = run_state.load();
     let s: &RunState = &s;
-    let unreached: Vec<&PhaseEntry> = s.phases.iter()
-        .filter(|p| p.kind == EntryKind::Phase
-            && matches!(p.status, PhaseStatus::Pending))
+    let unreached: Vec<&PhaseEntry> = s
+        .phases
+        .iter()
+        .filter(|p| p.kind == EntryKind::Phase && matches!(p.status, PhaseStatus::Pending))
         .collect();
-    if unreached.is_empty() { return None; }
+    if unreached.is_empty() {
+        return None;
+    }
     // A user-initiated stop (Ctrl-C) intentionally leaves later phases
     // unrun — that's not an error, and dumping the whole pending list is
     // noise. Exit with the conventional SIGINT code, no phase dump (the
@@ -917,12 +1051,15 @@ pub fn unreached_phase_exit_code(
     // stranded. The "scenario stop-on-error … halting remaining walk"
     // log already records the skip.
     if nbrs_runtime::session_signals::graceful_stop_requested()
-        || nbrs_runtime::session_signals::fault_stop_requested() {
+        || nbrs_runtime::session_signals::fault_stop_requested()
+    {
         return None;
     }
     eprintln!();
-    eprintln!("warning: {} pre-mapped phase(s) were not executed:",
-        unreached.len());
+    eprintln!(
+        "warning: {} pre-mapped phase(s) were not executed:",
+        unreached.len()
+    );
     for p in &unreached {
         let labels = if p.labels.is_empty() {
             String::new()
@@ -941,18 +1078,18 @@ mod elapsed_format_tests {
     #[test]
     fn buckets_widen_seconds_keep_seven_until_thousand() {
         // [0, 10): one integer digit + 5 fractional
-        assert_eq!(format_elapsed_seconds(0.0),       "0.00000");
-        assert_eq!(format_elapsed_seconds(0.000123),  "0.00012");
-        assert_eq!(format_elapsed_seconds(9.99999),   "9.99999");
+        assert_eq!(format_elapsed_seconds(0.0), "0.00000");
+        assert_eq!(format_elapsed_seconds(0.000123), "0.00012");
+        assert_eq!(format_elapsed_seconds(9.99999), "9.99999");
         // [10, 100): two integer digits + 4 fractional
-        assert_eq!(format_elapsed_seconds(10.0),      "10.0000");
-        assert_eq!(format_elapsed_seconds(99.9999),   "99.9999");
+        assert_eq!(format_elapsed_seconds(10.0), "10.0000");
+        assert_eq!(format_elapsed_seconds(99.9999), "99.9999");
         // [100, 1000): three integer digits + 3 fractional
-        assert_eq!(format_elapsed_seconds(100.0),     "100.000");
-        assert_eq!(format_elapsed_seconds(999.999),   "999.999");
+        assert_eq!(format_elapsed_seconds(100.0), "100.000");
+        assert_eq!(format_elapsed_seconds(999.999), "999.999");
         // [1000, ∞): integer widens, millis stays at 3
         assert_eq!(format_elapsed_seconds(1234.5678), "1234.568");
-        assert_eq!(format_elapsed_seconds(12345.6),   "12345.600");
+        assert_eq!(format_elapsed_seconds(12345.6), "12345.600");
     }
 
     #[test]
@@ -993,21 +1130,33 @@ mod scenario_tree_tests {
         let tree = render_scenario_tree(&s.phases);
 
         // Scope header (cyan bullet, italic name) — plain here.
-        assert!(tree.contains("· for_each n"),
-            "scope header missing:\n{tree}");
+        assert!(
+            tree.contains("· for_each n"),
+            "scope header missing:\n{tree}"
+        );
         // Failed leaf: [!!] marker + trailing (err), seq [1/2].
-        assert!(tree.contains("[!!] [1/2] boom"),
-            "failed marker/seq missing:\n{tree}");
-        assert!(tree.contains("(synthetic failure)"),
-            "failure text missing:\n{tree}");
+        assert!(
+            tree.contains("[!!] [1/2] boom"),
+            "failed marker/seq missing:\n{tree}"
+        );
+        assert!(
+            tree.contains("(synthetic failure)"),
+            "failure text missing:\n{tree}"
+        );
         // Pending leaf: [  ] marker + (not run), seq [2/2].
-        assert!(tree.contains("[  ] [2/2] never"),
-            "pending marker/seq missing:\n{tree}");
-        assert!(tree.contains("(not run)"),
-            "(not run) suffix missing:\n{tree}");
+        assert!(
+            tree.contains("[  ] [2/2] never"),
+            "pending marker/seq missing:\n{tree}"
+        );
+        assert!(
+            tree.contains("(not run)"),
+            "(not run) suffix missing:\n{tree}"
+        );
         // Plain artifact — no ANSI escapes leak into the file.
-        assert!(!tree.contains('\u{1b}'),
-            "persisted tree must be plain (no ANSI):\n{tree:?}");
+        assert!(
+            !tree.contains('\u{1b}'),
+            "persisted tree must be plain (no ANSI):\n{tree:?}"
+        );
     }
 
     /// Completed phases render `[ok]` and drop the marker/seq
@@ -1020,13 +1169,16 @@ mod scenario_tree_tests {
         let mut s = RunState::new("wl.yaml", "default", "testkit");
         s.install_tree(t);
         s.set_phase_running(p, "warmup", "", 1);
-        s.set_phase_completed(p, "warmup", "", 0.02,
-            crate::state::PhaseSummary::default());
+        s.set_phase_completed(p, "warmup", "", 0.02, crate::state::PhaseSummary::default());
 
         let tree = render_scenario_tree(&s.phases);
-        assert!(tree.contains("[ok] [1/1] warmup"),
-            "completed marker/seq missing:\n{tree}");
-        assert!(!tree.contains("(not run)"),
-            "completed row must not carry (not run):\n{tree}");
+        assert!(
+            tree.contains("[ok] [1/1] warmup"),
+            "completed marker/seq missing:\n{tree}"
+        );
+        assert!(
+            !tree.contains("(not run)"),
+            "completed row must not carry (not run):\n{tree}"
+        );
     }
 }

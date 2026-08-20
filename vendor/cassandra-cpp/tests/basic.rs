@@ -352,9 +352,12 @@ async fn test_decimal_round_trip() -> Result<()> {
             // instead of by display string.
             let txt_dec = BigDecimal::from_str(&txt).unwrap();
             assert_eq!(
-                txt_dec, dec,
+                txt_dec,
+                dec,
                 "Decimal test for literal CQL ({}):  {} and {}",
-                key, txt, dec.to_string(),
+                key,
+                txt,
+                dec.to_string(),
             );
         }
     }
@@ -384,9 +387,12 @@ async fn test_decimal_round_trip() -> Result<()> {
             // (`0.0000` ≡ `0`) doesn't trip the assertion.
             let txt_dec = BigDecimal::from_str(&txt).unwrap();
             assert_eq!(
-                txt_dec, dec,
+                txt_dec,
+                dec,
                 "Decimal test for driver ({}):  {} and {}",
-                key, txt, dec.to_string(),
+                key,
+                txt,
+                dec.to_string(),
             );
         }
     }

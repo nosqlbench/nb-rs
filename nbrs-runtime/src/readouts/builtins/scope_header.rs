@@ -35,8 +35,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct ScopeHeader;
 
 impl Readout for ScopeHeader {
-    fn name(&self) -> &'static str { "scope_header" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Iteration] }
+    fn name(&self) -> &'static str {
+        "scope_header"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Iteration]
+    }
 
     fn render(
         &self,
@@ -47,23 +51,19 @@ impl Readout for ScopeHeader {
         out: &mut dyn ReadoutBuf,
     ) -> usize {
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_value(ctx, out, false),
-            (Lod::Labeled,  ContentMode::Value)       => render_value(ctx, out, false),
-            (Lod::Expanded, ContentMode::Value)       => render_value(ctx, out, true),
-            (_,             ContentMode::Explanation) => render_explanation(out),
+            (Lod::Compact, ContentMode::Value) => render_value(ctx, out, false),
+            (Lod::Labeled, ContentMode::Value) => render_value(ctx, out, false),
+            (Lod::Expanded, ContentMode::Value) => render_value(ctx, out, true),
+            (_, ContentMode::Explanation) => render_explanation(out),
         }
     }
 }
 
-fn render_value(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-    expanded: bool,
-) -> usize {
+fn render_value(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf, expanded: bool) -> usize {
     let color = ctx.use_color();
-    let cyan   = if color { "\x1b[36m" } else { "" };
-    let italic = if color { "\x1b[3m"  } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let cyan = if color { "\x1b[36m" } else { "" };
+    let italic = if color { "\x1b[3m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let name = ctx.subject_name();
     let labels = ctx.subject_labels();
 
@@ -103,21 +103,51 @@ mod tests {
         use_color: bool,
     }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { &self.name }
-        fn subject_seq(&self) -> Option<(usize, usize)> { None }
-        fn subject_labels(&self) -> &str { &self.labels }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { "" }
-        fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::EachStart }
+        fn subject_name(&self) -> &str {
+            &self.name
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            None
+        }
+        fn subject_labels(&self) -> &str {
+            &self.labels
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            ""
+        }
+        fn use_color(&self) -> bool {
+            self.use_color
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::EachStart
+        }
     }
 
     fn render(ctx: &TestCtx, lod: Lod, mode: ContentMode) -> String {
@@ -166,8 +196,10 @@ mod tests {
         assert!(out.contains("for_combinations"));
         assert!(out.contains("(profile=alpha), (k=10, limit=100)"));
         // Expanded splits onto two lines.
-        assert!(out.lines().count() >= 2,
-            "expanded should be multi-line: {out}");
+        assert!(
+            out.lines().count() >= 2,
+            "expanded should be multi-line: {out}"
+        );
     }
 
     #[test]
@@ -177,8 +209,10 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled, ContentMode::Explanation);
-        assert!(out.contains("scope-name"),
-            "expected 'scope-name' descriptor: {out}");
+        assert!(
+            out.contains("scope-name"),
+            "expected 'scope-name' descriptor: {out}"
+        );
     }
 
     #[test]
@@ -191,7 +225,7 @@ mod tests {
         let out = render(&ctx, Lod::Labeled, ContentMode::Value);
         // Cyan bullet + italic name + reset bytes.
         assert!(out.contains("\x1b[36m"), "missing cyan: {out:?}");
-        assert!(out.contains("\x1b[3m"),  "missing italic: {out:?}");
-        assert!(out.contains("\x1b[0m"),  "missing reset: {out:?}");
+        assert!(out.contains("\x1b[3m"), "missing italic: {out:?}");
+        assert!(out.contains("\x1b[0m"), "missing reset: {out:?}");
     }
 }

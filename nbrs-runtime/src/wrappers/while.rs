@@ -28,8 +28,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// Wrapper name.
@@ -43,15 +43,18 @@ pub const BINDING_NAME: &str = "__while";
 
 /// Trigger: op declares a `while:` expression.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template.while_cond.is_some()
 }
 
 fn describe_assignment(s: WrapperSubject) -> Option<String> {
     let template = s.op()?;
-    template.while_cond.as_ref().map(|expr| {
-        format!("while: {}", expr.trim())
-    })
+    template
+        .while_cond
+        .as_ref()
+        .map(|expr| format!("while: {}", expr.trim()))
 }
 
 inventory::submit! {
@@ -112,8 +115,10 @@ impl WhileWrapper {
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
         let cond_handle = fx.register_pull(BINDING_NAME).map_err(|e| {
-            format!("while: {e} (expected synthesised binding `{BINDING_NAME}` \
-                     on the op-template kernel — synthesis bug?)")
+            format!(
+                "while: {e} (expected synthesised binding `{BINDING_NAME}` \
+                     on the op-template kernel — synthesis bug?)"
+            )
         })?;
         Ok(Arc::new(Self {
             inner,
@@ -131,9 +136,9 @@ impl WhileWrapper {
         fx: &mut crate::fixture::ScopeFixture,
         ceiling: u64,
     ) -> Result<Arc<dyn OpDispenser>, String> {
-        let cond_handle = fx.register_pull(BINDING_NAME).map_err(|e| {
-            format!("while: {e}")
-        })?;
+        let cond_handle = fx
+            .register_pull(BINDING_NAME)
+            .map_err(|e| format!("while: {e}"))?;
         Ok(Arc::new(Self {
             inner,
             cond_handle,
@@ -148,7 +153,6 @@ impl WhileWrapper {
 /// share a semantic: 0/false/empty-string/None is falsy,
 /// everything else is truthy.
 
-
 impl WrappingDispenser for WhileWrapper {}
 
 impl OpDispenser for WhileWrapper {
@@ -156,7 +160,9 @@ impl OpDispenser for WhileWrapper {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let mut iterations: u64 = 0;
             let mut last_result: Option<OpResult> = None;
@@ -174,9 +180,11 @@ impl OpDispenser for WhileWrapper {
                     // identical to a natural predicate-flip
                     // exit; the activity log records the
                     // ceiling hit at iteration time below.
-                    crate::diag!(crate::observer::LogLevel::Warn,
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
                         "while: iteration ceiling {} hit; exiting loop",
-                        self.iteration_ceiling);
+                        self.iteration_ceiling
+                    );
                     return Ok(last_result.unwrap_or_else(OpResult::skipped));
                 }
                 let cond = ctx.pulls.get(self.cond_handle);

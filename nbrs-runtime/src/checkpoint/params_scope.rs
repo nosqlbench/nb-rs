@@ -71,16 +71,15 @@ pub(crate) fn consumed_params(
     for prog in op_template_programs {
         seed.extend(prog.owned_extern_closure());
     }
-    let ancestor_programs: Vec<std::sync::Arc<PolydatProgram>> =
-        ancestors_below_session.iter()
-            .map(|k| k.program().clone())
-            .collect();
+    let ancestor_programs: Vec<std::sync::Arc<PolydatProgram>> = ancestors_below_session
+        .iter()
+        .map(|k| k.program().clone())
+        .collect();
     let ancestor_refs: Vec<&PolydatProgram> =
         ancestor_programs.iter().map(|p| p.as_ref()).collect();
-    let terminal: BTreeSet<String> =
-        PolydatProgram::resolve_externs_through(seed, &ancestor_refs)
-            .into_iter()
-            .collect();
+    let terminal: BTreeSet<String> = PolydatProgram::resolve_externs_through(seed, &ancestor_refs)
+        .into_iter()
+        .collect();
 
     // Terminal intersection + textual union.
     let mut out = BTreeMap::new();
@@ -104,7 +103,8 @@ mod tests {
     }
 
     fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter()
+        pairs
+            .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
     }
@@ -117,7 +117,10 @@ mod tests {
     fn direct_extern_consumption() {
         let phase = kernel("extern p1: String\nout := p1\n");
         let got = consumed_params(
-            &phase.program(), &[], &[], "",
+            &phase.program(),
+            &[],
+            &[],
+            "",
             &params(&[("p1", "a"), ("p2", "b")]),
         );
         assert_eq!(names(&got), vec!["p1"]);
@@ -131,7 +134,10 @@ mod tests {
         let root = kernel("extern run_tag: String\nalias := run_tag\n");
         let phase = kernel("extern alias: String\nout := alias\n");
         let got = consumed_params(
-            &phase.program(), &[], &[root], "",
+            &phase.program(),
+            &[],
+            &[root],
+            "",
             &params(&[("run_tag", "a"), ("other", "b")]),
         );
         assert_eq!(names(&got), vec!["run_tag"]);
@@ -143,11 +149,13 @@ mod tests {
         // `b` from p2; a phase consuming only `a` must consume
         // only p1 — whole-program over-approximation would pull
         // p2 and reintroduce whole-module invalidation.
-        let root = kernel(
-            "extern p1: String\nextern p2: String\na := p1\nb := p2\n");
+        let root = kernel("extern p1: String\nextern p2: String\na := p1\nb := p2\n");
         let phase = kernel("extern a: String\nout := a\n");
         let got = consumed_params(
-            &phase.program(), &[], &[root], "",
+            &phase.program(),
+            &[],
+            &[root],
+            "",
             &params(&[("p1", "x"), ("p2", "y")]),
         );
         assert_eq!(names(&got), vec!["p1"]);
@@ -157,7 +165,9 @@ mod tests {
     fn textual_interpolation_site_is_consumed() {
         let phase = kernel("out := 1\n");
         let got = consumed_params(
-            &phase.program(), &[], &[],
+            &phase.program(),
+            &[],
+            &[],
             r#"{"ops":{"q":{"stmt":"SELECT * FROM {keyspace}.t"}}}"#,
             &params(&[("keyspace", "ks"), ("unrelated", "z")]),
         );
@@ -172,7 +182,8 @@ mod tests {
         let got = consumed_params(
             &phase.program(),
             &[op_template.program().clone()],
-            &[root], "",
+            &[root],
+            "",
             &params(&[("p1", "x"), ("p2", "y")]),
         );
         assert_eq!(names(&got), vec!["p1"]);
@@ -186,7 +197,10 @@ mod tests {
         let comprehension = kernel("section := \"b\"\n");
         let phase = kernel("extern section: String\nout := section\n");
         let got = consumed_params(
-            &phase.program(), &[], &[comprehension], "",
+            &phase.program(),
+            &[],
+            &[comprehension],
+            "",
             &params(&[("run_tag", "a")]),
         );
         assert!(got.is_empty(), "got: {got:?}");
@@ -195,10 +209,7 @@ mod tests {
     #[test]
     fn coordinates_are_excluded_and_empty_set_is_empty() {
         let phase = kernel("input cycle: u64\nout := cycle\n");
-        let got = consumed_params(
-            &phase.program(), &[], &[], "",
-            &params(&[("p1", "a")]),
-        );
+        let got = consumed_params(&phase.program(), &[], &[], "", &params(&[("p1", "a")]));
         assert!(got.is_empty(), "got: {got:?}");
     }
 
@@ -215,12 +226,12 @@ mod tests {
     #[test]
     fn bare_compile_extern_reexport_reads_as_owned() {
         let phase = kernel("extern p1: String\nout := 1\n");
-        let got = consumed_params(
-            &phase.program(), &[], &[], "",
-            &params(&[("p1", "a")]),
+        let got = consumed_params(&phase.program(), &[], &[], "", &params(&[("p1", "a")]));
+        assert_eq!(
+            names(&got),
+            vec!["p1"],
+            "bare-compile re-exports carry no inherited marking"
         );
-        assert_eq!(names(&got), vec!["p1"],
-            "bare-compile re-exports carry no inherited marking");
     }
 
     #[test]

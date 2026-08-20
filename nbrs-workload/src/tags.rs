@@ -6,8 +6,8 @@
 //! Ops are selected for execution based on their tags. Scenario steps
 //! specify tag filters like `tags=block:schema` or `tags==block:"main.*"`.
 
-use std::collections::HashMap;
 use crate::model::ParsedOp;
+use std::collections::HashMap;
 
 /// A tag filter expression: key-value pairs where values can be
 /// exact matches or regex patterns.
@@ -30,13 +30,19 @@ impl TagFilter {
         let mut conditions = Vec::new();
         for part in spec.split(',') {
             let part = part.trim();
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             if let Some(colon_pos) = part.find(':') {
                 let key = part[..colon_pos].trim().to_string();
                 let value = part[colon_pos + 1..].trim().trim_matches('"').to_string();
                 // If it looks like a regex (contains .*+?[]()|), treat as regex
-                if value.contains('*') || value.contains('+') || value.contains('?')
-                    || value.contains('[') || value.contains('(') || value.contains('|')
+                if value.contains('*')
+                    || value.contains('+')
+                    || value.contains('?')
+                    || value.contains('[')
+                    || value.contains('(')
+                    || value.contains('|')
                 {
                     let re = regex::Regex::new(&format!("^{value}$"))
                         .map_err(|e| format!("invalid tag regex '{value}': {e}"))?;
@@ -57,9 +63,7 @@ impl TagFilter {
         self.conditions.iter().all(|(key, matcher)| {
             if let Some(tag_value) = tags.get(key) {
                 match matcher {
-                    TagMatch::Exact(expected) => {
-                        expected.is_empty() || tag_value == expected
-                    }
+                    TagMatch::Exact(expected) => expected.is_empty() || tag_value == expected,
                     TagMatch::Regex(re) => re.is_match(tag_value),
                 }
             } else {
@@ -71,7 +75,8 @@ impl TagFilter {
     /// Filter a list of ops, keeping only those that match.
     pub fn filter_ops(ops: &[ParsedOp], spec: &str) -> Result<Vec<ParsedOp>, String> {
         let filter = Self::parse(spec)?;
-        Ok(ops.iter()
+        Ok(ops
+            .iter()
             .filter(|op| filter.matches(&op.tags))
             .cloned()
             .collect())
@@ -83,7 +88,10 @@ mod tests {
     use super::*;
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]

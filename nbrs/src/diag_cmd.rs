@@ -68,8 +68,7 @@ pub fn spec() -> crate::cli_spec::Command {
                 name: "dbdir",
                 help: "Dataset directory containing profiles/.",
                 kind: crate::cli_spec::PositionalKind::One,
-                value: crate::cli_spec::ValueProvider::Custom(
-                    crate::completion::dirs_provider),
+                value: crate::cli_spec::ValueProvider::Custom(crate::completion::dirs_provider),
             }],
             subcommands: Vec::new(),
             handler: Some(Handler::Sync(handle_query_labels)),
@@ -84,15 +83,12 @@ pub fn spec() -> crate::cli_spec::Command {
 
 /// `nbrs diag query-labels <dbdir>` — see the module docs.
 fn query_labels(args: &[String]) -> Result<(), String> {
-    let dataset_dir = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .ok_or_else(|| {
-            "usage: nbrs diag query-labels <dbdir>\n\
+    let dataset_dir = args.iter().find(|a| !a.starts_with('-')).ok_or_else(|| {
+        "usage: nbrs diag query-labels <dbdir>\n\
              <dbdir> is the dataset directory containing `profiles/` \
              (base, default, label_NN partitions)."
-                .to_string()
-        })?;
+            .to_string()
+    })?;
     let base = Path::new(dataset_dir);
     if !base.is_dir() {
         return Err(format!("dataset directory not found: {}", base.display()));
@@ -137,9 +133,8 @@ fn query_labels(args: &[String]) -> Result<(), String> {
     println!("|-------|---------------|-------------------|--------|");
     for &label in &sorted_labels {
         let globals = label_globals.get(&label).map(|v| v.len()).unwrap_or(0);
-        let profile_base = read_vec_count(
-            &base.join(format!("profiles/label_{label:02}/base_vectors.fvec")),
-        )?;
+        let profile_base =
+            read_vec_count(&base.join(format!("profiles/label_{label:02}/base_vectors.fvec")))?;
         let matches = if globals == profile_base { "yes" } else { "NO" };
         println!("| {label:>5} | {globals:>13} | {profile_base:>17} | {matches:>6} |");
     }
@@ -156,7 +151,11 @@ fn query_labels(args: &[String]) -> Result<(), String> {
         let profile_queries =
             read_raw(&base.join(format!("profiles/label_{label:02}/query_vectors.fvec")))?;
         let pq_count = fvec_count(&profile_queries);
-        let status = if base_queries == profile_queries { "identical" } else { "DIFFERENT" };
+        let status = if base_queries == profile_queries {
+            "identical"
+        } else {
+            "DIFFERENT"
+        };
         println!("label_{label:02}: {pq_count} queries, {status} to base");
     }
 
@@ -186,8 +185,12 @@ fn query_labels(args: &[String]) -> Result<(), String> {
         let mut total_exact = 0usize;
 
         for &label in &sorted_labels {
-            let Some(globals) = label_globals.get(&label) else { continue };
-            let Some(pni) = profile_neighbors.get(&label) else { continue };
+            let Some(globals) = label_globals.get(&label) else {
+                continue;
+            };
+            let Some(pni) = profile_neighbors.get(&label) else {
+                continue;
+            };
             let query_indices = &label_query_indices[&label];
 
             let mut label_overlap = 0.0f64;
@@ -214,7 +217,11 @@ fn query_labels(args: &[String]) -> Result<(), String> {
                     .iter()
                     .map(|&local| {
                         let l = local as usize;
-                        if l < globals.len() { globals[l] as i32 } else { -1 }
+                        if l < globals.len() {
+                            globals[l] as i32
+                        } else {
+                            -1
+                        }
                     })
                     .collect();
 
@@ -229,8 +236,11 @@ fn query_labels(args: &[String]) -> Result<(), String> {
                 label_count += 1;
             }
 
-            let avg_overlap =
-                if label_count > 0 { label_overlap / label_count as f64 } else { 0.0 };
+            let avg_overlap = if label_count > 0 {
+                label_overlap / label_count as f64
+            } else {
+                0.0
+            };
             let exact_pct = if label_count > 0 {
                 label_exact as f64 / label_count as f64 * 100.0
             } else {

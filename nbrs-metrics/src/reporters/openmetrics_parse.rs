@@ -61,14 +61,19 @@ pub fn parse_prometheus_text(text: &str) -> MetricSet {
                 snapshot.insert_counter(&line.base_name, line.labels.clone(), *value, now);
             }
             LineKind::Gauge { value } => {
-                if line.is_rate { continue; }
+                if line.is_rate {
+                    continue;
+                }
                 if timer_bases.contains(&line.base_name) && line.quantile.is_none() {
                     continue;
                 }
                 if let Some(q) = line.quantile {
                     let key = (line.base_name.clone(), line.label_key.clone());
-                    timer_parts.entry(key).or_default()
-                        .quantiles.push((q, *value));
+                    timer_parts
+                        .entry(key)
+                        .or_default()
+                        .quantiles
+                        .push((q, *value));
                 } else {
                     snapshot.insert_gauge(&line.base_name, line.labels.clone(), *value, now);
                 }
@@ -87,8 +92,8 @@ pub fn parse_prometheus_text(text: &str) -> MetricSet {
     }
 
     for ((base_name, _), accum) in timer_parts {
-        let mut histogram = HdrHistogram::new_with_bounds(1, 3_600_000_000_000, 3)
-            .expect("histogram bounds");
+        let mut histogram =
+            HdrHistogram::new_with_bounds(1, 3_600_000_000_000, 3).expect("histogram bounds");
 
         if accum.quantiles.is_empty() && accum.count > 0 {
             let mean_nanos = (accum.sum_seconds / accum.count as f64 * 1_000_000_000.0) as u64;
@@ -168,8 +173,7 @@ fn parse_line(line: &str) -> Option<ParsedLine> {
 
     let (raw_name, labels_str) = if let Some(brace_start) = name_and_labels.find('{') {
         let name = &name_and_labels[..brace_start];
-        let labels_inner = name_and_labels[brace_start + 1..]
-            .strip_suffix('}')?;
+        let labels_inner = name_and_labels[brace_start + 1..].strip_suffix('}')?;
         (name, Some(labels_inner))
     } else {
         (name_and_labels, None)
@@ -182,7 +186,8 @@ fn parse_line(line: &str) -> Option<ParsedLine> {
 
     if let Some(inner) = labels_str {
         for pair in split_label_pairs(inner) {
-            let (k, v) = pair.split_once('=')
+            let (k, v) = pair
+                .split_once('=')
                 .map(|(k, v)| (k, v.trim_matches('"')))?;
             if k == "quantile" {
                 quantile = v.parse().ok();
@@ -349,7 +354,11 @@ mod tests {
                 // Reconstruction from quantile lines is inherently
                 // approximate — bucket-count rounding may drop one
                 // observation. Within 1% is acceptable.
-                assert!(h.count >= 990, "count round-trip lost too much: {}", h.count);
+                assert!(
+                    h.count >= 990,
+                    "count round-trip lost too much: {}",
+                    h.count
+                );
                 let parsed_p99 = h.reservoir.value_at_quantile(0.99);
                 let original_seconds = original_p99 as f64 / 1_000_000_000.0;
                 let parsed_seconds = parsed_p99 as f64 / 1_000_000_000.0;

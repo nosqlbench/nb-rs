@@ -24,11 +24,15 @@ impl Default for Labels {
 
 impl Labels {
     pub fn empty() -> Self {
-        Self { pairs: Arc::new(Vec::new()) }
+        Self {
+            pairs: Arc::new(Vec::new()),
+        }
     }
 
     pub fn of(key: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { pairs: Arc::new(vec![(key.into(), value.into())]) }
+        Self {
+            pairs: Arc::new(vec![(key.into(), value.into())]),
+        }
     }
 
     pub fn with(&self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -39,7 +43,9 @@ impl Labels {
         } else {
             pairs.push((key, value.into()));
         }
-        Self { pairs: Arc::new(pairs) }
+        Self {
+            pairs: Arc::new(pairs),
+        }
     }
 
     pub fn extend(&self, child: &Labels) -> Labels {
@@ -51,30 +57,47 @@ impl Labels {
                 pairs.push((k.clone(), v.clone()));
             }
         }
-        Labels { pairs: Arc::new(pairs) }
+        Labels {
+            pairs: Arc::new(pairs),
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
-    pub fn len(&self) -> usize { self.pairs.len() }
-    pub fn is_empty(&self) -> bool { self.pairs.is_empty() }
+    pub fn len(&self) -> usize {
+        self.pairs.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
     pub fn to_prometheus(&self) -> String {
-        if self.pairs.is_empty() { return String::new(); }
-        let inner: Vec<String> = self.pairs.iter()
+        if self.pairs.is_empty() {
+            return String::new();
+        }
+        let inner: Vec<String> = self
+            .pairs
+            .iter()
             .map(|(k, v)| format!("{k}=\"{v}\""))
             .collect();
         format!("{{{}}}", inner.join(","))
     }
 
     pub fn to_dotted(&self) -> String {
-        self.pairs.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>().join(".")
+        self.pairs
+            .iter()
+            .map(|(_, v)| v.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
     }
 
     /// Content-defined identity hash for this label set.
@@ -96,18 +119,28 @@ impl Labels {
         // Sort by key (then value for total order) without
         // mutating the Arc'd vec. Borrowed view is cheap; the
         // pair count is small (typically <16).
-        let mut sorted: Vec<(&str, &str)> = self.pairs.iter()
+        let mut sorted: Vec<(&str, &str)> = self
+            .pairs
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         sorted.sort();
         let mut h: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset
         for (k, v) in &sorted {
-            for b in k.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+            for b in k.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
             // `=` separator so `a=bc` and `ab=c` don't collide.
-            h ^= b'=' as u64; h = h.wrapping_mul(0x100000001b3);
-            for b in v.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+            h ^= b'=' as u64;
+            h = h.wrapping_mul(0x100000001b3);
+            for b in v.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
             // `\0` separator between pairs.
-            h ^= 0; h = h.wrapping_mul(0x100000001b3);
+            h ^= 0;
+            h = h.wrapping_mul(0x100000001b3);
         }
         h
     }
@@ -117,7 +150,9 @@ impl Labels {
     /// (filename, db spec, etc.) so the on-disk identity
     /// matches `identity_hash`.
     pub fn sorted_pairs(&self) -> Vec<(&str, &str)> {
-        let mut v: Vec<(&str, &str)> = self.pairs.iter()
+        let mut v: Vec<(&str, &str)> = self
+            .pairs
+            .iter()
             .map(|(k, val)| (k.as_str(), val.as_str()))
             .collect();
         v.sort();
@@ -143,7 +178,9 @@ impl Labels {
     ///   * Values are escaped per OpenMetrics §"Escaping":
     ///     `\` → `\\`, `"` → `\"`, `\n` → `\n` literal.
     pub fn to_canonical_spec(&self, metric_name: &str) -> String {
-        let mut pairs: Vec<(&str, &str)> = self.pairs.iter()
+        let mut pairs: Vec<(&str, &str)> = self
+            .pairs
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .filter(|(k, v)| !v.is_empty() && *k != "__name__")
             .collect();
@@ -153,7 +190,9 @@ impl Labels {
         out.push('{');
         let mut first = true;
         for (k, v) in pairs {
-            if !first { out.push(','); }
+            if !first {
+                out.push(',');
+            }
             first = false;
             out.push_str(k);
             out.push_str("=\"");
@@ -174,9 +213,9 @@ pub fn escape_label_value_into(out: &mut String, v: &str) {
     for c in v.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
-            '"'  => out.push_str("\\\""),
+            '"' => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
-            c    => out.push(c),
+            c => out.push(c),
         }
     }
 }
@@ -241,11 +280,14 @@ mod tests {
         // hash equally. Otherwise downstream reporters create
         // duplicate `metric_instance` rows for the same
         // logical instance.
-        let a = Labels::of("k", "1").with("optimize_for", "recall")
+        let a = Labels::of("k", "1")
+            .with("optimize_for", "recall")
             .with("phase", "ann_query");
-        let b = Labels::of("phase", "ann_query").with("k", "1")
+        let b = Labels::of("phase", "ann_query")
+            .with("k", "1")
             .with("optimize_for", "recall");
-        let c = Labels::of("optimize_for", "recall").with("phase", "ann_query")
+        let c = Labels::of("optimize_for", "recall")
+            .with("phase", "ann_query")
             .with("k", "1");
         assert_eq!(a.identity_hash(), b.identity_hash());
         assert_eq!(a.identity_hash(), c.identity_hash());
@@ -269,7 +311,8 @@ mod tests {
 
     #[test]
     fn canonical_spec_sorts_and_quotes() {
-        let l = Labels::of("phase", "ann_query").with("k", "1")
+        let l = Labels::of("phase", "ann_query")
+            .with("k", "1")
             .with("optimize_for", "recall");
         assert_eq!(
             l.to_canonical_spec("recall_mean"),
@@ -289,7 +332,8 @@ mod tests {
 
     #[test]
     fn canonical_spec_drops_empty_values_and_underscore_name() {
-        let l = Labels::of("phase", "ann").with("hint", "")
+        let l = Labels::of("phase", "ann")
+            .with("hint", "")
             .with("__name__", "should_be_ignored_here");
         let spec = l.to_canonical_spec("ops_total");
         // Empty value `hint=""` dropped (OpenMetrics §"Label"
@@ -309,7 +353,10 @@ mod tests {
 
     #[test]
     fn canonical_spec_empty_labels() {
-        assert_eq!(Labels::empty().to_canonical_spec("ops_total"), "ops_total{}");
+        assert_eq!(
+            Labels::empty().to_canonical_spec("ops_total"),
+            "ops_total{}"
+        );
     }
 
     #[test]

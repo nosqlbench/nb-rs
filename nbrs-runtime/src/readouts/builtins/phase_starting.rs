@@ -20,8 +20,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct PhaseStarting;
 
 impl Readout for PhaseStarting {
-    fn name(&self) -> &'static str { "phase_starting" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+    fn name(&self) -> &'static str {
+        "phase_starting"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Phase]
+    }
 
     fn render(
         &self,
@@ -32,10 +36,10 @@ impl Readout for PhaseStarting {
         out: &mut dyn ReadoutBuf,
     ) -> usize {
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact(ctx, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled(ctx, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded(ctx, out),
-            (_,             ContentMode::Explanation) => render_explanation(out),
+            (Lod::Compact, ContentMode::Value) => render_compact(ctx, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled(ctx, out),
+            (Lod::Expanded, ContentMode::Value) => render_expanded(ctx, out),
+            (_, ContentMode::Explanation) => render_explanation(out),
         }
     }
 }
@@ -43,7 +47,7 @@ impl Readout for PhaseStarting {
 fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
     let green = if color { "\x1b[32m" } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let name = ctx.subject_name();
     let depth_indent = ctx.depth_indent();
     let mut tmp = String::with_capacity(64);
@@ -60,10 +64,10 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     //   {indent}✓ [idx/total] [name] (coords) 100%
     let color = ctx.use_color();
     let green = if color { "\x1b[32m" } else { "" };
-    let bold  = if color { "\x1b[1m"  } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let blue  = if color { "\x1b[34m" } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let name = ctx.subject_name();
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
@@ -89,7 +93,9 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
         + 2  // [ and ]
         + name.chars().count();
     let coords_part = super::phase_outcome::format_coords_block(
-        labels, color, head_consumed,
+        labels,
+        color,
+        head_consumed,
         &format!("{depth_indent}  "),
         /* summarize_changed_only */ false,
     );
@@ -108,10 +114,10 @@ fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize 
     // line below (matching phase_outcome's Expanded shape).
     let color = ctx.use_color();
     let green = if color { "\x1b[32m" } else { "" };
-    let bold  = if color { "\x1b[1m"  } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let blue  = if color { "\x1b[34m" } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let name = ctx.subject_name();
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
@@ -132,7 +138,9 @@ fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize 
         let coords_continuation_indent = format!("{depth_indent}  ");
         let coords_head_consumed = depth_indent.chars().count() + 2;
         let coords_payload = super::phase_outcome::format_coords_block(
-            labels, color, coords_head_consumed,
+            labels,
+            color,
+            coords_head_consumed,
             &coords_continuation_indent,
             /* summarize_changed_only */ false,
         );
@@ -168,27 +176,63 @@ mod tests {
         use_color: bool,
     }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { &self.name }
-        fn subject_seq(&self) -> Option<(usize, usize)> { self.seq }
-        fn subject_labels(&self) -> &str { &self.labels }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { "" }
-        fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseStart }
+        fn subject_name(&self) -> &str {
+            &self.name
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            self.seq
+        }
+        fn subject_labels(&self) -> &str {
+            &self.labels
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            ""
+        }
+        fn use_color(&self) -> bool {
+            self.use_color
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::PhaseStart
+        }
     }
 
     fn render(ctx: &TestCtx, lod: Lod) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        PhaseStarting.render(ctx, lod, ContentMode::Value, &ReadoutOptions::new(), &mut buf);
+        PhaseStarting.render(
+            ctx,
+            lod,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         s
     }
 
@@ -206,7 +250,10 @@ mod tests {
 
     #[test]
     fn labeled_without_seq() {
-        let ctx = TestCtx { name: "setup".into(), ..Default::default() };
+        let ctx = TestCtx {
+            name: "setup".into(),
+            ..Default::default()
+        };
         assert_eq!(render(&ctx, Lod::Labeled), "▶ [setup] starting");
     }
 

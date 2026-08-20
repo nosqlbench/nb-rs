@@ -26,7 +26,9 @@ pub const NAME: WrapperName = WrapperName::new("readout");
 /// Trigger: `readout: visible` on the op template. Any other value (or
 /// absence) leaves the wrapper off.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template
         .params
         .get("readout")
@@ -73,9 +75,16 @@ impl ReadoutDispenser {
         Self::wrap_with_measure(inner, op_name, None)
     }
 
-    pub fn wrap_with_measure(inner: Arc<dyn OpDispenser>, op_name: String,
-                             measure: Option<String>) -> Arc<dyn OpDispenser> {
-        Arc::new(Self { inner, op_name, measure })
+    pub fn wrap_with_measure(
+        inner: Arc<dyn OpDispenser>,
+        op_name: String,
+        measure: Option<String>,
+    ) -> Arc<dyn OpDispenser> {
+        Arc::new(Self {
+            inner,
+            op_name,
+            measure,
+        })
     }
 }
 
@@ -86,7 +95,9 @@ impl OpDispenser for ReadoutDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let parent = crate::execution_context::current_phase_node();
             let obs = crate::observer::global_observer();
@@ -103,8 +114,10 @@ impl OpDispenser for ReadoutDispenser {
                 if let Some(t) = self.measure.as_deref() {
                     match crate::wires::substitute_via_wires(t, ctx.wires) {
                         Ok(text) => o.op_measure(p, &self.op_name, &text),
-                        Err(e) => crate::diag!(crate::observer::LogLevel::Debug,
-                            "measure: substitution failed for '{t}': {e}"),
+                        Err(e) => crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "measure: substitution failed for '{t}': {e}"
+                        ),
                     }
                 }
                 match &result {

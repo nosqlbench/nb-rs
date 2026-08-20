@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
@@ -19,7 +19,9 @@ pub const NAME: WrapperName = WrapperName::new("metrics");
 
 /// Trigger: op declares a non-empty `metrics:` map.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     !template.metrics.is_empty()
 }
 
@@ -118,25 +120,30 @@ pub struct MetricsDispenser {
 /// and histograms keep their one-record-per-op semantics (the
 /// end-of-op publish would double-count them). Resolution misses
 /// degrade to a debug log — status must never fail the poll.
-pub(crate) fn publish_gauges_lenient(
-    slots: &[MetricSlot],
-    wires: &dyn crate::wires::WireSource,
-) {
+pub(crate) fn publish_gauges_lenient(slots: &[MetricSlot], wires: &dyn crate::wires::WireSource) {
     for slot in slots {
         // Cell-placed metrics are skipped: their instrument depends on a
         // coordinate resolved from the cycle's wires, which this lenient
         // path has no basis to choose.
-        let Some(MetricInstrument::Gauge(g)) = &slot.instrument else { continue };
+        let Some(MetricInstrument::Gauge(g)) = &slot.instrument else {
+            continue;
+        };
         let Some(value) = wires.get(&slot.binding_name) else {
-            crate::diag!(crate::observer::LogLevel::Debug,
+            crate::diag!(
+                crate::observer::LogLevel::Debug,
                 "poll gauge '{}': binding '{}' unresolved this iteration",
-                slot.family, slot.binding_name);
+                slot.family,
+                slot.binding_name
+            );
             continue;
         };
         let Some(raw) = value_to_f64(&value) else {
-            crate::diag!(crate::observer::LogLevel::Debug,
+            crate::diag!(
+                crate::observer::LogLevel::Debug,
                 "poll gauge '{}': '{}' non-numeric this iteration",
-                slot.family, slot.value_expr);
+                slot.family,
+                slot.value_expr
+            );
             continue;
         };
         let sanitised = slot.format.as_ref().map(|f| f.apply(raw)).unwrap_or(raw);
@@ -191,8 +198,7 @@ pub(crate) struct CellPlacement {
     /// Instruments already materialised, keyed by the coordinate's canonical
     /// rendering. Steady state is a hash lookup: the registry write and the
     /// component attach happen once per distinct coordinate, never per cycle.
-    instances: std::sync::Mutex<
-        std::collections::HashMap<String, MetricInstrument>>,
+    instances: std::sync::Mutex<std::collections::HashMap<String, MetricInstrument>>,
 }
 
 /// Kind-specialised instrument storage owned by a [`MetricSlot`].
@@ -215,12 +221,13 @@ impl MetricInstrument {
     /// [`InstrumentRef`] for registry storage.
     fn as_ref(&self) -> nbrs_metrics::component::InstrumentRef {
         match self {
-            MetricInstrument::Gauge(g) =>
-                nbrs_metrics::component::InstrumentRef::Gauge(g.clone()),
-            MetricInstrument::Histogram(h) =>
-                nbrs_metrics::component::InstrumentRef::Histogram(h.clone()),
-            MetricInstrument::Counter(c) =>
-                nbrs_metrics::component::InstrumentRef::Counter(c.clone()),
+            MetricInstrument::Gauge(g) => nbrs_metrics::component::InstrumentRef::Gauge(g.clone()),
+            MetricInstrument::Histogram(h) => {
+                nbrs_metrics::component::InstrumentRef::Histogram(h.clone())
+            }
+            MetricInstrument::Counter(c) => {
+                nbrs_metrics::component::InstrumentRef::Counter(c.clone())
+            }
         }
     }
 }
@@ -264,8 +271,7 @@ impl MetricsDispenser {
         component_arc: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
-        Self::wrap_with_slots(inner, metrics, component, component_arc, fx)
-            .map(|(d, _)| d)
+        Self::wrap_with_slots(inner, metrics, component, component_arc, fx).map(|(d, _)| d)
     }
 
     /// As [`Self::wrap`], additionally returning the compiled slot
@@ -312,21 +318,17 @@ impl MetricsDispenser {
             // dimensional cell.
             let instr_labels = component_labels.with("family", family.clone());
             let instrument = match kind {
-                nbrs_workload::model::MetricKind::Gauge => {
-                    MetricInstrument::Gauge(Arc::new(
-                        nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels),
-                    ))
-                }
+                nbrs_workload::model::MetricKind::Gauge => MetricInstrument::Gauge(Arc::new(
+                    nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels),
+                )),
                 nbrs_workload::model::MetricKind::Histogram => {
                     MetricInstrument::Histogram(Arc::new(
                         nbrs_metrics::instruments::histogram::Histogram::new(instr_labels),
                     ))
                 }
-                nbrs_workload::model::MetricKind::Counter => {
-                    MetricInstrument::Counter(Arc::new(
-                        nbrs_metrics::instruments::counter::Counter::new(instr_labels),
-                    ))
-                }
+                nbrs_workload::model::MetricKind::Counter => MetricInstrument::Counter(Arc::new(
+                    nbrs_metrics::instruments::counter::Counter::new(instr_labels),
+                )),
             };
 
             // Resolve the metric's value expression against the
@@ -379,7 +381,8 @@ impl MetricsDispenser {
                             "metric '{name}' cell '{dim}': {e} (synthesised \
                              coordinate binding '{wire}' should have been \
                              registered by the op-template kernel synthesiser \
-                             — this is a bug)")
+                             — this is a bug)"
+                        )
                     })?;
                     dims.push((dim.clone(), wire));
                 }
@@ -397,13 +400,23 @@ impl MetricsDispenser {
                 value_expr: spec.value.clone(),
                 binding_name,
                 format,
-                instrument: if placement.is_some() { None } else { Some(instrument) },
+                instrument: if placement.is_some() {
+                    None
+                } else {
+                    Some(instrument)
+                },
                 placement,
             });
         }
 
         let slots = Arc::new(slots);
-        Ok((Arc::new(Self { inner, slots: slots.clone() }), Some(slots)))
+        Ok((
+            Arc::new(Self {
+                inner,
+                slots: slots.clone(),
+            }),
+            Some(slots),
+        ))
     }
 }
 
@@ -429,7 +442,8 @@ impl CellPlacement {
                         "metric '{family}' on cycle {cycle}: coordinate binding \
                          '{wire}' for dimension '{dim}' did not resolve through \
                          ctx.wires — this is a wiring bug between scope \
-                         synthesis and the metrics wrapper"),
+                         synthesis and the metrics wrapper"
+                    ),
                     retryable: false,
                 }));
             };
@@ -444,7 +458,8 @@ impl CellPlacement {
                          coordinate resolved to a non-string {disc:?}. A \
                          dimension's values are label values, which are \
                          strings — convert the expression explicitly.",
-                        disc = std::mem::discriminant(&value)),
+                        disc = std::mem::discriminant(&value)
+                    ),
                     retryable: false,
                 }));
             };
@@ -470,23 +485,30 @@ impl CellPlacement {
         };
         let instr_labels = cell_labels.with("family", family.to_string());
         let instrument = match self.kind {
-            nbrs_workload::model::MetricKind::Gauge => MetricInstrument::Gauge(
-                Arc::new(nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels))),
-            nbrs_workload::model::MetricKind::Histogram => MetricInstrument::Histogram(
-                Arc::new(nbrs_metrics::instruments::histogram::Histogram::new(instr_labels))),
-            nbrs_workload::model::MetricKind::Counter => MetricInstrument::Counter(
-                Arc::new(nbrs_metrics::instruments::counter::Counter::new(instr_labels))),
+            nbrs_workload::model::MetricKind::Gauge => MetricInstrument::Gauge(Arc::new(
+                nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels),
+            )),
+            nbrs_workload::model::MetricKind::Histogram => MetricInstrument::Histogram(Arc::new(
+                nbrs_metrics::instruments::histogram::Histogram::new(instr_labels),
+            )),
+            nbrs_workload::model::MetricKind::Counter => MetricInstrument::Counter(Arc::new(
+                nbrs_metrics::instruments::counter::Counter::new(instr_labels),
+            )),
         };
         {
             let mut g = cell.write().unwrap_or_else(|e| e.into_inner());
             g.register_instrument_with_unit(
-                family.to_string(), self.unit.clone(), instrument.as_ref())
-                .map_err(|e| ExecutionError::Op(crate::adapter::AdapterError {
+                family.to_string(),
+                self.unit.clone(),
+                instrument.as_ref(),
+            )
+            .map_err(|e| {
+                ExecutionError::Op(crate::adapter::AdapterError {
                     error_name: "metric_cell_family_collision".into(),
-                    message: format!(
-                        "metric '{family}' cell {key}: {e}"),
+                    message: format!("metric '{family}' cell {key}: {e}"),
                     retryable: false,
-                }))?;
+                })
+            })?;
         }
         let mut cache = self.instances.lock().unwrap_or_else(|e| e.into_inner());
         Ok(cache.entry(key).or_insert(instrument).clone())
@@ -501,8 +523,13 @@ impl CellPlacement {
 pub(crate) fn test_gauge_slot(
     family: &str,
     binding_name: &str,
-) -> (MetricSlot, Arc<nbrs_metrics::instruments::gauge::ValueGauge>) {
-    let g = Arc::new(nbrs_metrics::instruments::gauge::ValueGauge::new(nbrs_metrics::labels::Labels::default()));
+) -> (
+    MetricSlot,
+    Arc<nbrs_metrics::instruments::gauge::ValueGauge>,
+) {
+    let g = Arc::new(nbrs_metrics::instruments::gauge::ValueGauge::new(
+        nbrs_metrics::labels::Labels::default(),
+    ));
     (
         MetricSlot {
             family: family.to_string(),
@@ -523,7 +550,9 @@ impl OpDispenser for MetricsDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let result = self.inner.execute(cycle, ctx).await?;
             // Skipped ops produce no measurement — SRD-40b §5.2 /
@@ -602,8 +631,7 @@ impl OpDispenser for MetricsDispenser {
                         Ok(i) => std::borrow::Cow::Owned(i),
                         Err(e) => return Err(e),
                     },
-                    (None, None) => unreachable!(
-                        "a slot has either an instrument or a placement"),
+                    (None, None) => unreachable!("a slot has either an instrument or a placement"),
                 };
                 match instrument.as_ref() {
                     MetricInstrument::Gauge(g) => g.set(sanitised),
@@ -624,7 +652,9 @@ impl OpDispenser for MetricsDispenser {
             Ok(result)
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -642,19 +672,27 @@ mod absent_value_tests {
     /// specifically, never on "failed to coerce".
     #[test]
     fn absent_binding_skips_the_sample_but_bad_types_still_fail() {
-        let src = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/metrics.rs"))
-            .expect("read own source");
-        let skip = src.find("if matches!(value, polydat::ast::Value::None) {")
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/wrappers/metrics.rs"
+        ))
+        .expect("read own source");
+        let skip = src
+            .find("if matches!(value, polydat::ast::Value::None) {")
             .expect("None must be skipped explicitly");
-        let coerce = src.find("let raw = match value_to_f64(&value) {")
+        let coerce = src
+            .find("let raw = match value_to_f64(&value) {")
             .expect("the coercion site must still exist");
-        assert!(skip < coerce,
+        assert!(
+            skip < coerce,
             "the None skip must come BEFORE the coercion, or an absent value \
-             still reaches the error path");
-        assert!(src.contains("metric_value_non_numeric"),
+             still reaches the error path"
+        );
+        assert!(
+            src.contains("metric_value_non_numeric"),
             "non-numeric TYPES must still raise metric_value_non_numeric — \
-             the skip is for absence, not for bad wiring");
+             the skip is for absence, not for bad wiring"
+        );
     }
 }
 
@@ -671,9 +709,14 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
-                Ok(OpResult { body: None, skipped: false })
+                Ok(OpResult {
+                    body: None,
+                    skipped: false,
+                })
             })
         }
     }
@@ -687,9 +730,7 @@ mod tests {
 
     /// A component as the production path holds it: an `Arc` (cells attach
     /// under it) plus the `&mut` borrow registration needs.
-    fn fresh_component_arc()
-        -> Arc<std::sync::RwLock<nbrs_metrics::component::Component>>
-    {
+    fn fresh_component_arc() -> Arc<std::sync::RwLock<nbrs_metrics::component::Component>> {
         Arc::new(std::sync::RwLock::new(fresh_component()))
     }
 
@@ -709,7 +750,11 @@ mod tests {
         use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::identity::Identity;
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("cycle_id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
+        asm.add_node(
+            "cycle_id",
+            Box::new(Identity::new(polydat::ast::PortType::U64)),
+            vec![WireRef::input("cycle")],
+        );
         asm.add_output("cycle_id", WireRef::node("cycle_id"));
         let kernel = asm.compile().expect("test fixture asm.compile");
         crate::fixture::ScopeFixture::new(kernel.program().clone())
@@ -732,9 +777,7 @@ mod tests {
         let inner_ptr = Arc::as_ptr(&inner);
         let comp = fresh_component_arc();
         let mut fx = fresh_fixture();
-        let wrapped = wrap_on(
-            inner.clone(), &HashMap::new(), &comp, &mut fx,
-        ).unwrap();
+        let wrapped = wrap_on(inner.clone(), &HashMap::new(), &comp, &mut fx).unwrap();
         assert_eq!(Arc::as_ptr(&wrapped), inner_ptr);
     }
 
@@ -744,32 +787,47 @@ mod tests {
     /// against the same `ValueGauge` / `Histogram` / `Counter`
     /// the wrapper writes through.
     impl MetricsDispenser {
-        fn slot_gauge(&self, family: &str) -> Option<Arc<nbrs_metrics::instruments::gauge::ValueGauge>> {
-            self.slots.iter().find(|s| s.family == family).and_then(|s| match s.instrument.as_ref()? {
-                MetricInstrument::Gauge(g) => Some(g.clone()),
-                _ => None,
-            })
+        fn slot_gauge(
+            &self,
+            family: &str,
+        ) -> Option<Arc<nbrs_metrics::instruments::gauge::ValueGauge>> {
+            self.slots
+                .iter()
+                .find(|s| s.family == family)
+                .and_then(|s| match s.instrument.as_ref()? {
+                    MetricInstrument::Gauge(g) => Some(g.clone()),
+                    _ => None,
+                })
         }
-        fn slot_histogram(&self, family: &str) -> Option<Arc<nbrs_metrics::instruments::histogram::Histogram>> {
-            self.slots.iter().find(|s| s.family == family).and_then(|s| match s.instrument.as_ref()? {
-                MetricInstrument::Histogram(h) => Some(h.clone()),
-                _ => None,
-            })
+        fn slot_histogram(
+            &self,
+            family: &str,
+        ) -> Option<Arc<nbrs_metrics::instruments::histogram::Histogram>> {
+            self.slots
+                .iter()
+                .find(|s| s.family == family)
+                .and_then(|s| match s.instrument.as_ref()? {
+                    MetricInstrument::Histogram(h) => Some(h.clone()),
+                    _ => None,
+                })
         }
-        fn slot_counter(&self, family: &str) -> Option<Arc<nbrs_metrics::instruments::counter::Counter>> {
-            self.slots.iter().find(|s| s.family == family).and_then(|s| match s.instrument.as_ref()? {
-                MetricInstrument::Counter(c) => Some(c.clone()),
-                _ => None,
-            })
+        fn slot_counter(
+            &self,
+            family: &str,
+        ) -> Option<Arc<nbrs_metrics::instruments::counter::Counter>> {
+            self.slots
+                .iter()
+                .find(|s| s.family == family)
+                .and_then(|s| match s.instrument.as_ref()? {
+                    MetricInstrument::Counter(c) => Some(c.clone()),
+                    _ => None,
+                })
         }
     }
 
     fn kernel_with_const_outputs(
         consts: &[(&str, f64)],
-    ) -> (
-        polydat::kernel::PolydatKernel,
-        crate::fixture::ScopeFixture,
-    ) {
+    ) -> (polydat::kernel::PolydatKernel, crate::fixture::ScopeFixture) {
         use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::fixed::ConstF64;
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
@@ -828,7 +886,9 @@ mod tests {
                 )),
             };
             comp.register_instrument_with_unit(
-                family.clone(), spec.unit.clone(), instrument.as_ref(),
+                family.clone(),
+                spec.unit.clone(),
+                instrument.as_ref(),
             )?;
             let binding_name = crate::scope::synthesize_metric_binding_name(name);
             let _ = fx.register_pull(&binding_name)?;
@@ -841,7 +901,10 @@ mod tests {
                 placement: None,
             });
         }
-        let typed = Arc::new(MetricsDispenser { inner, slots: Arc::new(slots) });
+        let typed = Arc::new(MetricsDispenser {
+            inner,
+            slots: Arc::new(slots),
+        });
 
         let plan = fx.seal();
         kernel.set_inputs(&[0]);
@@ -857,7 +920,9 @@ mod tests {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let cw = crate::wires::CycleWires::new(kernel);
         let ctx = ExecCtx::with_wires(&fields, pulls, &cw);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(dispenser.execute(0, &ctx))
     }
 
@@ -865,11 +930,13 @@ mod tests {
     fn metrics_dispenser_gauge_records_f64() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
-        decl.insert("my_factor".into(), make_spec("my_factor", MetricKind::Gauge, None));
+        decl.insert(
+            "my_factor".into(),
+            make_spec("my_factor", MetricKind::Gauge, None),
+        );
 
-        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
-            inner, &decl, &[("my_factor", 3.5)],
-        ).unwrap();
+        let (typed, pulls, mut kernel) =
+            typed_wrap_with_kernel(inner, &decl, &[("my_factor", 3.5)]).unwrap();
         let gauge = typed.slot_gauge("my_factor").unwrap();
         run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
@@ -880,11 +947,13 @@ mod tests {
     fn metrics_dispenser_histogram_truncates_to_u64() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
-        decl.insert("latency_ms".into(), make_spec("latency_ms", MetricKind::Histogram, None));
+        decl.insert(
+            "latency_ms".into(),
+            make_spec("latency_ms", MetricKind::Histogram, None),
+        );
 
-        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
-            inner, &decl, &[("latency_ms", 7.9)],
-        ).unwrap();
+        let (typed, pulls, mut kernel) =
+            typed_wrap_with_kernel(inner, &decl, &[("latency_ms", 7.9)]).unwrap();
         let hist = typed.slot_histogram("latency_ms").unwrap();
         run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
@@ -897,12 +966,17 @@ mod tests {
     fn metrics_dispenser_counter_positive_inc_and_skip_non_positive() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
-        decl.insert("ok_inc".into(), make_spec("ok_inc", MetricKind::Counter, None));
-        decl.insert("skip_inc".into(), make_spec("skip_inc", MetricKind::Counter, None));
+        decl.insert(
+            "ok_inc".into(),
+            make_spec("ok_inc", MetricKind::Counter, None),
+        );
+        decl.insert(
+            "skip_inc".into(),
+            make_spec("skip_inc", MetricKind::Counter, None),
+        );
 
-        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
-            inner, &decl, &[("ok_inc", 5.0), ("skip_inc", 0.0)],
-        ).unwrap();
+        let (typed, pulls, mut kernel) =
+            typed_wrap_with_kernel(inner, &decl, &[("ok_inc", 5.0), ("skip_inc", 0.0)]).unwrap();
         let ok_counter = typed.slot_counter("ok_inc").unwrap();
         let skip_counter = typed.slot_counter("skip_inc").unwrap();
         run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
@@ -920,9 +994,8 @@ mod tests {
             make_spec("ratio", MetricKind::Gauge, Some("#.##")),
         );
 
-        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
-            inner, &decl, &[("ratio", 1.234)],
-        ).unwrap();
+        let (typed, pulls, mut kernel) =
+            typed_wrap_with_kernel(inner, &decl, &[("ratio", 1.234)]).unwrap();
         let gauge = typed.slot_gauge("ratio").unwrap();
         run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
@@ -933,24 +1006,33 @@ mod tests {
     fn metrics_dispenser_duplicate_family_errors() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let comp = fresh_component_arc();
-        comp.write().unwrap().register_instrument(
-            "recall_at_10",
-            nbrs_metrics::component::InstrumentRef::Counter(Arc::new(
-                nbrs_metrics::instruments::counter::Counter::new(
-                    nbrs_metrics::labels::Labels::of("name", "recall_at_10"),
-                ),
-            )),
-        ).unwrap();
+        comp.write()
+            .unwrap()
+            .register_instrument(
+                "recall_at_10",
+                nbrs_metrics::component::InstrumentRef::Counter(Arc::new(
+                    nbrs_metrics::instruments::counter::Counter::new(
+                        nbrs_metrics::labels::Labels::of("name", "recall_at_10"),
+                    ),
+                )),
+            )
+            .unwrap();
 
         let mut decl = HashMap::new();
-        decl.insert("recall_at_10".into(), make_spec("recall_at_10", MetricKind::Gauge, None));
+        decl.insert(
+            "recall_at_10".into(),
+            make_spec("recall_at_10", MetricKind::Gauge, None),
+        );
 
         let (_kernel, mut fx) = kernel_with_const_outputs(&[("recall_at_10", 0.0)]);
         let err = match wrap_on(inner, &decl, &comp, &mut fx) {
             Ok(_) => panic!("expected duplicate-family error, got Ok"),
             Err(e) => e,
         };
-        assert!(err.contains("duplicate family name"), "unexpected error: {err}");
+        assert!(
+            err.contains("duplicate family name"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -961,19 +1043,21 @@ mod tests {
                 &'a self,
                 _cycle: u64,
                 _ctx: &'a ExecCtx<'a>,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+            > {
                 Box::pin(async move { Ok(OpResult::skipped()) })
             }
         }
         let mut decl = HashMap::new();
         decl.insert("g".into(), make_spec("g", MetricKind::Gauge, None));
 
-        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
-            Arc::new(SkipInner), &decl, &[("g", 1.0)],
-        ).unwrap();
+        let (typed, pulls, mut kernel) =
+            typed_wrap_with_kernel(Arc::new(SkipInner), &decl, &[("g", 1.0)]).unwrap();
         let gauge = typed.slot_gauge("g").unwrap();
 
-        let res = run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
+        let res =
+            run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
         assert!(res.skipped);
         assert_eq!(gauge.get(), 0.0);
     }

@@ -67,7 +67,8 @@ impl Affinity {
         match t.as_str() {
             "auto" => Ok(Self::Auto),
             "off" | "none" | "" => Ok(Self::Off),
-            _ => t.parse::<usize>()
+            _ => t
+                .parse::<usize>()
                 .map(Self::Core)
                 .map_err(|_| format!("unknown thread affinity '{s}' (use auto|off|<core>)")),
         }
@@ -129,8 +130,16 @@ impl ThreadPoolConfig {
         let reserved = if cores >= 3 { 1 } else { 0 };
         let workers = cores.saturating_sub(reserved).max(1);
         Self {
-            timing: PoolSpec { threads: 1, sched: SchedPolicy::Rr, pin: Affinity::Auto },
-            io: PoolSpec { threads: 2, sched: SchedPolicy::None, pin: Affinity::Off },
+            timing: PoolSpec {
+                threads: 1,
+                sched: SchedPolicy::Rr,
+                pin: Affinity::Auto,
+            },
+            io: PoolSpec {
+                threads: 2,
+                sched: SchedPolicy::None,
+                pin: Affinity::Off,
+            },
             workers,
         }
     }
@@ -142,16 +151,29 @@ impl ThreadPoolConfig {
         let mut cfg = Self::defaults();
         let env_usize = |k: &str| -> Result<Option<usize>, String> {
             match std::env::var(k) {
-                Ok(v) => v.trim().parse::<usize>().map(Some)
+                Ok(v) => v
+                    .trim()
+                    .parse::<usize>()
+                    .map(Some)
                     .map_err(|_| format!("{k}='{v}' is not a thread count")),
                 Err(_) => Ok(None),
             }
         };
-        if let Some(n) = env_usize("NBRS_THREADS_TIMING")? { cfg.timing.threads = n; }
-        if let Some(n) = env_usize("NBRS_THREADS_IO")? { cfg.io.threads = n; }
-        if let Some(n) = env_usize("NBRS_THREADS_WORKERS")? { cfg.workers = n.max(1); }
-        if let Ok(v) = std::env::var("NBRS_THREADS_TIMING_SCHED") { cfg.timing.sched = SchedPolicy::parse(&v)?; }
-        if let Ok(v) = std::env::var("NBRS_THREADS_TIMING_PIN") { cfg.timing.pin = Affinity::parse(&v)?; }
+        if let Some(n) = env_usize("NBRS_THREADS_TIMING")? {
+            cfg.timing.threads = n;
+        }
+        if let Some(n) = env_usize("NBRS_THREADS_IO")? {
+            cfg.io.threads = n;
+        }
+        if let Some(n) = env_usize("NBRS_THREADS_WORKERS")? {
+            cfg.workers = n.max(1);
+        }
+        if let Ok(v) = std::env::var("NBRS_THREADS_TIMING_SCHED") {
+            cfg.timing.sched = SchedPolicy::parse(&v)?;
+        }
+        if let Ok(v) = std::env::var("NBRS_THREADS_TIMING_PIN") {
+            cfg.timing.pin = Affinity::parse(&v)?;
+        }
         Ok(cfg)
     }
 
@@ -163,14 +185,25 @@ impl ThreadPoolConfig {
     pub fn resolve_with_cli(cli: &CliThreadOverrides) -> Result<Self, String> {
         let mut cfg = Self::resolve()?;
         let usize_flag = |v: &str, flag: &str| -> Result<usize, String> {
-            v.trim().parse::<usize>()
+            v.trim()
+                .parse::<usize>()
                 .map_err(|_| format!("{flag}='{v}' is not a thread count"))
         };
-        if let Some(v) = &cli.timing { cfg.timing.threads = usize_flag(v, "--threads.timing")?; }
-        if let Some(v) = &cli.io { cfg.io.threads = usize_flag(v, "--threads.io")?; }
-        if let Some(v) = &cli.workers { cfg.workers = usize_flag(v, "--threads.workers")?.max(1); }
-        if let Some(v) = &cli.timing_sched { cfg.timing.sched = SchedPolicy::parse(v)?; }
-        if let Some(v) = &cli.timing_pin { cfg.timing.pin = Affinity::parse(v)?; }
+        if let Some(v) = &cli.timing {
+            cfg.timing.threads = usize_flag(v, "--threads.timing")?;
+        }
+        if let Some(v) = &cli.io {
+            cfg.io.threads = usize_flag(v, "--threads.io")?;
+        }
+        if let Some(v) = &cli.workers {
+            cfg.workers = usize_flag(v, "--threads.workers")?.max(1);
+        }
+        if let Some(v) = &cli.timing_sched {
+            cfg.timing.sched = SchedPolicy::parse(v)?;
+        }
+        if let Some(v) = &cli.timing_pin {
+            cfg.timing.pin = Affinity::parse(v)?;
+        }
         Ok(cfg)
     }
 
@@ -210,11 +243,18 @@ pub fn global() -> &'static ThreadPools {
 
 impl ThreadPools {
     fn new(config: ThreadPoolConfig) -> Self {
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        Self { config, top_core: cores.saturating_sub(1) }
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        Self {
+            config,
+            top_core: cores.saturating_sub(1),
+        }
     }
 
-    pub fn config(&self) -> &ThreadPoolConfig { &self.config }
+    pub fn config(&self) -> &ThreadPoolConfig {
+        &self.config
+    }
 
     /// Resolve a pool's `Auto` affinity to a concrete core (the top core), else
     /// pass through `Core`/`Off`.
@@ -245,8 +285,7 @@ impl ThreadPools {
             .name(format!("{pool}-{name}"))
             .spawn(move || {
                 let achieved = apply_policy(sched, pin);
-                let line = format!(
-                    "thread pool '{pool_owned}/{name_owned}': {achieved}");
+                let line = format!("thread pool '{pool_owned}/{name_owned}': {achieved}");
                 if achieved.contains("denied") {
                     crate::diag::warn(&line);
                 } else {
@@ -281,11 +320,17 @@ fn apply_policy(sched: SchedPolicy, pin: Option<usize>) -> String {
                 libc::SCHED_RR
             };
             let prio = 10; // mid-range realtime priority (RR range is 1..=99)
-            let param = libc::sched_param { sched_priority: prio };
+            let param = libc::sched_param {
+                sched_priority: prio,
+            };
             // 0 = the calling thread.
             let rc = unsafe { libc::sched_setscheduler(0, policy, &param) };
             if rc == 0 {
-                let name = if policy == libc::SCHED_FIFO { "fifo" } else { "rr" };
+                let name = if policy == libc::SCHED_FIFO {
+                    "fifo"
+                } else {
+                    "rr"
+                };
                 parts.push(format!("sched={name}(prio {prio})"));
             } else {
                 // Realtime denied (no CAP_SYS_NICE) — fall back to nice.
@@ -387,15 +432,30 @@ mod tests {
 
     #[test]
     fn cli_malformed_value_is_a_hard_error() {
-        let bad_count = CliThreadOverrides { timing: Some("abc".into()), ..Default::default() };
+        let bad_count = CliThreadOverrides {
+            timing: Some("abc".into()),
+            ..Default::default()
+        };
         let e = ThreadPoolConfig::resolve_with_cli(&bad_count).unwrap_err();
-        assert!(e.contains("--threads.timing"), "message names the flag: {e}");
-        assert!(e.contains("not a thread count"), "message explains why: {e}");
+        assert!(
+            e.contains("--threads.timing"),
+            "message names the flag: {e}"
+        );
+        assert!(
+            e.contains("not a thread count"),
+            "message explains why: {e}"
+        );
 
-        let bad_sched = CliThreadOverrides { timing_sched: Some("bogus".into()), ..Default::default() };
+        let bad_sched = CliThreadOverrides {
+            timing_sched: Some("bogus".into()),
+            ..Default::default()
+        };
         assert!(ThreadPoolConfig::resolve_with_cli(&bad_sched).is_err());
 
-        let bad_pin = CliThreadOverrides { timing_pin: Some("nonsense".into()), ..Default::default() };
+        let bad_pin = CliThreadOverrides {
+            timing_pin: Some("nonsense".into()),
+            ..Default::default()
+        };
         assert!(ThreadPoolConfig::resolve_with_cli(&bad_pin).is_err());
     }
 
@@ -403,7 +463,11 @@ mod tests {
     fn spawn_on_timing_runs_the_closure() {
         let pools = ThreadPools::new(ThreadPoolConfig::defaults());
         let (tx, rx) = std::sync::mpsc::channel();
-        let h = pools.spawn_timing("unit", move || { let _ = tx.send(42u8); }).unwrap();
+        let h = pools
+            .spawn_timing("unit", move || {
+                let _ = tx.send(42u8);
+            })
+            .unwrap();
         assert_eq!(rx.recv().unwrap(), 42);
         h.join().unwrap();
     }

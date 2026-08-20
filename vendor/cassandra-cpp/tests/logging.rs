@@ -104,8 +104,7 @@ async fn test_log_logger() {
     // never arrives within a generous bound; soft-ignore
     // every other record because they're all unrelated to
     // this test's contract.
-    const RESOLVER_TARGET: &str =
-        "{anonymous}::DefaultClusterMetadataResolver::on_resolve";
+    const RESOLVER_TARGET: &str = "{anonymous}::DefaultClusterMetadataResolver::on_resolve";
     const MAX_DRAIN: usize = 1024;
 
     let mut seen_records: Vec<String> = Vec::new();
@@ -119,20 +118,24 @@ async fn test_log_logger() {
             Some(record) => {
                 seen_records.push(format!(
                     "  - target={:?} level={:?} args={:?}",
-                    record.target(), record.level(), record.args(),
+                    record.target(),
+                    record.level(),
+                    record.args(),
                 ));
                 continue;
             }
             None => break,
         }
     }
-    let record = found.unwrap_or_else(|| panic!(
-        "expected a `log` record with target {RESOLVER_TARGET:?} \
+    let record = found.unwrap_or_else(|| {
+        panic!(
+            "expected a `log` record with target {RESOLVER_TARGET:?} \
          after the failed connect, but never saw one. Drained {} \
          unrelated record(s):\n{}",
-        seen_records.len(),
-        seen_records.join("\n"),
-    ));
+            seen_records.len(),
+            seen_records.join("\n"),
+        )
+    });
 
     assert_eq!(
         record.args(),

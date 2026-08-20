@@ -10,8 +10,8 @@
 //! Designed for relevancy scores (recall, precision) where lossy
 //! tracking is unacceptable.
 
-use std::sync::Mutex;
 use crate::labels::Labels;
+use std::sync::Mutex;
 
 /// Thread-safe f64 statistics accumulator with delta semantics.
 pub struct F64Stats {
@@ -32,19 +32,21 @@ impl F64Stats {
         }
     }
 
-    pub fn labels(&self) -> &Labels { &self.labels }
+    pub fn labels(&self) -> &Labels {
+        &self.labels
+    }
 
     /// Record a value.
     pub fn record(&self, value: f64) {
-        self.values.lock()
+        self.values
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(value);
     }
 
     /// Take a snapshot and reset (delta semantics).
     pub fn snapshot(&self) -> F64Snapshot {
-        let mut guard = self.values.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.values.lock().unwrap_or_else(|e| e.into_inner());
         let mut sorted = std::mem::take(&mut *guard);
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         F64Snapshot { sorted }
@@ -53,14 +55,20 @@ impl F64Stats {
 
 impl F64Snapshot {
     /// Number of values.
-    pub fn len(&self) -> usize { self.sorted.len() }
+    pub fn len(&self) -> usize {
+        self.sorted.len()
+    }
 
     /// Whether the snapshot is empty.
-    pub fn is_empty(&self) -> bool { self.sorted.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.sorted.is_empty()
+    }
 
     /// Exact arithmetic mean.
     pub fn mean(&self) -> f64 {
-        if self.sorted.is_empty() { return 0.0; }
+        if self.sorted.is_empty() {
+            return 0.0;
+        }
         self.sorted.iter().sum::<f64>() / self.sorted.len() as f64
     }
 
@@ -76,28 +84,41 @@ impl F64Snapshot {
 
     /// Standard deviation (population).
     pub fn stddev(&self) -> f64 {
-        if self.sorted.len() < 2 { return 0.0; }
+        if self.sorted.len() < 2 {
+            return 0.0;
+        }
         let mean = self.mean();
-        let var = self.sorted.iter()
-            .map(|v| (v - mean).powi(2))
-            .sum::<f64>() / self.sorted.len() as f64;
+        let var =
+            self.sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / self.sorted.len() as f64;
         var.sqrt()
     }
 
     /// Percentile (0.0 to 1.0). Uses nearest-rank method.
     pub fn percentile(&self, p: f64) -> f64 {
-        if self.sorted.is_empty() { return 0.0; }
+        if self.sorted.is_empty() {
+            return 0.0;
+        }
         let idx = ((p * self.sorted.len() as f64).ceil() as usize)
             .saturating_sub(1)
             .min(self.sorted.len() - 1);
         self.sorted[idx]
     }
 
-    pub fn p50(&self) -> f64 { self.percentile(0.50) }
-    pub fn p75(&self) -> f64 { self.percentile(0.75) }
-    pub fn p90(&self) -> f64 { self.percentile(0.90) }
-    pub fn p95(&self) -> f64 { self.percentile(0.95) }
-    pub fn p99(&self) -> f64 { self.percentile(0.99) }
+    pub fn p50(&self) -> f64 {
+        self.percentile(0.50)
+    }
+    pub fn p75(&self) -> f64 {
+        self.percentile(0.75)
+    }
+    pub fn p90(&self) -> f64 {
+        self.percentile(0.90)
+    }
+    pub fn p95(&self) -> f64 {
+        self.percentile(0.95)
+    }
+    pub fn p99(&self) -> f64 {
+        self.percentile(0.99)
+    }
 }
 
 #[cfg(test)]

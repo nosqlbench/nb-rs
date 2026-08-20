@@ -18,8 +18,8 @@ use std::sync::atomic::AtomicBool;
 use scylla::client::session::Session;
 
 use crate::common::session_handle::{
-    bytes_from_kb_value, bytes_from_unit_value, in_kb_setting_name,
-    warn_settings_unavailable, CqlSettingsSource,
+    CqlSettingsSource, bytes_from_kb_value, bytes_from_unit_value, in_kb_setting_name,
+    warn_settings_unavailable,
 };
 
 /// Settings-read surface over a pooled scylla session (the same `Arc<Session>`
@@ -32,14 +32,18 @@ pub(crate) struct ScyllaSettingsSource {
 
 impl ScyllaSettingsSource {
     pub(crate) fn new(session: Arc<Session>) -> Self {
-        Self { session, warned: AtomicBool::new(false) }
+        Self {
+            session,
+            warned: AtomicBool::new(false),
+        }
     }
 
     /// Run `SELECT value FROM system_views.settings WHERE name = ?`, returning
     /// the value text. `Ok(None)` = query ran but the row is absent;
     /// `Err(_)` = the query itself failed (view missing on Scylla, timeout).
     async fn query_value(&self, name: &str) -> Result<Option<String>, String> {
-        let result = self.session
+        let result = self
+            .session
             .query_unpaged(
                 "SELECT value FROM system_views.settings WHERE name = ?",
                 (name,),
@@ -47,7 +51,8 @@ impl ScyllaSettingsSource {
             .await
             .map_err(|e| e.to_string())?;
         let rows = result.into_rows_result().map_err(|e| e.to_string())?;
-        let value = rows.rows::<(String,)>()
+        let value = rows
+            .rows::<(String,)>()
             .map_err(|e| e.to_string())?
             .next()
             .and_then(|r| r.ok())
@@ -57,15 +62,19 @@ impl ScyllaSettingsSource {
 }
 
 impl CqlSettingsSource for ScyllaSettingsSource {
-    fn driver(&self) -> &'static str { "scylla" }
+    fn driver(&self) -> &'static str {
+        "scylla"
+    }
 
-    fn read<'a>(&'a self, name: &'a str)
-        -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>
-    {
+    fn read<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>> {
         Box::pin(async move {
             // C* 5.0 unit-typed form (`batch_size_fail_threshold` = "50KiB").
             match self.query_value(name).await {
-                Ok(Some(v)) => if let Some(b) = bytes_from_unit_value(&v) { return Some(b); },
+                Ok(Some(v)) => {
+                    if let Some(b) = bytes_from_unit_value(&v) {
+                        return Some(b);
+                    }
+                }
                 Ok(None) => {}
                 Err(e) => {
                     warn_settings_unavailable(&self.warned, self.driver(), &e);
@@ -74,7 +83,11 @@ impl CqlSettingsSource for ScyllaSettingsSource {
             }
             // C* 4.x integer-KB form (`batch_size_fail_threshold_in_kb` = "50").
             match self.query_value(&in_kb_setting_name(name)).await {
-                Ok(Some(v)) => if let Some(b) = bytes_from_kb_value(&v) { return Some(b); },
+                Ok(Some(v)) => {
+                    if let Some(b) = bytes_from_kb_value(&v) {
+                        return Some(b);
+                    }
+                }
                 Ok(None) => {}
                 Err(e) => {
                     warn_settings_unavailable(&self.warned, self.driver(), &e);

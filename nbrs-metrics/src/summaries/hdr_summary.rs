@@ -62,14 +62,15 @@ impl HdrSummary {
     }
 
     /// Configured bounds.
-    pub fn bounds(&self) -> HdrBounds { self.bounds }
+    pub fn bounds(&self) -> HdrBounds {
+        self.bounds
+    }
 
     /// Record one sample. Values outside the configured bounds
     /// are clamped into range (HDR would silently drop otherwise).
     pub fn record(&self, value: u64) {
         let v = value.clamp(self.bounds.low, self.bounds.high);
-        let mut g = self.hist.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut g = self.hist.lock().unwrap_or_else(|e| e.into_inner());
         // `record` can only fail for out-of-range values, which
         // we've already clamped — ignore the Result for the hot path.
         let _ = g.record(v);
@@ -79,20 +80,19 @@ impl HdrSummary {
     /// Clones the underlying HDR so callers can compute
     /// percentiles without holding the lock.
     pub fn peek_snapshot(&self) -> HdrSnapshot {
-        let g = self.hist.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let g = self.hist.lock().unwrap_or_else(|e| e.into_inner());
         HdrSnapshot { hist: g.clone() }
     }
 
     /// Total sample count so far.
     pub fn len(&self) -> u64 {
-        self.hist.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.hist.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// True when no samples have been recorded.
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Immutable snapshot returned by [`HdrSummary::peek_snapshot`].
@@ -105,32 +105,51 @@ pub struct HdrSnapshot {
 
 impl HdrSnapshot {
     /// Total sample count.
-    pub fn len(&self) -> u64 { self.hist.len() }
+    pub fn len(&self) -> u64 {
+        self.hist.len()
+    }
 
     /// True if the snapshot has no samples.
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Arithmetic mean over recorded samples.
-    pub fn mean(&self) -> f64 { self.hist.mean() }
+    pub fn mean(&self) -> f64 {
+        self.hist.mean()
+    }
 
     /// Minimum observed value. Zero if empty.
-    pub fn min(&self) -> u64 { self.hist.min() }
+    pub fn min(&self) -> u64 {
+        self.hist.min()
+    }
 
     /// Maximum observed value. Zero if empty.
-    pub fn max(&self) -> u64 { self.hist.max() }
+    pub fn max(&self) -> u64 {
+        self.hist.max()
+    }
 
     /// Percentile at quantile `q ∈ [0.0, 100.0]`.
-    pub fn percentile(&self, q: f64) -> u64 { self.hist.value_at_quantile(q / 100.0) }
+    pub fn percentile(&self, q: f64) -> u64 {
+        self.hist.value_at_quantile(q / 100.0)
+    }
 
-    pub fn p50(&self) -> u64 { self.percentile(50.0) }
-    pub fn p90(&self) -> u64 { self.percentile(90.0) }
-    pub fn p99(&self) -> u64 { self.percentile(99.0) }
-    pub fn p999(&self) -> u64 { self.percentile(99.9) }
+    pub fn p50(&self) -> u64 {
+        self.percentile(50.0)
+    }
+    pub fn p90(&self) -> u64 {
+        self.percentile(90.0)
+    }
+    pub fn p99(&self) -> u64 {
+        self.percentile(99.0)
+    }
+    pub fn p999(&self) -> u64 {
+        self.percentile(99.9)
+    }
 }
 
 fn bounds_build(b: &HdrBounds) -> HdrHistogram<u64> {
-    HdrHistogram::new_with_bounds(b.low, b.high, b.sig_digits)
-        .expect("HDR bounds must be valid")
+    HdrHistogram::new_with_bounds(b.low, b.high, b.sig_digits).expect("HDR bounds must be valid")
 }
 
 // =========================================================================
@@ -144,7 +163,9 @@ mod tests {
     #[test]
     fn retains_across_reads() {
         let s = HdrSummary::latency();
-        for v in [1_000_000u64, 2_000_000, 3_000_000] { s.record(v); }
+        for v in [1_000_000u64, 2_000_000, 3_000_000] {
+            s.record(v);
+        }
         let a = s.peek_snapshot();
         let b = s.peek_snapshot();
         assert_eq!(a.len(), 3);
@@ -155,7 +176,9 @@ mod tests {
     fn percentile_accuracy_within_hdr_resolution() {
         let s = HdrSummary::latency();
         // 1000 samples at 1 ms each.
-        for _ in 0..1_000 { s.record(1_000_000); }
+        for _ in 0..1_000 {
+            s.record(1_000_000);
+        }
         let snap = s.peek_snapshot();
         assert_eq!(snap.len(), 1_000);
         // HDR at 3 sig-digit over 1 µs .. 60 s resolves 1 ms
@@ -167,23 +190,35 @@ mod tests {
     #[test]
     fn clamps_out_of_range_values() {
         let bounds = HdrBounds {
-            low: 1_000, high: 60_000_000_000, sig_digits: 3,
+            low: 1_000,
+            high: 60_000_000_000,
+            sig_digits: 3,
         };
         let s = HdrSummary::new(bounds);
-        s.record(0);           // below low — clamped up to 1_000
-        s.record(u64::MAX);    // above high — clamped down to 60 s
+        s.record(0); // below low — clamped up to 1_000
+        s.record(u64::MAX); // above high — clamped down to 60 s
         let snap = s.peek_snapshot();
         assert_eq!(snap.len(), 2);
         // HDR quantizes to bucket boundaries; exact 1_000 / 60e9
         // matches aren't guaranteed. Verify the values land
         // inside the configured range (nothing dropped) and that
         // the two samples are on opposite ends of the distribution.
-        assert!(snap.min() > 0, "min = {} should be > 0 after clamp", snap.min());
-        assert!(snap.min() < snap.max() / 1_000_000,
+        assert!(
+            snap.min() > 0,
+            "min = {} should be > 0 after clamp",
+            snap.min()
+        );
+        assert!(
+            snap.min() < snap.max() / 1_000_000,
             "min/max should be far apart: min={}, max={}",
-            snap.min(), snap.max());
-        assert!(snap.max() <= 60_000_000_000 + 60_000_000,
-            "max = {} should be ≤ 60s + one bucket", snap.max());
+            snap.min(),
+            snap.max()
+        );
+        assert!(
+            snap.max() <= 60_000_000_000 + 60_000_000,
+            "max = {} should be ≤ 60s + one bucket",
+            snap.max()
+        );
     }
 
     #[test]
@@ -214,10 +249,14 @@ mod tests {
         for _ in 0..8 {
             let s = s.clone();
             handles.push(thread::spawn(move || {
-                for _ in 0..1_000 { s.record(1_000_000); }
+                for _ in 0..1_000 {
+                    s.record(1_000_000);
+                }
             }));
         }
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
         assert_eq!(s.len(), 8_000);
     }
 }

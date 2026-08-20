@@ -52,16 +52,16 @@
 // `MetricCatalog` trait (SRD-49) — not merely "what the nb-rs workspace
 // imports". So these modules stay `pub`; the SRD-05 D5 narrowing applies to
 // workspace-internal crates, not to standalone libraries.
-pub mod lexer;
 pub mod ast;
+pub mod eval;
+pub mod grammar;
+pub mod lexer;
 pub mod parser;
 pub mod prettifier;
 pub mod query_rewrite;
-pub mod eval;
-pub mod streaming;
-pub mod grammar;
 #[cfg(feature = "runtime")]
 pub mod runtime;
+pub mod streaming;
 // SRD-86 — the `metricsql_*` polydat node family + the Vector→Value
 // projector. Behind `polydat-nodes` so the engine stays polydat-free
 // for parse/evaluate-only consumers.
@@ -69,6 +69,6 @@ pub mod runtime;
 pub mod polydat_nodes;
 
 pub use ast::Expr;
-pub use eval::{MetricAccess, DataSourceError, EvalContext, EvalError, evaluate, evaluate_range};
-pub use streaming::{StreamingPlan, CompileError, compile_streaming};
-pub use parser::{parse, parse_for_prettify, ParseError};
+pub use eval::{DataSourceError, EvalContext, EvalError, MetricAccess, evaluate, evaluate_range};
+pub use parser::{ParseError, parse, parse_for_prettify};
+pub use streaming::{CompileError, StreamingPlan, compile_streaming};

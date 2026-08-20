@@ -102,22 +102,30 @@ pub fn write_named_section(
         (Some(_), WriteMode::AddIfMissing) => (current, false),
         (None, _) => {
             let mut prefix = current;
-            while prefix.ends_with("\n\n\n") { prefix.pop(); }
+            while prefix.ends_with("\n\n\n") {
+                prefix.pop();
+            }
             if !prefix.ends_with("\n\n") {
                 prefix.push('\n');
-                if !prefix.ends_with("\n\n") { prefix.push('\n'); }
+                if !prefix.ends_with("\n\n") {
+                    prefix.push('\n');
+                }
             }
             (format!("{prefix}{new_section}"), true)
         }
     };
 
-    if !modified { return Ok(false); }
+    if !modified {
+        return Ok(false);
+    }
 
     if let Some(parent) = report_path.parent()
-        && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
-        }
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
+    }
     std::fs::write(report_path, updated)
         .map_err(|e| format!("write '{}': {e}", report_path.display()))?;
     Ok(true)
@@ -186,31 +194,40 @@ pub fn write_named_section_first(
         // Insert after the first `# ` doc-header block (which
         // may span multiple lines until a blank line) and
         // before the first `## ` section.
-        let insertion = current.find("\n## ")
+        let insertion = current
+            .find("\n## ")
             .map(|p| p + 1) // land on the `#` of the heading
-            .or_else(|| current.find("\n# ").and({
-                // no `## ` yet — append after the header
-                // paragraph (look for the second `\n\n`)
-                None
-            }))
+            .or_else(|| {
+                current.find("\n# ").and({
+                    // no `## ` yet — append after the header
+                    // paragraph (look for the second `\n\n`)
+                    None
+                })
+            })
             .unwrap_or(current.len());
         // Step back to the start of any blank-line padding so
         // the new section is preceded by exactly one blank.
         let mut prefix = current[..insertion].to_string();
         let suffix = current[insertion..].to_string();
-        while prefix.ends_with("\n\n\n") { prefix.pop(); }
+        while prefix.ends_with("\n\n\n") {
+            prefix.pop();
+        }
         if !prefix.ends_with("\n\n") {
             prefix.push('\n');
-            if !prefix.ends_with("\n\n") { prefix.push('\n'); }
+            if !prefix.ends_with("\n\n") {
+                prefix.push('\n');
+            }
         }
         format!("{prefix}{new_section}{suffix}")
     };
 
     if let Some(parent) = report_path.parent()
-        && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
-        }
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
+    }
     std::fs::write(report_path, updated)
         .map_err(|e| format!("write '{}': {e}", report_path.display()))?;
     Ok(true)
@@ -244,7 +261,8 @@ fn find_section_by_anchor(text: &str, anchor: &str) -> Option<(usize, usize)> {
         let line_start = text[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
         // Anchor line contains only the tag, then the `## `
         // heading on the next line.
-        let line_end = text[line_start..].find('\n')
+        let line_end = text[line_start..]
+            .find('\n')
             .map(|p| line_start + p)
             .unwrap_or(text.len());
         let after = &text[line_end..];
@@ -273,7 +291,8 @@ fn find_section_by_anchor(text: &str, anchor: &str) -> Option<(usize, usize)> {
     // heading is the first `## ` at or after `start_byte`;
     // we want everything from `start_byte` up to (but not
     // including) the *next* `## ` heading after that.
-    let own_heading_offset = text[start_byte..].find("## ")
+    let own_heading_offset = text[start_byte..]
+        .find("## ")
         .map(|rel| start_byte + rel)
         .unwrap_or(start_byte);
     let after_heading = own_heading_offset + 3;
@@ -287,12 +306,12 @@ fn find_section_by_anchor(text: &str, anchor: &str) -> Option<(usize, usize)> {
         // immediately preceding `next_heading_byte` and
         // check it.
         let prev_line_end = text[..next_heading_byte].rfind('\n').unwrap_or(0);
-        let prior_line_start = text[..prev_line_end].rfind('\n')
+        let prior_line_start = text[..prev_line_end]
+            .rfind('\n')
             .map(|p| p + 1)
             .unwrap_or(0);
         let prior_line = &text[prior_line_start..prev_line_end];
-        if prior_line.trim_start().starts_with("<a id=") &&
-           prior_line.trim_end().ends_with("</a>")
+        if prior_line.trim_start().starts_with("<a id=") && prior_line.trim_end().ends_with("</a>")
         {
             prior_line_start
         } else {
@@ -330,14 +349,14 @@ pub fn prettify_name(name: &str) -> String {
 /// the doc resolves regardless of where it's opened from.
 pub fn image_section_body(report_path: &Path, image_path: &Path) -> String {
     let rel = match (report_path.parent(), image_path) {
-        (Some(parent), p) if parent == p.parent().unwrap_or(parent) => {
-            p.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.to_string_lossy().into_owned())
-        }
+        (Some(parent), p) if parent == p.parent().unwrap_or(parent) => p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.to_string_lossy().into_owned()),
         _ => image_path.to_string_lossy().into_owned(),
     };
-    let alt = image_path.file_stem()
+    let alt = image_path
+        .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "plot".into());
     format!("![{alt}]({rel})\n")
@@ -351,7 +370,11 @@ mod tests {
     /// which would report a correctly-padded row containing `µ` as misaligned —
     /// measuring the test the same wrong way the code must not.
     fn cols(line: &str) -> Vec<usize> {
-        line.chars().enumerate().filter(|(_, c)| *c == '|').map(|(i, _)| i).collect()
+        line.chars()
+            .enumerate()
+            .filter(|(_, c)| *c == '|')
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Every `|` must land in the same column on every line of a table.
@@ -363,7 +386,11 @@ mod tests {
     fn markdown_table_aligns_every_divider() {
         let header = vec!["p".to_string(), "segments".to_string(), "bytes".to_string()];
         let rows = vec![
-            vec!["Partition(0/36 [0..100000))".into(), "1".into(), "489170772".into()],
+            vec![
+                "Partition(0/36 [0..100000))".into(),
+                "1".into(),
+                "489170772".into(),
+            ],
             vec!["short".into(), "22".into(), "7".into()],
         ];
         let out = markdown_table(&header, &rows, 1);
@@ -374,10 +401,19 @@ mod tests {
             assert_eq!(cols(l), want, "line {n} pipes misaligned:\n{out}");
         }
         // The divider is filled, not a bare `---`.
-        assert!(lines[1].contains("-----"), "divider must span the column:\n{out}");
+        assert!(
+            lines[1].contains("-----"),
+            "divider must span the column:\n{out}"
+        );
         // Label column left-aligned, value columns right-aligned.
-        assert!(lines[3].starts_with("| short  "), "labels left-align:\n{out}");
-        assert!(lines[3].contains("|       22 |"), "values right-align:\n{out}");
+        assert!(
+            lines[3].starts_with("| short  "),
+            "labels left-align:\n{out}"
+        );
+        assert!(
+            lines[3].contains("|       22 |"),
+            "values right-align:\n{out}"
+        );
     }
 
     /// Headings stack one word per line so a column is as wide as its widest
@@ -389,14 +425,24 @@ mod tests {
         let out = markdown_table(&header, &rows, 1);
         let lines: Vec<&str> = out.lines().collect();
         // Five heading lines: live / bytes / per / ms / (K), the unit kept whole.
-        assert_eq!(lines.len(), 5 + 1 + 1, "heading lines + divider + row:\n{out}");
+        assert_eq!(
+            lines.len(),
+            5 + 1 + 1,
+            "heading lines + divider + row:\n{out}"
+        );
         assert!(lines[0].contains("live"), "{out}");
-        assert!(lines[4].contains("(K)"), "unit stays whole on its own line:\n{out}");
+        assert!(
+            lines[4].contains("(K)"),
+            "unit stays whole on its own line:\n{out}"
+        );
         // Column is 5 wide ("bytes"), not 21 ("live_bytes_per_ms (K)").
         let width = lines[5].split('|').nth(2).unwrap().len() - 2;
         assert_eq!(width, 5, "column should size to its widest word:\n{out}");
         // Bottom-aligned: the short heading's word sits on the last heading line.
-        assert!(lines[4].starts_with("| p "), "short headings bottom-align:\n{out}");
+        assert!(
+            lines[4].starts_with("| p "),
+            "short headings bottom-align:\n{out}"
+        );
     }
 
     /// The markdown artifact must stay a real GFM table: one header row, the
@@ -410,15 +456,23 @@ mod tests {
         let out = markdown_table_gfm(&header, &rows, 1);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "header + delimiter + row:\n{out}");
-        assert!(lines[0].contains("live<br>bytes<br>per<br>ms<br>(K)"),
-            "headings wrap via <br>:\n{out}");
-        assert!(lines[1].chars().all(|c| "|-: ".contains(c)), "delimiter row:\n{out}");
+        assert!(
+            lines[0].contains("live<br>bytes<br>per<br>ms<br>(K)"),
+            "headings wrap via <br>:\n{out}"
+        );
+        assert!(
+            lines[1].chars().all(|c| "|-: ".contains(c)),
+            "delimiter row:\n{out}"
+        );
         // Every line carries the same cell count, or the table is malformed.
         let cells = |l: &str| l.matches('|').count();
         assert_eq!(cells(lines[0]), cells(lines[1]));
         assert_eq!(cells(lines[0]), cells(lines[2]));
         // Value columns are marked right-aligned for the renderer.
-        assert!(lines[1].contains(":|"), "numeric columns right-align:\n{out}");
+        assert!(
+            lines[1].contains(":|"),
+            "numeric columns right-align:\n{out}"
+        );
     }
 
     /// Width is counted in characters, not bytes, so a multi-byte unit suffix
@@ -427,22 +481,25 @@ mod tests {
     fn markdown_table_measures_characters_not_bytes() {
         let header = vec!["metric".to_string(), "value".to_string()];
         let rows = vec![
-            vec!["latency".into(), "12µs".into()],   // 'µ' is two bytes
+            vec!["latency".into(), "12µs".into()], // 'µ' is two bytes
             vec!["count".into(), "9999".into()],
         ];
         let out = markdown_table(&header, &rows, 1);
         let lines: Vec<&str> = out.lines().collect();
         let want = cols(lines[0]);
         for (n, l) in lines.iter().enumerate() {
-            assert_eq!(cols(l), want, "line {n} misaligned by byte-width padding:\n{out}");
+            assert_eq!(
+                cols(l),
+                want,
+                "line {n} misaligned by byte-width padding:\n{out}"
+            );
         }
     }
 
     use super::*;
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("nbrs_report_test_{}",
-            std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nbrs_report_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
     }
@@ -452,18 +509,32 @@ mod tests {
         let p = tmp_path("add_new.md");
         let _ = std::fs::remove_file(&p);
         let added = write_named_section(
-            &p, "summary_a", "Summary A (table)", "first",
-            WriteMode::AddIfMissing).unwrap();
+            &p,
+            "summary_a",
+            "Summary A (table)",
+            "first",
+            WriteMode::AddIfMissing,
+        )
+        .unwrap();
         assert!(added);
         let added2 = write_named_section(
-            &p, "plot_b", "Plot B (plot)", "second",
-            WriteMode::AddIfMissing).unwrap();
+            &p,
+            "plot_b",
+            "Plot B (plot)",
+            "second",
+            WriteMode::AddIfMissing,
+        )
+        .unwrap();
         assert!(added2);
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("<a id=\"summary_a\"></a>"),
-            "missing anchor for summary_a: {content}");
-        assert!(content.contains("<a id=\"plot_b\"></a>"),
-            "missing anchor for plot_b: {content}");
+        assert!(
+            content.contains("<a id=\"summary_a\"></a>"),
+            "missing anchor for summary_a: {content}"
+        );
+        assert!(
+            content.contains("<a id=\"plot_b\"></a>"),
+            "missing anchor for plot_b: {content}"
+        );
         // The pandoc-style `{#…}` form must NOT appear in
         // freshly-written output — it confuses some
         // markdown renderers (literal braces in the heading).
@@ -477,39 +548,63 @@ mod tests {
     fn named_section_writes_anchor_and_kind() {
         let p = tmp_path("named.md");
         let _ = std::fs::remove_file(&p);
-        write_named_section(&p, "recall_at_k10",
+        write_named_section(
+            &p,
+            "recall_at_k10",
             "3. Recall At K10 (plot)",
             "![](plot_recall_at_k10.png)",
-            WriteMode::Update).unwrap();
+            WriteMode::Update,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
         // HTML anchor on its own line above the heading;
         // heading text is clean (no `{#…}` suffix).
         assert!(
             content.contains("<a id=\"recall_at_k10\"></a>\n## 3. Recall At K10 (plot)"),
-            "anchor + heading shape missing: {content}");
-        assert!(!content.contains("{#recall_at_k10}"),
-            "legacy `{{#…}}` form must not appear in fresh output");
+            "anchor + heading shape missing: {content}"
+        );
+        assert!(
+            !content.contains("{#recall_at_k10}"),
+            "legacy `{{#…}}` form must not appear in fresh output"
+        );
     }
 
     #[test]
     fn named_section_relookup_by_anchor_survives_label_change() {
         let p = tmp_path("relookup.md");
         let _ = std::fs::remove_file(&p);
-        write_named_section(&p, "recall_at_k10",
-            "1. Recall At K10 (plot)", "first body",
-            WriteMode::Update).unwrap();
+        write_named_section(
+            &p,
+            "recall_at_k10",
+            "1. Recall At K10 (plot)",
+            "first body",
+            WriteMode::Update,
+        )
+        .unwrap();
         // Same anchor, different display heading + body. The
         // anchor-based lookup must still find and replace the
         // earlier section in place.
-        write_named_section(&p, "recall_at_k10",
-            "5. Recall@10 reordered (plot)", "second body",
-            WriteMode::Update).unwrap();
+        write_named_section(
+            &p,
+            "recall_at_k10",
+            "5. Recall@10 reordered (plot)",
+            "second body",
+            WriteMode::Update,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(
             content.contains("<a id=\"recall_at_k10\"></a>\n## 5. Recall@10 reordered (plot)"),
-            "new heading missing: {content}");
-        assert!(content.contains("second body"), "new body missing: {content}");
-        assert!(!content.contains("first body"), "stale body retained: {content}");
+            "new heading missing: {content}"
+        );
+        assert!(
+            content.contains("second body"),
+            "new body missing: {content}"
+        );
+        assert!(
+            !content.contains("first body"),
+            "stale body retained: {content}"
+        );
         // Exactly one anchor + one heading for this anchor.
         assert_eq!(content.matches("<a id=\"recall_at_k10\"></a>").count(), 1);
     }
@@ -526,15 +621,24 @@ mod tests {
         let legacy = "# Report\n\n## 1. Old Title {#legacy_anchor}\n\nold body\n\n";
         std::fs::write(&p, legacy).unwrap();
 
-        write_named_section(&p, "legacy_anchor",
-            "1. Migrated Title", "fresh body",
-            WriteMode::Update).unwrap();
+        write_named_section(
+            &p,
+            "legacy_anchor",
+            "1. Migrated Title",
+            "fresh body",
+            WriteMode::Update,
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("<a id=\"legacy_anchor\"></a>"),
-            "expected migrated HTML anchor; got: {content}");
-        assert!(!content.contains("{#legacy_anchor}"),
-            "legacy form should be gone after rewrite; got: {content}");
+        assert!(
+            content.contains("<a id=\"legacy_anchor\"></a>"),
+            "expected migrated HTML anchor; got: {content}"
+        );
+        assert!(
+            !content.contains("{#legacy_anchor}"),
+            "legacy form should be gone after rewrite; got: {content}"
+        );
         assert!(content.contains("fresh body"));
         assert!(!content.contains("old body"));
     }
@@ -551,8 +655,10 @@ mod tests {
         let report = std::path::Path::new("/tmp/sess/summary.md");
         let img = std::path::Path::new("/tmp/sess/plot_recall.png");
         let body = image_section_body(report, img);
-        assert!(body.contains("![plot_recall](plot_recall.png)"),
-            "got: {body}");
+        assert!(
+            body.contains("![plot_recall](plot_recall.png)"),
+            "got: {body}"
+        );
     }
 }
 
@@ -578,7 +684,8 @@ fn split_heading(heading: &str) -> Vec<String> {
         Some((n, u)) => (n, Some(format!("({u}"))),
         None => (heading, None),
     };
-    let mut words: Vec<String> = name.split('_')
+    let mut words: Vec<String> = name
+        .split('_')
         .filter(|w| !w.is_empty())
         .map(str::to_string)
         .collect();
@@ -611,7 +718,8 @@ pub(crate) fn markdown_table_gfm(
     right_align_from: usize,
 ) -> String {
     let header_lines: Vec<Vec<String>> = header.iter().map(|h| split_heading(h)).collect();
-    let mut widths: Vec<usize> = header_lines.iter()
+    let mut widths: Vec<usize> = header_lines
+        .iter()
         .map(|words| words.iter().map(|w| w.chars().count()).max().unwrap_or(0))
         .collect();
     for row in rows {
@@ -642,7 +750,9 @@ pub(crate) fn markdown_table_gfm(
     for row in rows {
         out.push('|');
         for (i, cell) in row.iter().enumerate() {
-            if i >= widths.len() { continue; }
+            if i >= widths.len() {
+                continue;
+            }
             if i < right_align_from {
                 out.push_str(&format!(" {:<w$} |", cell, w = widths[i]));
             } else {
@@ -666,7 +776,8 @@ pub(crate) fn markdown_table(
     let header_lines: Vec<Vec<String>> = header.iter().map(|h| split_heading(h)).collect();
     let header_depth = header_lines.iter().map(Vec::len).max().unwrap_or(1);
 
-    let mut widths: Vec<usize> = header_lines.iter()
+    let mut widths: Vec<usize> = header_lines
+        .iter()
         .map(|words| words.iter().map(|w| w.chars().count()).max().unwrap_or(0))
         .collect();
     for row in rows {
@@ -684,7 +795,11 @@ pub(crate) fn markdown_table(
         out.push('|');
         for (i, words) in header_lines.iter().enumerate() {
             let pad_top = header_depth - words.len();
-            let text = if line < pad_top { "" } else { words[line - pad_top].as_str() };
+            let text = if line < pad_top {
+                ""
+            } else {
+                words[line - pad_top].as_str()
+            };
             out.push_str(&format!(" {:<w$} |", text, w = widths[i]));
         }
         out.push('\n');
@@ -697,7 +812,9 @@ pub(crate) fn markdown_table(
     for row in rows {
         out.push('|');
         for (i, cell) in row.iter().enumerate() {
-            if i >= widths.len() { continue; }
+            if i >= widths.len() {
+                continue;
+            }
             if i < right_align_from {
                 out.push_str(&format!(" {:<w$} |", cell, w = widths[i]));
             } else {

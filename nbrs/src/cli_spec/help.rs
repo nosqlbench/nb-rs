@@ -38,8 +38,12 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
         eprintln!("SUBCOMMANDS:");
         // Two-column layout: name padded to a stable width
         // computed across all siblings, then the one-line help.
-        let name_width = cmd.subcommands.iter()
-            .map(|s| s.name.len()).max().unwrap_or(0);
+        let name_width = cmd
+            .subcommands
+            .iter()
+            .map(|s| s.name.len())
+            .max()
+            .unwrap_or(0);
         for sub in &cmd.subcommands {
             let one_line = sub.help.lines().next().unwrap_or("").trim_end();
             eprintln!("  {:<name_width$}  {}", sub.name, one_line);
@@ -49,13 +53,21 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
         eprintln!("  --help, -h     Show usage for the current command path");
         eprintln!("  --version, -V  Print the nbrs version");
         eprintln!();
-        eprintln!("PHYSICAL THREAD POOLS (SRD-102, process-wide; CLI > env > core-count defaults):");
+        eprintln!(
+            "PHYSICAL THREAD POOLS (SRD-102, process-wide; CLI > env > core-count defaults):"
+        );
         eprintln!("  --threads.timing=N          timing-pool thread count (default 1)");
         eprintln!("  --threads.io=N              io-pool thread count (default 2)");
         eprintln!("  --threads.workers=N         async worker threads (default cores - 1)");
-        eprintln!("  --threads.timing.sched=P    timing sched policy: rr|fifo|nice|none (default rr)");
-        eprintln!("  --threads.timing.pin=C      timing core affinity: auto|off|<core> (default auto)");
-        eprintln!("  (env equivalents: NBRS_THREADS_TIMING, _IO, _WORKERS, _TIMING_SCHED, _TIMING_PIN)");
+        eprintln!(
+            "  --threads.timing.sched=P    timing sched policy: rr|fifo|nice|none (default rr)"
+        );
+        eprintln!(
+            "  --threads.timing.pin=C      timing core affinity: auto|off|<core> (default auto)"
+        );
+        eprintln!(
+            "  (env equivalents: NBRS_THREADS_TIMING, _IO, _WORKERS, _TIMING_SCHED, _TIMING_PIN)"
+        );
         eprintln!();
         eprintln!("Run `{invocation} <subcommand> --help` for per-subcommand help.");
         return;
@@ -70,13 +82,17 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
 
     if !cmd.positionals.is_empty() {
         eprintln!("POSITIONAL ARGUMENTS:");
-        let name_width = cmd.positionals.iter()
-            .map(|p| p.name.len() + 2).max().unwrap_or(0);
+        let name_width = cmd
+            .positionals
+            .iter()
+            .map(|p| p.name.len() + 2)
+            .max()
+            .unwrap_or(0);
         for p in &cmd.positionals {
             let kind = match p.kind {
-                PositionalKind::One       => "required",
+                PositionalKind::One => "required",
                 PositionalKind::ZeroOrOne => "optional",
-                PositionalKind::Many      => "0+",
+                PositionalKind::Many => "0+",
             };
             let label = format!("<{}>", p.name);
             eprintln!("  {label:<name_width$}  ({kind}) {}", p.help);
@@ -88,9 +104,7 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
         eprintln!("FLAGS:");
         // Compute label width across all flags so help columns
         // align. Label = `--long [aliases…] <value>?`.
-        let labels: Vec<String> = cmd.flags.iter()
-            .map(flag_label)
-            .collect();
+        let labels: Vec<String> = cmd.flags.iter().map(flag_label).collect();
         let lw = labels.iter().map(|s| s.len()).max().unwrap_or(0);
         for (f, label) in cmd.flags.iter().zip(labels.iter()) {
             eprintln!("  {label:<lw$}  {}", f.help);
@@ -114,12 +128,15 @@ fn flag_label(f: &Flag) -> String {
 }
 
 fn positionals_hint(ps: &[Positional]) -> String {
-    if ps.is_empty() { return String::new(); }
-    let parts: Vec<String> = ps.iter()
+    if ps.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = ps
+        .iter()
         .map(|p| match p.kind {
-            PositionalKind::One       => format!("<{}>", p.name),
+            PositionalKind::One => format!("<{}>", p.name),
             PositionalKind::ZeroOrOne => format!("[<{}>]", p.name),
-            PositionalKind::Many      => format!("[{}...]", p.name),
+            PositionalKind::Many => format!("[{}...]", p.name),
         })
         .collect();
     format!(" {}", parts.join(" "))

@@ -18,18 +18,18 @@
 //!   produces a `ResumePlan` the executor consults before
 //!   dispatch.
 
-pub mod identity;
-pub mod storage;
 pub mod events;
-pub mod writer;
-pub mod resume;
+pub mod identity;
 pub mod params_scope;
+pub mod resume;
+pub mod storage;
+pub mod writer;
 
-pub use identity::{PathSegment, PhaseIdentity};
-pub use storage::{Checkpoint, OpCounts, PhaseEntry, PhaseStatus};
 pub use events::CheckpointData;
+pub use identity::{PathSegment, PhaseIdentity};
+pub use resume::{ResumeAction, ResumePlan};
+pub use storage::{Checkpoint, OpCounts, PhaseEntry, PhaseStatus};
 pub use writer::CheckpointWriter;
-pub use resume::{ResumePlan, ResumeAction};
 
 /// Declare every phase node in a freshly-pre-mapped scene tree
 /// to the writer. Called once at session bootstrap, immediately
@@ -53,7 +53,8 @@ pub fn declare_scene_tree_phases(
             coords: node.labels.clone(),
             phase_hash: None,
         };
-        let skip_eligible = phases.get(&node.name)
+        let skip_eligible = phases
+            .get(&node.name)
             .and_then(|p| p.checkpoint.as_ref())
             .map(|c| c.idempotent)
             .unwrap_or(false);
@@ -90,21 +91,23 @@ pub fn scene_tree_resume_candidates(
     scope_tree: &crate::scope_tree::ScopeTree,
     phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
 ) -> Vec<(PhaseIdentity, bool)> {
-    tree.dfs_phases().map(|node| {
-        let phase = phases.get(&node.name);
-        let chain = ancestor_chain_hash(scope_tree, &node.name);
-        let config = phase.map(phase_config_hash).unwrap_or([0u8; 32]);
-        let identity = PhaseIdentity {
-            yaml_path: node.yaml_path.clone(),
-            coords: node.labels.clone(),
-            phase_hash: Some(compose_phase_hash(chain, config)),
-        };
-        let idempotent = phase
-            .and_then(|p| p.checkpoint.as_ref())
-            .map(|c| c.idempotent)
-            .unwrap_or(false);
-        (identity, idempotent)
-    }).collect()
+    tree.dfs_phases()
+        .map(|node| {
+            let phase = phases.get(&node.name);
+            let chain = ancestor_chain_hash(scope_tree, &node.name);
+            let config = phase.map(phase_config_hash).unwrap_or([0u8; 32]);
+            let identity = PhaseIdentity {
+                yaml_path: node.yaml_path.clone(),
+                coords: node.labels.clone(),
+                phase_hash: Some(compose_phase_hash(chain, config)),
+            };
+            let idempotent = phase
+                .and_then(|p| p.checkpoint.as_ref())
+                .map(|c| c.idempotent)
+                .unwrap_or(false);
+            (identity, idempotent)
+        })
+        .collect()
 }
 
 /// Compose the two provenance digests into the one phase hash
@@ -113,10 +116,7 @@ pub fn scene_tree_resume_candidates(
 /// row (SRD-77 refine hash gate), and the resume planner's
 /// candidates all use this same formula, so a saved hash and a
 /// freshly computed one compare directly.
-pub(crate) fn compose_phase_hash(
-    chain: Option<[u8; 32]>,
-    config: [u8; 32],
-) -> [u8; 32] {
+pub(crate) fn compose_phase_hash(chain: Option<[u8; 32]>, config: [u8; 32]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(b"nbrs-phase-identity-v2\n");
@@ -140,19 +140,14 @@ pub(crate) fn compose_phase_hash(
 /// so insertion order alone is NOT stable). One surface, two
 /// consumers: the config digest below and SRD-107's textual
 /// `{name}` interpolation scan.
-pub(crate) fn phase_config_canonical_text(
-    phase: &nbrs_workload::model::WorkloadPhase,
-) -> String {
-    let mut value = serde_json::to_value(phase)
-        .unwrap_or(serde_json::Value::Null);
+pub(crate) fn phase_config_canonical_text(phase: &nbrs_workload::model::WorkloadPhase) -> String {
+    let mut value = serde_json::to_value(phase).unwrap_or(serde_json::Value::Null);
     sort_json_keys(&mut value);
     serde_json::to_string(&value).unwrap_or_default()
 }
 
 /// Canonical SHA-256 over [`phase_config_canonical_text`].
-pub(crate) fn phase_config_hash(
-    phase: &nbrs_workload::model::WorkloadPhase,
-) -> [u8; 32] {
+pub(crate) fn phase_config_hash(phase: &nbrs_workload::model::WorkloadPhase) -> [u8; 32] {
     config_text_hash(&phase_config_canonical_text(phase))
 }
 
@@ -217,6 +212,8 @@ pub(crate) fn ancestor_chain_hash(
     // both compute sites.
     let head = ancestors[0].program();
     let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
-        .iter().map(|k| k.program().as_ref()).collect();
+        .iter()
+        .map(|k| k.program().as_ref())
+        .collect();
     Some(head.instance_hash(&tail))
 }

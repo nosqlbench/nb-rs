@@ -26,29 +26,27 @@ use ratatui::backend::TestBackend;
 use nbrs_metrics::component::Component;
 use nbrs_metrics::controls::{BranchScope, ControlBuilder, ControlOrigin};
 use nbrs_metrics::labels::Labels;
+use nbrs_runtime::polydat_nodes::runtime_context::set_session_root;
 use nbrs_tui::app::App;
 use nbrs_tui::run_state_actor::spawn_run_state_actor;
 use nbrs_tui::state::RunState;
-use nbrs_runtime::polydat_nodes::runtime_context::set_session_root;
 
 /// Serialize tests that mutate the process-global session root
 /// (the same pattern used in runtime_context's own tests).
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_metrics_query() -> Arc<nbrs_metrics::metrics_query::MetricsQuery> {
-    use nbrs_metrics::cadence::{Cadences, CadenceTree};
+    use nbrs_metrics::cadence::{CadenceTree, Cadences};
     use nbrs_metrics::cadence_reporter::CadenceReporter;
     let tree = CadenceTree::plan_default(Cadences::defaults());
     let reporter = Arc::new(CadenceReporter::new(tree));
-    let root = Component::root(
-        Labels::of("session", "ce_test"), HashMap::new(),
-    );
-    Arc::new(nbrs_metrics::metrics_query::MetricsQuery::new(reporter, root))
+    let root = Component::root(Labels::of("session", "ce_test"), HashMap::new());
+    Arc::new(nbrs_metrics::metrics_query::MetricsQuery::new(
+        reporter, root,
+    ))
 }
 
-fn install_session_with_rate_control(
-    initial: f64,
-) -> Arc<RwLock<Component>> {
+fn install_session_with_rate_control(initial: f64) -> Arc<RwLock<Component>> {
     let root = Component::root(
         Labels::empty()
             .with("type", "session")
@@ -78,9 +76,7 @@ fn build_app() -> App {
     // `recv()` errors out and the thread exits cleanly. Tests
     // don't observe the actor thread directly — they exercise
     // App's prompt API and snapshot reads.
-    let (handle, _join) = spawn_run_state_actor(
-        RunState::new("test.yaml", "smoke", "stdout"),
-    );
+    let (handle, _join) = spawn_run_state_actor(RunState::new("test.yaml", "smoke", "stdout"));
     let (_tx, rx) = mpsc::channel();
     App::new(rx, handle, test_metrics_query())
 }
@@ -118,8 +114,8 @@ async fn edit_push_and_pop_char_mutate_buffer() {
 async fn submit_parses_name_value_and_writes_control() {
     let _g = TEST_LOCK.lock().unwrap();
     let root = install_session_with_rate_control(100.0);
-    let control: nbrs_metrics::controls::Control<f64> = root.read().unwrap()
-        .controls().get("rate").unwrap();
+    let control: nbrs_metrics::controls::Control<f64> =
+        root.read().unwrap().controls().get("rate").unwrap();
 
     let mut app = build_app();
     app.open_control_edit_prompt();
@@ -133,7 +129,9 @@ async fn submit_parses_name_value_and_writes_control() {
     // committed value catches up.
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(5)).await;
-        if control.value() == 4242.0 { break; }
+        if control.value() == 4242.0 {
+            break;
+        }
     }
     assert_eq!(control.value(), 4242.0);
     assert_eq!(control.get().origin, ControlOrigin::Tui);
@@ -172,7 +170,9 @@ async fn submit_non_f64_writable_control_errors_inline() {
     // Declare a control WITHOUT from_f64; TUI writes should
     // error out with a clear message rather than silently drop.
     let root = Component::root(
-        Labels::empty().with("type", "session").with("session", "nof"),
+        Labels::empty()
+            .with("type", "session")
+            .with("session", "nof"),
         HashMap::new(),
     );
     root.read().unwrap().controls().declare(
@@ -192,8 +192,7 @@ async fn submit_non_f64_writable_control_errors_inline() {
     let p = app.edit_prompt().unwrap();
     match &p.last_result {
         Some(Err(msg)) => assert!(
-            msg.contains("not declared f64-writable")
-                || msg.contains("from_f64"),
+            msg.contains("not declared f64-writable") || msg.contains("from_f64"),
             "got: {msg}",
         ),
         other => panic!("expected f64-writable error, got {other:?}"),
@@ -212,10 +211,7 @@ async fn submit_unknown_control_name_errors_inline() {
     app.submit_control_edit();
     let p = app.edit_prompt().unwrap();
     match &p.last_result {
-        Some(Err(msg)) => assert!(
-            msg.contains("nonexistent"),
-            "got: {msg}",
-        ),
+        Some(Err(msg)) => assert!(msg.contains("nonexistent"), "got: {msg}",),
         other => panic!("expected unknown-name error, got {other:?}"),
     }
 }
@@ -252,8 +248,7 @@ async fn prompt_renders_input_and_result_lines() {
         "buffer contents missing from render:\n{text}",
     );
     assert!(
-        text.contains("Enter submits")
-            || text.contains("name=value"),
+        text.contains("Enter submits") || text.contains("name=value"),
         "hint missing:\n{text}",
     );
 }

@@ -21,10 +21,15 @@ pub enum TimeUnit {
 impl TimeUnit {
     /// Select the appropriate time unit for a given rate.
     pub fn for_rate(ops_per_sec: f64) -> Self {
-        if ops_per_sec > 1.0 { TimeUnit::Nanos }
-        else if ops_per_sec > 0.001 { TimeUnit::Micros }
-        else if ops_per_sec > 0.000001 { TimeUnit::Millis }
-        else { TimeUnit::Seconds }
+        if ops_per_sec > 1.0 {
+            TimeUnit::Nanos
+        } else if ops_per_sec > 0.001 {
+            TimeUnit::Micros
+        } else if ops_per_sec > 0.000001 {
+            TimeUnit::Millis
+        } else {
+            TimeUnit::Seconds
+        }
     }
 
     /// Convert nanoseconds to ticks in this unit.
@@ -110,8 +115,7 @@ impl RateSpec {
             return Err("empty rate spec".into());
         }
 
-        let ops_per_sec: f64 = parts[0].parse()
-            .map_err(|e| format!("invalid rate: {e}"))?;
+        let ops_per_sec: f64 = parts[0].parse().map_err(|e| format!("invalid rate: {e}"))?;
         if ops_per_sec <= 0.0 {
             return Err("rate must be positive".into());
         }

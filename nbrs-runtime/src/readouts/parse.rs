@@ -89,14 +89,20 @@ pub fn bake(body: &str) -> Result<(BakedBody, Vec<String>), String> {
 
                 while lex.peek_option().is_some() {
                     let (key, value) = lex.consume_option_pair()?;
-                    apply_option(&key, value, &mut lod, &mut layout, &mut color, &mut options, &mut primary_arg)?;
+                    apply_option(
+                        &key,
+                        value,
+                        &mut lod,
+                        &mut layout,
+                        &mut color,
+                        &mut options,
+                        &mut primary_arg,
+                    )?;
                 }
 
                 let readout = Registry::lookup(&name).ok_or_else(|| {
                     let known = Registry::all_names().join(", ");
-                    format!(
-                        "readouts: unknown readout name '{name}'. Known: {known}"
-                    )
+                    format!("readouts: unknown readout name '{name}'. Known: {known}")
                 })?;
                 // Push 9b: the `name:arg` colon-shorthand
                 // routes its argument into the option store
@@ -133,14 +139,10 @@ fn apply_option(
 ) -> Result<(), String> {
     match key {
         "lod" => {
-            *lod = parse_lod(&value).map_err(|e| {
-                format!("readouts: lod=…: {e}")
-            })?;
+            *lod = parse_lod(&value).map_err(|e| format!("readouts: lod=…: {e}"))?;
         }
         "layout" => {
-            *layout = parse_layout(&value).map_err(|e| {
-                format!("readouts: layout=…: {e}")
-            })?;
+            *layout = parse_layout(&value).map_err(|e| format!("readouts: layout=…: {e}"))?;
         }
         "color" | "style" => {
             // `color=` and `style=` are aliases — both
@@ -152,10 +154,12 @@ fn apply_option(
             // palette at render time.
             let token = match value {
                 OptionValue::Str(s) => s,
-                other => return Err(format!(
-                    "readouts: {key}= must be a string token (RED, BRIGHT_GREEN, \
+                other => {
+                    return Err(format!(
+                        "readouts: {key}= must be a string token (RED, BRIGHT_GREEN, \
                      #aabbcc, ERROR, …); got {other:?}"
-                )),
+                    ));
+                }
             };
             *color = Some(ColorSpec::parse(&token).ok_or_else(|| {
                 format!(
@@ -181,11 +185,11 @@ fn apply_option(
 fn parse_lod(value: &OptionValue) -> Result<Lod, String> {
     match value {
         OptionValue::Str(s) => match s.as_str() {
-            "compact"  | "1" => Ok(Lod::Compact),
-            "labeled"  | "2" => Ok(Lod::Labeled),
+            "compact" | "1" => Ok(Lod::Compact),
+            "labeled" | "2" => Ok(Lod::Labeled),
             "expanded" | "3" => Ok(Lod::Expanded),
             other => Err(format!("unknown LOD '{other}' (compact/labeled/expanded)")),
-        }
+        },
         OptionValue::Int(1) => Ok(Lod::Compact),
         OptionValue::Int(2) => Ok(Lod::Labeled),
         OptionValue::Int(3) => Ok(Lod::Expanded),
@@ -196,11 +200,11 @@ fn parse_lod(value: &OptionValue) -> Result<Lod, String> {
 fn parse_layout(value: &OptionValue) -> Result<LayoutMode, String> {
     match value {
         OptionValue::Str(s) => match s.as_str() {
-            "auto"   => Ok(LayoutMode::Auto),
+            "auto" => Ok(LayoutMode::Auto),
             "inline" => Ok(LayoutMode::Inline),
-            "block"  => Ok(LayoutMode::Block),
+            "block" => Ok(LayoutMode::Block),
             other => Err(format!("unknown layout '{other}' (auto/inline/block)")),
-        }
+        },
         other => Err(format!("layout must be a string, got {other:?}")),
     }
 }
@@ -229,10 +233,16 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Self { src, pos: 0, pending_colon_arg: None }
+        Self {
+            src,
+            pos: 0,
+            pending_colon_arg: None,
+        }
     }
 
-    fn rest(&self) -> &str { &self.src[self.pos..] }
+    fn rest(&self) -> &str {
+        &self.src[self.pos..]
+    }
 
     fn skip_ws(&mut self) {
         while let Some(c) = self.rest().chars().next() {
@@ -299,16 +309,23 @@ impl<'a> Lexer<'a> {
         self.pos += 1; // consume '['
         let start = self.pos;
         while let Some(c) = self.rest().chars().next() {
-            if c == ']' { break; }
+            if c == ']' {
+                break;
+            }
             self.pos += c.len_utf8();
         }
         let raw = &self.src[start..self.pos];
         if !self.rest().starts_with(']') {
-            return Err(format!("readouts: unterminated `[…]` color directive at byte {}", start - 1));
+            return Err(format!(
+                "readouts: unterminated `[…]` color directive at byte {}",
+                start - 1
+            ));
         }
         self.pos += 1; // consume ']'
         let spec = ColorSpec::parse(raw).ok_or_else(|| {
-            format!("readouts: invalid bracketed colour '[{raw}]' (expected `[#rrggbb]` or `[#rgb]`)")
+            format!(
+                "readouts: invalid bracketed colour '[{raw}]' (expected `[#rrggbb]` or `[#rgb]`)"
+            )
         })?;
         Ok(Token::ColorDirective(spec))
     }
@@ -319,7 +336,9 @@ impl<'a> Lexer<'a> {
         let inner_start = self.pos + quote.len_utf8();
         let mut inner_end = inner_start;
         for c in chars {
-            if c == quote { break; }
+            if c == quote {
+                break;
+            }
             inner_end += c.len_utf8();
         }
         if inner_end >= self.src.len() {
@@ -344,16 +363,20 @@ impl<'a> Lexer<'a> {
         // Attached colon-arg: `name:arg` where `arg` is a
         // non-whitespace run that may contain glob chars
         // (`*`, `?`), digits, etc. but no `=`.
-        if self.rest().starts_with(':')
-            && !self.rest().starts_with(":=")  // future-proof
+        if self.rest().starts_with(':') && !self.rest().starts_with(":=")
+        // future-proof
         {
             // peek: is the next byte after `:` something
             // that could start a value? Quoted, ident, glob
             // char, digit. If yes, attach.
             let after_colon = &self.src[self.pos + 1..];
             if let Some(c) = after_colon.chars().next()
-                && (is_ident_start(c) || c == '"' || c == '\''
-                    || c == '*' || c == '?' || c.is_ascii_digit())
+                && (is_ident_start(c)
+                    || c == '"'
+                    || c == '\''
+                    || c == '*'
+                    || c == '?'
+                    || c.is_ascii_digit())
             {
                 self.pos += 1; // consume ':'
                 let arg = self.read_unquoted_value()?;
@@ -380,7 +403,9 @@ impl<'a> Lexer<'a> {
         let rest = self.rest();
         let mut chars = rest.chars();
         let c = chars.next()?;
-        if !is_ident_start(c) { return None; }
+        if !is_ident_start(c) {
+            return None;
+        }
         // Walk an identifier and check for `=` or `:` after it.
         let mut idx = c.len_utf8();
         for c in chars {
@@ -421,11 +446,17 @@ impl<'a> Lexer<'a> {
         // Accept either `=` or `:` (the latter only for
         // structural keys, matching `peek_option`'s gate).
         match self.rest().chars().next() {
-            Some('=') => { self.pos += 1; }
-            Some(':') if is_structural_key(&key) => { self.pos += 1; }
-            _ => return Err(format!(
-                "expected `=` (or `:` for lod/layout/color/style) after option key '{key}'"
-            )),
+            Some('=') => {
+                self.pos += 1;
+            }
+            Some(':') if is_structural_key(&key) => {
+                self.pos += 1;
+            }
+            _ => {
+                return Err(format!(
+                    "expected `=` (or `:` for lod/layout/color/style) after option key '{key}'"
+                ));
+            }
         }
 
         // Read value: quoted or unquoted.
@@ -464,7 +495,6 @@ fn is_structural_key(key: &str) -> bool {
 }
 
 impl<'a> Lexer<'a> {
-
     fn read_quoted_value(&mut self, quote: char) -> Result<String, String> {
         // Same logic as read_quoted but returns just the string.
         let inner_start = self.pos + quote.len_utf8();
@@ -472,7 +502,9 @@ impl<'a> Lexer<'a> {
         chars.next(); // open quote
         let mut inner_end = inner_start;
         for c in chars {
-            if c == quote { break; }
+            if c == quote {
+                break;
+            }
             inner_end += c.len_utf8();
         }
         if inner_end >= self.src.len() {
@@ -545,8 +577,10 @@ mod tests {
     #[test]
     fn unknown_readout_name_is_error() {
         let err = bake("not_a_real_readout").unwrap_err();
-        assert!(err.contains("unknown readout name 'not_a_real_readout'"),
-            "wrong message: {err}");
+        assert!(
+            err.contains("unknown readout name 'not_a_real_readout'"),
+            "wrong message: {err}"
+        );
     }
 
     #[test]
@@ -583,15 +617,13 @@ mod tests {
     #[test]
     fn rejects_unknown_lod_value() {
         let err = bake("phase_status lod=enormous").unwrap_err();
-        assert!(err.contains("unknown LOD"),
-            "wrong message: {err}");
+        assert!(err.contains("unknown LOD"), "wrong message: {err}");
     }
 
     #[test]
     fn rejects_unknown_layout_value() {
         let err = bake("phase_status layout=sideways").unwrap_err();
-        assert!(err.contains("unknown layout"),
-            "wrong message: {err}");
+        assert!(err.contains("unknown layout"), "wrong message: {err}");
     }
 
     #[test]
@@ -732,7 +764,10 @@ mod tests {
         let (baked, _) = bake("phase_outcome style=ERROR").expect("parse");
         match &baked.steps[0] {
             RenderStep::Render { color, .. } => {
-                assert_eq!(*color, Some(ColorSpec::Style(super::super::color::StyleName::Error)));
+                assert_eq!(
+                    *color,
+                    Some(ColorSpec::Style(super::super::color::StyleName::Error))
+                );
             }
             _ => panic!("expected Render"),
         }
@@ -741,15 +776,19 @@ mod tests {
     #[test]
     fn unknown_color_token_is_error() {
         let err = bake("@notacolor phase_outcome").unwrap_err();
-        assert!(err.contains("unknown colour / style '@notacolor'"),
-            "wrong message: {err}");
+        assert!(
+            err.contains("unknown colour / style '@notacolor'"),
+            "wrong message: {err}"
+        );
     }
 
     #[test]
     fn unknown_style_option_is_error() {
         let err = bake("phase_outcome style=notastyle").unwrap_err();
-        assert!(err.contains("unknown colour / style"),
-            "wrong message: {err}");
+        assert!(
+            err.contains("unknown colour / style"),
+            "wrong message: {err}"
+        );
     }
 
     /// Test-only diagnostic trait: emits a one-token name for

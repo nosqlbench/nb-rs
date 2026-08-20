@@ -36,12 +36,14 @@ impl Sandbox {
     fn new() -> Self {
         let parent = tempfile::tempdir().expect("create sandbox tmpdir");
         let workload_path = parent.path().join("wkl.yaml");
-        Self { _parent: parent, workload_path }
+        Self {
+            _parent: parent,
+            workload_path,
+        }
     }
 
     fn write_workload(&self, content: &str) {
-        std::fs::write(&self.workload_path, content)
-            .expect("write workload yaml");
+        std::fs::write(&self.workload_path, content).expect("write workload yaml");
     }
 
     /// Spawn `nbrs <verb> [args] workload=<path>` from inside
@@ -59,14 +61,21 @@ impl Sandbox {
         let mut cmd = nbrs();
         cmd.current_dir(self._parent.path());
         cmd.arg(verb);
-        for a in extra { cmd.arg(a); }
+        for a in extra {
+            cmd.arg(a);
+        }
         cmd.arg(format!("workload={}", self.workload_path.display()));
         cmd.arg("cycles=1");
         cmd.arg("tui=off");
         let output = cmd.output().expect("nbrs spawn");
         let session_log = std::fs::read_to_string(
-            self._parent.path().join("sessions").join("latest").join("session.log"))
-            .unwrap_or_default();
+            self._parent
+                .path()
+                .join("sessions")
+                .join("latest")
+                .join("session.log"),
+        )
+        .unwrap_or_default();
         let mut evidence = String::from_utf8_lossy(&output.stderr).to_string();
         evidence.push('\n');
         evidence.push_str(&session_log);
@@ -80,7 +89,11 @@ impl Sandbox {
     /// Resolve the most recent session's metrics.db under the
     /// sandbox's `logs/` dir. Follows `logs/latest` symlink.
     fn db_path(&self) -> PathBuf {
-        self._parent.path().join("sessions").join("latest").join("metrics.db")
+        self._parent
+            .path()
+            .join("sessions")
+            .join("latest")
+            .join("metrics.db")
     }
 }
 
@@ -90,42 +103,50 @@ impl Sandbox {
 // (exec_id, verb, scope, disposition, has_ended_timestamp) rows.
 #[allow(clippy::type_complexity)]
 fn read_executions(db: &Path) -> Vec<(u64, String, Option<String>, Option<String>, bool)> {
-    let conn = rusqlite::Connection::open_with_flags(
-        db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ).expect("open sqlite");
-    let mut stmt = conn.prepare(
-        "SELECT exec_id, verb, scope, disposition, ended_at_nanos \
-         FROM executions ORDER BY exec_id"
-    ).expect("prepare executions");
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)? as u64,
-            r.get::<_, String>(1)?,
-            r.get::<_, Option<String>>(2)?,
-            r.get::<_, Option<String>>(3)?,
-            r.get::<_, Option<i64>>(4)?.is_some(),
-        ))
-    }).expect("query");
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open sqlite");
+    let mut stmt = conn
+        .prepare(
+            "SELECT exec_id, verb, scope, disposition, ended_at_nanos \
+         FROM executions ORDER BY exec_id",
+        )
+        .expect("prepare executions");
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<i64>>(4)?.is_some(),
+            ))
+        })
+        .expect("query");
     rows.filter_map(Result::ok).collect()
 }
 
 /// Read (exec_id, phase_name, status) tuples from
 /// `phase_outcomes`, ordered.
 fn read_outcomes(db: &Path) -> Vec<(u64, String, String)> {
-    let conn = rusqlite::Connection::open_with_flags(
-        db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ).expect("open sqlite");
-    let mut stmt = conn.prepare(
-        "SELECT exec_id, phase_name, status FROM phase_outcomes \
-         ORDER BY exec_id, phase_name"
-    ).expect("prepare");
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)? as u64,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    }).expect("query");
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open sqlite");
+    let mut stmt = conn
+        .prepare(
+            "SELECT exec_id, phase_name, status FROM phase_outcomes \
+         ORDER BY exec_id, phase_name",
+        )
+        .expect("prepare");
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .expect("query");
     rows.filter_map(Result::ok).collect()
 }
 
@@ -177,10 +198,12 @@ fn refine_default_skips_all_prior_completed_phases() {
 
     let (_, stderr, ok) = sbx.invoke("refine", &[]);
     assert!(ok, "refine failed: {stderr}");
-    assert!(stderr.contains("refine: skipping phase 'schema'")
+    assert!(
+        stderr.contains("refine: skipping phase 'schema'")
             && stderr.contains("refine: skipping phase 'query'"),
         "refine MUST emit the skip log for every prior phase; \
-         got stderr:\n{stderr}");
+         got stderr:\n{stderr}"
+    );
 
     let executions = read_executions(&sbx.db_path());
     assert_eq!(executions.len(), 2, "executions table must have 2 rows");
@@ -189,16 +212,21 @@ fn refine_default_skips_all_prior_completed_phases() {
     assert_eq!(executions[0].2, None, "run verb writes NULL scope");
     assert_eq!(executions[1].0, 2);
     assert_eq!(executions[1].1, "refine");
-    assert_eq!(executions[1].2.as_deref(), Some("missing"),
-        "refine default scope must be 'missing'");
+    assert_eq!(
+        executions[1].2.as_deref(),
+        Some("missing"),
+        "refine default scope must be 'missing'"
+    );
 
     // Every prior outcome row must still be readable under exec_id=1.
     // The skip-only refine must NOT have written new phase_outcomes
     // rows under exec_id=2.
     let outcomes = read_outcomes(&sbx.db_path());
-    assert!(outcomes.iter().all(|(eid, _, _)| *eid == 1),
+    assert!(
+        outcomes.iter().all(|(eid, _, _)| *eid == 1),
         "skip-only refine MUST NOT write any phase_outcomes rows; \
-         got: {outcomes:?}");
+         got: {outcomes:?}"
+    );
 }
 
 /// `refine` after the workload added a new phase: the prior 2
@@ -217,11 +245,13 @@ fn refine_runs_new_phase_skips_prior() {
     let outcomes = read_outcomes(&sbx.db_path());
     // exec_id=1 rows: schema + query from the initial run
     // exec_id=2 row: verify from the refine
-    let exec_2: Vec<&(u64, String, String)> = outcomes.iter()
-        .filter(|(eid, _, _)| *eid == 2)
-        .collect();
-    assert_eq!(exec_2.len(), 1,
-        "only the new `verify` phase must write to exec_id=2; got: {outcomes:?}");
+    let exec_2: Vec<&(u64, String, String)> =
+        outcomes.iter().filter(|(eid, _, _)| *eid == 2).collect();
+    assert_eq!(
+        exec_2.len(),
+        1,
+        "only the new `verify` phase must write to exec_id=2; got: {outcomes:?}"
+    );
     assert_eq!(exec_2[0].1, "verify");
     assert_eq!(exec_2[0].2, "completed");
 }
@@ -239,23 +269,27 @@ fn refine_scope_all_runs_every_phase_under_bumped_exec_id() {
 
     let (_, stderr, ok) = sbx.invoke("refine", &["scope=all"]);
     assert!(ok, "refine scope=all failed: {stderr}");
-    assert!(!stderr.contains("refine: skipping phase"),
-        "scope=all MUST NOT skip any phase; got stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("refine: skipping phase"),
+        "scope=all MUST NOT skip any phase; got stderr:\n{stderr}"
+    );
 
     let outcomes = read_outcomes(&sbx.db_path());
-    let exec_1: Vec<_> = outcomes.iter()
-        .filter(|(eid, _, _)| *eid == 1).collect();
-    let exec_2: Vec<_> = outcomes.iter()
-        .filter(|(eid, _, _)| *eid == 2).collect();
+    let exec_1: Vec<_> = outcomes.iter().filter(|(eid, _, _)| *eid == 1).collect();
+    let exec_2: Vec<_> = outcomes.iter().filter(|(eid, _, _)| *eid == 2).collect();
     assert_eq!(exec_1.len(), 2, "prior outcomes MUST be preserved");
     assert_eq!(exec_2.len(), 2, "every phase MUST write a new outcome row");
 
     let executions = read_executions(&sbx.db_path());
-    let refine_row = executions.iter()
+    let refine_row = executions
+        .iter()
         .find(|(eid, _, _, _, _)| *eid == 2)
         .expect("refine execution row");
-    assert_eq!(refine_row.2.as_deref(), Some("all"),
-        "executions.scope must be 'all'");
+    assert_eq!(
+        refine_row.2.as_deref(),
+        Some("all"),
+        "executions.scope must be 'all'"
+    );
 }
 
 // ── on_removed policy (Never Ignore Silently) ────────────
@@ -270,7 +304,8 @@ fn refine_on_removed_error_default_refuses() {
     sbx.invoke("run", &[]);
 
     // Workload now declares only `schema` — `query` was removed.
-    sbx.write_workload(r#"
+    sbx.write_workload(
+        r#"
 bindings:
   cycle_val := cycle
 phases:
@@ -278,11 +313,17 @@ phases:
     ops:
       noop:
         op: "schema {cycle_val}"
-"#);
+"#,
+    );
     let (_, stderr, ok) = sbx.invoke("refine", &[]);
-    assert!(!ok, "refine MUST refuse when workload drops a phase with prior outcomes");
-    assert!(stderr.contains("removes 1 phase") && stderr.contains("query"),
-        "error must name the removed phase 'query'; got stderr:\n{stderr}");
+    assert!(
+        !ok,
+        "refine MUST refuse when workload drops a phase with prior outcomes"
+    );
+    assert!(
+        stderr.contains("removes 1 phase") && stderr.contains("query"),
+        "error must name the removed phase 'query'; got stderr:\n{stderr}"
+    );
 }
 
 /// `on_removed=keep` accepts the workload trim — prior outcomes
@@ -294,7 +335,8 @@ fn refine_on_removed_keep_retains_prior_outcomes() {
     sbx.write_workload(WORKLOAD_TWO_PHASES);
     sbx.invoke("run", &[]);
 
-    sbx.write_workload(r#"
+    sbx.write_workload(
+        r#"
 bindings:
   cycle_val := cycle
 phases:
@@ -302,15 +344,21 @@ phases:
     ops:
       noop:
         op: "schema {cycle_val}"
-"#);
+"#,
+    );
     let (_, stderr, ok) = sbx.invoke("refine", &["on_removed=keep"]);
     assert!(ok, "on_removed=keep MUST succeed: {stderr}");
 
     let outcomes = read_outcomes(&sbx.db_path());
-    assert_eq!(outcomes.len(), 2,
-        "prior outcomes MUST be preserved under on_removed=keep: {outcomes:?}");
-    assert!(outcomes.iter().any(|(_, n, _)| n == "query"),
-        "removed phase's prior outcome MUST remain: {outcomes:?}");
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "prior outcomes MUST be preserved under on_removed=keep: {outcomes:?}"
+    );
+    assert!(
+        outcomes.iter().any(|(_, n, _)| n == "query"),
+        "removed phase's prior outcome MUST remain: {outcomes:?}"
+    );
 }
 
 /// Unknown `on_removed=` policy value is rejected with a
@@ -321,7 +369,8 @@ fn refine_on_removed_unknown_value_is_rejected() {
     sbx.write_workload(WORKLOAD_TWO_PHASES);
     sbx.invoke("run", &[]);
 
-    sbx.write_workload(r#"
+    sbx.write_workload(
+        r#"
 bindings:
   cycle_val := cycle
 phases:
@@ -329,12 +378,14 @@ phases:
     ops:
       noop:
         op: "schema {cycle_val}"
-"#);
+"#,
+    );
     let (_, stderr, ok) = sbx.invoke("refine", &["on_removed=banana"]);
     assert!(!ok, "unknown on_removed value MUST be rejected");
-    assert!(stderr.contains("unknown on_removed= policy")
-            && stderr.contains("banana"),
-        "error must name the bad value; got stderr:\n{stderr}");
+    assert!(
+        stderr.contains("unknown on_removed= policy") && stderr.contains("banana"),
+        "error must name the bad value; got stderr:\n{stderr}"
+    );
 }
 
 // ── exec_id bump across multiple refines ────────────────
@@ -348,21 +399,29 @@ phases:
 fn exec_id_bumps_correctly_across_skip_only_refine() {
     let sbx = Sandbox::new();
     sbx.write_workload(WORKLOAD_TWO_PHASES);
-    sbx.invoke("run", &[]);                            // exec 1
-    sbx.invoke("refine", &[]);                         // exec 2 (skip only)
-    sbx.invoke("refine", &["scope=all"]);              // exec 3 (must NOT collide)
+    sbx.invoke("run", &[]); // exec 1
+    sbx.invoke("refine", &[]); // exec 2 (skip only)
+    sbx.invoke("refine", &["scope=all"]); // exec 3 (must NOT collide)
 
     let executions = read_executions(&sbx.db_path());
-    assert_eq!(executions.len(), 3,
-        "three invocations must produce three executions rows: {executions:?}");
+    assert_eq!(
+        executions.len(),
+        3,
+        "three invocations must produce three executions rows: {executions:?}"
+    );
     let exec_ids: Vec<u64> = executions.iter().map(|(e, _, _, _, _)| *e).collect();
-    assert_eq!(exec_ids, vec![1, 2, 3],
-        "exec_ids must be 1, 2, 3 — no collisions: {executions:?}");
+    assert_eq!(
+        exec_ids,
+        vec![1, 2, 3],
+        "exec_ids must be 1, 2, 3 — no collisions: {executions:?}"
+    );
 
     // Every row must have ended_at_nanos populated (clean shutdown).
     for (e, _, _, _, has_end) in &executions {
-        assert!(*has_end,
-            "exec_id={e} must have ended_at_nanos populated after clean shutdown");
+        assert!(
+            *has_end,
+            "exec_id={e} must have ended_at_nanos populated after clean shutdown"
+        );
     }
 }
 
@@ -380,14 +439,18 @@ fn refine_scope_changed_skips_when_workload_unchanged() {
 
     let (_, stderr, ok) = sbx.invoke("refine", &["scope=changed"]);
     assert!(ok, "scope=changed failed: {stderr}");
-    assert!(stderr.contains("prior completed outcome, hash unchanged"),
-        "scope=changed MUST log the hash-match skip; got stderr:\n{stderr}");
+    assert!(
+        stderr.contains("prior completed outcome, hash unchanged"),
+        "scope=changed MUST log the hash-match skip; got stderr:\n{stderr}"
+    );
 
     // No new phase_outcomes rows from the unchanged refine.
     let outcomes = read_outcomes(&sbx.db_path());
-    assert!(outcomes.iter().all(|(eid, _, _)| *eid == 1),
+    assert!(
+        outcomes.iter().all(|(eid, _, _)| *eid == 1),
         "unchanged-workload scope=changed MUST NOT write new outcome rows; \
-         got: {outcomes:?}");
+         got: {outcomes:?}"
+    );
 }
 
 /// `scope=changed` with an edited workload: the hash changes,
@@ -402,7 +465,8 @@ fn refine_scope_changed_reruns_when_bindings_edit_changes_hash() {
     // Edit the workload's binding — `cycle_val := cycle` →
     // `cycle_val := cycle * 2`. The program-tree shape changes,
     // so instance_hash changes for every phase that inherits.
-    sbx.write_workload(r#"
+    sbx.write_workload(
+        r#"
 bindings:
   cycle_val := cycle * 2
 phases:
@@ -414,23 +478,30 @@ phases:
     ops:
       noop:
         op: "query {cycle_val}"
-"#);
+"#,
+    );
     let (_, stderr, ok) = sbx.invoke("refine", &["scope=changed"]);
     assert!(ok, "scope=changed (edited) failed: {stderr}");
-    assert!(!stderr.contains("scope=changed: prior hash matches"),
+    assert!(
+        !stderr.contains("scope=changed: prior hash matches"),
         "edited-workload scope=changed MUST NOT report hash-match; \
-         got stderr:\n{stderr}");
+         got stderr:\n{stderr}"
+    );
 
     let outcomes = read_outcomes(&sbx.db_path());
-    let exec_2: Vec<_> = outcomes.iter()
-        .filter(|(eid, _, _)| *eid == 2).collect();
-    assert_eq!(exec_2.len(), 2,
-        "edited-binding refine MUST write 2 new outcome rows; got: {outcomes:?}");
+    let exec_2: Vec<_> = outcomes.iter().filter(|(eid, _, _)| *eid == 2).collect();
+    assert_eq!(
+        exec_2.len(),
+        2,
+        "edited-binding refine MUST write 2 new outcome rows; got: {outcomes:?}"
+    );
     // Prior outcomes (exec_id=1) still present as cardinal history.
-    let exec_1: Vec<_> = outcomes.iter()
-        .filter(|(eid, _, _)| *eid == 1).collect();
-    assert_eq!(exec_1.len(), 2,
-        "prior outcomes MUST be preserved: {outcomes:?}");
+    let exec_1: Vec<_> = outcomes.iter().filter(|(eid, _, _)| *eid == 1).collect();
+    assert_eq!(
+        exec_1.len(),
+        2,
+        "prior outcomes MUST be preserved: {outcomes:?}"
+    );
 }
 
 // ── nbrs replay --execution / --all-executions ────────
@@ -445,9 +516,9 @@ phases:
 fn replay_default_qualifies_to_latest_execution() {
     let sbx = Sandbox::new();
     sbx.write_workload(WORKLOAD_TWO_PHASES);
-    sbx.invoke("run", &[]);                                    // exec 1
-    sbx.invoke("refine", &["scope=all"]);                      // exec 2
-    sbx.invoke("refine", &["scope=all"]);                      // exec 3
+    sbx.invoke("run", &[]); // exec 1
+    sbx.invoke("refine", &["scope=all"]); // exec 2
+    sbx.invoke("refine", &["scope=all"]); // exec 3
 
     // Spawn replay with NO --execution flag (the implicit
     // latest-execution default).
@@ -461,13 +532,16 @@ fn replay_default_qualifies_to_latest_execution() {
     // exec 3's outcome lines exist; exec 1 and exec 2 must
     // NOT — `replay` ran the latest-qualifier resolve at the
     // storage boundary, not after-the-fact in-memory filtering.
-    let outcome_lines: Vec<&str> = stdout.lines()
+    let outcome_lines: Vec<&str> = stdout
+        .lines()
         .filter(|l| l.contains("[schema]") || l.contains("[query]"))
         .collect();
     // Two phases × one execution = 2 outcome lines maximum.
-    assert!(outcome_lines.len() <= 2,
+    assert!(
+        outcome_lines.len() <= 2,
         "replay default MUST narrow to one execution; saw {} outcome lines:\n{stdout}",
-        outcome_lines.len());
+        outcome_lines.len()
+    );
 }
 
 /// Explicit `--execution=1` reads only that execution's
@@ -476,16 +550,18 @@ fn replay_default_qualifies_to_latest_execution() {
 fn replay_explicit_execution_filter_targets_one_exec_id() {
     let sbx = Sandbox::new();
     sbx.write_workload(WORKLOAD_TWO_PHASES);
-    sbx.invoke("run", &[]);                                    // exec 1
-    sbx.invoke("refine", &["scope=all"]);                      // exec 2
+    sbx.invoke("run", &[]); // exec 1
+    sbx.invoke("refine", &["scope=all"]); // exec 2
 
     let mut cmd = nbrs();
     cmd.current_dir(sbx._parent.path());
     cmd.args(["replay", "--plain", "--execution", "1"]);
     let output = cmd.output().expect("nbrs replay spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(output.status.success(),
-        "replay --execution=1 failed: {stdout}");
+    assert!(
+        output.status.success(),
+        "replay --execution=1 failed: {stdout}"
+    );
     // Both phases ran under exec 1 — should see both.
     assert!(stdout.contains("[schema]"));
     assert!(stdout.contains("[query]"));
@@ -506,14 +582,21 @@ fn replay_all_executions_aggregates_across_every_execution() {
     cmd.args(["replay", "--plain", "--all-executions"]);
     let output = cmd.output().expect("nbrs replay spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(output.status.success(),
-        "replay --all-executions failed: {stdout}");
-    let outcome_lines: Vec<&str> = stdout.lines()
+    assert!(
+        output.status.success(),
+        "replay --all-executions failed: {stdout}"
+    );
+    let outcome_lines: Vec<&str> = stdout
+        .lines()
         .filter(|l| l.contains("[schema]") || l.contains("[query]"))
         .collect();
-    assert_eq!(outcome_lines.len(), 4,
+    assert_eq!(
+        outcome_lines.len(),
+        4,
         "--all-executions MUST aggregate across every execution; \
-         saw {} lines:\n{stdout}", outcome_lines.len());
+         saw {} lines:\n{stdout}",
+        outcome_lines.len()
+    );
 }
 
 // ── Multi-execution disambiguation banner ──────────────
@@ -527,8 +610,8 @@ fn replay_all_executions_aggregates_across_every_execution() {
 fn replay_default_emits_multi_exec_banner_when_more_than_one() {
     let sbx = Sandbox::new();
     sbx.write_workload(WORKLOAD_TWO_PHASES);
-    sbx.invoke("run", &[]);                            // exec 1
-    sbx.invoke("refine", &["scope=all"]);              // exec 2
+    sbx.invoke("run", &[]); // exec 1
+    sbx.invoke("refine", &["scope=all"]); // exec 2
 
     let mut cmd = nbrs();
     cmd.current_dir(sbx._parent.path());
@@ -552,7 +635,7 @@ fn replay_default_emits_multi_exec_banner_when_more_than_one() {
 fn replay_default_stays_silent_when_only_one_execution() {
     let sbx = Sandbox::new();
     sbx.write_workload(WORKLOAD_TWO_PHASES);
-    sbx.invoke("run", &[]);  // single execution
+    sbx.invoke("run", &[]); // single execution
 
     let mut cmd = nbrs();
     cmd.current_dir(sbx._parent.path());
@@ -606,18 +689,26 @@ fn metrics_match_defaults_to_latest_execution() {
     let output = cmd.output().expect("spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(),
-        "metrics match failed: stderr={stderr}");
+    assert!(
+        output.status.success(),
+        "metrics match failed: stderr={stderr}"
+    );
     // Every printed spec MUST carry exec_id="2" (latest), never exec_id="1".
     for line in stdout.lines().filter(|l| l.contains("cycles_total")) {
-        assert!(line.contains(r#"exec_id="2""#),
-            "default-latest qualifier should narrow to exec_id=2; got: {line}");
-        assert!(!line.contains(r#"exec_id="1""#),
-            "default-latest MUST NOT include exec_id=1 rows: {line}");
+        assert!(
+            line.contains(r#"exec_id="2""#),
+            "default-latest qualifier should narrow to exec_id=2; got: {line}"
+        );
+        assert!(
+            !line.contains(r#"exec_id="1""#),
+            "default-latest MUST NOT include exec_id=1 rows: {line}"
+        );
     }
     // Multi-exec banner surfaces on stderr.
-    assert!(stderr.contains("session has 2 execution(s)"),
-        "multi-exec banner MUST fire under default-latest; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("session has 2 execution(s)"),
+        "multi-exec banner MUST fire under default-latest; stderr:\n{stderr}"
+    );
 }
 
 /// `--execution=<n>` narrows to one execution.
@@ -630,21 +721,26 @@ fn metrics_match_explicit_execution_narrows() {
 
     let mut cmd = nbrs();
     cmd.current_dir(sbx._parent.path());
-    cmd.args(["metrics", "match", "cycles_total",
-              "--execution", "1"]);
+    cmd.args(["metrics", "match", "cycles_total", "--execution", "1"]);
     let output = cmd.output().expect("spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(),
-        "metrics match --execution=1 failed: stderr={stderr}");
+    assert!(
+        output.status.success(),
+        "metrics match --execution=1 failed: stderr={stderr}"
+    );
     for line in stdout.lines().filter(|l| l.contains("cycles_total")) {
-        assert!(line.contains(r#"exec_id="1""#),
-            "--execution=1 MUST narrow to exec_id=1 rows: {line}");
+        assert!(
+            line.contains(r#"exec_id="1""#),
+            "--execution=1 MUST narrow to exec_id=1 rows: {line}"
+        );
     }
     // Explicit selector means the operator already knows;
     // banner must stay silent.
-    assert!(!stderr.contains("session has"),
-        "banner MUST NOT fire under explicit --execution=N: {stderr}");
+    assert!(
+        !stderr.contains("session has"),
+        "banner MUST NOT fire under explicit --execution=N: {stderr}"
+    );
 }
 
 /// `--all-executions` pulls every recorded execution.
@@ -660,16 +756,25 @@ fn metrics_match_all_executions_pulls_every_exec_id() {
     cmd.args(["metrics", "match", "cycles_total", "--all-executions"]);
     let output = cmd.output().expect("spawn");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(output.status.success(), "metrics match --all-executions failed");
+    assert!(
+        output.status.success(),
+        "metrics match --all-executions failed"
+    );
     let mut saw_1 = false;
     let mut saw_2 = false;
     for line in stdout.lines() {
-        if line.contains(r#"exec_id="1""#) { saw_1 = true; }
-        if line.contains(r#"exec_id="2""#) { saw_2 = true; }
+        if line.contains(r#"exec_id="1""#) {
+            saw_1 = true;
+        }
+        if line.contains(r#"exec_id="2""#) {
+            saw_2 = true;
+        }
     }
-    assert!(saw_1 && saw_2,
+    assert!(
+        saw_1 && saw_2,
         "--all-executions MUST surface both exec_id=1 AND exec_id=2 rows; \
-         got saw_1={saw_1}, saw_2={saw_2}\n{stdout}");
+         got saw_1={saw_1}, saw_2={saw_2}\n{stdout}"
+    );
 }
 
 /// Every clean exit marks `disposition=SUCCESS` on the
@@ -682,6 +787,9 @@ fn clean_exit_writes_success_disposition() {
     sbx.invoke("run", &[]);
 
     let executions = read_executions(&sbx.db_path());
-    assert_eq!(executions[0].3.as_deref(), Some("SUCCESS"),
-        "clean run MUST mark disposition=SUCCESS: {executions:?}");
+    assert_eq!(
+        executions[0].3.as_deref(),
+        Some("SUCCESS"),
+        "clean run MUST mark disposition=SUCCESS: {executions:?}"
+    );
 }

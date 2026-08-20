@@ -72,13 +72,19 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexError> {
     loop {
         i = skip_ws_and_comments(bytes, i);
         if i >= bytes.len() {
-            tokens.push(Token { raw: String::new(), start: i });
+            tokens.push(Token {
+                raw: String::new(),
+                start: i,
+            });
             return Ok(tokens);
         }
         let start = i;
         // Single-char punctuators that don't overlap with op
         // prefixes.
-        if matches!(bytes[i], b'{' | b'}' | b'[' | b']' | b'(' | b')' | b',' | b'@') {
+        if matches!(
+            bytes[i],
+            b'{' | b'}' | b'[' | b']' | b'(' | b')' | b',' | b'@'
+        ) {
             tokens.push(Token {
                 raw: (bytes[i] as char).to_string(),
                 start,
@@ -87,12 +93,18 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexError> {
             continue;
         }
         if let Some(end) = scan_ident(input, i) {
-            tokens.push(Token { raw: input[i..end].to_string(), start });
+            tokens.push(Token {
+                raw: input[i..end].to_string(),
+                start,
+            });
             i = end;
             continue;
         }
         if let Some(end) = scan_string(input, i)? {
-            tokens.push(Token { raw: input[i..end].to_string(), start });
+            tokens.push(Token {
+                raw: input[i..end].to_string(),
+                start,
+            });
             i = end;
             continue;
         }
@@ -101,29 +113,44 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexError> {
         // first, then tag-filter ops, then duration, then
         // positive number.
         if let Some(end) = scan_binary_op_prefix(input, i) {
-            tokens.push(Token { raw: input[i..end].to_string(), start });
+            tokens.push(Token {
+                raw: input[i..end].to_string(),
+                start,
+            });
             i = end;
             continue;
         }
         if let Some(end) = scan_tag_filter_op_prefix(input, i) {
-            tokens.push(Token { raw: input[i..end].to_string(), start });
+            tokens.push(Token {
+                raw: input[i..end].to_string(),
+                start,
+            });
             i = end;
             continue;
         }
         if let Some(end) = scan_duration(input, i) {
-            tokens.push(Token { raw: input[i..end].to_string(), start });
+            tokens.push(Token {
+                raw: input[i..end].to_string(),
+                start,
+            });
             i = end;
             continue;
         }
         if is_positive_number_prefix(bytes, i) {
             let end = scan_positive_number(input, i)?;
-            tokens.push(Token { raw: input[i..end].to_string(), start });
+            tokens.push(Token {
+                raw: input[i..end].to_string(),
+                start,
+            });
             i = end;
             continue;
         }
         if input[i..].starts_with("$__interval") {
             i += "$__interval".len();
-            tokens.push(Token { raw: "$__interval".into(), start });
+            tokens.push(Token {
+                raw: "$__interval".into(),
+                start,
+            });
             continue;
         }
         if input[i..].starts_with("$__rate_interval") {
@@ -131,7 +158,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, LexError> {
             // do the same so the parser doesn't need a second
             // arm.
             i += "$__rate_interval".len();
-            tokens.push(Token { raw: "$__interval".into(), start });
+            tokens.push(Token {
+                raw: "$__interval".into(),
+                start,
+            });
             continue;
         }
         return Err(LexError {
@@ -223,13 +253,19 @@ fn is_ident_prefix(s: &str, i: usize) -> bool {
 }
 
 fn is_first_ident_char(r: char) -> bool {
-    if r.is_alphabetic() { return true; }
+    if r.is_alphabetic() {
+        return true;
+    }
     matches!(r, '_' | ':')
 }
 
 fn is_ident_char(r: char) -> bool {
-    if is_first_ident_char(r) { return true; }
-    if r == '.' { return true; }
+    if is_first_ident_char(r) {
+        return true;
+    }
+    if r == '.' {
+        return true;
+    }
     (r as u32) < 256 && r.is_ascii_digit()
 }
 
@@ -255,7 +291,9 @@ fn decode_escape_sequence(s: &str, i: usize) -> (Option<char>, usize) {
     let bytes = s.as_bytes();
     let head = bytes[i];
     if head == b'x' || head == b'X' {
-        if i + 3 > s.len() { return (None, 0); }
+        if i + 3 > s.len() {
+            return (None, 0);
+        }
         let h1 = from_hex(bytes[i + 1]);
         let h2 = from_hex(bytes[i + 2]);
         if let (Some(h1), Some(h2)) = (h1, h2) {
@@ -265,7 +303,9 @@ fn decode_escape_sequence(s: &str, i: usize) -> (Option<char>, usize) {
         return (None, 0);
     }
     if head == b'u' || head == b'U' {
-        if i + 5 > s.len() { return (None, 0); }
+        if i + 5 > s.len() {
+            return (None, 0);
+        }
         let h1 = from_hex(bytes[i + 1]);
         let h2 = from_hex(bytes[i + 2]);
         let h3 = from_hex(bytes[i + 3]);
@@ -277,12 +317,16 @@ fn decode_escape_sequence(s: &str, i: usize) -> (Option<char>, usize) {
         return (None, 0);
     }
     let (r, size) = decode_utf8(s, i);
-    if size == 0 { return (None, 0); }
+    if size == 0 {
+        return (None, 0);
+    }
     // Upstream: only printable runes are accepted as escaped
     // chars; non-printable raw bytes are treated as bad.
     // We approximate "printable" via Rust's Unicode category
     // — `is_control` catches the cases upstream rejects.
-    if r.is_control() { return (None, 0); }
+    if r.is_control() {
+        return (None, 0);
+    }
     (Some(r), size)
 }
 
@@ -312,10 +356,12 @@ fn scan_string(s: &str, start: usize) -> Result<Option<usize>, LexError> {
     let mut i = start + 1;
     loop {
         match bytes[i..].iter().position(|&b| b == quote) {
-            None => return Err(LexError {
-                message: format!("cannot find closing quote {} for the string", quote as char),
-                at: start,
-            }),
+            None => {
+                return Err(LexError {
+                    message: format!("cannot find closing quote {} for the string", quote as char),
+                    at: start,
+                });
+            }
             Some(rel) => {
                 i += rel;
                 // Count preceding backslashes — even number
@@ -339,9 +385,7 @@ fn scan_string(s: &str, start: usize) -> Result<Option<usize>, LexError> {
 
 const SYMBOLIC_BINARY_OPS: &[&str] = &[
     // longest first so the matcher is greedy
-    "==", "!=", ">=", "<=",
-    "+", "-", "*", "/", "%", "^",
-    ">", "<",
+    "==", "!=", ">=", "<=", "+", "-", "*", "/", "%", "^", ">", "<",
 ];
 
 // Keyword binary ops (`and`, `or`, `unless`, `if`, `ifnot`,
@@ -444,18 +488,18 @@ fn scan_single_duration(s: &str, start: usize, can_be_negative: bool) -> Option<
         b'm' => {
             if i + 1 < bytes.len() {
                 let next = bytes[i + 1].to_ascii_lowercase();
-                if next == b's' { return Some(i + 2); }
+                if next == b's' {
+                    return Some(i + 2);
+                }
                 // `Mi` / `Mb` are byte multipliers, not
                 // durations.
-                if next == b'i' || next == b'b' { return None; }
+                if next == b'i' || next == b'b' {
+                    return None;
+                }
             }
             // `m` (minutes). Upstream restricts to lowercase
             // because `M` means 1e6 multiplier.
-            if bytes[i] == b'm' {
-                Some(i + 1)
-            } else {
-                None
-            }
+            if bytes[i] == b'm' { Some(i + 1) } else { None }
         }
         b's' | b'h' | b'd' | b'w' | b'y' | b'i' => Some(i + 1),
         _ => None,
@@ -470,9 +514,13 @@ fn is_positive_number_prefix(bytes: &[u8], i: usize) -> bool {
     if i >= bytes.len() {
         return false;
     }
-    if bytes[i].is_ascii_digit() { return true; }
+    if bytes[i].is_ascii_digit() {
+        return true;
+    }
     // `.234` numbers
-    if bytes[i] != b'.' || i + 1 >= bytes.len() { return false; }
+    if bytes[i] != b'.' || i + 1 >= bytes.len() {
+        return false;
+    }
     bytes[i + 1].is_ascii_digit()
 }
 
@@ -492,7 +540,10 @@ fn scan_positive_number(s: &str, start: usize) -> Result<usize, LexError> {
     }
     if i >= bytes.len() {
         if i == start {
-            return Err(LexError { message: "number cannot be empty".into(), at: start });
+            return Err(LexError {
+                message: "number cannot be empty".into(),
+                at: start,
+            });
         }
         return Ok(i);
     }
@@ -501,7 +552,10 @@ fn scan_positive_number(s: &str, start: usize) -> Result<usize, LexError> {
     }
     if bytes[i] != b'.' && bytes[i] != b'e' && bytes[i] != b'E' {
         if i == start {
-            return Err(LexError { message: "missing positive number".into(), at: start });
+            return Err(LexError {
+                message: "missing positive number".into(),
+                at: start,
+            });
         }
         return Ok(i);
     }
@@ -522,7 +576,10 @@ fn scan_positive_number(s: &str, start: usize) -> Result<usize, LexError> {
     }
     i += 1;
     if i == bytes.len() {
-        return Err(LexError { message: "missing exponent part".into(), at: start });
+        return Err(LexError {
+            message: "missing exponent part".into(),
+            at: start,
+        });
     }
     if bytes[i] == b'-' || bytes[i] == b'+' {
         i += 1;
@@ -532,7 +589,10 @@ fn scan_positive_number(s: &str, start: usize) -> Result<usize, LexError> {
         i += 1;
     }
     if i == exp_start {
-        return Err(LexError { message: "missing exponent part".into(), at: start });
+        return Err(LexError {
+            message: "missing exponent part".into(),
+            at: start,
+        });
     }
     Ok(i)
 }
@@ -542,10 +602,22 @@ fn scan_num_multiplier(s: &str, i: usize) -> Option<usize> {
     let head = s[i..i + take].to_lowercase();
     let head = head.as_str();
     for (suffix, len) in &[
-        ("kib", 3), ("ki", 2), ("kb", 2), ("k", 1),
-        ("mib", 3), ("mi", 2), ("mb", 2), ("m", 1),
-        ("gib", 3), ("gi", 2), ("gb", 2), ("g", 1),
-        ("tib", 3), ("ti", 2), ("tb", 2), ("t", 1),
+        ("kib", 3),
+        ("ki", 2),
+        ("kb", 2),
+        ("k", 1),
+        ("mib", 3),
+        ("mi", 2),
+        ("mb", 2),
+        ("m", 1),
+        ("gib", 3),
+        ("gi", 2),
+        ("gb", 2),
+        ("g", 1),
+        ("tib", 3),
+        ("ti", 2),
+        ("tb", 2),
+        ("t", 1),
     ] {
         if head.starts_with(suffix) {
             return Some(*len);
@@ -566,8 +638,12 @@ fn scan_special_integer_prefix(bytes: &[u8], i: usize) -> (usize, bool) {
         // Leading-zero octal: 0123 → consume the `0`.
         return (1, false);
     }
-    if next == b'x' { return (2, true); }
-    if next == b'o' || next == b'b' { return (2, false); }
+    if next == b'x' {
+        return (2, true);
+    }
+    if next == b'o' || next == b'b' {
+        return (2, false);
+    }
     (0, false)
 }
 
@@ -589,7 +665,10 @@ mod tests {
 
     fn raw_tokens(input: &str) -> Vec<String> {
         let toks = lex(input).expect("lex");
-        toks.into_iter().filter(|t| !t.is_eof()).map(|t| t.raw).collect()
+        toks.into_iter()
+            .filter(|t| !t.is_eof())
+            .map(|t| t.raw)
+            .collect()
     }
 
     #[test]
@@ -601,7 +680,10 @@ mod tests {
 
     #[test]
     fn single_char_punctuators() {
-        assert_eq!(raw_tokens("{}[](),@"), vec!["{","}","[","]","(",")",",","@"]);
+        assert_eq!(
+            raw_tokens("{}[](),@"),
+            vec!["{", "}", "[", "]", "(", ")", ",", "@"]
+        );
     }
 
     #[test]
@@ -612,7 +694,10 @@ mod tests {
     #[test]
     fn line_comments_skipped() {
         assert_eq!(raw_tokens("# leading comment\nmetric"), vec!["metric"]);
-        assert_eq!(raw_tokens("metric # trailing\n + 5"), vec!["metric", "+", "5"]);
+        assert_eq!(
+            raw_tokens("metric # trailing\n + 5"),
+            vec!["metric", "+", "5"]
+        );
     }
 
     #[test]
@@ -678,10 +763,19 @@ mod tests {
 
     #[test]
     fn tag_filter_ops() {
-        assert_eq!(raw_tokens(r#"{a="b"}"#), vec!["{","a","=",r#""b""#,"}"]);
-        assert_eq!(raw_tokens(r#"{a!="b"}"#), vec!["{","a","!=",r#""b""#,"}"]);
-        assert_eq!(raw_tokens(r#"{a=~"b"}"#), vec!["{","a","=~",r#""b""#,"}"]);
-        assert_eq!(raw_tokens(r#"{a!~"b"}"#), vec!["{","a","!~",r#""b""#,"}"]);
+        assert_eq!(raw_tokens(r#"{a="b"}"#), vec!["{", "a", "=", r#""b""#, "}"]);
+        assert_eq!(
+            raw_tokens(r#"{a!="b"}"#),
+            vec!["{", "a", "!=", r#""b""#, "}"]
+        );
+        assert_eq!(
+            raw_tokens(r#"{a=~"b"}"#),
+            vec!["{", "a", "=~", r#""b""#, "}"]
+        );
+        assert_eq!(
+            raw_tokens(r#"{a!~"b"}"#),
+            vec!["{", "a", "!~", r#""b""#, "}"]
+        );
     }
 
     #[test]

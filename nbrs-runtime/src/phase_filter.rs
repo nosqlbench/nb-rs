@@ -74,8 +74,8 @@ impl PhaseDialect {
     pub fn as_str(self) -> &'static str {
         match self {
             PhaseDialect::Literal => "literal",
-            PhaseDialect::Glob    => "glob",
-            PhaseDialect::Regex   => "regex",
+            PhaseDialect::Glob => "glob",
+            PhaseDialect::Regex => "regex",
         }
     }
 }
@@ -104,14 +104,19 @@ impl PhasePattern {
         // one rule-set; the `pattern_match` polydat node uses the same
         // `compile_pattern`, so `phases=…` and a workload's
         // `pattern_match(...)` interpret a pattern identically).
-        let (re, dialect) = polydat::library::regex::compile_pattern(body)
-            .map_err(|e| format!("phases={e}"))?;
+        let (re, dialect) =
+            polydat::library::regex::compile_pattern(body).map_err(|e| format!("phases={e}"))?;
         let dialect = match dialect {
             polydat::library::regex::PatternDialect::Literal => PhaseDialect::Literal,
             polydat::library::regex::PatternDialect::Glob => PhaseDialect::Glob,
             polydat::library::regex::PatternDialect::Regex => PhaseDialect::Regex,
         };
-        Ok(Self { re, source: source.to_string(), dialect, negated })
+        Ok(Self {
+            re,
+            source: source.to_string(),
+            dialect,
+            negated,
+        })
     }
 
     /// Whether `phase_name` matches the compiled pattern. A negated
@@ -121,15 +126,21 @@ impl PhasePattern {
     }
 
     /// The original source string the user passed.
-    pub fn source(&self) -> &str { &self.source }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 
     /// Which dialect the source was interpreted as. Reflects the
     /// pattern body — the `!` negation prefix is stripped before
     /// dialect detection.
-    pub fn dialect(&self) -> PhaseDialect { self.dialect }
+    pub fn dialect(&self) -> PhaseDialect {
+        self.dialect
+    }
 
     /// Whether a leading `!` inverted this pattern's match.
-    pub fn negated(&self) -> bool { self.negated }
+    pub fn negated(&self) -> bool {
+        self.negated
+    }
 
     /// Whether this pattern names exactly one phase by literal name —
     /// a non-negated `Literal` dialect. A negated pattern spans many
@@ -190,8 +201,8 @@ mod tests {
         let p = PhasePattern::parse("[a-z]+").unwrap();
         assert_eq!(p.dialect(), PhaseDialect::Regex);
         assert!(p.is_match("schema"));
-        assert!(!p.is_match("Schema"));  // anchored, capital S breaks the class
-        assert!(!p.is_match("schema_1"));  // anchored, digit breaks the class
+        assert!(!p.is_match("Schema")); // anchored, capital S breaks the class
+        assert!(!p.is_match("schema_1")); // anchored, digit breaks the class
     }
 
     #[test]
@@ -199,7 +210,7 @@ mod tests {
         let p = PhasePattern::parse("!teardown").unwrap();
         assert!(p.negated());
         assert_eq!(p.dialect(), PhaseDialect::Literal);
-        assert!(!p.is_exact_literal());   // negated → spans many phases
+        assert!(!p.is_exact_literal()); // negated → spans many phases
         assert!(!p.is_match("teardown")); // the one excluded phase
         assert!(p.is_match("schema"));
         assert!(p.is_match("load_increment"));

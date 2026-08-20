@@ -144,7 +144,10 @@ fn normalize(v: Value, in_bindings: bool) -> Value {
         Value::Object(m) => Value::Object(
             m.into_iter()
                 .filter(|(k, _)| {
-                    !matches!(k.as_str(), "abstract_interface" | "interface_bound" | "description")
+                    !matches!(
+                        k.as_str(),
+                        "abstract_interface" | "interface_bound" | "description"
+                    )
                 })
                 .map(|(k, v)| {
                     let is_bindings = k == "bindings" || k == "PolydatSource";
@@ -153,7 +156,10 @@ fn normalize(v: Value, in_bindings: bool) -> Value {
                 .collect(),
         ),
         Value::Array(items) => Value::Array(
-            items.into_iter().map(|i| normalize(i, in_bindings)).collect(),
+            items
+                .into_iter()
+                .map(|i| normalize(i, in_bindings))
+                .collect(),
         ),
         Value::String(s) => Value::String(if in_bindings {
             normalize_bindings_source(&s)
@@ -172,10 +178,14 @@ fn normalize(v: Value, in_bindings: bool) -> Value {
 /// param matter, compared strictly with scalars stringified.
 fn scrub_op_params(v: &mut Value, declared: &BTreeSet<String>) {
     let Value::Object(m) = v else { return };
-    let Some(Value::Array(ops)) = m.get_mut("ops") else { return };
+    let Some(Value::Array(ops)) = m.get_mut("ops") else {
+        return;
+    };
     for op in ops {
         let Value::Object(om) = op else { continue };
-        let Some(Value::Object(pm)) = om.get_mut("params") else { continue };
+        let Some(Value::Object(pm)) = om.get_mut("params") else {
+            continue;
+        };
         pm.retain(|k, _| !declared.contains(k));
         for (_, pv) in pm.iter_mut() {
             match pv {
@@ -309,7 +319,10 @@ fn suite_model_equivalence() {
         scrub_op_params(&mut p_v, &declared);
         let d_v = normalize(d_v, false);
         let p_v = normalize(p_v, false);
-        assert_eq!(d_v, p_v, "phase '{name}' diverges\ndirect: {d_v:#}\npair:   {p_v:#}");
+        assert_eq!(
+            d_v, p_v,
+            "phase '{name}' diverges\ndirect: {d_v:#}\npair:   {p_v:#}"
+        );
     }
 
     // The blueprint carries no dead phases: its phase set is
@@ -354,16 +367,31 @@ fn suite_model_equivalence() {
 
     // ── Root scaffolding. ──
     assert_eq!(direct.stick_session, pair.stick_session, "stick_session");
-    assert_eq!(direct.status_metrics, pair.status_metrics, "root status_metrics");
-    assert!(direct.stop_when.is_empty() && pair.stop_when.is_empty(), "root stop_when");
-    assert!(direct.ops.is_empty() && pair.ops.is_empty(), "top-level ops");
-    assert!(direct.wrappers.is_none() && pair.wrappers.is_none(), "root wrappers");
+    assert_eq!(
+        direct.status_metrics, pair.status_metrics,
+        "root status_metrics"
+    );
+    assert!(
+        direct.stop_when.is_empty() && pair.stop_when.is_empty(),
+        "root stop_when"
+    );
+    assert!(
+        direct.ops.is_empty() && pair.ops.is_empty(),
+        "top-level ops"
+    );
+    assert!(
+        direct.wrappers.is_none() && pair.wrappers.is_none(),
+        "root wrappers"
+    );
 
     // ── Report: defaults + shared groups equal; one-sided groups
     // must not touch any suite phase. ──
     let d_report = serde_json::to_value(&direct.report).unwrap();
     let p_report = serde_json::to_value(&pair.report).unwrap();
-    assert_eq!(d_report["defaults"], p_report["defaults"], "report defaults");
+    assert_eq!(
+        d_report["defaults"], p_report["defaults"],
+        "report defaults"
+    );
     let group_names = |r: &Value| -> BTreeSet<String> {
         r["groups"]
             .as_array()
@@ -392,7 +420,8 @@ fn suite_model_equivalence() {
         );
     }
     for name in d_groups.symmetric_difference(&p_groups) {
-        let text = find_group(&d_report, name).to_string() + &find_group(&p_report, name).to_string();
+        let text =
+            find_group(&d_report, name).to_string() + &find_group(&p_report, name).to_string();
         for phase in expected.iter() {
             assert!(
                 !word_referenced(&text, phase),
@@ -411,8 +440,8 @@ fn pair_documents_do_not_mention_the_direct_form() {
         "workloads/vector_suite_blueprint.yaml",
         "adapters/cql/workloads/vector_suite_cql_impl.yaml",
     ] {
-        let text = std::fs::read_to_string(root.join(rel))
-            .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let text =
+            std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"));
         assert!(
             !text.contains("vector_suite_cql_direct"),
             "{rel} mentions vector_suite_cql_direct"

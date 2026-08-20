@@ -11,10 +11,9 @@
 //! extensions; the parity tests light up incrementally.
 
 use crate::ast::{
-    AggrModifier, AggrModifierOp, BinaryOp, BinaryOpExpr, DurationExpr, Expr,
-    FuncExpr, GroupModifier, GroupOp, JoinModifier, JoinOp, LabelFilter,
-    LabelFilterOp, MetricExpr, NumberExpr, ParensExpr, RollupExpr, StringExpr,
-    WithArgExpr, WithExpr,
+    AggrModifier, AggrModifierOp, BinaryOp, BinaryOpExpr, DurationExpr, Expr, FuncExpr,
+    GroupModifier, GroupOp, JoinModifier, JoinOp, LabelFilter, LabelFilterOp, MetricExpr,
+    NumberExpr, ParensExpr, RollupExpr, StringExpr, WithArgExpr, WithExpr,
 };
 
 /// Maximum length for a single line emitted by
@@ -34,15 +33,21 @@ pub fn pretty_print(expr: &Expr) -> String {
 }
 
 fn append_indent(out: &mut String, indent: usize) {
-    for _ in 0..indent { out.push_str("  "); }
+    for _ in 0..indent {
+        out.push_str("  ");
+    }
 }
 
 fn append_prettified(out: &mut String, e: &Expr, indent: usize, need_parens: bool) {
     let start = out.len();
     append_indent(out, indent);
-    if need_parens { out.push('('); }
+    if need_parens {
+        out.push('(');
+    }
     append_expr(out, e);
-    if need_parens { out.push(')'); }
+    if need_parens {
+        out.push(')');
+    }
     if out.len() - start <= MAX_PRETTIFIED_LINE_LEN {
         return;
     }
@@ -73,7 +78,11 @@ fn append_prettified(out: &mut String, e: &Expr, indent: usize, need_parens: boo
                 append_indent(out, inner_indent);
                 out.push_str("(\n");
             }
-            let bi = if b.keep_metric_names { inner_indent + 1 } else { inner_indent };
+            let bi = if b.keep_metric_names {
+                inner_indent + 1
+            } else {
+                inner_indent
+            };
             let left_parens = needs_binary_arg_parens(&b.left);
             append_prettified(out, &b.left, bi, left_parens);
             out.push('\n');
@@ -143,7 +152,9 @@ fn append_prettified_binding(out: &mut String, b: &WithArgExpr, indent: usize) {
     if !b.args.is_empty() {
         out.push('(');
         for (i, a) in b.args.iter().enumerate() {
-            if i > 0 { out.push_str(", "); }
+            if i > 0 {
+                out.push_str(", ");
+            }
             append_escaped_ident(out, a);
         }
         out.push(')');
@@ -159,7 +170,9 @@ fn append_prettified_func_args(out: &mut String, indent: usize, args: &[Expr]) {
     out.push_str("(\n");
     for (i, arg) in args.iter().enumerate() {
         append_prettified(out, arg, indent + 1, false);
-        if i + 1 < args.len() { out.push(','); }
+        if i + 1 < args.len() {
+            out.push(',');
+        }
         out.push('\n');
     }
     append_indent(out, indent);
@@ -175,12 +188,16 @@ fn append_prettified_metric(out: &mut String, me: &MetricExpr, indent: usize) {
     let metric_name = get_metric_name(me);
     let only_name = is_only_metric_name(me);
     let name_was_quoted = metric_name_was_quoted(me)
-        && metric_name.as_deref().map(needs_quoted_form).unwrap_or(false);
+        && metric_name
+            .as_deref()
+            .map(needs_quoted_form)
+            .unwrap_or(false);
     let offset = if metric_name.is_some() { 1 } else { 0 };
 
     append_indent(out, indent);
     if let Some(name) = &metric_name
-        && !name_was_quoted {
+        && !name_was_quoted
+    {
         append_escaped_ident(out, name);
     }
     if only_name {
@@ -199,7 +216,9 @@ fn append_prettified_metric(out: &mut String, me: &MetricExpr, indent: usize) {
     }
     let groups = &me.label_filterss;
     for (i, lfs) in groups.iter().enumerate() {
-        if lfs.len() <= offset { continue; }
+        if lfs.len() <= offset {
+            continue;
+        }
         append_prettified_label_filters(out, indent + 1, &lfs[offset..]);
         out.push('\n');
         if i + 1 < groups.len() && groups[i + 1].len() > offset {
@@ -215,7 +234,9 @@ fn append_prettified_label_filters(out: &mut String, indent: usize, lfs: &[Label
     let start = out.len();
     append_indent(out, indent);
     for (i, lf) in lfs.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         append_label_filter(out, lf);
     }
     if out.len() - start <= MAX_PRETTIFIED_LINE_LEN {
@@ -225,13 +246,17 @@ fn append_prettified_label_filters(out: &mut String, indent: usize, lfs: &[Label
     for (i, lf) in lfs.iter().enumerate() {
         append_indent(out, indent);
         append_label_filter(out, lf);
-        if i + 1 < lfs.len() { out.push_str(",\n"); }
+        if i + 1 < lfs.len() {
+            out.push_str(",\n");
+        }
     }
 }
 
 fn append_binary_modifiers(out: &mut String, b: &BinaryOpExpr) {
     out.push_str(binary_op_str(b.op));
-    if b.bool_modifier { out.push_str("bool"); }
+    if b.bool_modifier {
+        out.push_str("bool");
+    }
     if let Some(g) = &b.group_modifier {
         out.push(' ');
         append_group_modifier(out, g);
@@ -339,15 +364,17 @@ fn needs_binary_arg_parens(e: &Expr) -> bool {
 /// vector-matching grammar (`group_left`, `on`, `bool`,
 /// `prefix`) or when a function carries `keep_metric_names`.
 fn needs_right_parens(b: &BinaryOpExpr) -> bool {
-    if needs_binary_arg_parens(&b.right) { return true; }
+    if needs_binary_arg_parens(&b.right) {
+        return true;
+    }
     match &*b.right {
-        Expr::Metric(me) => {
-            metric_name_str(me)
-                .map(is_reserved_binary_op_ident)
-                .unwrap_or(false)
-        }
+        Expr::Metric(me) => metric_name_str(me)
+            .map(is_reserved_binary_op_ident)
+            .unwrap_or(false),
         Expr::Func(f) => {
-            if is_reserved_binary_op_ident(&f.name) { return true; }
+            if is_reserved_binary_op_ident(&f.name) {
+                return true;
+            }
             // Only wrap when the rhs *itself* carries
             // `keep_metric_names`; the outer binary's flag
             // already implies a containing `(...)` wrap so
@@ -376,9 +403,9 @@ fn metric_name_str(me: &MetricExpr) -> Option<&str> {
 }
 
 fn is_reserved_binary_op_ident(s: &str) -> bool {
-    matches!(s.to_ascii_lowercase().as_str(),
-        "on" | "ignoring" | "group_left" | "group_right"
-        | "bool" | "prefix"
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "on" | "ignoring" | "group_left" | "group_right" | "bool" | "prefix"
     )
 }
 
@@ -389,7 +416,9 @@ fn append_group_modifier(out: &mut String, g: &GroupModifier) {
     });
     out.push('(');
     for (i, lbl) in g.labels.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         append_modifier_label(out, lbl);
     }
     out.push(')');
@@ -402,7 +431,9 @@ fn append_join_modifier(out: &mut String, j: &JoinModifier) {
     });
     out.push('(');
     for (i, lbl) in j.labels.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         append_modifier_label(out, lbl);
     }
     out.push(')');
@@ -411,12 +442,24 @@ fn append_join_modifier(out: &mut String, j: &JoinModifier) {
 fn binary_op_str(op: BinaryOp) -> &'static str {
     use BinaryOp::*;
     match op {
-        Add => "+", Sub => "-", Mul => "*", Div => "/",
-        Mod => "%", Pow => "^",
-        Eq => "==", Ne => "!=",
-        Lt => "<", Le => "<=", Gt => ">", Ge => ">=",
-        And => "and", Or => "or", Unless => "unless",
-        If => "if", IfNot => "ifnot", Default => "default",
+        Add => "+",
+        Sub => "-",
+        Mul => "*",
+        Div => "/",
+        Mod => "%",
+        Pow => "^",
+        Eq => "==",
+        Ne => "!=",
+        Lt => "<",
+        Le => "<=",
+        Gt => ">",
+        Ge => ">=",
+        And => "and",
+        Or => "or",
+        Unless => "unless",
+        If => "if",
+        IfNot => "ifnot",
+        Default => "default",
         Atan2 => "atan2",
     }
 }
@@ -427,7 +470,9 @@ fn append_func(out: &mut String, f: &FuncExpr) {
     // Function-call args use `, ` (upstream
     // appendStringArgListExpr).
     for (i, arg) in f.args.iter().enumerate() {
-        if i > 0 { out.push_str(", "); }
+        if i > 0 {
+            out.push_str(", ");
+        }
         append_expr(out, arg);
     }
     out.push(')');
@@ -453,7 +498,9 @@ fn append_aggr_modifier(out: &mut String, m: &AggrModifier) {
     // Modifier label lists use `,` (no space) — upstream
     // ModifierExpr.AppendString.
     for (i, lbl) in m.args.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         append_modifier_label(out, lbl);
     }
     out.push(')');
@@ -464,7 +511,9 @@ fn append_parens(out: &mut String, p: &ParensExpr) {
     // ParensExpr is rendered via the same `, `-separated
     // arg-list helper as function calls upstream.
     for (i, e) in p.exprs.iter().enumerate() {
-        if i > 0 { out.push_str(", "); }
+        if i > 0 {
+            out.push_str(", ");
+        }
         append_expr(out, e);
     }
     out.push(')');
@@ -494,10 +543,22 @@ fn append_number(out: &mut String, n: &NumberExpr) {
 /// We re-format synthesised numbers (folded constants) this
 /// way so output matches upstream MetricsQL byte-for-byte.
 fn format_go_g(x: f64) -> String {
-    if x.is_nan() { return "NaN".into(); }
-    if x.is_infinite() { return if x > 0.0 { "+Inf".into() } else { "-Inf".into() }; }
+    if x.is_nan() {
+        return "NaN".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 {
+            "+Inf".into()
+        } else {
+            "-Inf".into()
+        };
+    }
     if x == 0.0 {
-        return if x.is_sign_negative() { "-0".into() } else { "0".into() };
+        return if x.is_sign_negative() {
+            "-0".into()
+        } else {
+            "0".into()
+        };
     }
     // Rust's `{:e}` produces a shortest-round-trip mantissa.
     // We use it to determine the exponent and significant
@@ -527,7 +588,9 @@ fn format_go_g(x: f64) -> String {
 fn append_with(out: &mut String, w: &WithExpr) {
     out.push_str("WITH (");
     for (i, b) in w.bindings.iter().enumerate() {
-        if i > 0 { out.push_str(", "); }
+        if i > 0 {
+            out.push_str(", ");
+        }
         append_with_binding(out, b);
     }
     out.push_str(") ");
@@ -539,7 +602,9 @@ fn append_with_binding(out: &mut String, b: &WithArgExpr) {
     if !b.args.is_empty() {
         out.push('(');
         for (i, a) in b.args.iter().enumerate() {
-            if i > 0 { out.push_str(", "); }
+            if i > 0 {
+                out.push_str(", ");
+            }
             append_escaped_ident(out, a);
         }
         out.push(')');
@@ -554,10 +619,24 @@ fn append_string(out: &mut String, s: &StringExpr) {
     for ch in s.value.chars() {
         // Inside the chosen quote style, escape only that
         // quote (the other quote round-trips literally).
-        if ch == quote || ch == '\\' { out.push('\\'); }
-        if ch == '\n' { out.push('\\'); out.push('n'); continue; }
-        if ch == '\t' { out.push('\\'); out.push('t'); continue; }
-        if ch == '\r' { out.push('\\'); out.push('r'); continue; }
+        if ch == quote || ch == '\\' {
+            out.push('\\');
+        }
+        if ch == '\n' {
+            out.push('\\');
+            out.push('n');
+            continue;
+        }
+        if ch == '\t' {
+            out.push('\\');
+            out.push('t');
+            continue;
+        }
+        if ch == '\r' {
+            out.push('\\');
+            out.push('r');
+            continue;
+        }
         out.push(ch);
     }
     out.push(quote);
@@ -570,9 +649,13 @@ fn append_rollup(out: &mut String, re: &RollupExpr) {
     // `sum(x) by(l[5m])`.
     let needs_parens = matches!(*re.expr, Expr::Rollup(_) | Expr::Binary(_))
         || matches!(&*re.expr, Expr::Func(f) if f.modifier.is_some());
-    if needs_parens { out.push('('); }
+    if needs_parens {
+        out.push('(');
+    }
     append_expr(out, &re.expr);
-    if needs_parens { out.push(')'); }
+    if needs_parens {
+        out.push(')');
+    }
     append_rollup_modifiers(out, re);
 }
 
@@ -597,9 +680,13 @@ fn append_rollup_modifiers(out: &mut String, re: &RollupExpr) {
     if let Some(at) = &re.at {
         out.push_str(" @ ");
         let needs = matches!(**at, Expr::Binary(_));
-        if needs { out.push('('); }
+        if needs {
+            out.push('(');
+        }
         append_expr(out, at);
-        if needs { out.push(')'); }
+        if needs {
+            out.push(')');
+        }
     }
 }
 
@@ -624,9 +711,13 @@ fn append_metric(out: &mut String, me: &MetricExpr) {
     // output uses `\`-escapes per upstream's canonical
     // `MetricExpr.AppendString` path.
     let name_was_quoted = metric_name_was_quoted(me)
-        && metric_name.as_deref().map(needs_quoted_form).unwrap_or(false);
+        && metric_name
+            .as_deref()
+            .map(needs_quoted_form)
+            .unwrap_or(false);
     if let Some(name) = &metric_name
-        && !name_was_quoted {
+        && !name_was_quoted
+    {
         append_escaped_ident(out, name);
         if only_name {
             return;
@@ -655,7 +746,9 @@ fn append_metric(out: &mut String, me: &MetricExpr) {
         first_group_emitted = true;
         let slice = &lfs[offset..];
         for (j, lf) in slice.iter().enumerate() {
-            if j > 0 { out.push(','); }
+            if j > 0 {
+                out.push(',');
+            }
             append_label_filter(out, lf);
         }
     }
@@ -700,7 +793,8 @@ fn append_label_filter(out: &mut String, lf: &LabelFilter) {
 /// strings and bare-ident WITH-template refs here.
 fn append_label_value_chain(out: &mut String, e: &Expr) {
     if let Expr::Binary(b) = e
-        && matches!(b.op, BinaryOp::Add) {
+        && matches!(b.op, BinaryOp::Add)
+    {
         append_label_value_chain(out, &b.left);
         out.push('+');
         append_label_value_chain(out, &b.right);
@@ -772,8 +866,12 @@ fn is_first_ident_char(r: char) -> bool {
 }
 
 fn is_ident_char(r: char) -> bool {
-    if is_first_ident_char(r) { return true; }
-    if r == '.' { return true; }
+    if is_first_ident_char(r) {
+        return true;
+    }
+    if r == '.' {
+        return true;
+    }
     (r as u32) < 256 && r.is_ascii_digit()
 }
 
@@ -787,16 +885,23 @@ fn is_ident_char(r: char) -> bool {
 /// form or `\`-escape form.
 fn needs_quoted_form(s: &str) -> bool {
     let mut chars = s.chars();
-    let Some(first) = chars.next() else { return true; };
-    if !is_first_ident_char(first) { return true; }
+    let Some(first) = chars.next() else {
+        return true;
+    };
+    if !is_first_ident_char(first) {
+        return true;
+    }
     for ch in chars {
-        if !is_ident_char(ch) { return true; }
+        if !is_ident_char(ch) {
+            return true;
+        }
     }
     false
 }
 
 fn metric_name_was_quoted(me: &MetricExpr) -> bool {
-    me.label_filterss.first()
+    me.label_filterss
+        .first()
         .and_then(|g| g.first())
         .filter(|lf| lf.label == "__name__" && matches!(lf.op, LabelFilterOp::Eq))
         .map(|lf| lf.was_quoted)
@@ -825,7 +930,9 @@ fn is_metric_name_filter(lf: &LabelFilter) -> bool {
 }
 
 fn is_only_metric_name(me: &MetricExpr) -> bool {
-    if get_metric_name(me).is_none() { return false; }
+    if get_metric_name(me).is_none() {
+        return false;
+    }
     me.label_filterss.iter().all(|lfs| lfs.len() <= 1)
 }
 
@@ -862,8 +969,22 @@ mod tests {
     fn metric_with_filter() {
         let e = Expr::Metric(MetricExpr {
             label_filterss: vec![vec![
-                LabelFilter { label: "__name__".into(), op: LabelFilterOp::Eq, value: "metric".into(), is_template_ref: false, was_quoted: false, value_expr: None },
-                LabelFilter { label: "foo".into(), op: LabelFilterOp::Eq, value: "bar".into(), is_template_ref: false, was_quoted: false, value_expr: None },
+                LabelFilter {
+                    label: "__name__".into(),
+                    op: LabelFilterOp::Eq,
+                    value: "metric".into(),
+                    is_template_ref: false,
+                    was_quoted: false,
+                    value_expr: None,
+                },
+                LabelFilter {
+                    label: "foo".into(),
+                    op: LabelFilterOp::Eq,
+                    value: "bar".into(),
+                    is_template_ref: false,
+                    was_quoted: false,
+                    value_expr: None,
+                },
             ]],
         });
         assert_eq!(pretty_string(&e), r#"metric{foo="bar"}"#);

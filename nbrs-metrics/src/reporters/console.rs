@@ -17,15 +17,24 @@ pub struct ConsoleReporter {
 
 impl ConsoleReporter {
     pub fn stdout() -> Self {
-        Self { out: Box::new(std::io::stdout()), prev_counts: Default::default() }
+        Self {
+            out: Box::new(std::io::stdout()),
+            prev_counts: Default::default(),
+        }
     }
 
     pub fn stderr() -> Self {
-        Self { out: Box::new(std::io::stderr()), prev_counts: Default::default() }
+        Self {
+            out: Box::new(std::io::stderr()),
+            prev_counts: Default::default(),
+        }
     }
 
     pub fn new(out: Box<dyn Write + Send>) -> Self {
-        Self { out, prev_counts: Default::default() }
+        Self {
+            out,
+            prev_counts: Default::default(),
+        }
     }
 
     fn format_nanos(nanos: u64) -> String {
@@ -51,28 +60,41 @@ impl ConsoleReporter {
 impl Reporter for ConsoleReporter {
     fn report(&mut self, snapshot: &MetricSet) {
         let interval_secs = snapshot.interval().as_secs_f64();
-        if interval_secs <= 0.0 { return; }
+        if interval_secs <= 0.0 {
+            return;
+        }
 
         self.emit(format_args!("\n"));
 
         // Group (family, metric) pairs by `activity` label.
-        let mut by_activity: std::collections::BTreeMap<String, Vec<(&str, &crate::snapshot::Metric)>> =
-            std::collections::BTreeMap::new();
+        let mut by_activity: std::collections::BTreeMap<
+            String,
+            Vec<(&str, &crate::snapshot::Metric)>,
+        > = std::collections::BTreeMap::new();
         for family in snapshot.families() {
             for metric in family.metrics() {
-                let activity = metric.labels().get("activity")
+                let activity = metric
+                    .labels()
+                    .get("activity")
                     .unwrap_or("global")
                     .to_string();
-                by_activity.entry(activity).or_default().push((family.name(), metric));
+                by_activity
+                    .entry(activity)
+                    .or_default()
+                    .push((family.name(), metric));
             }
         }
 
         for (activity, entries) in &by_activity {
-            self.emit(format_args!("── {activity} ({:.1}s) ──────────────────\n",
-                interval_secs));
+            self.emit(format_args!(
+                "── {activity} ({:.1}s) ──────────────────\n",
+                interval_secs
+            ));
 
             for (name, metric) in entries {
-                let Some(point) = metric.point() else { continue };
+                let Some(point) = metric.point() else {
+                    continue;
+                };
                 match point.value() {
                     MetricValue::Counter(c) => {
                         let key = metric.labels().identity_hash();
@@ -84,16 +106,18 @@ impl Reporter for ConsoleReporter {
                         if delta > 0 || c.cumulative > 0 {
                             self.emit(format_args!(
                                 "  {name}  count={total}  delta={delta}  rate={rate:.0}/s\n",
-                                total = c.cumulative));
+                                total = c.cumulative
+                            ));
                         }
                     }
                     MetricValue::Histogram(h) => {
                         let obs = h.count;
-                        if obs == 0 { continue; }
+                        if obs == 0 {
+                            continue;
+                        }
                         let rate = obs as f64 / interval_secs;
 
-                        self.emit(format_args!(
-                            "  {name}  count={obs}  rate={rate:.0}/s\n"));
+                        self.emit(format_args!("  {name}  count={obs}  rate={rate:.0}/s\n"));
 
                         let p50 = Self::format_nanos(h.reservoir.value_at_quantile(0.50));
                         let p90 = Self::format_nanos(h.reservoir.value_at_quantile(0.90));
@@ -102,7 +126,8 @@ impl Reporter for ConsoleReporter {
                         let max = Self::format_nanos(h.reservoir.max());
 
                         self.emit(format_args!(
-                            "    p50={p50}  p90={p90}  p99={p99}  p999={p999}  max={max}\n"));
+                            "    p50={p50}  p90={p90}  p99={p99}  p999={p999}  max={max}\n"
+                        ));
                     }
                     MetricValue::Gauge(g) => {
                         self.emit(format_args!("  {name}  {value:.2}\n", value = g.value));
@@ -110,24 +135,33 @@ impl Reporter for ConsoleReporter {
                     MetricValue::BucketedHistogram(h) => {
                         self.emit(format_args!(
                             "  {name}  buckets={n}  count={total}\n",
-                            n = h.buckets.len(), total = h.count));
+                            n = h.buckets.len(),
+                            total = h.count
+                        ));
                     }
                     MetricValue::Info(_) => {
-                        let pairs: Vec<String> = metric.labels().iter()
+                        let pairs: Vec<String> = metric
+                            .labels()
+                            .iter()
                             .map(|(k, v)| format!("{k}={v}"))
                             .collect();
                         self.emit(format_args!(
                             "  {name}  info: {{{pairs}}}\n",
-                            pairs = pairs.join(", ")));
+                            pairs = pairs.join(", ")
+                        ));
                     }
                     MetricValue::StateSet(s) => {
-                        let active: Vec<&str> = s.states.iter()
+                        let active: Vec<&str> = s
+                            .states
+                            .iter()
                             .filter(|(_, a)| *a)
                             .map(|(n, _)| n.as_str())
                             .collect();
                         self.emit(format_args!(
                             "  {name}  states_active={n} ({list})\n",
-                            n = active.len(), list = active.join(",")));
+                            n = active.len(),
+                            list = active.join(",")
+                        ));
                     }
                 }
             }

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use nbrs_runtime::observer::RunObserver;
-use nbrs_runtime::runner::{run_executions, ExecutionSpec};
+use nbrs_runtime::runner::{ExecutionSpec, run_executions};
 use nbrs_runtime::scene_tree::{NodeKind, SceneTree};
 
 struct TempDir {
@@ -52,7 +52,16 @@ impl RunObserver for TreeCapturingObserver {
     fn scenario_pre_mapped(&self, tree: &SceneTree) {
         *self.tree.lock().unwrap_or_else(|e| e.into_inner()) = Some(tree.clone());
     }
-    fn phase_starting(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: usize, _: u64, _: usize) {}
+    fn phase_starting(
+        &self,
+        _: nbrs_runtime::scene_tree::SceneNodeId,
+        _: &str,
+        _: &str,
+        _: usize,
+        _: u64,
+        _: usize,
+    ) {
+    }
     fn phase_completed(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: f64) {}
     fn phase_failed(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: &str) {}
     fn phase_progress(&self, _: &nbrs_runtime::observer::PhaseProgressUpdate) {}
@@ -69,10 +78,14 @@ async fn phase_level_for_each_materializes_distinct_nodes_per_cell() {
 
     let tmp = TempDir::new();
     let session = tmp.path.join("s");
-    let session_args: Vec<String> =
-        vec!["--session-path".into(), session.to_string_lossy().into_owned()];
+    let session_args: Vec<String> = vec![
+        "--session-path".into(),
+        session.to_string_lossy().into_owned(),
+    ];
 
-    let capture = Arc::new(TreeCapturingObserver { tree: Mutex::new(None) });
+    let capture = Arc::new(TreeCapturingObserver {
+        tree: Mutex::new(None),
+    });
     let session_obs: Arc<dyn RunObserver> = capture.clone();
 
     // `test_phase_for_each` is `- show_each_animal`, a phase whose own
@@ -91,30 +104,48 @@ async fn phase_level_for_each_materializes_distinct_nodes_per_cell() {
         .expect("run_executions: session setup");
     assert!(results[0].is_ok(), "execution errored: {:?}", results[0]);
 
-    let tree = capture.tree.lock().unwrap_or_else(|e| e.into_inner())
+    let tree = capture
+        .tree
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
         .expect("scenario_pre_mapped delivered the tree");
 
     // The two cells must be DISTINCT phase nodes (not one aliased node).
-    let cells: Vec<_> = tree.dfs_phases()
+    let cells: Vec<_> = tree
+        .dfs_phases()
         .filter(|n| n.name == "show_each_animal")
         .collect();
-    assert_eq!(cells.len(), 2,
+    assert_eq!(
+        cells.len(),
+        2,
         "phase-level for_each over [cat,dog] must materialize 2 distinct \
          phase nodes, got {} — same-name cells collapsed to one node",
-        cells.len());
+        cells.len()
+    );
 
     // Distinct ids, distinct labels, distinct parents (the per-iter scopes).
     assert_ne!(cells[0].id, cells[1].id, "cells must be distinct node ids");
-    assert_ne!(cells[0].labels, cells[1].labels,
-        "each cell carries its own iteration coordinate");
-    assert_ne!(cells[0].parent, cells[1].parent,
+    assert_ne!(
+        cells[0].labels, cells[1].labels,
+        "each cell carries its own iteration coordinate"
+    );
+    assert_ne!(
+        cells[0].parent, cells[1].parent,
         "each cell hangs under its OWN per-iter scope (distinctness via parent, \
-         not by label-keying the phase — the §4 invariant)");
+         not by label-keying the phase — the §4 invariant)"
+    );
     // Each parent is a Scope (the per-iter wrapper), not the for_each header
     // shared across cells.
     for c in &cells {
-        let parent = c.parent.and_then(|p| tree.nodes.get(p)).expect("cell has a parent");
-        assert_eq!(parent.kind, NodeKind::Scope, "cell parent is a per-iter scope");
+        let parent = c
+            .parent
+            .and_then(|p| tree.nodes.get(p))
+            .expect("cell has a parent");
+        assert_eq!(
+            parent.kind,
+            NodeKind::Scope,
+            "cell parent is a per-iter scope"
+        );
     }
 }

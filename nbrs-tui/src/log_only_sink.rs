@@ -68,9 +68,9 @@
 //! §"Display and Diagnostic Decoupling").
 
 use std::io::{self, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -192,16 +192,26 @@ fn seed_last_seen(resume: Option<u64>, current: u64) -> u64 {
 fn severity_to_level(s: LogSeverity) -> LogLevel {
     match s {
         LogSeverity::Debug => LogLevel::Debug,
-        LogSeverity::Info  => LogLevel::Info,
-        LogSeverity::Warn  => LogLevel::Warn,
+        LogSeverity::Info => LogLevel::Info,
+        LogSeverity::Warn => LogLevel::Warn,
         LogSeverity::Error => LogLevel::Error,
     }
 }
 
 impl DisplaySink for LogOnlySink {
     fn start(self: Box<Self>, inputs: DisplayInputs) -> Box<dyn SinkHandle> {
-        let DisplayInputs { state, frame_rx, metrics_query: _ } = inputs;
-        let LogOnlySink { min_level, sink_active, key_rx, runtime, resume_from } = *self;
+        let DisplayInputs {
+            state,
+            frame_rx,
+            metrics_query: _,
+        } = inputs;
+        let LogOnlySink {
+            min_level,
+            sink_active,
+            key_rx,
+            runtime,
+            resume_from,
+        } = *self;
 
         // Claim the durable scrollback stream FIRST — this flips the
         // actor's "buffer scrollback deltas" latch on (see
@@ -368,36 +378,46 @@ fn run_render_loop(
                         // repainted out from under the operator. Only
                         // intercepted while the REPL is Hidden — with a
                         // visible prompt, `p` is a letter being typed.
-                        if matches!(ke.code,
-                                crossterm::event::KeyCode::Char('p')
-                                | crossterm::event::KeyCode::Char('P'))
-                            && ke.modifiers.is_empty()
-                            && matches!(crate::repl_state::current(),
-                                crate::repl_state::ReplVisibility::Hidden)
+                        if matches!(
+                            ke.code,
+                            crossterm::event::KeyCode::Char('p')
+                                | crossterm::event::KeyCode::Char('P')
+                        ) && ke.modifiers.is_empty()
+                            && matches!(
+                                crate::repl_state::current(),
+                                crate::repl_state::ReplVisibility::Hidden
+                            )
                         {
-                            let paused =
-                                nbrs_runtime::observer::toggle_readout_pause();
+                            let paused = nbrs_runtime::observer::toggle_readout_pause();
                             // Raw mode needs explicit `\r\n`. The notice
                             // itself is the one write allowed while
                             // paused — it tells the operator how to get
                             // their readout back.
-                            let _ = write!(stderr, "\r\n{}\r\n",
+                            let _ = write!(
+                                stderr,
+                                "\r\n{}\r\n",
                                 if paused {
                                     "⏸ readout paused for copy — press 'p' to resume"
                                 } else {
                                     "▶ readout resumed"
-                                });
+                                }
+                            );
                             let _ = stderr.flush();
                             continue;
                         }
                         match p.handle_key(ke) {
                             PromptAction::Continue => {}
                             PromptAction::Submit(line) => submitted_commands.push(line),
-                            PromptAction::ShowCompletions(list) =>
-                                completion_lists.push(list),
-                            PromptAction::GrowWindow => { p.grow_window(); }
-                            PromptAction::ShrinkWindow => { p.shrink_window(); }
-                            PromptAction::ToggleHelp => { p.toggle_help(); }
+                            PromptAction::ShowCompletions(list) => completion_lists.push(list),
+                            PromptAction::GrowWindow => {
+                                p.grow_window();
+                            }
+                            PromptAction::ShrinkWindow => {
+                                p.shrink_window();
+                            }
+                            PromptAction::ToggleHelp => {
+                                p.toggle_help();
+                            }
                             PromptAction::Interrupt => {
                                 // Match supervisor's Ctrl-C path: re-
                                 // raise SIGINT so the runtime's
@@ -407,14 +427,25 @@ fn run_render_loop(
                                 // here only when a Ctrl-C lands in
                                 // the key stream rather than as
                                 // WatcherSignal::Interrupt.)
-                                unsafe { libc::raise(libc::SIGINT); }
+                                unsafe {
+                                    libc::raise(libc::SIGINT);
+                                }
                             }
                         }
                         prompt_dirty = true;
                     }
-                    Ok(WatcherSignal::GrowPrompt)   => { p.grow_window(); prompt_dirty = true; }
-                    Ok(WatcherSignal::ShrinkPrompt) => { p.shrink_window(); prompt_dirty = true; }
-                    Ok(WatcherSignal::ToggleHelp)   => { p.toggle_help(); prompt_dirty = true; }
+                    Ok(WatcherSignal::GrowPrompt) => {
+                        p.grow_window();
+                        prompt_dirty = true;
+                    }
+                    Ok(WatcherSignal::ShrinkPrompt) => {
+                        p.shrink_window();
+                        prompt_dirty = true;
+                    }
+                    Ok(WatcherSignal::ToggleHelp) => {
+                        p.toggle_help();
+                        prompt_dirty = true;
+                    }
                     Ok(_) => { /* ignored — supervisor handles other signals */ }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -465,8 +496,7 @@ fn run_render_loop(
         // region with internal scrollback. `dispatched_lines`
         // still flags a redraw so the frame picks the new lines
         // up this tick.
-        let dispatched_lines = !submitted_commands.is_empty()
-            || !completion_lists.is_empty();
+        let dispatched_lines = !submitted_commands.is_empty() || !completion_lists.is_empty();
         for list in &completion_lists {
             // One space-separated suggestion row into the frame;
             // column grouping is a future polish.
@@ -477,8 +507,7 @@ fn run_render_loop(
         // transcript ring; the frame renders them. Nothing is
         // written to the shared stderr stream here.
         for line in &submitted_commands {
-            let response = crate::inspector_server::dispatch(
-                line, &state, runtime.as_ref());
+            let response = crate::inspector_server::dispatch(line, &state, runtime.as_ref());
             crate::repl_state::push_transcript(line, &response);
         }
 
@@ -493,8 +522,7 @@ fn run_render_loop(
         // console is up the log drain is frozen (logs accumulate in
         // the ring) and flushed on leave.
         let repl_now = crate::repl_state::current();
-        let console_visible = !matches!(repl_now,
-            crate::repl_state::ReplVisibility::Hidden);
+        let console_visible = !matches!(repl_now, crate::repl_state::ReplVisibility::Hidden);
 
         if console_visible && !console_alt {
             // Enter: switch to the alternate screen (the terminal saves
@@ -531,8 +559,11 @@ fn run_render_loop(
             repl_visibility_drawn = repl_now;
             let tlen = crate::repl_state::transcript_len();
             let transcript_changed = tlen != transcript_len_drawn;
-            if repl_alt_dirty || prompt_dirty || dispatched_lines
-                || repl_switch || transcript_changed
+            if repl_alt_dirty
+                || prompt_dirty
+                || dispatched_lines
+                || repl_switch
+                || transcript_changed
             {
                 let (cols, rows) = terminal_size_via_ioctl().unwrap_or((200, 50));
                 redraw_console_altscreen(&mut stderr, prompt.as_ref(), cols, rows);
@@ -557,8 +588,11 @@ fn run_render_loop(
         // and on a swap re-entry from the prior sink's final cursor
         // (its scrollback). Both are `seq <= last_seen` and dropped
         // from re-emission here; everything newer is emitted below.
-        let mut new_logs: Vec<(crate::state::LogEntry, String,
-            Option<nbrs_runtime::wrappers::gutter::GutterSpec>)> = Vec::new();
+        let mut new_logs: Vec<(
+            crate::state::LogEntry,
+            String,
+            Option<nbrs_runtime::wrappers::gutter::GutterSpec>,
+        )> = Vec::new();
         while let Some(line) = scrollback.try_next() {
             if line.seq > last_seen {
                 last_seen = line.seq;
@@ -600,8 +634,8 @@ fn run_render_loop(
         // restored surface is left byte-exact.
         let repl_changed = repl_now != repl_visibility_drawn;
         repl_visibility_drawn = repl_now;
-        let must_redraw = need_log_emit || status_changed
-            || dispatched_lines || prompt_dirty || repl_changed;
+        let must_redraw =
+            need_log_emit || status_changed || dispatched_lines || prompt_dirty || repl_changed;
 
         if must_redraw {
             // Compute the new footer content + geometry, then run the
@@ -614,8 +648,7 @@ fn run_render_loop(
             // Re-format the margin at draw time so the session
             // timer + phase counter tick along with the running
             // phase, matching the log lines above.
-            let status_margin = format_margin_prefix(&snap,
-                nbrs_runtime::observer::use_color());
+            let status_margin = format_margin_prefix(&snap, nbrs_runtime::observer::use_color());
             let margin_visible_width = visible_width(&status_margin) as u16;
             // Row-2 margin for the running-phase status block:
             // progress bar + ETA + spinner replacing the `│`
@@ -624,8 +657,7 @@ fn run_render_loop(
             // (contextual gutters now arrive per-row from status_fold —
             // see `status_gutters`; the old single row-2 bar margin is
             // retired.)
-            let status_cols = (cols as usize)
-                .saturating_sub(margin_visible_width as usize);
+            let status_cols = (cols as usize).saturating_sub(margin_visible_width as usize);
 
             // REPL visibility (sampled once this tick as `repl_now`):
             // - Hidden: no prompt; status fills the bottom region.
@@ -635,34 +667,29 @@ fn run_render_loop(
             //   header, and the phase-history region is suppressed
             //   (the console owns the surface; closing it repaints
             //   the region via the `repl_changed` redraw).
-            let window_mode = matches!(repl_now,
-                crate::repl_state::ReplVisibility::Window);
-            let repl_visible = !matches!(repl_now,
-                crate::repl_state::ReplVisibility::Hidden);
+            let window_mode = matches!(repl_now, crate::repl_state::ReplVisibility::Window);
+            let repl_visible = !matches!(repl_now, crate::repl_state::ReplVisibility::Hidden);
 
             let new_status_text: Option<String> = if window_mode {
                 let color = nbrs_runtime::observer::use_color();
-                let dim   = if color { "\x1b[2m" } else { "" };
+                let dim = if color { "\x1b[2m" } else { "" };
                 let reset = if color { "\x1b[0m" } else { "" };
-                Some(format!(
-                    "{dim}REPL · ` close · ~ hide{reset}"
-                ))
+                Some(format!("{dim}REPL · ` close · ~ hide{reset}"))
             } else {
-                next_status.as_ref().map(|s| {
-                    clamp_multiline(s, status_cols.saturating_sub(1))
-                })
+                next_status
+                    .as_ref()
+                    .map(|s| clamp_multiline(s, status_cols.saturating_sub(1)))
             };
             // Window mode expands the prompt to fill the screen
             // minus the header row. `set_window_rows` is the single
             // geometry chokepoint; re-applied each tick so the
             // REPL-mode override wins over Alt-Up / Alt-Down.
-            if window_mode
-                && let Some(p) = prompt.as_mut() {
-                    let target = rows.saturating_sub(2).max(1);
-                    if p.window_rows() != target {
-                        p.set_window_rows(target);
-                    }
+            if window_mode && let Some(p) = prompt.as_mut() {
+                let target = rows.saturating_sub(2).max(1);
+                if p.window_rows() != target {
+                    p.set_window_rows(target);
                 }
+            }
             let prompt_input = if repl_visible {
                 prompt.as_ref().map(|p| {
                     let win_rows = p.window_rows() as usize;
@@ -690,8 +717,7 @@ fn run_render_loop(
                             composed.push_str("\r\n");
                         }
                         for line in tail.iter() {
-                            let row = nbrs_runtime::activity::truncate_to_width(
-                                line, cols_usize);
+                            let row = nbrs_runtime::activity::truncate_to_width(line, cols_usize);
                             composed.push_str(&row);
                             composed.push_str("\r\n");
                         }
@@ -786,7 +812,9 @@ fn run_render_loop(
                     }
                     // Match the observer's cosmetic blank line before
                     // the Ctrl-C / force-exit banners.
-                    if entry.message.starts_with("session: graceful shutdown requested")
+                    if entry
+                        .message
+                        .starts_with("session: graceful shutdown requested")
                         || entry.message.starts_with("session: force-exit")
                     {
                         let _ = write!(stderr, "\r\n");
@@ -797,8 +825,8 @@ fn run_render_loop(
                     // messages get `\r\n` (raw mode needs the explicit
                     // `\r`); each row gets the margin and a trailing
                     // newline so it scrolls the surface.
-                    let painted = nbrs_runtime::observer::colorize_log_line(
-                        entry_level, &entry.message);
+                    let painted =
+                        nbrs_runtime::observer::colorize_log_line(entry_level, &entry.message);
                     // SRD-92 margin assignment for scrollback: the
                     // HEADER row of every entry gets the actor-stamped
                     // triad; detail rows get the blank divider margin
@@ -815,26 +843,29 @@ fn run_render_loop(
                     } else {
                         format!("\x1b[2m{:<cell_w$}│\x1b[0m ", "")
                     };
-                    let final_cell: Option<String> = detail_gutter.as_ref().map(|spec| {
-                        match spec {
-                            nbrs_runtime::wrappers::gutter::GutterSpec::Labeled { name, value } =>
-                                labeled_gutter(name, value, cell_w, color),
-                            nbrs_runtime::wrappers::gutter::GutterSpec::Text(t) =>
-                                text_gutter(t, cell_w, color),
-                            nbrs_runtime::wrappers::gutter::GutterSpec::Bar(f) =>
-                                bar_gutter(*f, cell_w, color),
-                            nbrs_runtime::wrappers::gutter::GutterSpec::Spark(v) =>
-                                text_gutter(&format!("{v:.2}"), cell_w, color),
-                        }
-                    });
+                    let final_cell: Option<String> =
+                        detail_gutter.as_ref().map(|spec| match spec {
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Labeled { name, value } => {
+                                labeled_gutter(name, value, cell_w, color)
+                            }
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Text(t) => {
+                                text_gutter(t, cell_w, color)
+                            }
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Bar(f) => {
+                                bar_gutter(*f, cell_w, color)
+                            }
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Spark(v) => {
+                                text_gutter(&format!("{v:.2}"), cell_w, color)
+                            }
+                        });
                     // `completed_phases=headers` (SRD-92 R5): retain
                     // only the header row of completion blocks in
                     // scrollback (details/leaves stay in session.log).
                     let headers_only = matches!(
                         nbrs_runtime::observer::completed_phase_display(),
-                        nbrs_runtime::observer::CompletedPhaseDisplay::Headers);
-                    let is_detail_entry = entry.category
-                        == crate::state::LogCategory::PhaseDetail;
+                        nbrs_runtime::observer::CompletedPhaseDisplay::Headers
+                    );
+                    let is_detail_entry = entry.category == crate::state::LogCategory::PhaseDetail;
                     if headers_only && is_detail_entry {
                         continue;
                     }
@@ -857,8 +888,9 @@ fn run_render_loop(
                         } else {
                             match role {
                                 crate::status_fold::RowRole::Header => margin,
-                                crate::status_fold::RowRole::Standard =>
-                                    final_cell.as_deref().unwrap_or(&blank_margin),
+                                crate::status_fold::RowRole::Standard => {
+                                    final_cell.as_deref().unwrap_or(&blank_margin)
+                                }
                                 _ => &blank_margin,
                             }
                         };
@@ -936,17 +968,14 @@ fn run_render_loop(
 /// from [`crate::state::RunState::margin_body_stamp`] (single source,
 /// shared with the actor's per-line stamps) and this wraps it in the
 /// color + divider dressing.
-fn format_margin_prefix(
-    snap: &std::sync::Arc<crate::state::RunState>,
-    color: bool,
-) -> String {
+fn format_margin_prefix(snap: &std::sync::Arc<crate::state::RunState>, color: bool) -> String {
     format_margin_from_body(&snap.margin_body_stamp(), color)
 }
 
 /// Colorize a margin body (stamped or live) and append the `│ ` divider.
 fn format_margin_from_body(body: &str, color: bool) -> String {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     format!("{dim}{body} \u{2502}{reset} ")
 }
 
@@ -959,8 +988,18 @@ fn format_margin_from_body(body: &str, color: bool) -> String {
 #[cfg(unix)]
 fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
     #[repr(C)]
-    struct WinSize { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 }
-    let mut ws = WinSize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    struct WinSize {
+        ws_row: u16,
+        ws_col: u16,
+        ws_xpixel: u16,
+        ws_ypixel: u16,
+    }
+    let mut ws = WinSize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     let rc = unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws as *mut _) };
     if rc < 0 || ws.ws_col == 0 || ws.ws_row == 0 {
         return None;
@@ -974,7 +1013,8 @@ fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
 /// distinction doesn't apply to the console query.
 #[cfg(not(unix))]
 fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
-    crossterm::terminal::size().ok()
+    crossterm::terminal::size()
+        .ok()
         .filter(|&(c, r)| c != 0 && r != 0)
 }
 
@@ -1082,20 +1122,30 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                 Some(crate::status_fold::RowGutter::Metric { key, name, value }) => {
                     ctx_margin_owned = metric_gutter(
                         gutter_state.rings.entry(key.clone()).or_default(),
-                        name, *value, blank_w, use_color_now);
+                        name,
+                        *value,
+                        blank_w,
+                        use_color_now,
+                    );
                     &ctx_margin_owned
                 }
                 Some(crate::status_fold::RowGutter::Bar(f)) => {
                     ctx_margin_owned = bar_gutter(*f, blank_w, use_color_now);
                     &ctx_margin_owned
                 }
-                Some(crate::status_fold::RowGutter::Latency { key, p50, p99, count }) => {
+                Some(crate::status_fold::RowGutter::Latency {
+                    key,
+                    p50,
+                    p99,
+                    count,
+                }) => {
                     let cell = gutter_state.latency.entry(key.clone()).or_default();
-                    if *count != cell.last_count || cell.last_w != blank_w
+                    if *count != cell.last_count
+                        || cell.last_w != blank_w
                         || cell.last_render.is_empty()
                     {
-                        cell.last_render = latency_gutter(
-                            &mut cell.ring, *p50, *p99, blank_w, use_color_now);
+                        cell.last_render =
+                            latency_gutter(&mut cell.ring, *p50, *p99, blank_w, use_color_now);
                         cell.last_count = *count;
                         cell.last_w = blank_w;
                     }
@@ -1103,26 +1153,29 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                     &ctx_margin_owned
                 }
                 Some(crate::status_fold::RowGutter::LatencyHist { key, p50, count }) => {
-                    let cell = gutter_state.hists.entry(key.clone())
-                        .or_insert_with(|| HistCellState {
+                    let cell = gutter_state.hists.entry(key.clone()).or_insert_with(|| {
+                        HistCellState {
                             trend: crate::widgets::DecimatingTrend::new(
                                 // Matches the helper's spark region:
                                 // cell width minus the min∕max label
                                 // (≤11 chars) and its separator space,
                                 // so no lifetime cell is ever clipped.
-                                blank_w.saturating_sub(12).max(4)),
+                                blank_w.saturating_sub(12).max(4),
+                            ),
                             last_count: 0,
                             last_w: 0,
                             last_render: String::new(),
-                        });
+                        }
+                    });
                     // Sample-gated: one trend sample per NEW op, not per
                     // redraw tick — a slow poller keeps a stable cell
                     // between ops.
-                    if *count != cell.last_count || cell.last_w != blank_w
+                    if *count != cell.last_count
+                        || cell.last_w != blank_w
                         || cell.last_render.is_empty()
                     {
-                        cell.last_render = latency_hist_gutter(
-                            &mut cell.trend, *p50, blank_w, use_color_now);
+                        cell.last_render =
+                            latency_hist_gutter(&mut cell.trend, *p50, blank_w, use_color_now);
                         cell.last_count = *count;
                         cell.last_w = blank_w;
                     }
@@ -1148,7 +1201,10 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                 Some(crate::status_fold::RowGutter::Spark { key, value }) => {
                     ctx_margin_owned = spark_gutter(
                         gutter_state.rings.entry(key.clone()).or_default(),
-                        *value, blank_w, use_color_now);
+                        *value,
+                        blank_w,
+                        use_color_now,
+                    );
                     &ctx_margin_owned
                 }
                 _ if i == 0 => status_margin,
@@ -1159,7 +1215,11 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
         // A truncation can strand an open SGR (the reset was past the
         // cut) — close it so the tint can't bleed into the margin of
         // the next row.
-        let reset_tail = if fitted.len() != row.len() { "\x1b[0m" } else { "" };
+        let reset_tail = if fitted.len() != row.len() {
+            "\x1b[0m"
+        } else {
+            ""
+        };
         let _ = write!(out, "\r\x1b[K{margin}{fitted}{reset_tail}");
     }
     // Prompt rows — present only for the inline console bar (the full
@@ -1203,13 +1263,15 @@ fn redraw_console_altscreen<W: Write>(
     rows: u16,
 ) {
     let color = nbrs_runtime::observer::use_color();
-    let dim   = if color { "\x1b[2m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let cols_usize = cols as usize;
 
     // Header (row 1).
-    let _ = write!(out,
-        "\x1b[1;1H\x1b[K{dim}REPL · ~ or ` to close · ↑↓ history{reset}");
+    let _ = write!(
+        out,
+        "\x1b[1;1H\x1b[K{dim}REPL · ~ or ` to close · ↑↓ history{reset}"
+    );
 
     // Transcript tail fills rows 2 ..= rows-1 — oldest at the top,
     // top-padded with blanks so the newest line sits just above the
@@ -1255,9 +1317,9 @@ fn redraw_console_altscreen<W: Write>(
 
 /// Completion-bar gutter cell (the house braille bar + divider).
 fn bar_gutter(frac: f64, w: usize, color: bool) -> String {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
-    let bg     = if color { "\x1b[48;2;50;50;50m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
     let bright = if color { "\x1b[97m" } else { "" };
     let bar = nbrs_runtime::readouts::format::braille_bar(frac * 100.0, w);
     format!("{bg}{bright}{bar}{reset}{dim}│{reset} ")
@@ -1274,14 +1336,18 @@ fn latency_gutter(
     w: usize,
     color: bool,
 ) -> String {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
-    let cyan  = if color { "\x1b[36m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let cyan = if color { "\x1b[36m" } else { "" };
     let fmt = |n: u64| {
         let ms = n as f64 / 1e6;
-        if ms >= 100.0 { format!("{ms:.0}") }
-        else if ms >= 10.0 { format!("{ms:.1}") }
-        else { format!("{ms:.2}") }
+        if ms >= 100.0 {
+            format!("{ms:.0}")
+        } else if ms >= 10.0 {
+            format!("{ms:.1}")
+        } else {
+            format!("{ms:.2}")
+        }
     };
     let text = format!("{}∕{}ms", fmt(p50), fmt(p99));
     let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
@@ -1291,8 +1357,10 @@ fn latency_gutter(
     }
     let samples: Vec<f64> = ring.iter().copied().collect();
     let spark = crate::widgets::sparkline_str(&samples, spark_w);
-    format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
-        tw = w.saturating_sub(spark_w + 1))
+    format!(
+        "{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
+        tw = w.saturating_sub(spark_w + 1)
+    )
 }
 
 /// Key-metric gutter cell (SRD-92 R4): the metric macro's live view —
@@ -1309,10 +1377,9 @@ fn metric_gutter(
     color: bool,
 ) -> String {
     let accent = if color { "\x1b[1;95m" } else { "" };
-    let dim    = if color { "\x1b[2m"    } else { "" };
-    let reset  = if color { "\x1b[0m"    } else { "" };
-    let label = nbrs_runtime::activity::truncate_to_width(
-        name, w.saturating_sub(5).max(4));
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let label = nbrs_runtime::activity::truncate_to_width(name, w.saturating_sub(5).max(4));
     let label_w = label.chars().count();
     let spark_w = w.saturating_sub(label_w + 1).max(4);
     ring.push_back(value);
@@ -1321,8 +1388,10 @@ fn metric_gutter(
     }
     let samples: Vec<f64> = ring.iter().copied().collect();
     let spark = crate::widgets::sparkline_str(&samples, spark_w);
-    format!("{accent}{spark}{reset} {dim}{label:>lw$}│{reset} ",
-        lw = w.saturating_sub(spark_w + 1))
+    format!(
+        "{accent}{spark}{reset} {dim}{label:>lw$}│{reset} ",
+        lw = w.saturating_sub(spark_w + 1)
+    )
 }
 
 /// Composed cell (SRD-92 R3): the phase's completion bar beside a
@@ -1331,16 +1400,15 @@ fn metric_gutter(
 /// shrinking on narrow margins); the text gets the remainder,
 /// truncated.
 fn bar_text_gutter(frac: f64, text: &str, w: usize, color: bool) -> String {
-    let dim    = if color { "\x1b[2m"  } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
-    let bg     = if color { "\x1b[48;2;50;50;50m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
     let bright = if color { "\x1b[97m" } else { "" };
     let bar_w = if w >= 14 { 8 } else { (w / 3).max(3) };
     let text_w = w.saturating_sub(bar_w + 1);
     let bar = nbrs_runtime::readouts::format::braille_bar(frac * 100.0, bar_w);
     let fitted = nbrs_runtime::activity::truncate_to_width(text, text_w);
-    let pad = text_w.saturating_sub(
-        fitted.chars().filter(|c| !c.is_control()).count());
+    let pad = text_w.saturating_sub(fitted.chars().filter(|c| !c.is_control()).count());
     format!("{bg}{bright}{bar}{reset} {dim}{fitted}{:pad$}│{reset} ", "")
 }
 
@@ -1430,8 +1498,8 @@ fn sysmon_gutter(items: &[(char, f64)], w: usize, color: bool) -> String {
 }
 
 fn text_gutter(text: &str, w: usize, color: bool) -> String {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     // One column of right margin before the divider, matching the header cell
     // (`body │`). Without it a leaf's duration ended flush against the divider
     // while the header's phase time stopped a column short, so the same quantity
@@ -1441,8 +1509,7 @@ fn text_gutter(text: &str, w: usize, color: bool) -> String {
     //    45.0s │    ✓ [concurrent_query]
     let inner = w.saturating_sub(1);
     let fitted = nbrs_runtime::activity::truncate_to_width(text, inner);
-    let pad = inner.saturating_sub(
-        fitted.chars().filter(|c| !c.is_control()).count());
+    let pad = inner.saturating_sub(fitted.chars().filter(|c| !c.is_control()).count());
     format!("{dim}{:pad$}{fitted} │{reset} ", "")
 }
 
@@ -1454,15 +1521,15 @@ fn text_gutter(text: &str, w: usize, color: bool) -> String {
 /// and both stay in the same columns across rows. The value is accented; the
 /// label stays dim so it recedes.
 fn labeled_gutter(name: &str, value: &str, w: usize, color: bool) -> String {
-    let dim    = if color { "\x1b[2m"     } else { "" };
-    let accent = if color { "\x1b[1;92m"  } else { "" };
-    let reset  = if color { "\x1b[0m"     } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let accent = if color { "\x1b[1;92m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     // Bracketed and centred, because this cell shares a column with the phase
     // TIMINGS. Aligning the metric the same way they are aligned made it read as
     // one more timing field; the brackets span the cell so the row announces
     // itself as something else entirely before you read the number.
-    let inner = w.saturating_sub(1);          // shared right margin, as above
-    let text_w = inner.saturating_sub(2);     // the two bracket columns
+    let inner = w.saturating_sub(1); // shared right margin, as above
+    let text_w = inner.saturating_sub(2); // the two bracket columns
     let plain = format!("{name}: {value}");
     if text_w < 3 {
         // No room to be decorative — keep the number, drop the frame.
@@ -1481,7 +1548,10 @@ fn labeled_gutter(name: &str, value: &str, w: usize, color: bool) -> String {
         Some((l, v)) => (format!("{l}: "), v.to_string()),
         None => (String::new(), fitted.clone()),
     };
-    format!("{dim}[{:left$}{lbl}{reset}{accent}{val}{reset}{dim}{:right$}] │{reset} ", "", "")
+    format!(
+        "{dim}[{:left$}{lbl}{reset}{accent}{val}{reset}{dim}{:right$}] │{reset} ",
+        "", ""
+    )
 }
 
 /// Workload-declared trend gutter cell (`gutter: {spark: ...}`): a
@@ -1493,12 +1563,16 @@ fn spark_gutter(
     w: usize,
     color: bool,
 ) -> String {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
-    let cyan  = if color { "\x1b[36m" } else { "" };
-    let text = if value.abs() >= 100.0 { format!("{value:.0}") }
-        else if value.abs() >= 10.0 { format!("{value:.1}") }
-        else { format!("{value:.2}") };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let cyan = if color { "\x1b[36m" } else { "" };
+    let text = if value.abs() >= 100.0 {
+        format!("{value:.0}")
+    } else if value.abs() >= 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.2}")
+    };
     let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
     ring.push_back(value);
     while ring.len() > spark_w {
@@ -1506,8 +1580,10 @@ fn spark_gutter(
     }
     let samples: Vec<f64> = ring.iter().copied().collect();
     let spark = crate::widgets::sparkline_str(&samples, spark_w);
-    format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
-        tw = w.saturating_sub(spark_w + 1))
+    format!(
+        "{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
+        tw = w.saturating_sub(spark_w + 1)
+    )
 }
 
 /// Per-key persistent display state for the contextual gutter
@@ -1560,14 +1636,18 @@ fn latency_hist_gutter(
     w: usize,
     color: bool,
 ) -> String {
-    let dim    = if color { "\x1b[2m"  } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
-    let cyan   = if color { "\x1b[36m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let cyan = if color { "\x1b[36m" } else { "" };
     let accent = if color { "\x1b[93m" } else { "" };
     let fmt = |ms: f64| {
-        if ms >= 100.0 { format!("{ms:.0}") }
-        else if ms >= 10.0 { format!("{ms:.1}") }
-        else { format!("{ms:.2}") }
+        if ms >= 100.0 {
+            format!("{ms:.0}")
+        } else if ms >= 10.0 {
+            format!("{ms:.1}")
+        } else {
+            format!("{ms:.2}")
+        }
     };
     let text_probe = format!("{}∕{}ms", fmt(trend.min), fmt(trend.max));
     let spark_w = w.saturating_sub(text_probe.chars().count() + 1).max(4);
@@ -1591,8 +1671,11 @@ fn latency_hist_gutter(
     let hist_part: String = glyphs.chars().take(hist_n).collect();
     let raw_part: String = glyphs.chars().skip(hist_n).collect();
     let pad = spark_w.saturating_sub(visible.len());
-    format!("{cyan}{hist_part}{reset}{accent}{raw_part}{reset}{:pad$} {dim}{text:>tw$}│{reset} ",
-        "", tw = w.saturating_sub(spark_w + 1))
+    format!(
+        "{cyan}{hist_part}{reset}{accent}{raw_part}{reset}{:pad$} {dim}{text:>tw$}│{reset} ",
+        "",
+        tw = w.saturating_sub(spark_w + 1)
+    )
 }
 
 /// Approximate visible width of a string with ANSI SGR escape
@@ -1607,12 +1690,19 @@ fn visible_width(s: &str) -> usize {
         if in_escape {
             // Escapes end on any final byte (`m`, `K`, `J`, …),
             // not just SGR's `m`.
-            if ch.is_ascii_alphabetic() { in_escape = false; }
+            if ch.is_ascii_alphabetic() {
+                in_escape = false;
+            }
             continue;
         }
-        if ch == '\x1b' { in_escape = true; continue; }
+        if ch == '\x1b' {
+            in_escape = true;
+            continue;
+        }
         // Control chars (`\r`, …) occupy no columns.
-        if ch.is_control() { continue; }
+        if ch.is_control() {
+            continue;
+        }
         width += 1;
     }
     width
@@ -1627,7 +1717,9 @@ fn clamp_multiline(s: &str, max_cols: usize) -> String {
     let mut out = String::with_capacity(s.len());
     let mut first = true;
     for row in s.split('\n') {
-        if !first { out.push('\n'); }
+        if !first {
+            out.push('\n');
+        }
         out.push_str(&nbrs_runtime::activity::truncate_to_width(row, max_cols));
         first = false;
     }
@@ -1652,7 +1744,9 @@ impl SinkHandle for LogOnlySinkHandle {
         self.sink_active.store(false, Ordering::Release);
     }
 
-    fn owns_terminal(&self) -> bool { false }
+    fn owns_terminal(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -1704,8 +1798,11 @@ mod redraw_tests {
         let w = 27;
         let ours = crate::status_fold::strip_ansi(&sysmon_gutter(&items, w, true));
         let reference = crate::status_fold::strip_ansi(&text_gutter("x", w, true));
-        assert_eq!(ours.chars().count(), reference.chars().count(),
-            "sysmon cell must occupy the same columns as a text cell:\n{ours:?}\n{reference:?}");
+        assert_eq!(
+            ours.chars().count(),
+            reference.chars().count(),
+            "sysmon cell must occupy the same columns as a text cell:\n{ours:?}\n{reference:?}"
+        );
         // 3 items × 3 cells + 2 separators = 11 visible strip chars.
         assert!(ours.contains('⛃') && ours.contains('⚙') && ours.contains('▤'));
     }
@@ -1716,31 +1813,52 @@ mod redraw_tests {
     /// exactly this divider, nothing more.
     #[test]
     fn blank_gutter_is_width_aligned_divider() {
-        let row1 = "   12.3s [5/9]  1.2s │ ";   // 23 visible cols
+        let row1 = "   12.3s [5/9]  1.2s │ "; // 23 visible cols
         let target = super::visible_width(row1);
         let mut out: Vec<u8> = Vec::new();
         draw_footer_at_cursor(
-            &mut out, Some("head\ndetail"), None,
-            80, row1, target as u16,
-            &[], &mut GutterState::default());
+            &mut out,
+            Some("head\ndetail"),
+            None,
+            80,
+            row1,
+            target as u16,
+            &[],
+            &mut GutterState::default(),
+        );
         let out = String::from_utf8(out).expect("utf-8");
         let line1 = out.split("\r\n").nth(1).expect("two rows");
         let margin_end = line1.find("detail").expect("detail text present");
         let margin = &line1[..margin_end];
-        assert_eq!(super::visible_width(margin), target,
-            "blank margin must be exactly the row-0 width: {margin:?}");
+        assert_eq!(
+            super::visible_width(margin),
+            target,
+            "blank margin must be exactly the row-0 width: {margin:?}"
+        );
         // Strip SGR escapes, then everything before the divider must
         // be blank.
         let mut plain = String::new();
         let mut in_esc = false;
         for c in margin.chars() {
-            if in_esc { if c.is_ascii_alphabetic() { in_esc = false; } continue; }
-            if c == '\u{1b}' { in_esc = true; continue; }
-            if !c.is_ascii_control() { plain.push(c); }
+            if in_esc {
+                if c.is_ascii_alphabetic() {
+                    in_esc = false;
+                }
+                continue;
+            }
+            if c == '\u{1b}' {
+                in_esc = true;
+                continue;
+            }
+            if !c.is_ascii_control() {
+                plain.push(c);
+            }
         }
         let div = plain.find('│').expect("divider present");
-        assert!(plain[..div].chars().all(|c| c == ' '),
-            "blank margin must be blank before the divider: {plain:?}");
+        assert!(
+            plain[..div].chars().all(|c| c == ' '),
+            "blank margin must be blank before the divider: {plain:?}"
+        );
     }
 
     /// One simulated render tick with a left margin: draw the footer
@@ -1754,8 +1872,16 @@ mod redraw_tests {
     ) -> String {
         let mut out: Vec<u8> = Vec::new();
         let width = super::visible_width(margin) as u16;
-        draw_footer_at_cursor(&mut out, status, prompt, 80, margin, width, &[],
-            &mut GutterState::default());
+        draw_footer_at_cursor(
+            &mut out,
+            status,
+            prompt,
+            80,
+            margin,
+            width,
+            &[],
+            &mut GutterState::default(),
+        );
         String::from_utf8(out).expect("rendered bytes are utf-8")
     }
 
@@ -1779,12 +1905,25 @@ mod redraw_tests {
     fn footer_rows_home_erase_and_have_no_trailing_newline() {
         let mut out: Vec<u8> = Vec::new();
         let (rows, below) = draw_footer_at_cursor(
-            &mut out, Some("head row\ntail row"), None, 80, "", 0, &[],
-            &mut GutterState::default());
+            &mut out,
+            Some("head row\ntail row"),
+            None,
+            80,
+            "",
+            0,
+            &[],
+            &mut GutterState::default(),
+        );
         let s = String::from_utf8(out).expect("utf-8");
         assert_eq!((rows, below), (2, 1), "two rows, cursor 1 below the top");
-        assert!(s.contains("\r\x1b[Khead row"), "head row homed + erased: {s:?}");
-        assert!(s.contains("\r\x1b[Ktail row"), "tail row homed + erased: {s:?}");
+        assert!(
+            s.contains("\r\x1b[Khead row"),
+            "head row homed + erased: {s:?}"
+        );
+        assert!(
+            s.contains("\r\x1b[Ktail row"),
+            "tail row homed + erased: {s:?}"
+        );
         // Exactly one `\r\n` separates the two rows; none trails.
         assert_eq!(s.matches("\r\n").count(), 1, "one separator only: {s:?}");
         assert!(!s.ends_with("\r\n"), "no trailing newline: {s:?}");
@@ -1795,8 +1934,16 @@ mod redraw_tests {
     #[test]
     fn empty_footer_draws_nothing() {
         let mut out: Vec<u8> = Vec::new();
-        let (rows, below) = draw_footer_at_cursor(&mut out, None, None, 80, "", 0, &[],
-            &mut GutterState::default());
+        let (rows, below) = draw_footer_at_cursor(
+            &mut out,
+            None,
+            None,
+            80,
+            "",
+            0,
+            &[],
+            &mut GutterState::default(),
+        );
         assert_eq!((rows, below), (0, 0));
         assert!(out.is_empty(), "empty footer emits no bytes: {out:?}");
     }
@@ -1811,14 +1958,20 @@ mod redraw_tests {
         let status = "running";
         let prompt = one_row_prompt("hi");
         let out = render_tick_with_margin(Some(status), Some(&prompt), margin);
-        assert!(out.contains(&format!("\r\x1b[K{margin}running")),
-            "status row must carry the margin: {out:?}");
-        assert!(out.contains(&format!("\r\x1b[K{margin}\x1b[36m❯\x1b[0m hi")),
-            "prompt row must carry the margin: {out:?}");
+        assert!(
+            out.contains(&format!("\r\x1b[K{margin}running")),
+            "status row must carry the margin: {out:?}"
+        );
+        assert!(
+            out.contains(&format!("\r\x1b[K{margin}\x1b[36m❯\x1b[0m hi")),
+            "prompt row must carry the margin: {out:?}"
+        );
         // Column = margin_width + cursor_col + 1.
         // margin is 13 visible; "❯ hi" puts cursor_col at 4 → 13+4+1=18.
-        assert!(out.contains("\x1b[18G"),
-            "cursor must skip past the margin width: {out:?}");
+        assert!(
+            out.contains("\x1b[18G"),
+            "cursor must skip past the margin width: {out:?}"
+        );
     }
 
     /// When the running-phase row-2 margin is supplied (the
@@ -1837,15 +1990,25 @@ mod redraw_tests {
             crate::status_fold::RowGutter::Bar(0.5),
         ];
         draw_footer_at_cursor(
-            &mut out, Some(status), None,
-            80, row1, super::visible_width(row1) as u16,
-            &gutters, &mut GutterState::default());
+            &mut out,
+            Some(status),
+            None,
+            80,
+            row1,
+            super::visible_width(row1) as u16,
+            &gutters,
+            &mut GutterState::default(),
+        );
         let out = String::from_utf8(out).expect("utf-8");
-        assert!(out.contains(&format!("\r\x1b[K{row1}running")),
-            "line 0 MUST carry the triad margin: {out:?}");
+        assert!(
+            out.contains(&format!("\r\x1b[K{row1}running")),
+            "line 0 MUST carry the triad margin: {out:?}"
+        );
         // Detail row: half-full braille bar (has full cells) + text.
-        assert!(out.contains('\u{28ff}') && out.contains("stats line"),
-            "line 1 MUST carry the bar gutter: {out:?}");
+        assert!(
+            out.contains('\u{28ff}') && out.contains("stats line"),
+            "line 1 MUST carry the bar gutter: {out:?}"
+        );
     }
 
     /// A status row wider than the terminal is TRUNCATED to one
@@ -1857,20 +2020,28 @@ mod redraw_tests {
     /// closed with a reset so the tint can't bleed into the next row.
     #[test]
     fn overwide_status_row_truncates_to_one_physical_row() {
-        let margin = "12.34s 5/9 │ ";           // 13 visible cols
-        let wide = "x".repeat(200);              // ≫ 80-col terminal
+        let margin = "12.34s 5/9 │ "; // 13 visible cols
+        let wide = "x".repeat(200); // ≫ 80-col terminal
         let status = format!("head\n{wide}");
         let mut out: Vec<u8> = Vec::new();
         let (rows, below) = draw_footer_at_cursor(
-            &mut out, Some(&status), None,
-            80, margin, super::visible_width(margin) as u16,
-            &[], &mut GutterState::default());
+            &mut out,
+            Some(&status),
+            None,
+            80,
+            margin,
+            super::visible_width(margin) as u16,
+            &[],
+            &mut GutterState::default(),
+        );
         assert_eq!((rows, below), (2, 1));
         let out = String::from_utf8(out).expect("utf-8");
         for line in out.split("\r\n") {
-            assert!(super::visible_width(line) <= 80,
+            assert!(
+                super::visible_width(line) <= 80,
                 "footer row must fit the terminal width ({}): {line:?}",
-                super::visible_width(line));
+                super::visible_width(line)
+            );
         }
         assert!(out.contains('…'), "truncation marker expected: {out:?}");
 
@@ -1879,12 +2050,20 @@ mod redraw_tests {
         let colored = format!("\x1b[31m{}\x1b[0m", "y".repeat(200));
         let mut out2: Vec<u8> = Vec::new();
         draw_footer_at_cursor(
-            &mut out2, Some(&colored), None,
-            80, margin, super::visible_width(margin) as u16,
-            &[], &mut GutterState::default());
+            &mut out2,
+            Some(&colored),
+            None,
+            80,
+            margin,
+            super::visible_width(margin) as u16,
+            &[],
+            &mut GutterState::default(),
+        );
         let out2 = String::from_utf8(out2).expect("utf-8");
-        assert!(out2.ends_with("\x1b[0m"),
-            "truncated colored row must close its SGR: {out2:?}");
+        assert!(
+            out2.ends_with("\x1b[0m"),
+            "truncated colored row must close its SGR: {out2:?}"
+        );
     }
 
     /// Empty gutter list → row 0 carries the triad margin, every
@@ -1896,16 +2075,28 @@ mod redraw_tests {
         let status = "first\nsecond";
         let mut out: Vec<u8> = Vec::new();
         draw_footer_at_cursor(
-            &mut out, Some(status), None,
-            80, row1, super::visible_width(row1) as u16,
-            &[], &mut GutterState::default());
+            &mut out,
+            Some(status),
+            None,
+            80,
+            row1,
+            super::visible_width(row1) as u16,
+            &[],
+            &mut GutterState::default(),
+        );
         let out = String::from_utf8(out).expect("utf-8");
-        assert!(out.contains(&format!("\r\x1b[K{row1}first")),
-            "line 0 MUST carry the triad margin: {out:?}");
-        assert!(out.contains("│\x1b[0m second"),
-            "line 1 MUST carry the blank divider margin: {out:?}");
-        assert!(!out.contains(&format!("{row1}second")),
-            "line 1 must NOT repeat the triad margin: {out:?}");
+        assert!(
+            out.contains(&format!("\r\x1b[K{row1}first")),
+            "line 0 MUST carry the triad margin: {out:?}"
+        );
+        assert!(
+            out.contains("│\x1b[0m second"),
+            "line 1 MUST carry the blank divider margin: {out:?}"
+        );
+        assert!(
+            !out.contains(&format!("{row1}second")),
+            "line 1 must NOT repeat the triad margin: {out:?}"
+        );
     }
 
     /// A fresh sink (no shared cursor, or one still holding the
@@ -1937,8 +2128,10 @@ mod redraw_tests {
         // `\x1b[2m...\x1b[0m` carries no columns.
         assert_eq!(super::visible_width("\x1b[2mdim\x1b[0m text"), 8);
         // Nested / multiple escapes.
-        assert_eq!(super::visible_width("\x1b[1;31mAB\x1b[0m\x1b[32mCD\x1b[0m"),
-            4);
+        assert_eq!(
+            super::visible_width("\x1b[1;31mAB\x1b[0m\x1b[32mCD\x1b[0m"),
+            4
+        );
     }
 
     /// The phase time must land in the SAME column whichever row carries it.
@@ -1958,16 +2151,23 @@ mod redraw_tests {
         let leaf = super::text_gutter("0.0s", blank_w, false);
 
         let divider = |cell: &str| cell.chars().position(|c| c == '│').expect("divider");
-        assert_eq!(divider(&header), divider(&leaf),
-            "divider column differs:\n  header |{header}|\n  leaf   |{leaf}|");
+        assert_eq!(
+            divider(&header),
+            divider(&leaf),
+            "divider column differs:\n  header |{header}|\n  leaf   |{leaf}|"
+        );
 
         // Both durations end on the column immediately before the divider's space.
         let ends_at = |cell: &str, needle: &str| {
-            cell.find(needle).map(|b| cell[..b].chars().count() + needle.chars().count())
+            cell.find(needle)
+                .map(|b| cell[..b].chars().count() + needle.chars().count())
                 .expect("duration present")
         };
-        assert_eq!(ends_at(&header, "45.0s"), ends_at(&leaf, "0.0s"),
-            "durations end in different columns:\n  header |{header}|\n  leaf   |{leaf}|");
+        assert_eq!(
+            ends_at(&header, "45.0s"),
+            ends_at(&leaf, "0.0s"),
+            "durations end in different columns:\n  header |{header}|\n  leaf   |{leaf}|"
+        );
     }
 
     /// Timing rows carry a mark so they are not mistaken for the metric cells
@@ -1998,7 +2198,11 @@ mod redraw_tests {
         assert_eq!(open, 0, "bracket must open at the cell edge: |{cell}|");
         let close = plain.find(']').unwrap();
         let divider = plain.find('│').unwrap();
-        assert_eq!(divider - close, 2, "close bracket sits one space before the divider: |{cell}|");
+        assert_eq!(
+            divider - close,
+            2,
+            "close bracket sits one space before the divider: |{cell}|"
+        );
         // Centred: padding on both sides differs by at most one.
         let inner = &plain[open + 1..close];
         let lead = inner.len() - inner.trim_start().len();

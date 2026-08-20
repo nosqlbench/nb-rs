@@ -59,9 +59,11 @@ pub enum Located {
 pub fn parse(source: &str) -> Result<Tree, String> {
     let mut parser = Parser::new();
     let language = tree_sitter_yaml::LANGUAGE.into();
-    parser.set_language(&language)
+    parser
+        .set_language(&language)
         .map_err(|e| format!("tree-sitter-yaml language load failed: {e}"))?;
-    parser.parse(source, None)
+    parser
+        .parse(source, None)
         .ok_or_else(|| "tree-sitter-yaml parse returned no tree".to_string())
 }
 
@@ -73,19 +75,15 @@ pub fn parse(source: &str) -> Result<Tree, String> {
 /// fully resolved) or [`Located::Missing`] (path resolved
 /// up to a point; new keys need to be inserted at the
 /// returned offset).
-pub fn locate_path(
-    tree: &Tree,
-    source: &str,
-    path: &[&str],
-) -> Result<Located, String> {
+pub fn locate_path(tree: &Tree, source: &str, path: &[&str]) -> Result<Located, String> {
     let root = tree.root_node();
     // tree-sitter-yaml's root is `stream`, with one or more
     // `document` children. The first document holds the
     // top-level mapping.
     let document = first_named_child_kind(root, "document")
         .ok_or_else(|| "yaml has no document".to_string())?;
-    let top = first_block_node_under(document)
-        .ok_or_else(|| "yaml document is empty".to_string())?;
+    let top =
+        first_block_node_under(document).ok_or_else(|| "yaml document is empty".to_string())?;
 
     walk_path(top, source, path, 0)
 }
@@ -120,7 +118,9 @@ fn walk_path(
     depth: usize,
 ) -> Result<Located, String> {
     if path.is_empty() {
-        return Ok(Located::Found { range: mapping.byte_range() });
+        return Ok(Located::Found {
+            range: mapping.byte_range(),
+        });
     }
 
     // Walk every `block_mapping_pair` (or `flow_pair`) child
@@ -135,10 +135,10 @@ fn walk_path(
             continue;
         }
         let (key_node, value_node) = pair_key_value(pair)
-            .ok_or_else(|| format!(
-                "malformed mapping pair at byte {}", pair.start_byte(),
-            ))?;
-        let key_text = node_text(key_node, source).trim().trim_matches(|c| c == '"' || c == '\'');
+            .ok_or_else(|| format!("malformed mapping pair at byte {}", pair.start_byte(),))?;
+        let key_text = node_text(key_node, source)
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'');
         last_pair_end = Some(pair.end_byte());
         if child_indent.is_none() {
             child_indent = Some(pair.start_position().column);
@@ -176,10 +176,8 @@ fn walk_path(
     // Key not found at this level. Return a Missing with
     // the insertion point at end-of-mapping plus the
     // sibling-key indent so the new key aligns.
-    let insert_at = last_pair_end
-        .unwrap_or_else(|| mapping.end_byte());
-    let indent = child_indent
-        .unwrap_or_else(|| mapping.start_position().column);
+    let insert_at = last_pair_end.unwrap_or_else(|| mapping.end_byte());
+    let indent = child_indent.unwrap_or_else(|| mapping.start_position().column);
     Ok(Located::Missing {
         existing_depth: depth,
         insert_at,
@@ -236,8 +234,10 @@ mod tests {
         match r {
             Located::Found { range } => {
                 let text = &yaml[range];
-                assert!(text.contains("default"),
-                    "should cover scenarios value, got: {text:?}");
+                assert!(
+                    text.contains("default"),
+                    "should cover scenarios value, got: {text:?}"
+                );
             }
             other => panic!("expected Found, got {other:?}"),
         }
@@ -248,15 +248,20 @@ mod tests {
         let yaml = "scenarios:\n  default: [a]\n";
         let r = loc(yaml, &["report"]);
         match r {
-            Located::Missing { existing_depth, insert_at, indent } => {
+            Located::Missing {
+                existing_depth,
+                insert_at,
+                indent,
+            } => {
                 assert_eq!(existing_depth, 0);
-                assert_eq!(indent, 0,
-                    "root-level keys insert at column 0");
+                assert_eq!(indent, 0, "root-level keys insert at column 0");
                 // Insert position should be at end of last
                 // root pair (after `default: [a]\n`-ish).
-                assert!(insert_at >= yaml.len() - 1,
+                assert!(
+                    insert_at >= yaml.len() - 1,
                     "insert_at {insert_at} should be near eof {}",
-                    yaml.len());
+                    yaml.len()
+                );
             }
             other => panic!("expected Missing, got {other:?}"),
         }
@@ -275,8 +280,10 @@ report:
         match r {
             Located::Found { range } => {
                 let text = &yaml[range];
-                assert!(text.contains("plot: r1"),
-                    "expected recall_block body, got: {text:?}");
+                assert!(
+                    text.contains("plot: r1"),
+                    "expected recall_block body, got: {text:?}"
+                );
             }
             other => panic!("expected Found, got {other:?}"),
         }
@@ -291,12 +298,15 @@ report:
 "#;
         let r = loc(yaml, &["report", "cli_added"]);
         match r {
-            Located::Missing { existing_depth, insert_at, indent } => {
+            Located::Missing {
+                existing_depth,
+                insert_at,
+                indent,
+            } => {
                 assert_eq!(existing_depth, 1, "report exists, cli_added doesn't");
                 // Indentation should match the existing
                 // sibling key (`intro:`) — column 2.
-                assert_eq!(indent, 2,
-                    "child keys of `report:` are at column 2");
+                assert_eq!(indent, 2, "child keys of `report:` are at column 2");
                 // insert_at should land after `text: hello\n`-ish.
                 let prefix = &yaml[..insert_at];
                 assert!(prefix.contains("hello"));

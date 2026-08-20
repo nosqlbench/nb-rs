@@ -58,8 +58,8 @@
 
 use std::path::{Path, PathBuf};
 
+use nbrs_metrics::reporters::sqlite::{SqliteReporter, derive_name_and_format};
 use nbrs_runtime::runner::report_config_from_summary;
-use nbrs_metrics::reporters::sqlite::{derive_name_and_format, SqliteReporter};
 use nbrs_workload::model::SummaryConfig;
 
 /// Best-effort lookup of stored summary names from a metrics
@@ -68,9 +68,14 @@ use nbrs_workload::model::SummaryConfig;
 /// this before any user action and shouldn't surface partial
 /// failures.
 pub fn list_stored_summary_names(db_path: &Path) -> Vec<String> {
-    if !db_path.exists() { return Vec::new(); }
-    let Ok(reporter) = SqliteReporter::new(db_path) else { return Vec::new(); };
-    reporter.read_stored_summaries()
+    if !db_path.exists() {
+        return Vec::new();
+    }
+    let Ok(reporter) = SqliteReporter::new(db_path) else {
+        return Vec::new();
+    };
+    reporter
+        .read_stored_summaries()
         .into_iter()
         .map(|(name, _)| name)
         .collect()
@@ -91,10 +96,12 @@ pub fn list_workload_summary_names(workload_path: &Path) -> Vec<String> {
 /// `(name, spec_text)` pairs for every `table` item, in
 /// declaration order (SRD-46).
 fn load_workload_summaries(path: &Path) -> Result<Vec<(String, String)>, String> {
-    let workload = nbrs_workload::parse::parse_workload_from_path(
-        path, &std::collections::HashMap::new(),
-    ).map_err(|e| format!("parse: {e}"))?;
-    let entries: Vec<(String, String)> = workload.report.items()
+    let workload =
+        nbrs_workload::parse::parse_workload_from_path(path, &std::collections::HashMap::new())
+            .map_err(|e| format!("parse: {e}"))?;
+    let entries: Vec<(String, String)> = workload
+        .report
+        .items()
         .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Table))
         .map(|i| (i.name.clone(), i.body.clone()))
         .collect();
@@ -205,7 +212,9 @@ fn render_metricsql_table(
     // SRD-77 — execution selection from the table's `executions:`
     // directive (default per-instance-latest); the DataSource applies
     // it, so no single-`exec_id` injection.
-    let selection = cfg.raw.lines()
+    let selection = cfg
+        .raw
+        .lines()
         .find_map(|l| l.trim().strip_prefix("executions:"))
         .map(|v| crate::plot_metrics::parse_execution_selection(v.trim()))
         .transpose()?
@@ -216,16 +225,20 @@ fn render_metricsql_table(
     // Anchor the instant query at the latest sample in the db
     // with a wide lookback so cadence-skewed gauge writes still
     // resolve. Same anchor logic as `plot_metrics::rows_via_metricsql`.
-    let conn = rusqlite::Connection::open(db_path)
-        .map_err(|e| format!("open db: {e}"))?;
-    let (min_ts, max_ts): (i64, i64) = conn.query_row(
-        "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) \
+    let conn = rusqlite::Connection::open(db_path).map_err(|e| format!("open db: {e}"))?;
+    let (min_ts, max_ts): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) \
          FROM sample_value",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|e| format!("read time bounds: {e}"))?;
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("read time bounds: {e}"))?;
     if max_ts == 0 {
-        return Ok(TableRendering { console: String::new(), markdown: String::new() });
+        return Ok(TableRendering {
+            console: String::new(),
+            markdown: String::new(),
+        });
     }
     let ctx = EvalContext {
         data: &ds,
@@ -254,10 +267,8 @@ fn render_metricsql_table(
     let mut series_seen: usize = 0;
     let n_cols = cfg.metricsql_columns.len();
     for (col_idx, (_col_name, expr)) in cfg.metricsql_columns.iter().enumerate() {
-        let parsed = nbrs_metricsql::parse(expr)
-            .map_err(|e| format!("parse '{expr}': {e}"))?;
-        let series = evaluate(&ctx, &parsed)
-            .map_err(|e| format!("evaluate '{expr}': {e}"))?;
+        let parsed = nbrs_metricsql::parse(expr).map_err(|e| format!("parse '{expr}': {e}"))?;
+        let series = evaluate(&ctx, &parsed).map_err(|e| format!("evaluate '{expr}': {e}"))?;
         for s in series {
             series_seen += 1;
             for (k, _) in &s.labels {
@@ -271,9 +282,11 @@ fn render_metricsql_table(
             let group_val: String = if group_keys.is_empty() {
                 String::new()
             } else {
-                group_keys.iter()
+                group_keys
+                    .iter()
                     .map(|polydat| {
-                        s.labels.iter()
+                        s.labels
+                            .iter()
                             .find(|(k, _)| k == polydat)
                             .map(|(_, v)| v.as_str())
                             .unwrap_or("")
@@ -299,11 +312,15 @@ fn render_metricsql_table(
             // `last_over_time`. A column that wants the plot's mean asks for
             // it; a column that wants the current value says nothing and gets
             // the last sample, which is what an instant query returns anyway.
-            let value = s.samples.iter()
+            let value = s
+                .samples
+                .iter()
                 .rev()
                 .map(|s| s.value)
                 .find(|v| v.is_finite());
-            let row = by_group.entry(group_val).or_insert_with(|| vec![None; n_cols]);
+            let row = by_group
+                .entry(group_val)
+                .or_insert_with(|| vec![None; n_cols]);
             row[col_idx] = value;
         }
     }
@@ -366,20 +383,24 @@ fn render_metricsql_table(
     let state_by_group: std::collections::BTreeMap<String, bool> = match &cfg.state_query {
         None => Default::default(),
         Some(expr) => {
-            let parsed = nbrs_metricsql::parse(expr)
-                .map_err(|e| format!("parse state '{expr}': {e}"))?;
-            let series = evaluate(&ctx, &parsed)
-                .map_err(|e| format!("evaluate state '{expr}': {e}"))?;
+            let parsed =
+                nbrs_metricsql::parse(expr).map_err(|e| format!("parse state '{expr}': {e}"))?;
+            let series =
+                evaluate(&ctx, &parsed).map_err(|e| format!("evaluate state '{expr}': {e}"))?;
             let mut m: std::collections::BTreeMap<String, bool> = Default::default();
             for s in series {
                 let group_val: String = if group_keys.is_empty() {
                     String::new()
                 } else {
-                    group_keys.iter()
-                        .map(|k| s.labels.iter()
-                            .find(|(lk, _)| lk == k)
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or_default())
+                    group_keys
+                        .iter()
+                        .map(|k| {
+                            s.labels
+                                .iter()
+                                .find(|(lk, _)| lk == k)
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or_default()
+                        })
                         .collect::<Vec<_>>()
                         .join("|")
                 };
@@ -400,39 +421,57 @@ fn render_metricsql_table(
     // sees a column of bare nanosecond integers labelled
     // `latency` and has no way to tell whether
     // `338422551` is microseconds, nanoseconds, or seconds.
-    let timestamp_columns: Vec<bool> = cfg.metricsql_columns.iter()
+    let timestamp_columns: Vec<bool> = cfg
+        .metricsql_columns
+        .iter()
         .map(|(_name, expr)| is_timestamp_query(expr))
         .collect();
-    let column_si: Vec<Option<SiScale>> = cfg.metricsql_columns.iter()
+    let column_si: Vec<Option<SiScale>> = cfg
+        .metricsql_columns
+        .iter()
         .enumerate()
         .map(|(idx, (_name, expr))| {
             // Durations and moments have their own scales; percentages are
             // already human-sized and a `K` on a percent column reads as an error.
-            if timestamp_columns[idx] || is_time_domain_query(expr) { return None; }
+            if timestamp_columns[idx] || is_time_domain_query(expr) {
+                return None;
+            }
             // Seconds-domain columns get their own scale below.
-            if is_seconds_domain_query(expr) { return None; }
+            if is_seconds_domain_query(expr) {
+                return None;
+            }
             let name_l = cfg.metricsql_columns[idx].0.to_ascii_lowercase();
             if name_l.contains("pct") || name_l.contains("percent") || name_l.contains("ratio") {
                 return None;
             }
-            let max_abs = by_group.values()
+            let max_abs = by_group
+                .values()
                 .filter_map(|row| row[idx])
                 .filter(|v| v.is_finite())
                 .fold(0.0_f64, |m, v| m.max(v.abs()));
             SiScale::for_max(max_abs)
         })
         .collect();
-    let column_secs: Vec<bool> = cfg.metricsql_columns.iter()
+    let column_secs: Vec<bool> = cfg
+        .metricsql_columns
+        .iter()
         .map(|(_name, expr)| is_seconds_domain_query(expr))
         .collect();
-    let column_units: Vec<Option<TimeUnit>> = cfg.metricsql_columns.iter()
+    let column_units: Vec<Option<TimeUnit>> = cfg
+        .metricsql_columns
+        .iter()
         .enumerate()
         .map(|(idx, (_name, expr))| {
             // A moment is formatted as a clock time, not scaled as a duration.
-            if timestamp_columns[idx] { return None; }
-            if !is_time_domain_query(expr) { return None; }
+            if timestamp_columns[idx] {
+                return None;
+            }
+            if !is_time_domain_query(expr) {
+                return None;
+            }
             // Gather the max-abs cell value across rows.
-            let max_abs = by_group.values()
+            let max_abs = by_group
+                .values()
                 .filter_map(|row| row[idx])
                 .fold(0.0_f64, |m, v| m.max(v.abs()));
             Some(TimeUnit::for_max_nanos(max_abs))
@@ -449,24 +488,35 @@ fn render_metricsql_table(
     by_group.sort_by(|a, b| natural_cmp_pipe_tuple(&a.0, &b.0));
 
     // Render headers including unit annotations.
-    let column_headers: Vec<String> = cfg.metricsql_columns.iter()
+    let column_headers: Vec<String> = cfg
+        .metricsql_columns
+        .iter()
         .zip(column_units.iter())
         .enumerate()
         .map(|(idx, ((name, _expr), unit))| {
-            if timestamp_columns[idx] { return format!("{name} (UTC)"); }
+            if timestamp_columns[idx] {
+                return format!("{name} (UTC)");
+            }
             match unit {
                 Some(u) => format!("{name} ({})", u.symbol),
-                None    => match (column_secs[idx], column_si[idx]) {
-                    (true, _)        => format!("{name} (h:m:s)"),
+                None => match (column_secs[idx], column_si[idx]) {
+                    (true, _) => format!("{name} (h:m:s)"),
                     (false, Some(si)) => format!("{name} ({})", si.symbol),
-                    (false, None)     => name.clone(),
+                    (false, None) => name.clone(),
                 },
             }
         })
         .collect();
 
     // Render a single cell against the chosen column unit.
-    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, si: Option<SiScale>, secs: bool, is_timestamp: bool, sep: &str) -> String {
+    fn render_cell(
+        value: Option<f64>,
+        unit: Option<&TimeUnit>,
+        si: Option<SiScale>,
+        secs: bool,
+        is_timestamp: bool,
+        sep: &str,
+    ) -> String {
         let _ = sep;
         if is_timestamp {
             return match value {
@@ -475,12 +525,12 @@ fn render_metricsql_table(
             };
         }
         match (value, unit) {
-            (None, _)            => "-".to_string(),
-            (Some(v), Some(u))   => format_sig(v / u.divisor),
-            (Some(v), None)      => match (secs, si) {
-                (true, _)         => format_hms(v),
+            (None, _) => "-".to_string(),
+            (Some(v), Some(u)) => format_sig(v / u.divisor),
+            (Some(v), None) => match (secs, si) {
+                (true, _) => format_hms(v),
                 (false, Some(si)) => format_sig(v / si.divisor),
-                (false, None)     => format_sig(v),
+                (false, None) => format_sig(v),
             },
         }
     }
@@ -500,47 +550,71 @@ fn render_metricsql_table(
         let mut out = String::new();
         let mut header: Vec<&str> = group_keys.iter().map(String::as_str).collect();
         let header_strs: Vec<&str> = column_headers.iter().map(String::as_str).collect();
-        for h in &header_strs { header.push(*h); }
+        for h in &header_strs {
+            header.push(*h);
+        }
         out.push_str(&header.join(","));
         out.push('\n');
         for (group_val, cells) in &by_group {
             let mut row: Vec<String> = split_group(group_val);
             for (idx, (cell, unit)) in cells.iter().zip(column_units.iter()).enumerate() {
-                row.push(render_cell(*cell, unit.as_ref(), column_si[idx], column_secs[idx], timestamp_columns[idx], ","));
+                row.push(render_cell(
+                    *cell,
+                    unit.as_ref(),
+                    column_si[idx],
+                    column_secs[idx],
+                    timestamp_columns[idx],
+                    ",",
+                ));
             }
             out.push_str(&row.join(","));
             out.push('\n');
         }
         // CSV is not markdown — the same text serves both destinations.
-        return Ok(TableRendering { console: out.clone(), markdown: out });
+        return Ok(TableRendering {
+            console: out.clone(),
+            markdown: out,
+        });
     }
 
     // Markdown. Label columns left-aligned, value columns right-aligned; the
     // shared renderer pads every cell so the `|` grid lines up in the raw file.
     let has_state = cfg.state_query.is_some();
-    let header: Vec<String> = group_keys.iter().cloned()
+    let header: Vec<String> = group_keys
+        .iter()
+        .cloned()
         .chain(has_state.then(|| "state".to_string()))
         .chain(column_headers.iter().cloned())
         .collect();
     // The state word is a label, so it left-aligns with the group keys rather
     // than right-aligning with the numbers.
     let label_cols = group_keys.len() + usize::from(has_state);
-    let rows: Vec<Vec<String>> = by_group.iter()
-        .map(|(group_val, cells)| {
-            let mut row = split_group(group_val);
-            if has_state {
-                row.push(match state_by_group.get(group_val) {
-                    Some(true) => "complete".to_string(),
-                    _ => "active".to_string(),
-                });
-            }
-            row.extend(cells.iter()
-                .zip(column_units.iter())
-                .enumerate()
-                .map(|(idx, (c, u))| render_cell(*c, u.as_ref(), column_si[idx], column_secs[idx], timestamp_columns[idx], " | ")));
-            row
-        })
-        .collect();
+    let rows: Vec<Vec<String>> =
+        by_group
+            .iter()
+            .map(|(group_val, cells)| {
+                let mut row = split_group(group_val);
+                if has_state {
+                    row.push(match state_by_group.get(group_val) {
+                        Some(true) => "complete".to_string(),
+                        _ => "active".to_string(),
+                    });
+                }
+                row.extend(cells.iter().zip(column_units.iter()).enumerate().map(
+                    |(idx, (c, u))| {
+                        render_cell(
+                            *c,
+                            u.as_ref(),
+                            column_si[idx],
+                            column_secs[idx],
+                            timestamp_columns[idx],
+                            " | ",
+                        )
+                    },
+                ));
+                row
+            })
+            .collect();
     // Two renderings of the same table from one query pass: the console form
     // stacks heading words on their own lines (narrow, aligned as plain text),
     // and the markdown form is a valid GFM table whose headings wrap via `<br>`.
@@ -622,7 +696,12 @@ fn format_hms(total_seconds: f64) -> String {
         return "-".to_string();
     }
     let secs = total_seconds.round() as u64;
-    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
 }
 
 /// Whether a column's value is a DURATION in seconds: a moment arithmetic'd
@@ -653,8 +732,14 @@ fn is_seconds_domain_query(expr: &str) -> bool {
         }
     }
 
-    const MOMENT_FNS: &[&str] = &["tfirst_over_time", "tlast_over_time", "tlast_change_over_time"];
-    if !MOMENT_FNS.iter().any(|f| lower.contains(f)) { return false; }
+    const MOMENT_FNS: &[&str] = &[
+        "tfirst_over_time",
+        "tlast_over_time",
+        "tlast_change_over_time",
+    ];
+    if !MOMENT_FNS.iter().any(|f| lower.contains(f)) {
+        return false;
+    }
     // Seconds come from SUBTRACTING one moment from another. A rate that merely
     // DIVIDES by such a difference is not itself a duration — it carries the
     // units of its numerator, and labelling one "(h)" because the elapsed time
@@ -689,21 +774,57 @@ impl SiScale {
     fn for_max(max_abs: f64) -> Option<Self> {
         // Below a thousand there is nothing to gain: the number is already
         // readable and a suffix would only add a decimal point.
-        if !max_abs.is_finite()      { None }
-        else if max_abs >= 1e12 { Some(Self { symbol: "T", divisor: 1e12 }) }
-        else if max_abs >= 1e9  { Some(Self { symbol: "G", divisor: 1e9  }) }
-        else if max_abs >= 1e6  { Some(Self { symbol: "M", divisor: 1e6  }) }
-        else if max_abs >= 1e3  { Some(Self { symbol: "K", divisor: 1e3  }) }
-        else { None }
+        if !max_abs.is_finite() {
+            None
+        } else if max_abs >= 1e12 {
+            Some(Self {
+                symbol: "T",
+                divisor: 1e12,
+            })
+        } else if max_abs >= 1e9 {
+            Some(Self {
+                symbol: "G",
+                divisor: 1e9,
+            })
+        } else if max_abs >= 1e6 {
+            Some(Self {
+                symbol: "M",
+                divisor: 1e6,
+            })
+        } else if max_abs >= 1e3 {
+            Some(Self {
+                symbol: "K",
+                divisor: 1e3,
+            })
+        } else {
+            None
+        }
     }
 }
 
 impl TimeUnit {
     fn for_max_nanos(max_abs: f64) -> Self {
-        if max_abs >= 1e9       { Self { symbol: "s",  divisor: 1e9 } }
-        else if max_abs >= 1e6  { Self { symbol: "ms", divisor: 1e6 } }
-        else if max_abs >= 1e3  { Self { symbol: "µs", divisor: 1e3 } }
-        else                    { Self { symbol: "ns", divisor: 1.0 } }
+        if max_abs >= 1e9 {
+            Self {
+                symbol: "s",
+                divisor: 1e9,
+            }
+        } else if max_abs >= 1e6 {
+            Self {
+                symbol: "ms",
+                divisor: 1e6,
+            }
+        } else if max_abs >= 1e3 {
+            Self {
+                symbol: "µs",
+                divisor: 1e3,
+            }
+        } else {
+            Self {
+                symbol: "ns",
+                divisor: 1.0,
+            }
+        }
     }
 }
 
@@ -730,7 +851,11 @@ fn is_timestamp_query(expr: &str) -> bool {
     // Every MetricsQL `t*_over_time` returns a moment, so match the family rather
     // than listing members: `tlast_change_over_time` is not a substring of
     // `tlast_over_time` and was silently rendering as a raw epoch float.
-    const MOMENT_FNS: &[&str] = &["tfirst_over_time", "tlast_over_time", "tlast_change_over_time"];
+    const MOMENT_FNS: &[&str] = &[
+        "tfirst_over_time",
+        "tlast_over_time",
+        "tlast_change_over_time",
+    ];
     if !MOMENT_FNS.iter().any(|f| lower.contains(f)) {
         return false;
     }
@@ -753,15 +878,24 @@ fn is_timestamp_query(expr: &str) -> bool {
 fn is_time_domain_query(expr: &str) -> bool {
     let lower = expr.to_ascii_lowercase();
     const NAME_HINTS: &[&str] = &[
-        "latency", "servicetime", "service_time",
-        "duration", "elapsed", "responsetime", "response_time",
+        "latency",
+        "servicetime",
+        "service_time",
+        "duration",
+        "elapsed",
+        "responsetime",
+        "response_time",
     ];
-    if NAME_HINTS.iter().any(|h| lower.contains(h)) { return true; }
+    if NAME_HINTS.iter().any(|h| lower.contains(h)) {
+        return true;
+    }
     // Suffix conventions. Look at every metric-shaped
     // token (alphanumeric + underscores) for the suffix.
     for tok in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
         for suffix in ["_ns", "_seconds", "_ms", "_us"] {
-            if tok.ends_with(suffix) { return true; }
+            if tok.ends_with(suffix) {
+                return true;
+            }
         }
     }
     false
@@ -774,19 +908,26 @@ mod time_unit_tests {
     #[test]
     fn time_unit_for_max_nanos_picks_natural_scale() {
         assert_eq!(TimeUnit::for_max_nanos(2_500_000_000.0).symbol, "s");
-        assert_eq!(TimeUnit::for_max_nanos(338_422_551.0).symbol,    "ms");
-        assert_eq!(TimeUnit::for_max_nanos(951_290.0).symbol,        "µs");
-        assert_eq!(TimeUnit::for_max_nanos(750.0).symbol,            "ns");
-        assert_eq!(TimeUnit::for_max_nanos(0.0).symbol,              "ns");
+        assert_eq!(TimeUnit::for_max_nanos(338_422_551.0).symbol, "ms");
+        assert_eq!(TimeUnit::for_max_nanos(951_290.0).symbol, "µs");
+        assert_eq!(TimeUnit::for_max_nanos(750.0).symbol, "ns");
+        assert_eq!(TimeUnit::for_max_nanos(0.0).symbol, "ns");
     }
 
     #[test]
     fn is_time_domain_query_recognises_the_canonical_names() {
-        assert!(is_time_domain_query("avg(cycles_servicetime_mean) by (profile)"));
+        assert!(is_time_domain_query(
+            "avg(cycles_servicetime_mean) by (profile)"
+        ));
         assert!(is_time_domain_query("avg(latency_p99) by (profile)"));
         assert!(is_time_domain_query("avg(some_metric_ns)"));
-        assert!(is_time_domain_query("rate(http_request_duration_seconds[5m])"));
-        assert!(is_time_domain_query("AVG(LATENCY_MEAN)"), "case-insensitive");
+        assert!(is_time_domain_query(
+            "rate(http_request_duration_seconds[5m])"
+        ));
+        assert!(
+            is_time_domain_query("AVG(LATENCY_MEAN)"),
+            "case-insensitive"
+        );
     }
 
     #[test]
@@ -804,8 +945,10 @@ pub fn summary_command(args: &[String]) {
     // path is used as-is. With multiple dbs the merge step runs
     // first, producing a temp file whose merged rows feed
     // SqliteReporter as if from one logical session.
-    let primary_db = opts.db.clone().unwrap_or_else(
-        nbrs_runtime::session::latest_metrics_db);
+    let primary_db = opts
+        .db
+        .clone()
+        .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     let effective_dbs: Vec<PathBuf> = if opts.dbs.is_empty() {
         vec![primary_db.clone()]
     } else {
@@ -824,8 +967,7 @@ pub fn summary_command(args: &[String]) {
     let db_path: PathBuf = if effective_dbs.len() > 1 {
         match crate::db_merge::merge_dbs(&effective_dbs) {
             Ok(path) => {
-                eprintln!("merge: {} dbs → {}",
-                    effective_dbs.len(), path.display());
+                eprintln!("merge: {} dbs → {}", effective_dbs.len(), path.display());
                 path
             }
             Err(e) => {
@@ -843,8 +985,7 @@ pub fn summary_command(args: &[String]) {
     let mut reporter = match SqliteReporter::new(&db_path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("nbrs summary: failed to open '{}': {e}",
-                db_path.display());
+            eprintln!("nbrs summary: failed to open '{}': {e}", db_path.display());
             std::process::exit(1);
         }
     };
@@ -876,115 +1017,122 @@ pub fn summary_command(args: &[String]) {
         },
         None => reporter.read_stored_summaries(),
     };
-    let to_render: Vec<(String, SummaryConfig)> = match (
-        opts.name.as_deref(),
-        opts.create,
-        opts.spec.as_deref(),
-    ) {
-        // Case 6a: --create without --name has no place to
-        // store the spec. Reject early with a clear message.
-        (None, true, _) => {
-            eprintln!("nbrs summary: --create requires --name <NAME>");
-            std::process::exit(1);
-        }
-        // Case 4b: --name + positional spec without --create
-        // = render the ad-hoc spec under that name. The name
-        // drives the standalone output filename
-        // (`<name>_summary.md`) and the markdown report's
-        // section identifier so concurrent ad-hoc renders
-        // (e.g. SRD-46 companion tables, one per plot) get
-        // distinct sections instead of stomping on a single
-        // shared `default` slot. Add `--create` only when
-        // you want the spec persisted to the db for replay.
-        (Some(name), false, Some(spec_text)) => {
-            literal_spec(spec_text, Some(name))
-        }
-        // Case 5: persist + render.
-        (Some(name), true, Some(spec_text)) => {
-            let cfg = SummaryConfig::parse(spec_text);
-            reporter.set_metadata(&format!("summary.{name}"), &cfg.raw);
-            eprintln!("created: summary.{name} → {} (in {})",
-                cfg.raw.lines().next().unwrap_or("").trim(),
-                db_path.display());
-            vec![(name.to_string(), cfg)]
-        }
-        // Case 6c: --create --name N but no spec — nothing to
-        // persist.
-        (Some(_), true, None) => {
-            eprintln!("nbrs summary: --create --name <NAME> needs a positional spec");
-            std::process::exit(1);
-        }
-        // Case 3: render stored by name.
-        (Some(name), false, None) => {
-            let Some((found, raw)) = stored.iter().find(|(n, _)| n == name) else {
-                eprintln!("nbrs summary: no stored summary named '{name}' in '{}'",
-                    db_path.display());
-                if !stored.is_empty() {
-                    eprintln!();
-                    eprintln!("Available:");
-                    for (n, _) in &stored { eprintln!("  {n}"); }
-                }
+    let to_render: Vec<(String, SummaryConfig)> =
+        match (opts.name.as_deref(), opts.create, opts.spec.as_deref()) {
+            // Case 6a: --create without --name has no place to
+            // store the spec. Reject early with a clear message.
+            (None, true, _) => {
+                eprintln!("nbrs summary: --create requires --name <NAME>");
                 std::process::exit(1);
-            };
-            return_stored_or_literal(found, raw)
-        }
-        // Case 2: render every stored.
-        (None, false, Some("all")) => {
-            if stored.is_empty() {
-                eprintln!("nbrs summary: '{}' has no stored named \
+            }
+            // Case 4b: --name + positional spec without --create
+            // = render the ad-hoc spec under that name. The name
+            // drives the standalone output filename
+            // (`<name>_summary.md`) and the markdown report's
+            // section identifier so concurrent ad-hoc renders
+            // (e.g. SRD-46 companion tables, one per plot) get
+            // distinct sections instead of stomping on a single
+            // shared `default` slot. Add `--create` only when
+            // you want the spec persisted to the db for replay.
+            (Some(name), false, Some(spec_text)) => literal_spec(spec_text, Some(name)),
+            // Case 5: persist + render.
+            (Some(name), true, Some(spec_text)) => {
+                let cfg = SummaryConfig::parse(spec_text);
+                reporter.set_metadata(&format!("summary.{name}"), &cfg.raw);
+                eprintln!(
+                    "created: summary.{name} → {} (in {})",
+                    cfg.raw.lines().next().unwrap_or("").trim(),
+                    db_path.display()
+                );
+                vec![(name.to_string(), cfg)]
+            }
+            // Case 6c: --create --name N but no spec — nothing to
+            // persist.
+            (Some(_), true, None) => {
+                eprintln!("nbrs summary: --create --name <NAME> needs a positional spec");
+                std::process::exit(1);
+            }
+            // Case 3: render stored by name.
+            (Some(name), false, None) => {
+                let Some((found, raw)) = stored.iter().find(|(n, _)| n == name) else {
+                    eprintln!(
+                        "nbrs summary: no stored summary named '{name}' in '{}'",
+                        db_path.display()
+                    );
+                    if !stored.is_empty() {
+                        eprintln!();
+                        eprintln!("Available:");
+                        for (n, _) in &stored {
+                            eprintln!("  {n}");
+                        }
+                    }
+                    std::process::exit(1);
+                };
+                return_stored_or_literal(found, raw)
+            }
+            // Case 2: render every stored.
+            (None, false, Some("all")) => {
+                if stored.is_empty() {
+                    eprintln!(
+                        "nbrs summary: '{}' has no stored named \
                            summaries to render. Use `nbrs summary '*'` \
                            for an ad-hoc all-metrics report, or \
                            `--name <N> --create <spec>` to persist \
                            one first.",
-                    db_path.display());
+                        db_path.display()
+                    );
+                    std::process::exit(1);
+                }
+                stored
+                    .into_iter()
+                    .map(|(name, raw)| (name, SummaryConfig::parse(&raw)))
+                    .collect()
+            }
+            // Case 4: ad-hoc literal spec (no `--name`, no
+            // `--create`). Includes the `*` wildcard, which is just
+            // a literal spec the DSL knows how to parse.
+            (None, false, Some(spec_text)) => literal_spec(spec_text, None),
+            // Case 1: bare. List stored, or hint at literal-spec
+            // mode if nothing is persisted yet.
+            (None, false, None) => {
+                if stored.is_empty() {
+                    eprintln!(
+                        "nbrs summary: '{}' has no stored named \
+                           summaries.",
+                        db_path.display()
+                    );
+                    eprintln!();
+                    eprintln!("Pass a literal spec to render an ad-hoc report:");
+                    eprintln!("  nbrs summary '*'                  # all metrics");
+                    eprintln!("  nbrs summary 'recall; mean(...)'  # custom DSL");
+                    eprintln!();
+                    eprintln!("Use `--name <N> --create <spec>` to persist a");
+                    eprintln!("spec into the db so future runs can replay it.");
+                } else {
+                    eprintln!(
+                        "nbrs summary: '{}' has stored named summaries —",
+                        db_path.display()
+                    );
+                    eprintln!("pick one with --name, or use `summary all` for every.");
+                    eprintln!();
+                    eprintln!("Available:");
+                    for (name, raw) in &stored {
+                        let preview = raw.lines().next().unwrap_or("").trim();
+                        let preview = if preview.len() > 60 {
+                            format!("{}…", &preview[..60])
+                        } else {
+                            preview.to_string()
+                        };
+                        eprintln!("  {name:<24}  {preview}");
+                    }
+                    eprintln!();
+                    eprintln!("Examples:");
+                    eprintln!("  nbrs summary all                       # render every stored");
+                    eprintln!("  nbrs summary --name {}", stored[0].0);
+                }
                 std::process::exit(1);
             }
-            stored.into_iter()
-                .map(|(name, raw)| (name, SummaryConfig::parse(&raw)))
-                .collect()
-        }
-        // Case 4: ad-hoc literal spec (no `--name`, no
-        // `--create`). Includes the `*` wildcard, which is just
-        // a literal spec the DSL knows how to parse.
-        (None, false, Some(spec_text)) => {
-            literal_spec(spec_text, None)
-        }
-        // Case 1: bare. List stored, or hint at literal-spec
-        // mode if nothing is persisted yet.
-        (None, false, None) => {
-            if stored.is_empty() {
-                eprintln!("nbrs summary: '{}' has no stored named \
-                           summaries.", db_path.display());
-                eprintln!();
-                eprintln!("Pass a literal spec to render an ad-hoc report:");
-                eprintln!("  nbrs summary '*'                  # all metrics");
-                eprintln!("  nbrs summary 'recall; mean(...)'  # custom DSL");
-                eprintln!();
-                eprintln!("Use `--name <N> --create <spec>` to persist a");
-                eprintln!("spec into the db so future runs can replay it.");
-            } else {
-                eprintln!("nbrs summary: '{}' has stored named summaries —",
-                    db_path.display());
-                eprintln!("pick one with --name, or use `summary all` for every.");
-                eprintln!();
-                eprintln!("Available:");
-                for (name, raw) in &stored {
-                    let preview = raw.lines().next().unwrap_or("").trim();
-                    let preview = if preview.len() > 60 {
-                        format!("{}…", &preview[..60])
-                    } else {
-                        preview.to_string()
-                    };
-                    eprintln!("  {name:<24}  {preview}");
-                }
-                eprintln!();
-                eprintln!("Examples:");
-                eprintln!("  nbrs summary all                       # render every stored");
-                eprintln!("  nbrs summary --name {}", stored[0].0);
-            }
-            std::process::exit(1);
-        }
-    };
+        };
 
     // When a single ad-hoc report is requested AND the user
     // gave `--output`, that path applies to the one report
@@ -993,9 +1141,11 @@ pub fn summary_command(args: &[String]) {
     // ignored with a warning.
     let multiple = to_render.len() > 1;
     if multiple && opts.output.is_some() {
-        eprintln!("warning: --output is ignored when multiple summaries \
+        eprintln!(
+            "warning: --output is ignored when multiple summaries \
                    are rendered; falling back to per-name filenames in \
-                   the db's session directory.");
+                   the db's session directory."
+        );
     }
 
     let cli_format = opts.format.clone();
@@ -1024,20 +1174,27 @@ pub fn summary_command(args: &[String]) {
             // max(exec_id) recorded in that db's executions
             // table. Emit the multi-exec banner so the
             // operator sees which execution they're seeing.
-            let session_dir = db_path.parent()
+            let session_dir = db_path
+                .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
             nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
-            let exec_id_filter = nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
-                .specific_id();
+            let exec_id_filter =
+                nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir).specific_id();
             let report_cfg = report_config_from_summary(cfg, exec_id_filter);
             // The legacy SQL renderer has one form, used for both destinations.
             let legacy = reporter.format_summary_with_format(&report_cfg, &format);
-            TableRendering { console: legacy.clone(), markdown: legacy }
+            TableRendering {
+                console: legacy.clone(),
+                markdown: legacy,
+            }
         };
         if rendered.console.is_empty() {
-            eprintln!("nbrs summary: '{name}' produced no rows \
-                       (db='{}').", db_path.display());
+            eprintln!(
+                "nbrs summary: '{name}' produced no rows \
+                       (db='{}').",
+                db_path.display()
+            );
             continue;
         }
         any_nonempty = true;
@@ -1047,17 +1204,23 @@ pub fn summary_command(args: &[String]) {
             default_output_path(&basename, &format, &output_anchor)
         };
         if let Some(parent) = output_path.parent()
-            && !parent.as_os_str().is_empty() && !parent.exists()
-                && let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!("nbrs summary: failed to create output dir '{}': {e}",
-                        parent.display());
-                    std::process::exit(1);
-                }
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "nbrs summary: failed to create output dir '{}': {e}",
+                parent.display()
+            );
+            std::process::exit(1);
+        }
         // The artifact gets the GFM form — one header row, `<br>`-wrapped
         // headings — so it stays a real table when rendered. No fence needed.
         if let Err(e) = std::fs::write(&output_path, &rendered.markdown) {
-            eprintln!("nbrs summary: failed to write '{}': {e}",
-                output_path.display());
+            eprintln!(
+                "nbrs summary: failed to write '{}': {e}",
+                output_path.display()
+            );
             std::process::exit(1);
         }
         eprintln!("summary: {}", output_path.display());
@@ -1068,7 +1231,8 @@ pub fn summary_command(args: &[String]) {
         // since rendering them inline would be unreadable.
         if !opts.report_disabled {
             let report_path = opts.report.clone().unwrap_or_else(|| {
-                let dir = output_anchor.parent()
+                let dir = output_anchor
+                    .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."));
                 dir.join("summary.md")
@@ -1080,29 +1244,37 @@ pub fn summary_command(args: &[String]) {
                     // Embedded in a markdown document, so the GFM form.
                     rendered.markdown.clone()
                 } else {
-                    let leaf = output_path.file_name()
+                    let leaf = output_path
+                        .file_name()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| output_path.to_string_lossy().into_owned());
                     format!("[{leaf}]({leaf})\n")
                 };
-                let label = opts.label.clone()
+                let label = opts
+                    .label
+                    .clone()
                     .unwrap_or_else(|| crate::report::prettify_name(&basename));
                 let heading_display = match opts.figure_num {
                     Some(n) => format!("{n}. {label} (table)"),
                     None => format!("{label} (table)"),
                 };
-                let mode = opts.report_mode
-                    .unwrap_or(crate::report::WriteMode::Update);
+                let mode = opts.report_mode.unwrap_or(crate::report::WriteMode::Update);
                 match crate::report::write_named_section(
-                    &report_path, &basename, &heading_display, &body, mode,
+                    &report_path,
+                    &basename,
+                    &heading_display,
+                    &body,
+                    mode,
                 ) {
                     Ok(true) => {}
                     Ok(false) => eprintln!(
                         "report: {} (skipped — section exists, --add-to-markdown mode)",
-                        report_path.display()),
+                        report_path.display()
+                    ),
                     Err(e) => eprintln!(
                         "warning: failed to update report '{}': {e}",
-                        report_path.display()),
+                        report_path.display()
+                    ),
                 }
             }
         }
@@ -1123,25 +1295,22 @@ pub fn summary_command(args: &[String]) {
 /// Default output path for a single summary: live in the db's
 /// session directory, named `<basename>_summary.<format>`.
 fn default_output_path(basename: &str, format: &str, db_path: &Path) -> PathBuf {
-    let dir = db_path.parent()
+    let dir = db_path
+        .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     dir.join(format!("{basename}_summary.{format}"))
 }
 
 /// Wrap a stored hit into the `to_render` shape.
-fn return_stored_or_literal(name: &str, raw: &str)
-    -> Vec<(String, SummaryConfig)>
-{
+fn return_stored_or_literal(name: &str, raw: &str) -> Vec<(String, SummaryConfig)> {
     vec![(name.to_string(), SummaryConfig::parse(raw))]
 }
 
 /// Wrap an ad-hoc literal spec into the `to_render` shape, using
 /// `override_name` if supplied (currently unused — the new CLI
 /// reserves names for stored entries) else `"default"`.
-fn literal_spec(spec: &str, override_name: Option<&str>)
-    -> Vec<(String, SummaryConfig)>
-{
+fn literal_spec(spec: &str, override_name: Option<&str>) -> Vec<(String, SummaryConfig)> {
     let name = override_name.unwrap_or("default").to_string();
     vec![(name, SummaryConfig::parse(spec))]
 }
@@ -1168,7 +1337,8 @@ fn resolve_output_path(
             }
         }
         None => {
-            let dir = db_path.parent()
+            let dir = db_path
+                .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
             dir.join(format!("summary.{format}"))
@@ -1247,10 +1417,14 @@ struct SummaryOpts {
 /// reported success. A key=value token is never a spec: a spec body starts with
 /// a directive keyword, and `key=value` with no space is the param shape.
 fn is_kv_param_token(tok: &str) -> bool {
-    let Some((key, _)) = tok.split_once('=') else { return false };
+    let Some((key, _)) = tok.split_once('=') else {
+        return false;
+    };
     !key.is_empty()
         && !key.contains(char::is_whitespace)
-        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 fn parse_args(args: &[String]) -> SummaryOpts {
@@ -1297,7 +1471,8 @@ fn parse_args(args: &[String]) -> SummaryOpts {
             }
             "--figure-num" => {
                 if let Some(v) = iter.next()
-                    && let Ok(n) = v.parse::<usize>() {
+                    && let Ok(n) = v.parse::<usize>()
+                {
                     opts.figure_num = Some(n);
                 }
             }
@@ -1326,11 +1501,17 @@ fn parse_args(args: &[String]) -> SummaryOpts {
             // `read_session_dir` above. Swallow the value so
             // it doesn't drift into `opts.spec` as a stray
             // positional.
-            "--session" | "--session-name" | "--session-path"
-            | "--session-reuse" | "--session-keep" | "--session-shelflife"
-            | "--resume" | "--polydat-lib" => { let _ = iter.next(); }
-            "--strict" | "--no-prompt" | "--resume-latest"
-            | "--force-retry-failed" => {}
+            "--session"
+            | "--session-name"
+            | "--session-path"
+            | "--session-reuse"
+            | "--session-keep"
+            | "--session-shelflife"
+            | "--resume"
+            | "--polydat-lib" => {
+                let _ = iter.next();
+            }
+            "--strict" | "--no-prompt" | "--resume-latest" | "--force-retry-failed" => {}
             other => {
                 if let Some(v) = other.strip_prefix("--db=") {
                     for path in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -1346,11 +1527,13 @@ fn parse_args(args: &[String]) -> SummaryOpts {
                 } else if let Some(v) = other.strip_prefix("--name=") {
                     opts.name = Some(v.to_string());
                 } else if let Some(v) = other.strip_prefix("workload=") {
-                    let resolved = crate::cli::resolve_workload_path(v)
-                        .unwrap_or_else(|| v.to_string());
+                    let resolved =
+                        crate::cli::resolve_workload_path(v).unwrap_or_else(|| v.to_string());
                     opts.workload = Some(PathBuf::from(resolved));
-                } else if let Some(v) = other.strip_prefix("--report=")
-                    .or_else(|| other.strip_prefix("--update-markdown=")) {
+                } else if let Some(v) = other
+                    .strip_prefix("--report=")
+                    .or_else(|| other.strip_prefix("--update-markdown="))
+                {
                     if v == "skip" || v.is_empty() {
                         opts.report_disabled = true;
                     } else {
@@ -1380,18 +1563,26 @@ fn parse_args(args: &[String]) -> SummaryOpts {
 mod tests {
     use super::*;
 
-    fn s(v: &str) -> String { v.to_string() }
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
 
     #[test]
     fn bare_yields_no_spec() {
         let opts = parse_args(&[]);
-        assert!(opts.spec.is_none(), "bare `summary` should leave spec as None (lists stored)");
+        assert!(
+            opts.spec.is_none(),
+            "bare `summary` should leave spec as None (lists stored)"
+        );
     }
 
     #[test]
     fn first_positional_becomes_spec() {
         let opts = parse_args(&[s("recall; mean(recall) over profile~label")]);
-        assert_eq!(opts.spec.as_deref(), Some("recall; mean(recall) over profile~label"));
+        assert_eq!(
+            opts.spec.as_deref(),
+            Some("recall; mean(recall) over profile~label")
+        );
     }
 
     /// One magnitude per column, chosen from that column's largest value, so rows
@@ -1426,13 +1617,17 @@ mod tests {
 
         // A difference of two moments IS a duration.
         assert!(is_seconds_domain_query(
-            "max(tlast_over_time(x[7d])) - on() group_right() min(tfirst_over_time(y[7d])) by (p)"));
+            "max(tlast_over_time(x[7d])) - on() group_right() min(tfirst_over_time(y[7d])) by (p)"
+        ));
         // A rate that divides BY that difference is not: it keeps its numerator's
         // units, and calling it "(h)" turned bytes-per-ms into hours.
         assert!(!is_seconds_domain_query(
-            "max(bytes) by (p) / (1000 * (max(tlast_over_time(x[7d])) - on() group_right() min(tfirst_over_time(y[7d])) by (p)))"));
+            "max(bytes) by (p) / (1000 * (max(tlast_over_time(x[7d])) - on() group_right() min(tfirst_over_time(y[7d])) by (p)))"
+        ));
         // A bare moment is neither — it is an instant, handled as a timestamp.
-        assert!(!is_seconds_domain_query("min(tfirst_over_time(x[7d])) by (p)"));
+        assert!(!is_seconds_domain_query(
+            "min(tfirst_over_time(x[7d])) by (p)"
+        ));
         assert!(is_timestamp_query("min(tfirst_over_time(x[7d])) by (p)"));
     }
 
@@ -1445,8 +1640,11 @@ mod tests {
         // did exactly that.
         for tok in ["session=/tmp/s", "phases=load", "cycles=1..10", "tries=3"] {
             let opts = parse_args(&[s(tok)]);
-            assert!(opts.spec.is_none(),
-                "`{tok}` is a param, not a spec (got {:?})", opts.spec);
+            assert!(
+                opts.spec.is_none(),
+                "`{tok}` is a param, not a spec (got {:?})",
+                opts.spec
+            );
         }
     }
 
@@ -1464,7 +1662,10 @@ mod tests {
     #[test]
     fn flags_do_not_become_spec() {
         let opts = parse_args(&[s("--db"), s("/tmp/m.db")]);
-        assert!(opts.spec.is_none(), "flags must not be parsed as the spec positional");
+        assert!(
+            opts.spec.is_none(),
+            "flags must not be parsed as the spec positional"
+        );
         assert_eq!(opts.db.as_deref(), Some(std::path::Path::new("/tmp/m.db")));
     }
 
@@ -1477,13 +1678,20 @@ mod tests {
     #[test]
     fn output_extension_preserved_when_present() {
         let p = resolve_output_path(Some("/tmp/x.csv"), "md", std::path::Path::new("/tmp/m.db"));
-        assert_eq!(p, PathBuf::from("/tmp/x.csv"), "explicit extension wins over --format default");
+        assert_eq!(
+            p,
+            PathBuf::from("/tmp/x.csv"),
+            "explicit extension wins over --format default"
+        );
     }
 
     #[test]
     fn default_output_lives_alongside_db() {
-        let p = resolve_output_path(None, "md",
-            std::path::Path::new("logs/session_1/metrics.db"));
+        let p = resolve_output_path(
+            None,
+            "md",
+            std::path::Path::new("logs/session_1/metrics.db"),
+        );
         assert_eq!(p, PathBuf::from("logs/session_1/summary.md"));
     }
 
@@ -1491,9 +1699,12 @@ mod tests {
     fn all_options_combined() {
         let opts = parse_args(&[
             s("recall"),
-            s("--db"), s("/tmp/m.db"),
-            s("--format"), s("md"),
-            s("--output"), s("/tmp/out"),
+            s("--db"),
+            s("/tmp/m.db"),
+            s("--format"),
+            s("md"),
+            s("--output"),
+            s("/tmp/out"),
         ]);
         assert_eq!(opts.spec.as_deref(), Some("recall"));
         assert_eq!(opts.db.as_deref(), Some(std::path::Path::new("/tmp/m.db")));
@@ -1512,7 +1723,8 @@ mod tests {
     #[test]
     fn name_with_create_and_spec() {
         let opts = parse_args(&[
-            s("--name"), s("recall_v1"),
+            s("--name"),
+            s("recall_v1"),
             s("--create"),
             s("recall; mean(recall)"),
         ]);
@@ -1539,13 +1751,16 @@ mod natural_sort_tests {
             "Partition(1/36 [100000..200000))",
         ];
         keys.sort_by(|a, b| natural_cmp_one(a, b));
-        assert_eq!(keys, vec![
-            "Partition(0/36 [0..100000))",
-            "Partition(1/36 [100000..200000))",
-            "Partition(2/36 [200000..300000))",
-            "Partition(10/36 [1000000..2000000))",
-            "Partition(20/36 [20000000..30000000))",
-        ]);
+        assert_eq!(
+            keys,
+            vec![
+                "Partition(0/36 [0..100000))",
+                "Partition(1/36 [100000..200000))",
+                "Partition(2/36 [200000..300000))",
+                "Partition(10/36 [1000000..2000000))",
+                "Partition(20/36 [20000000..30000000))",
+            ]
+        );
     }
 
     #[test]
@@ -1588,6 +1803,9 @@ mod natural_sort_tests {
     fn pipe_tuples_compare_segment_by_segment() {
         // Multi-key group_by joins label values with `|`; each segment is natural.
         assert_eq!(natural_cmp_pipe_tuple("a|2", "a|10"), Ordering::Less);
-        assert_eq!(natural_cmp_pipe_tuple("tier2|x", "tier10|a"), Ordering::Less);
+        assert_eq!(
+            natural_cmp_pipe_tuple("tier2|x", "tier10|a"),
+            Ordering::Less
+        );
     }
 }

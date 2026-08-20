@@ -11,12 +11,12 @@
 //! optionally wrapped by Filter / Order) records the
 //! parsed-out structure.
 
-use std::collections::HashMap;
+use nbrs_workload::model::ScenarioNode;
+use nbrs_workload::parse::parse_workload;
 use polydat::iteration::comprehension::Comprehension as Algebra;
 use polydat::iteration::comprehension::source::{LiteralValue, Source};
 use polydat::iteration::comprehension::strategy::ZipMode;
-use nbrs_workload::model::ScenarioNode;
-use nbrs_workload::parse::parse_workload;
+use std::collections::HashMap;
 
 fn first_scenario_node(yaml: &str) -> ScenarioNode {
     let wl = parse_workload(yaml, &HashMap::new())
@@ -85,13 +85,15 @@ phases:
 
 #[test]
 fn string_single_clause_is_single_clause_cartesian() {
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "x in 1,2,3"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -105,13 +107,15 @@ scenarios:
 
 #[test]
 fn string_multi_clause_distinct_vars_is_multi_clause_cartesian() {
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "x in 1,2, y in a,b"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -131,13 +135,15 @@ scenarios:
 fn string_multi_clause_repeated_var_is_union() {
     // Same var name twice in a single string ⇒ Union (each
     // clause is its own sub-space).
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "x in 1, x in 2"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -159,7 +165,8 @@ scenarios:
 
 #[test]
 fn array_single_clause_distinct_vars_is_multi_clause_cartesian() {
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each:
@@ -167,7 +174,8 @@ scenarios:
         - "y in a,b"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -187,7 +195,8 @@ scenarios:
 fn array_single_clause_repeated_var_is_union() {
     // Two array entries each with one clause, same var name ⇒
     // Union of single-var sub-spaces.
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each:
@@ -195,7 +204,8 @@ scenarios:
         - "x in 2"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -213,7 +223,8 @@ scenarios:
 fn array_multi_clause_repeated_vars_is_union() {
     // The motivating union shape: two array entries, each is a
     // multi-dim sub-space; vars repeat across entries.
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each:
@@ -221,7 +232,8 @@ scenarios:
         - "k in 100, limit in 100,200,300"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -248,14 +260,16 @@ scenarios:
 
 #[test]
 fn array_multi_clause_distinct_vars_is_multi_clause_cartesian() {
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each:
         - "x in 1,2, y in a,b, z in p,q"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -275,13 +289,15 @@ scenarios:
 #[test]
 fn for_keyword_alias_maps_to_same_comprehension() {
     // `for: ...` is accepted as a synonym for `for_each: ...`.
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for: "k in 10,100"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -294,14 +310,16 @@ scenarios:
 
 #[test]
 fn where_clause_attaches_to_comprehension() {
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for: "k in 10,100, limit in 10,20,30"
       where: "{{k}} * {{limit}} < 1000"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -313,13 +331,15 @@ scenarios:
 fn for_each_in_paren_call_does_not_split() {
     // Regression guard: commas inside `matching_profiles('a','b')`
     // must not be treated as top-level clause separators.
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "p in matching_profiles('ds', 'pre')"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -342,13 +362,15 @@ fn parallel_iter_string_form_round_trips_through_yaml() {
     // `(a, b) in (e1, e2)` survives the YAML → algebra path
     // as a top-level Zip with two Clause children and
     // Strict mode.
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "(x, y) in (fib(5), pow2(5))"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -367,13 +389,15 @@ scenarios:
 
 #[test]
 fn parallel_iter_zip_truncate_round_trips_through_yaml() {
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "(x, y) in zip_truncate(fib(5), pow2(3))"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
@@ -392,13 +416,15 @@ fn parallel_iter_mixed_with_single_clause_round_trips() {
     // `(x, y) in (...), z in zs` — parallel group is one
     // clause, z is another. Cartesian over both: child 0 is
     // a Zip, child 1 is a Clause.
-    let yaml = format!(r#"
+    let yaml = format!(
+        r#"
 scenarios:
   s:
     - for_each: "(x, y) in (fib(4), pow2(4)), z in 1..3"
       phases: [p]
 {PHASES}
-"#);
+"#
+    );
     let node = first_scenario_node(&yaml);
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");

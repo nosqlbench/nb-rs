@@ -2,7 +2,8 @@
 #![deny(missing_docs)]
 #![allow(unknown_lints)]
 #![allow(clippy::doc_markdown)]
-#![allow(dead_code)] // TODO: remove
+#![allow(dead_code)]
+// TODO: remove
 // `error_chain!` (v0.12, unmaintained) emits its own internal
 // `cfg(has_error_description_deprecated)` check that newer rustc
 // flags as `unexpected_cfgs`. The cfg is the crate's build-script

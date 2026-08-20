@@ -65,85 +65,85 @@
 // services (component tree + controls + fiber context). Moved out
 // of polydat itself so polydat can publish standalone — see
 // `polydat_nodes/mod.rs` for the rationale.
-pub mod polydat_nodes;
-pub mod wires;
-pub mod adapter;
-pub mod control_catalog;
-pub mod op_modifier;
-pub mod opseq;
 pub mod activity;
+pub mod adapter;
 pub(crate) mod adapters;
-pub mod synthesis;
-pub mod scope_synth;
 pub mod bindings;
-pub(crate) mod params;
-pub mod scope;
-pub mod scope_tree;
-pub(crate) mod scope_elision;
-pub mod scene_tree;
-pub(crate) mod phase_filter;
-/// SRD-71 P3 phase-scoped CLI parameter overrides
-/// (`<phase-pattern>.<param>=<value>`).
-pub(crate) mod phase_params;
-/// SRD-76 phase outcome disposition (structured
-/// per-phase status + error list).
-pub mod phase_outcome;
+pub mod checkpoint;
 /// SRD-92 / ExecUnification Step 5a — the unified child-stream contract
 /// (`ChildSource` + `Realizability`). Additive; callers land in 5b+.
 pub(crate) mod child_source;
+pub mod concurrent;
+pub mod control_catalog;
+pub(crate) mod daemon_pool;
+pub(crate) mod describe;
+pub(crate) mod error_policy;
+pub mod execution_context;
+pub(crate) mod executor;
+pub(crate) mod fiber_pool;
+pub mod fixture;
+/// Lifecycle event vocabulary: the kind-tag [`lifecycle::EventType`]
+/// and its [`lifecycle::SubjectKind`], shared by the readout
+/// binder and the checkpoint log.
+pub mod lifecycle;
+pub mod log_sink;
+pub mod observer;
+pub mod op_modifier;
+pub mod opseq;
+/// SRD-86 — the optimizer service boundary: the `Optimizer`/`Objective`
+/// contract + registry the phase-execution driver uses, defined here in the
+/// core with no dependency on any algorithm crate. Public so algorithm crates
+/// (e.g. `nbrs-optimizers`) can register against it and the CLI can discover.
+pub mod optimize;
+pub mod output_channel;
+pub(crate) mod params;
 /// Phase-end trigger registry — content-agnostic callbacks
 /// that fire after every phase completion or failure. Used by
 /// the `watch=plots` / `watch=report` CLI flags to keep an
 /// external view (plot image, report html) up-to-date as the
 /// run progresses.
 pub mod phase_end_triggers;
+pub(crate) mod phase_filter;
+/// SRD-76 phase outcome disposition (structured
+/// per-phase status + error list).
+pub mod phase_outcome;
+/// SRD-71 P3 phase-scoped CLI parameter overrides
+/// (`<phase-pattern>.<param>=<value>`).
+pub(crate) mod phase_params;
+pub mod polydat_nodes;
+pub(crate) mod profiler;
+pub(crate) mod readout_context;
+pub mod readouts;
 /// SRD-77 refine plan — pre-computed skip set + next-execution
 /// id, derived from a session's prior `phase_outcomes` rows.
 /// The runner builds one when `nbrs refine` re-attaches to an
 /// existing session; the executor's phase-walk gate checks it
 /// before dispatching each phase's per-cycle work.
 pub mod refine_plan;
-pub mod checkpoint;
-pub(crate) mod scheduler;
-pub(crate) mod profiler;
-pub mod sysmon;
-pub mod session_signals;
-pub mod execution_context;
-pub mod concurrent;
-pub mod observer;
-pub mod output_channel;
-pub(crate) mod trace_router;
-pub mod session;
-pub mod timeval;
-pub mod runner;
-pub(crate) mod executor;
-pub(crate) mod error_policy;
-pub(crate) mod stop_conditions;
-pub(crate) mod workload_shell;
-/// SRD-86 — the optimizer service boundary: the `Optimizer`/`Objective`
-/// contract + registry the phase-execution driver uses, defined here in the
-/// core with no dependency on any algorithm crate. Public so algorithm crates
-/// (e.g. `nbrs-optimizers`) can register against it and the CLI can discover.
-pub mod optimize;
-pub mod resource_pool;
-pub(crate) mod describe;
-pub mod wrappers;
-pub mod wrapper_registry;
-pub(crate) mod wrapper_registrations;
-pub mod wrapper_resolver;
 pub(crate) mod relevancy;
-pub mod fixture;
+pub mod resource_pool;
+pub mod runner;
+pub mod scene_tree;
+pub(crate) mod scheduler;
+pub mod scope;
+pub(crate) mod scope_elision;
+pub mod scope_synth;
+pub mod scope_tree;
+pub mod session;
+pub mod session_signals;
+pub(crate) mod stop_conditions;
+pub mod synthesis;
+pub mod sysmon;
+pub mod timeval;
+pub(crate) mod trace_router;
 pub mod validation;
+pub mod wires;
 pub mod workload_lint;
-pub(crate) mod fiber_pool;
-pub(crate) mod daemon_pool;
-pub mod log_sink;
-/// Lifecycle event vocabulary: the kind-tag [`lifecycle::EventType`]
-/// and its [`lifecycle::SubjectKind`], shared by the readout
-/// binder and the checkpoint log.
-pub mod lifecycle;
-pub mod readouts;
-pub(crate) mod readout_context;
+pub(crate) mod workload_shell;
+pub(crate) mod wrapper_registrations;
+pub mod wrapper_registry;
+pub mod wrapper_resolver;
+pub mod wrappers;
 /// SRD-100 P2 — the per-phase status builder, re-exported for the display
 /// consumer (nbrs-tui) that now folds `active_phases` and renders each
 /// phase's status line itself (the module otherwise stays crate-private).

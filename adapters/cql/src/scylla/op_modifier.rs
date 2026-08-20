@@ -19,12 +19,12 @@ use std::time::Duration;
 
 use nbrs_runtime::op_modifier::OpFieldModifier;
 use polydat::ast::Value;
-use scylla::statement::{Consistency, SerialConsistency, Statement};
 use scylla::statement::batch::Batch;
 use scylla::statement::prepared::PreparedStatement;
+use scylla::statement::{Consistency, SerialConsistency, Statement};
 
-use crate::common::op_modifier::{CqlModifierFactory, parse_consistency};
 use crate::common::CqlConsistency;
+use crate::common::op_modifier::{CqlModifierFactory, parse_consistency};
 
 /// Setter surface shared by scylla's `Statement` and
 /// `PreparedStatement`. Universal CQL fields target one of
@@ -38,29 +38,57 @@ pub trait ScyllaStmt: Send + Sync + 'static {
 }
 
 impl ScyllaStmt for Statement {
-    fn set_consistency(&mut self, c: Consistency) { Statement::set_consistency(self, c); }
-    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) { Statement::set_serial_consistency(self, sc); }
-    fn set_request_timeout(&mut self, t: Option<Duration>) { Statement::set_request_timeout(self, t); }
-    fn set_page_size(&mut self, n: i32) { Statement::set_page_size(self, n); }
-    fn set_tracing(&mut self, b: bool) { Statement::set_tracing(self, b); }
+    fn set_consistency(&mut self, c: Consistency) {
+        Statement::set_consistency(self, c);
+    }
+    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) {
+        Statement::set_serial_consistency(self, sc);
+    }
+    fn set_request_timeout(&mut self, t: Option<Duration>) {
+        Statement::set_request_timeout(self, t);
+    }
+    fn set_page_size(&mut self, n: i32) {
+        Statement::set_page_size(self, n);
+    }
+    fn set_tracing(&mut self, b: bool) {
+        Statement::set_tracing(self, b);
+    }
 }
 
 impl ScyllaStmt for PreparedStatement {
-    fn set_consistency(&mut self, c: Consistency) { PreparedStatement::set_consistency(self, c); }
-    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) { PreparedStatement::set_serial_consistency(self, sc); }
-    fn set_request_timeout(&mut self, t: Option<Duration>) { PreparedStatement::set_request_timeout(self, t); }
-    fn set_page_size(&mut self, n: i32) { PreparedStatement::set_page_size(self, n); }
-    fn set_tracing(&mut self, b: bool) { PreparedStatement::set_tracing(self, b); }
+    fn set_consistency(&mut self, c: Consistency) {
+        PreparedStatement::set_consistency(self, c);
+    }
+    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) {
+        PreparedStatement::set_serial_consistency(self, sc);
+    }
+    fn set_request_timeout(&mut self, t: Option<Duration>) {
+        PreparedStatement::set_request_timeout(self, t);
+    }
+    fn set_page_size(&mut self, n: i32) {
+        PreparedStatement::set_page_size(self, n);
+    }
+    fn set_tracing(&mut self, b: bool) {
+        PreparedStatement::set_tracing(self, b);
+    }
 }
 
 impl ScyllaStmt for Batch {
-    fn set_consistency(&mut self, c: Consistency) { Batch::set_consistency(self, c); }
-    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) { Batch::set_serial_consistency(self, sc); }
-    fn set_request_timeout(&mut self, t: Option<Duration>) { Batch::set_request_timeout(self, t); }
+    fn set_consistency(&mut self, c: Consistency) {
+        Batch::set_consistency(self, c);
+    }
+    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) {
+        Batch::set_serial_consistency(self, sc);
+    }
+    fn set_request_timeout(&mut self, t: Option<Duration>) {
+        Batch::set_request_timeout(self, t);
+    }
     // A batch is a set of writes; CQL paging applies to reads, so page size is
     // inert for a batch. The one aspect that does not map — an explicit no-op.
     fn set_page_size(&mut self, _n: i32) {}
-    fn set_tracing(&mut self, b: bool) { Batch::set_tracing(self, b); }
+    fn set_tracing(&mut self, b: bool) {
+        Batch::set_tracing(self, b);
+    }
 }
 
 // =========================================================================
@@ -73,8 +101,12 @@ struct ConsistencyMod {
 }
 
 impl<S: ScyllaStmt> OpFieldModifier<S> for ConsistencyMod {
-    fn field_name(&self) -> &'static str { "consistency" }
-    fn apply(&self, s: &mut S) { s.set_consistency(self.consistency); }
+    fn field_name(&self) -> &'static str {
+        "consistency"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_consistency(self.consistency);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::String(self.display.to_string())
     }
@@ -86,8 +118,12 @@ struct SerialConsistencyMod {
 }
 
 impl<S: ScyllaStmt> OpFieldModifier<S> for SerialConsistencyMod {
-    fn field_name(&self) -> &'static str { "serial_consistency" }
-    fn apply(&self, s: &mut S) { s.set_serial_consistency(Some(self.serial)); }
+    fn field_name(&self) -> &'static str {
+        "serial_consistency"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_serial_consistency(Some(self.serial));
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::String(self.display.to_string())
     }
@@ -98,8 +134,12 @@ struct RequestTimeoutMod {
 }
 
 impl<S: ScyllaStmt> OpFieldModifier<S> for RequestTimeoutMod {
-    fn field_name(&self) -> &'static str { "request_timeout_ms" }
-    fn apply(&self, s: &mut S) { s.set_request_timeout(Some(self.timeout)); }
+    fn field_name(&self) -> &'static str {
+        "request_timeout_ms"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_request_timeout(Some(self.timeout));
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::from(self.timeout.as_millis() as u64)
     }
@@ -110,8 +150,12 @@ struct PageSizeMod {
 }
 
 impl<S: ScyllaStmt> OpFieldModifier<S> for PageSizeMod {
-    fn field_name(&self) -> &'static str { "page_size" }
-    fn apply(&self, s: &mut S) { s.set_page_size(self.page_size); }
+    fn field_name(&self) -> &'static str {
+        "page_size"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_page_size(self.page_size);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::from(self.page_size as i64)
     }
@@ -122,8 +166,12 @@ struct CqlTraceMod {
 }
 
 impl<S: ScyllaStmt> OpFieldModifier<S> for CqlTraceMod {
-    fn field_name(&self) -> &'static str { "cql_trace" }
-    fn apply(&self, s: &mut S) { s.set_tracing(self.tracing); }
+    fn field_name(&self) -> &'static str {
+        "cql_trace"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_tracing(self.tracing);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::Bool(self.tracing)
     }
@@ -205,29 +253,29 @@ impl<S: ScyllaStmt> CqlModifierFactory for ScyllaModifierFactory<S> {
 
 fn cql_to_scylla(c: CqlConsistency) -> Consistency {
     match c {
-        CqlConsistency::Any         => Consistency::Any,
-        CqlConsistency::One         => Consistency::One,
-        CqlConsistency::Two         => Consistency::Two,
-        CqlConsistency::Three       => Consistency::Three,
-        CqlConsistency::Quorum      => Consistency::Quorum,
-        CqlConsistency::All         => Consistency::All,
+        CqlConsistency::Any => Consistency::Any,
+        CqlConsistency::One => Consistency::One,
+        CqlConsistency::Two => Consistency::Two,
+        CqlConsistency::Three => Consistency::Three,
+        CqlConsistency::Quorum => Consistency::Quorum,
+        CqlConsistency::All => Consistency::All,
         CqlConsistency::LocalQuorum => Consistency::LocalQuorum,
-        CqlConsistency::EachQuorum  => Consistency::EachQuorum,
-        CqlConsistency::LocalOne    => Consistency::LocalOne,
+        CqlConsistency::EachQuorum => Consistency::EachQuorum,
+        CqlConsistency::LocalOne => Consistency::LocalOne,
     }
 }
 
 fn cql_consistency_display(c: CqlConsistency) -> &'static str {
     match c {
-        CqlConsistency::Any         => "ANY",
-        CqlConsistency::One         => "ONE",
-        CqlConsistency::Two         => "TWO",
-        CqlConsistency::Three       => "THREE",
-        CqlConsistency::Quorum      => "QUORUM",
-        CqlConsistency::All         => "ALL",
+        CqlConsistency::Any => "ANY",
+        CqlConsistency::One => "ONE",
+        CqlConsistency::Two => "TWO",
+        CqlConsistency::Three => "THREE",
+        CqlConsistency::Quorum => "QUORUM",
+        CqlConsistency::All => "ALL",
         CqlConsistency::LocalQuorum => "LOCAL_QUORUM",
-        CqlConsistency::EachQuorum  => "EACH_QUORUM",
-        CqlConsistency::LocalOne    => "LOCAL_ONE",
+        CqlConsistency::EachQuorum => "EACH_QUORUM",
+        CqlConsistency::LocalOne => "LOCAL_ONE",
     }
 }
 
@@ -237,7 +285,7 @@ fn cql_consistency_display(c: CqlConsistency) -> &'static str {
 /// event-log diagnostic.
 fn parse_serial_consistency(s: &str) -> Result<(SerialConsistency, &'static str), String> {
     match s.to_uppercase().as_str() {
-        "SERIAL"       => Ok((SerialConsistency::Serial, "SERIAL")),
+        "SERIAL" => Ok((SerialConsistency::Serial, "SERIAL")),
         "LOCAL_SERIAL" => Ok((SerialConsistency::LocalSerial, "LOCAL_SERIAL")),
         _ => Err(format!(
             "unrecognized serial_consistency '{s}'. Valid: SERIAL, LOCAL_SERIAL"
@@ -248,7 +296,9 @@ fn parse_serial_consistency(s: &str) -> Result<(SerialConsistency, &'static str)
 // Suppress "unused" warnings for the Arc re-export pulled in by
 // callers via this module's path.
 #[allow(dead_code)]
-fn _arc_anchor() -> Option<Arc<()>> { None }
+fn _arc_anchor() -> Option<Arc<()>> {
+    None
+}
 
 #[cfg(test)]
 mod tests {
@@ -256,20 +306,26 @@ mod tests {
 
     #[test]
     fn request_timeout_modifier_builds() {
-        let m: Box<dyn OpFieldModifier<Statement>> = ScyllaModifierFactory::<Statement>::modifier_for(
-            "request_timeout_ms",
-            Value::U64(300_000),
-        ).unwrap().unwrap();
+        let m: Box<dyn OpFieldModifier<Statement>> =
+            ScyllaModifierFactory::<Statement>::modifier_for(
+                "request_timeout_ms",
+                Value::U64(300_000),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(m.field_name(), "request_timeout_ms");
         assert_eq!(m.diagnostic_value(), serde_json::json!(300_000u64));
     }
 
     #[test]
     fn consistency_modifier_builds_with_display() {
-        let m: Box<dyn OpFieldModifier<Statement>> = ScyllaModifierFactory::<Statement>::modifier_for(
-            "consistency",
-            Value::Str(std::sync::Arc::from("LOCAL_QUORUM")),
-        ).unwrap().unwrap();
+        let m: Box<dyn OpFieldModifier<Statement>> =
+            ScyllaModifierFactory::<Statement>::modifier_for(
+                "consistency",
+                Value::Str(std::sync::Arc::from("LOCAL_QUORUM")),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(m.field_name(), "consistency");
         assert_eq!(m.diagnostic_value(), serde_json::json!("LOCAL_QUORUM"));
     }
@@ -294,7 +350,8 @@ mod tests {
     #[test]
     fn page_size_rejects_zero_and_negative() {
         let err = expect_err(ScyllaModifierFactory::<Statement>::modifier_for(
-            "page_size", Value::U64(0),
+            "page_size",
+            Value::U64(0),
         ));
         assert!(err.contains("positive"), "{err}");
     }
@@ -302,7 +359,8 @@ mod tests {
     #[test]
     fn page_size_rejects_overflow() {
         let err = expect_err(ScyllaModifierFactory::<Statement>::modifier_for(
-            "page_size", Value::U64(u64::MAX),
+            "page_size",
+            Value::U64(u64::MAX),
         ));
         assert!(err.contains("i32"), "{err}");
     }
@@ -318,18 +376,22 @@ mod tests {
 
     #[test]
     fn cql_trace_accepts_bool() {
-        let m: Box<dyn OpFieldModifier<Statement>> = ScyllaModifierFactory::<Statement>::modifier_for(
-            "cql_trace", Value::Bool(true),
-        ).unwrap().unwrap();
+        let m: Box<dyn OpFieldModifier<Statement>> =
+            ScyllaModifierFactory::<Statement>::modifier_for("cql_trace", Value::Bool(true))
+                .unwrap()
+                .unwrap();
         assert_eq!(m.diagnostic_value(), serde_json::json!(true));
     }
 
     #[test]
     fn serial_consistency_parses_known_levels() {
-        let m: Box<dyn OpFieldModifier<Statement>> = ScyllaModifierFactory::<Statement>::modifier_for(
-            "serial_consistency",
-            Value::Str(std::sync::Arc::from("LOCAL_SERIAL")),
-        ).unwrap().unwrap();
+        let m: Box<dyn OpFieldModifier<Statement>> =
+            ScyllaModifierFactory::<Statement>::modifier_for(
+                "serial_consistency",
+                Value::Str(std::sync::Arc::from("LOCAL_SERIAL")),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(m.diagnostic_value(), serde_json::json!("LOCAL_SERIAL"));
     }
 
@@ -349,10 +411,13 @@ mod tests {
     /// and exercise the boxed-trait machinery.
     #[test]
     fn modifier_apply_compiles_against_statement() {
-        let m: Box<dyn OpFieldModifier<Statement>> = ScyllaModifierFactory::<Statement>::modifier_for(
-            "request_timeout_ms",
-            Value::U64(60_000),
-        ).unwrap().unwrap();
+        let m: Box<dyn OpFieldModifier<Statement>> =
+            ScyllaModifierFactory::<Statement>::modifier_for(
+                "request_timeout_ms",
+                Value::U64(60_000),
+            )
+            .unwrap()
+            .unwrap();
         let mut stmt = Statement::new("SELECT 1".to_string());
         m.apply(&mut stmt); // should not panic
     }
@@ -363,8 +428,9 @@ mod tests {
         // isolation (requires a session round-trip), but we CAN
         // confirm the trait impls compile and type-check.
         fn _typecheck() {
-            let _: Box<dyn OpFieldModifier<PreparedStatement>> =
-                Box::new(RequestTimeoutMod { timeout: Duration::from_millis(1) });
+            let _: Box<dyn OpFieldModifier<PreparedStatement>> = Box::new(RequestTimeoutMod {
+                timeout: Duration::from_millis(1),
+            });
         }
     }
 
@@ -375,10 +441,10 @@ mod tests {
     #[test]
     fn modifier_apply_compiles_against_batch() {
         use scylla::statement::batch::{Batch, BatchType};
-        let m: Box<dyn OpFieldModifier<Batch>> = ScyllaModifierFactory::<Batch>::modifier_for(
-            "request_timeout_ms",
-            Value::U64(60_000),
-        ).unwrap().unwrap();
+        let m: Box<dyn OpFieldModifier<Batch>> =
+            ScyllaModifierFactory::<Batch>::modifier_for("request_timeout_ms", Value::U64(60_000))
+                .unwrap()
+                .unwrap();
         let mut batch = Batch::new(BatchType::Unlogged);
         m.apply(&mut batch); // should not panic
     }

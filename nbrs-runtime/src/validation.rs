@@ -16,11 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nbrs_metrics::labels::Labels;
 
-use crate::wires::WireSource;
-use crate::adapter::{
-    ExecutionError, OpDispenser, OpResult, WrappingDispenser,
-};
+use crate::adapter::{ExecutionError, OpDispenser, OpResult, WrappingDispenser};
 use crate::relevancy::{self, RelevancyFn};
+use crate::wires::WireSource;
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name for the validation layer. Exposed at
@@ -31,14 +29,13 @@ pub const WRAPPER_NAME: WrapperName = WrapperName::new("validate");
 
 /// Trigger: op carries `verify:` or `relevancy:`.
 fn wrapper_triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
-    template.params.contains_key("verify")
-        || template.params.contains_key("relevancy")
+    let Some(template) = s.op() else {
+        return false;
+    };
+    template.params.contains_key("verify") || template.params.contains_key("relevancy")
 }
 
-fn wrapper_describe_assignment(
-    s: WrapperSubject,
-) -> Option<String> {
+fn wrapper_describe_assignment(s: WrapperSubject) -> Option<String> {
     let template = s.op()?;
     let strict = template
         .params
@@ -47,10 +44,16 @@ fn wrapper_describe_assignment(
         .unwrap_or(false);
     let mut parts: Vec<String> = Vec::new();
     if let Some(v) = template.params.get("verify") {
-        parts.push(format!("verify={}", crate::wrapper_registrations::short_value(v)));
+        parts.push(format!(
+            "verify={}",
+            crate::wrapper_registrations::short_value(v)
+        ));
     }
     if let Some(v) = template.params.get("relevancy") {
-        parts.push(format!("relevancy={}", crate::wrapper_registrations::short_value(v)));
+        parts.push(format!(
+            "relevancy={}",
+            crate::wrapper_registrations::short_value(v)
+        ));
     }
     if parts.is_empty() {
         return None;
@@ -105,17 +108,21 @@ inventory::submit! {
 /// field creeps back in.
 pub const CORE_OP_PARAMS: &[&str] = &[
     // Batching (no wrapper owns these — consumed by the batch path).
-    "batch", "batchtype", "max_batch_size",
+    "batch",
+    "batchtype",
+    "max_batch_size",
     // Op weighting (activity-level dispatch weight, not a wrapper).
     "ratio",
     // Adapter selection.
-    "adapter", "driver",
+    "adapter",
+    "driver",
     // Daemon-op declaration. `daemon` marks an op for cycle-pool
     // dispatch onto a daemon fiber (with per-op-name cap);
     // `daemon_cancel_grace_ms` overrides the phase-exit drain budget.
     // (The loop / rate primitives `while` / `rate` ARE wrapper-owned
     // and come from the registry.)
-    "daemon", "daemon_cancel_grace_ms",
+    "daemon",
+    "daemon_cancel_grace_ms",
 ];
 
 /// Configuration for relevancy measurement on a single op template.
@@ -188,9 +195,7 @@ impl AssertionSpec {
         // shape rather than a per-row field value. Handled before
         // field extraction.
         if let AssertionPredicate::MinRows(n) = &self.predicate {
-            let row_count = result.body.as_ref()
-                .map(|b| b.element_count())
-                .unwrap_or(0);
+            let row_count = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
             return row_count >= *n;
         }
 
@@ -212,10 +217,12 @@ impl AssertionSpec {
             // here. That is the whole distinction: value predicates go quiet
             // when there is nothing to read; presence predicates are exactly
             // the ones that shouldn't.
-            None => return !matches!(
-                self.predicate,
-                AssertionPredicate::NotNull | AssertionPredicate::MalformedBound { .. }
-            ),
+            None => {
+                return !matches!(
+                    self.predicate,
+                    AssertionPredicate::NotNull | AssertionPredicate::MalformedBound { .. }
+                );
+            }
         };
 
         let field_val = extract_field_from_json(&json, &self.field);
@@ -226,19 +233,17 @@ impl AssertionSpec {
             AssertionPredicate::Eq(expected) => {
                 field_val.is_some_and(|v| json_value_as_string(v) == *expected)
             }
-            AssertionPredicate::Gte(threshold) => {
-                field_val.and_then(|v| v.as_f64()).is_some_and(|v| v >= *threshold)
-            }
-            AssertionPredicate::Lte(threshold) => {
-                field_val.and_then(|v| v.as_f64()).is_some_and(|v| v <= *threshold)
-            }
+            AssertionPredicate::Gte(threshold) => field_val
+                .and_then(|v| v.as_f64())
+                .is_some_and(|v| v >= *threshold),
+            AssertionPredicate::Lte(threshold) => field_val
+                .and_then(|v| v.as_f64())
+                .is_some_and(|v| v <= *threshold),
             AssertionPredicate::Contains(substr) => {
                 field_val.is_some_and(|v| json_value_as_string(v).contains(substr.as_str()))
             }
             AssertionPredicate::MalformedBound { .. } => false,
-            AssertionPredicate::MinRows(_) => unreachable!(
-                "MinRows handled in early-return above"
-            ),
+            AssertionPredicate::MinRows(_) => unreachable!("MinRows handled in early-return above"),
         }
     }
 }
@@ -337,12 +342,7 @@ impl ValidationMetrics {
     /// awkward `recall_at_10` synthesised name. `r`
     /// defaults to `k` when the relevancy config doesn't
     /// declare it (`r:` was unset → first-k semantics).
-    pub fn new(
-        labels: &Labels,
-        functions: &[RelevancyFn],
-        k: usize,
-        r: Option<usize>,
-    ) -> Self {
+    pub fn new(labels: &Labels, functions: &[RelevancyFn], k: usize, r: Option<usize>) -> Self {
         let r_value = r.unwrap_or(k);
         let stats_labels = labels
             .with("k", k.to_string())
@@ -354,7 +354,7 @@ impl ValidationMetrics {
             stats.insert(
                 metric_name.clone(),
                 nbrs_metrics::summaries::f64stats::F64Stats::new(
-                    stats_labels.with("name", &metric_name)
+                    stats_labels.with("name", &metric_name),
                 ),
             );
             running.insert(
@@ -511,7 +511,9 @@ impl ValidatingDispenser {
             .as_ref()
             .map(|k| k.as_ref() as &dyn WireSource);
         let relevancy = parse_relevancy(template, program, wires_for_parse)?;
-        let strict = template.params.get("strict")
+        let strict = template
+            .params
+            .get("strict")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -532,13 +534,13 @@ impl ValidatingDispenser {
         // (the legacy text-template form — braces strip).
         let expected_wire_name = match &relevancy {
             Some(cfg) => {
-                let name = cfg.expected_binding
+                let name = cfg
+                    .expected_binding
                     .trim_matches(|c| c == '{' || c == '}')
                     .to_string();
-                fx.register_pull(&name).map_err(|e| format!(
-                    "op '{op}' relevancy.expected: {e}",
-                    op = template.name,
-                ))?;
+                fx.register_pull(&name).map_err(|e| {
+                    format!("op '{op}' relevancy.expected: {e}", op = template.name,)
+                })?;
                 Some(name)
             }
             None => None,
@@ -571,12 +573,18 @@ impl ValidatingDispenser {
                 }
                 match raw {
                     Some(path) => {
-                        let segs = crate::wrappers::result::parse_path_expr(&path)
-                            .map_err(|e| format!(
-                                "op '{op}' relevancy.actual '{field}': result \
+                        let segs =
+                            crate::wrappers::result::parse_path_expr(&path).map_err(|e| {
+                                format!(
+                                    "op '{op}' relevancy.actual '{field}': result \
                                  binding path: {e}",
-                                op = template.name, field = cfg.actual_field))?;
-                        let target = template.abstract_interface.as_ref()
+                                    op = template.name,
+                                    field = cfg.actual_field
+                                )
+                            })?;
+                        let target = template
+                            .abstract_interface
+                            .as_ref()
                             .and_then(|i| i.results.get(&cfg.actual_field))
                             .and_then(|kw| polydat::ast::PortType::from_keyword(kw));
                         Some(ActualProjection { segs, target })
@@ -617,7 +625,9 @@ impl OpDispenser for ValidatingDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let result = self.inner.execute(cycle, ctx).await?;
 
@@ -646,16 +656,22 @@ impl OpDispenser for ValidatingDispenser {
                 // legacy result-column walk for workloads that
                 // predate the interface.
                 let actual_ordered = if let Some(proj) = &self.actual_projection {
-                    let projected = result.body.as_ref()
-                        .and_then(|b| crate::wrappers::result::evaluate_path_value(
-                            &b.to_json(), &proj.segs, proj.target));
-                    projected.as_ref()
+                    let projected = result.body.as_ref().and_then(|b| {
+                        crate::wrappers::result::evaluate_path_value(
+                            &b.to_json(),
+                            &proj.segs,
+                            proj.target,
+                        )
+                    });
+                    projected
+                        .as_ref()
                         .map(resolve_expected_from_value)
                         .unwrap_or_default()
                 } else {
                     match ctx.wires.get(&config.actual_field) {
-                        Some(v) if !matches!(v, polydat::ast::Value::None) =>
-                            resolve_expected_from_value(&v),
+                        Some(v) if !matches!(v, polydat::ast::Value::None) => {
+                            resolve_expected_from_value(&v)
+                        }
                         _ => extract_actual_indices(&result, &config.actual_field),
                     }
                 };
@@ -694,13 +710,20 @@ impl OpDispenser for ValidatingDispenser {
                         let indent = crate::scene_tree::running_phase_indent();
                         crate::observer::log(
                             crate::observer::LogLevel::Warn,
-                            &format!("{indent}relevancy: no values extracted for field '{}' from result", config.actual_field),
+                            &format!(
+                                "{indent}relevancy: no values extracted for field '{}' from result",
+                                config.actual_field
+                            ),
                         );
                         if let Some(body) = &result.body {
-                            let preview = serde_json::to_string(&body.to_json()).unwrap_or_default();
+                            let preview =
+                                serde_json::to_string(&body.to_json()).unwrap_or_default();
                             crate::observer::log(
                                 crate::observer::LogLevel::Warn,
-                                &format!("{indent}  result preview: {}", &preview[..preview.len().min(300)]),
+                                &format!(
+                                    "{indent}  result preview: {}",
+                                    &preview[..preview.len().min(300)]
+                                ),
                             );
                         }
                     }
@@ -716,19 +739,20 @@ impl OpDispenser for ValidatingDispenser {
                 // than silently producing a recall figure for an
                 // off-by-one retrieval window.
                 if let Some(r) = config.r
-                    && actual_ordered.len() != r {
-                        return Err(ExecutionError::Op(crate::adapter::AdapterError {
-                            error_name: "relevancy_error".into(),
-                            message: format!(
-                                "relevancy: expected exactly r={r} results from \
+                    && actual_ordered.len() != r
+                {
+                    return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                        error_name: "relevancy_error".into(),
+                        message: format!(
+                            "relevancy: expected exactly r={r} results from \
                                  retrieval, got {} (k-recall@r contract). Either \
                                  size the query LIMIT to {r}, or remove the `r:` \
                                  declaration to fall back to first-k semantics.",
-                                actual_ordered.len(),
-                            ),
-                            retryable: false,
-                        }));
-                    }
+                            actual_ordered.len(),
+                        ),
+                        retryable: false,
+                    }));
+                }
 
                 // k-recall@r semantics: the recall metric counts
                 // how many of the *top-k* ground-truth items appear
@@ -744,14 +768,9 @@ impl OpDispenser for ValidatingDispenser {
                 let expected_sorted = relevancy::truncate_and_sort(&expected_raw, config.k);
                 let actual_sorted = relevancy::truncate_and_sort(&actual_ordered, r_window);
 
-
                 for func in &config.functions {
-                    let score = func.compute(
-                        &expected_sorted,
-                        &actual_sorted,
-                        &actual_ordered,
-                        config.k,
-                    );
+                    let score =
+                        func.compute(&expected_sorted, &actual_sorted, &actual_ordered, config.k);
                     self.metrics.record_relevancy(func.metric_name(), score);
                     // Generic observability point: a relevancy
                     // score has been computed. The trace fires
@@ -763,10 +782,11 @@ impl OpDispenser for ValidatingDispenser {
                     // r), so `--trace=` routing/filtering is
                     // entirely config-driven.
                     if crate::observer::trace_enabled() {
-                        let intersect = crate::relevancy::intersection_count(
-                            &expected_sorted, &actual_sorted,
-                        );
-                        let stats_labels = self.metrics.relevancy_stats
+                        let intersect =
+                            crate::relevancy::intersection_count(&expected_sorted, &actual_sorted);
+                        let stats_labels = self
+                            .metrics
+                            .relevancy_stats
                             .get(func.metric_name())
                             .map(|s| s.labels().clone())
                             .unwrap_or_default();
@@ -790,9 +810,13 @@ impl OpDispenser for ValidatingDispenser {
             }
 
             if all_pass {
-                self.metrics.validations_passed.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .validations_passed
+                    .fetch_add(1, Ordering::Relaxed);
             } else {
-                self.metrics.validations_failed.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .validations_failed
+                    .fetch_add(1, Ordering::Relaxed);
                 if self.strict {
                     return Err(ExecutionError::Op(crate::adapter::AdapterError {
                         error_name: "validation_failed".into(),
@@ -834,49 +858,40 @@ fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> S
     let observed_repr = observed_field_repr(&assertion.field, result);
     match &assertion.predicate {
         AssertionPredicate::MinRows(n) => {
-            let got = result.body.as_ref()
-                .map(|b| b.element_count())
-                .unwrap_or(0);
+            let got = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
             format!("min_rows: expected ≥{n}, got {got}{body_tail}")
         }
-        AssertionPredicate::Eq(expected) =>
-            format!(
-                "field '{}' eq '{}' failed (observed: {observed_repr}){body_tail}",
-                assertion.field, expected
-            ),
-        AssertionPredicate::NotNull =>
-            format!(
-                "field '{}' must not be null (observed: {observed_repr}){body_tail}",
-                assertion.field
-            ),
-        AssertionPredicate::IsNull =>
-            format!(
-                "field '{}' must be null (observed: {observed_repr}){body_tail}",
-                assertion.field
-            ),
-        AssertionPredicate::Gte(t) =>
-            format!(
-                "field '{}' >= {t} failed (observed: {observed_repr}){body_tail}",
-                assertion.field
-            ),
-        AssertionPredicate::MalformedBound { key, raw } =>
-            format!(
-                "field '{}': `{key}: {raw}` is not a number — a numeric bound \
+        AssertionPredicate::Eq(expected) => format!(
+            "field '{}' eq '{}' failed (observed: {observed_repr}){body_tail}",
+            assertion.field, expected
+        ),
+        AssertionPredicate::NotNull => format!(
+            "field '{}' must not be null (observed: {observed_repr}){body_tail}",
+            assertion.field
+        ),
+        AssertionPredicate::IsNull => format!(
+            "field '{}' must be null (observed: {observed_repr}){body_tail}",
+            assertion.field
+        ),
+        AssertionPredicate::Gte(t) => format!(
+            "field '{}' >= {t} failed (observed: {observed_repr}){body_tail}",
+            assertion.field
+        ),
+        AssertionPredicate::MalformedBound { key, raw } => format!(
+            "field '{}': `{key}: {raw}` is not a number — a numeric bound \
                  must be a number (`{key}: 5`) or a string holding one \
                  (`{key}: \"5\"`). If that is a `{{placeholder}}`, it did not \
                  resolve.",
-                assertion.field
-            ),
-        AssertionPredicate::Lte(t) =>
-            format!(
-                "field '{}' <= {t} failed (observed: {observed_repr}){body_tail}",
-                assertion.field
-            ),
-        AssertionPredicate::Contains(sub) =>
-            format!(
-                "field '{}' contains '{}' failed (observed: {observed_repr}){body_tail}",
-                assertion.field, sub
-            ),
+            assertion.field
+        ),
+        AssertionPredicate::Lte(t) => format!(
+            "field '{}' <= {t} failed (observed: {observed_repr}){body_tail}",
+            assertion.field
+        ),
+        AssertionPredicate::Contains(sub) => format!(
+            "field '{}' contains '{}' failed (observed: {observed_repr}){body_tail}",
+            assertion.field, sub
+        ),
     }
 }
 
@@ -907,8 +922,7 @@ fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> S
 ///   readability.
 fn observed_field_repr(field: &str, result: &OpResult) -> String {
     let Some(body) = &result.body else {
-        return "<no body returned by op — verify clause cannot read fields>"
-            .to_string();
+        return "<no body returned by op — verify clause cannot read fields>".to_string();
     };
     let json = body.to_json();
     if let Some(v) = extract_field_from_json(&json, field) {
@@ -938,8 +952,7 @@ fn observed_field_repr(field: &str, result: &OpResult) -> String {
                 if arr.len() == 1 { "" } else { "s" },
             )
         }
-        serde_json::Value::Null =>
-            "<field absent; body is JSON null>".to_string(),
+        serde_json::Value::Null => "<field absent; body is JSON null>".to_string(),
         other => {
             let short = truncate_for_message(&other.to_string(), 80);
             format!("<not-json: {short}>")
@@ -998,7 +1011,8 @@ fn truncate_for_message(s: &str, max: usize) -> String {
 /// [`AssertionPredicate::MalformedBound`] that fails loudly, rather than the
 /// old silent `0.0`.
 fn numeric_bound(v: &serde_json::Value) -> Option<f64> {
-    v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
 
 fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionSpec> {
@@ -1012,20 +1026,24 @@ fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionS
 
     let mut assertions = Vec::new();
     for item in items {
-        let Some(obj) = item.as_object() else { continue };
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
 
         // Body-level predicates first: `min_rows: N` doesn't take
         // a `field:` because it asserts on the body's row count.
         if let Some(v) = obj.get("min_rows") {
             let n = v.as_u64().unwrap_or(0);
             assertions.push(AssertionSpec {
-                field: String::new(),  // ignored for MinRows
+                field: String::new(), // ignored for MinRows
                 predicate: AssertionPredicate::MinRows(n),
             });
             continue;
         }
 
-        let Some(field) = obj.get("field").and_then(|v| v.as_str()) else { continue };
+        let Some(field) = obj.get("field").and_then(|v| v.as_str()) else {
+            continue;
+        };
 
         let predicate = if let Some(v) = obj.get("eq") {
             AssertionPredicate::Eq(json_value_as_string(v))
@@ -1033,13 +1051,17 @@ fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionS
             match numeric_bound(v) {
                 Some(t) => AssertionPredicate::Gte(t),
                 None => AssertionPredicate::MalformedBound {
-                    key: "gte".into(), raw: json_value_as_string(v) },
+                    key: "gte".into(),
+                    raw: json_value_as_string(v),
+                },
             }
         } else if let Some(v) = obj.get("lte") {
             match numeric_bound(v) {
                 Some(t) => AssertionPredicate::Lte(t),
                 None => AssertionPredicate::MalformedBound {
-                    key: "lte".into(), raw: json_value_as_string(v) },
+                    key: "lte".into(),
+                    raw: json_value_as_string(v),
+                },
             }
         } else if let Some(v) = obj.get("contains") {
             AssertionPredicate::Contains(json_value_as_string(v))
@@ -1065,9 +1087,7 @@ fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionS
 /// vocabulary is a hard error — silent acceptance of typos
 /// (e.g. `relevency:`) is exactly the failure mode SRD-15 §
 /// "Strict mode" rules out.
-const RELEVANCY_VOCAB: &[&str] = &[
-    "actual", "expected", "k", "r", "functions",
-];
+const RELEVANCY_VOCAB: &[&str] = &["actual", "expected", "k", "r", "functions"];
 
 /// Parse `relevancy:` block from a ParsedOp's params.
 ///
@@ -1091,19 +1111,23 @@ fn parse_relevancy(
     _program: Option<&polydat::kernel::PolydatProgram>,
     wires: Option<&dyn WireSource>,
 ) -> Result<Option<RelevancyConfig>, String> {
-    let Some(rel) = template.params.get("relevancy") else { return Ok(None); };
-    let obj = rel.as_object().ok_or_else(|| format!(
-        "op '{}': relevancy: expected a mapping, got {kind}",
-        template.name,
-        kind = match rel {
-            serde_json::Value::Null => "null",
-            serde_json::Value::Bool(_) => "boolean",
-            serde_json::Value::Number(_) => "number",
-            serde_json::Value::String(_) => "string",
-            serde_json::Value::Array(_) => "array",
-            _ => "unknown",
-        },
-    ))?;
+    let Some(rel) = template.params.get("relevancy") else {
+        return Ok(None);
+    };
+    let obj = rel.as_object().ok_or_else(|| {
+        format!(
+            "op '{}': relevancy: expected a mapping, got {kind}",
+            template.name,
+            kind = match rel {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::String(_) => "string",
+                serde_json::Value::Array(_) => "array",
+                _ => "unknown",
+            },
+        )
+    })?;
 
     // Closed-vocabulary check.
     for k in obj.keys() {
@@ -1116,62 +1140,73 @@ fn parse_relevancy(
         }
     }
 
-    let actual_field = obj.get("actual")
+    let actual_field = obj
+        .get("actual")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!(
-            "op '{}' relevancy: missing required field 'actual' (string column name)",
-            template.name,
-        ))?
+        .ok_or_else(|| {
+            format!(
+                "op '{}' relevancy: missing required field 'actual' (string column name)",
+                template.name,
+            )
+        })?
         .to_string();
-    let expected_binding = obj.get("expected")
+    let expected_binding = obj
+        .get("expected")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!(
-            "op '{}' relevancy: missing required field 'expected' (binding reference)",
-            template.name,
-        ))?
+        .ok_or_else(|| {
+            format!(
+                "op '{}' relevancy: missing required field 'expected' (binding reference)",
+                template.name,
+            )
+        })?
         .to_string();
 
     let k_label = format!("op '{}' relevancy.k", template.name);
-    let k = parse_count_param(obj.get("k"), &k_label, wires)?
-        .ok_or_else(|| format!(
+    let k = parse_count_param(obj.get("k"), &k_label, wires)?.ok_or_else(|| {
+        format!(
             "op '{}' relevancy: missing required field 'k' (integer)",
             template.name,
-        ))? as usize;
+        )
+    })? as usize;
 
     let r_label = format!("op '{}' relevancy.r", template.name);
-    let r: Option<usize> = parse_count_param(obj.get("r"), &r_label, wires)?
-        .map(|n| n as usize);
+    let r: Option<usize> = parse_count_param(obj.get("r"), &r_label, wires)?.map(|n| n as usize);
 
     if let Some(rv) = r
-        && rv < k {
-            return Err(format!(
-                "op '{op}' relevancy: r={rv} is smaller than k={k}; \
+        && rv < k
+    {
+        return Err(format!(
+            "op '{op}' relevancy: r={rv} is smaller than k={k}; \
                  the k-recall@r contract requires r >= k",
-                op = template.name,
-            ));
-        }
+            op = template.name,
+        ));
+    }
 
     let functions: Vec<RelevancyFn> = match obj.get("functions") {
         None => vec![RelevancyFn::Recall],
         Some(serde_json::Value::Array(arr)) => {
             let mut out: Vec<RelevancyFn> = Vec::new();
             for (i, v) in arr.iter().enumerate() {
-                let name = v.as_str().ok_or_else(|| format!(
-                    "op '{op}' relevancy.functions[{i}]: expected a string, got {kind}",
-                    op = template.name,
-                    kind = match v {
-                        serde_json::Value::Null => "null",
-                        serde_json::Value::Bool(_) => "boolean",
-                        serde_json::Value::Number(_) => "number",
-                        serde_json::Value::Array(_) => "array",
-                        serde_json::Value::Object(_) => "object",
-                        _ => "unknown",
-                    },
-                ))?;
-                let func = RelevancyFn::parse(name).ok_or_else(|| format!(
-                    "op '{op}' relevancy.functions[{i}]: unknown function '{name}'",
-                    op = template.name,
-                ))?;
+                let name = v.as_str().ok_or_else(|| {
+                    format!(
+                        "op '{op}' relevancy.functions[{i}]: expected a string, got {kind}",
+                        op = template.name,
+                        kind = match v {
+                            serde_json::Value::Null => "null",
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                            _ => "unknown",
+                        },
+                    )
+                })?;
+                let func = RelevancyFn::parse(name).ok_or_else(|| {
+                    format!(
+                        "op '{op}' relevancy.functions[{i}]: unknown function '{name}'",
+                        op = template.name,
+                    )
+                })?;
                 out.push(func);
             }
             if out.is_empty() {
@@ -1183,10 +1218,12 @@ fn parse_relevancy(
             }
             out
         }
-        Some(_) => return Err(format!(
-            "op '{op}' relevancy.functions: expected an array of strings",
-            op = template.name,
-        )),
+        Some(_) => {
+            return Err(format!(
+                "op '{op}' relevancy.functions: expected an array of strings",
+                op = template.name,
+            ));
+        }
     };
 
     Ok(Some(RelevancyConfig {
@@ -1214,20 +1251,26 @@ fn parse_count_param(
     field_label: &str,
     wires: Option<&dyn WireSource>,
 ) -> Result<Option<u64>, String> {
-    let Some(v) = val else { return Ok(None); };
-    if let Some(n) = v.as_u64() { return Ok(Some(n)); }
+    let Some(v) = val else {
+        return Ok(None);
+    };
+    if let Some(n) = v.as_u64() {
+        return Ok(Some(n));
+    }
     let s = match v.as_str() {
         Some(s) => s,
-        None => return Err(format!(
-            "{field_label}: expected an integer or numeric string, got {kind}",
-            kind = match v {
-                serde_json::Value::Null => "null",
-                serde_json::Value::Bool(_) => "boolean",
-                serde_json::Value::Array(_) => "array",
-                serde_json::Value::Object(_) => "object",
-                _ => "unsupported value",
-            },
-        )),
+        None => {
+            return Err(format!(
+                "{field_label}: expected an integer or numeric string, got {kind}",
+                kind = match v {
+                    serde_json::Value::Null => "null",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::Object(_) => "object",
+                    _ => "unsupported value",
+                },
+            ));
+        }
     };
     let trimmed = s.trim();
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
@@ -1247,10 +1290,14 @@ fn parse_count_param(
         && is_bare_ident(trimmed)
         && let Some(value) = wires.get(trimmed)
     {
-        return value_to_u64_for_count(value).ok_or_else(|| format!(
-            "{field_label}: wire '{trimmed}' resolved but its value is not \
+        return value_to_u64_for_count(value)
+            .ok_or_else(|| {
+                format!(
+                    "{field_label}: wire '{trimmed}' resolved but its value is not \
              coercible to a non-negative integer"
-        )).map(Some);
+                )
+            })
+            .map(Some);
     }
     match trimmed.parse::<u64>() {
         Ok(n) => Ok(Some(n)),
@@ -1304,11 +1351,10 @@ fn extract_actual_indices(result: &OpResult, field: &str) -> Vec<i64> {
 /// Extract integer values for a named field from JSON result structure.
 fn extract_indices_from_json(json: &serde_json::Value, field: &str) -> Vec<i64> {
     match json {
-        serde_json::Value::Array(rows) => {
-            rows.iter()
-                .filter_map(|row| json_field_as_i64(row.get(field)?))
-                .collect()
-        }
+        serde_json::Value::Array(rows) => rows
+            .iter()
+            .filter_map(|row| json_field_as_i64(row.get(field)?))
+            .collect(),
         serde_json::Value::Object(obj) => {
             if let Some(rows) = obj.get("rows") {
                 return extract_indices_from_json(rows, field);
@@ -1345,12 +1391,8 @@ fn json_field_as_i64(v: &serde_json::Value) -> Option<i64> {
 fn resolve_expected_from_value(value: &polydat::ast::Value) -> Vec<i64> {
     match value {
         // Typed-slice fast paths — zero-copy read, no parse.
-        polydat::ast::Value::VecI32(slice) => {
-            slice.as_slice().iter().map(|&x| x as i64).collect()
-        }
-        polydat::ast::Value::VecI64(slice) => {
-            slice.as_slice().to_vec()
-        }
+        polydat::ast::Value::VecI32(slice) => slice.as_slice().iter().map(|&x| x as i64).collect(),
+        polydat::ast::Value::VecI64(slice) => slice.as_slice().to_vec(),
         polydat::ast::Value::VecF32(slice) => {
             // Vector ground-truth indices are integer-valued
             // by domain. Truncating fractional parts is the
@@ -1358,16 +1400,12 @@ fn resolve_expected_from_value(value: &polydat::ast::Value) -> Vec<i64> {
             // dataset's index column is mis-typed at the source.
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
-        polydat::ast::Value::VecF64(slice) => {
-            slice.as_slice().iter().map(|&x| x as i64).collect()
-        }
+        polydat::ast::Value::VecF64(slice) => slice.as_slice().iter().map(|&x| x as i64).collect(),
         // SRD-70 projection landed as structural JSON (mixed or
         // string-typed columns): integer-valued leaves extract,
         // numeric strings parse, anything else drops.
         polydat::ast::Value::Json(j) => match &**j {
-            serde_json::Value::Array(elems) => elems.iter()
-                .filter_map(json_field_as_i64)
-                .collect(),
+            serde_json::Value::Array(elems) => elems.iter().filter_map(json_field_as_i64).collect(),
             other => json_field_as_i64(other).into_iter().collect(),
         },
         polydat::ast::Value::Str(s) => parse_int_array(s),
@@ -1385,26 +1423,26 @@ fn resolve_expected_from_value(value: &polydat::ast::Value) -> Vec<i64> {
 /// Handles formats: `[1, 5, 12]`, `1,5,12`, `1 5 12`.
 fn parse_int_array(s: &str) -> Vec<i64> {
     let trimmed = s.trim().trim_start_matches('[').trim_end_matches(']');
-    trimmed.split(|c: char| c == ',' || c.is_whitespace())
+    trimmed
+        .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.trim().parse::<i64>().ok())
         .collect()
 }
 
 /// Extract a field from JSON by name, checking both top-level and row arrays.
-fn extract_field_from_json<'a>(json: &'a serde_json::Value, field: &str) -> Option<&'a serde_json::Value> {
+fn extract_field_from_json<'a>(
+    json: &'a serde_json::Value,
+    field: &str,
+) -> Option<&'a serde_json::Value> {
     match json {
-        serde_json::Value::Object(obj) => {
-            obj.get(field).or_else(|| {
-                obj.get("rows")
-                    .and_then(|r| r.as_array())
-                    .and_then(|rows| rows.first())
-                    .and_then(|row| row.get(field))
-            })
-        }
-        serde_json::Value::Array(rows) => {
-            rows.first().and_then(|row| row.get(field))
-        }
+        serde_json::Value::Object(obj) => obj.get(field).or_else(|| {
+            obj.get("rows")
+                .and_then(|r| r.as_array())
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get(field))
+        }),
+        serde_json::Value::Array(rows) => rows.first().and_then(|row| row.get(field)),
         _ => None,
     }
 }
@@ -1426,8 +1464,12 @@ mod tests {
     #[derive(Debug)]
     struct JsonBody(serde_json::Value);
     impl ResultBody for JsonBody {
-        fn to_json(&self) -> serde_json::Value { self.0.clone() }
-        fn as_any(&self) -> &dyn Any { self }
+        fn to_json(&self) -> serde_json::Value {
+            self.0.clone()
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[test]
@@ -1445,7 +1487,9 @@ mod tests {
     fn core_op_params_disjoint_from_owned_fields() {
         let registry = crate::wrapper_registry::WrapperRegistry::from_inventory();
         let owned = registry.all_owned_fields();
-        let dupes: Vec<&str> = CORE_OP_PARAMS.iter().copied()
+        let dupes: Vec<&str> = CORE_OP_PARAMS
+            .iter()
+            .copied()
             .filter(|p| owned.contains(p))
             .collect();
         assert!(
@@ -1463,14 +1507,22 @@ mod tests {
     #[test]
     fn wrapper_field_accepted_without_cli_or_core_membership() {
         let registry = crate::wrapper_registry::WrapperRegistry::from_inventory();
-        assert!(registry.owns_field("readout"),
-            "readout must be registry-owned");
-        assert!(registry.owns_field("errors"),
-            "errors must be registry-owned (was riding the CLI hatch)");
-        assert!(registry.owns_field("tries"),
-            "tries must be registry-owned (was riding the CLI hatch)");
-        assert!(!CORE_OP_PARAMS.contains(&"readout"),
-            "readout should NOT be in CORE_OP_PARAMS — it's wrapper-owned");
+        assert!(
+            registry.owns_field("readout"),
+            "readout must be registry-owned"
+        );
+        assert!(
+            registry.owns_field("errors"),
+            "errors must be registry-owned (was riding the CLI hatch)"
+        );
+        assert!(
+            registry.owns_field("tries"),
+            "tries must be registry-owned (was riding the CLI hatch)"
+        );
+        assert!(
+            !CORE_OP_PARAMS.contains(&"readout"),
+            "readout should NOT be in CORE_OP_PARAMS — it's wrapper-owned"
+        );
     }
 
     #[test]
@@ -1598,8 +1650,12 @@ mod tests {
         fn to_json(&self) -> serde_json::Value {
             serde_json::Value::Array(self.rows.clone())
         }
-        fn as_any(&self) -> &dyn Any { self }
-        fn element_count(&self) -> u64 { self.rows.len() as u64 }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn element_count(&self) -> u64 {
+            self.rows.len() as u64
+        }
     }
 
     #[test]
@@ -1653,9 +1709,12 @@ mod tests {
         //   verify:
         //     - min_rows: 1
         let mut template = nbrs_workload::model::ParsedOp::simple("await", "test");
-        template.params.insert("verify".into(), serde_json::json!([
-            {"min_rows": 1},
-        ]));
+        template.params.insert(
+            "verify".into(),
+            serde_json::json!([
+                {"min_rows": 1},
+            ]),
+        );
         let assertions = parse_assertions(&template);
         assert_eq!(assertions.len(), 1);
         match &assertions[0].predicate {
@@ -1681,16 +1740,23 @@ mod tests {
             predicate: AssertionPredicate::Eq("200".into()),
         };
         let msg = describe_assertion_failure(&spec, &result);
-        assert!(msg.contains("field absent"),
-            "json-without-field should mark observed as absent, got: {msg}");
-        assert!(msg.contains("body keys"),
-            "absent message should enumerate present keys, got: {msg}");
-        assert!(msg.contains("\"value\"") && msg.contains("\"request\""),
-            "key list should include both present keys, got: {msg}");
-        assert!(msg.contains("body: "),
-            "body excerpt missing: {msg}");
-        assert!(msg.contains("\"request\""),
-            "body excerpt should echo the actual JSON: {msg}");
+        assert!(
+            msg.contains("field absent"),
+            "json-without-field should mark observed as absent, got: {msg}"
+        );
+        assert!(
+            msg.contains("body keys"),
+            "absent message should enumerate present keys, got: {msg}"
+        );
+        assert!(
+            msg.contains("\"value\"") && msg.contains("\"request\""),
+            "key list should include both present keys, got: {msg}"
+        );
+        assert!(msg.contains("body: "), "body excerpt missing: {msg}");
+        assert!(
+            msg.contains("\"request\""),
+            "body excerpt should echo the actual JSON: {msg}"
+        );
 
         // Plain-text body: observed reads `<not-json: …>` with a
         // short preview so the operator can recognise the actual
@@ -1701,19 +1767,28 @@ mod tests {
             fn to_json(&self) -> serde_json::Value {
                 serde_json::Value::String(self.0.clone())
             }
-            fn as_any(&self) -> &dyn Any { self }
-            fn to_text(&self) -> String { self.0.clone() }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn to_text(&self) -> String {
+                self.0.clone()
+            }
         }
         let text_result = OpResult {
             body: Some(Box::new(PlainBody(
-                "<html><body>404 Not Found</body></html>".into()))),
+                "<html><body>404 Not Found</body></html>".into(),
+            ))),
             skipped: false,
         };
         let msg2 = describe_assertion_failure(&spec, &text_result);
-        assert!(msg2.contains("not-json"),
-            "text body should mark observed as not-json, got: {msg2}");
-        assert!(msg2.contains("404 Not Found"),
-            "body excerpt should include the text: {msg2}");
+        assert!(
+            msg2.contains("not-json"),
+            "text body should mark observed as not-json, got: {msg2}"
+        );
+        assert!(
+            msg2.contains("404 Not Found"),
+            "body excerpt should include the text: {msg2}"
+        );
     }
 
     /// When the op produced no body at all, the message must
@@ -1722,16 +1797,23 @@ mod tests {
     /// both the observed-field slot and the body excerpt.
     #[test]
     fn eq_failure_with_no_body_explains_situation() {
-        let result = OpResult { body: None, skipped: false };
+        let result = OpResult {
+            body: None,
+            skipped: false,
+        };
         let spec = AssertionSpec {
             field: "status".into(),
             predicate: AssertionPredicate::Eq("200".into()),
         };
         let msg = describe_assertion_failure(&spec, &result);
-        assert!(msg.contains("no body returned by op"),
-            "no-body case should explain why the field can't be read, got: {msg}");
-        assert!(!msg.contains("body: "),
-            "no-body case should suppress the redundant body excerpt, got: {msg}");
+        assert!(
+            msg.contains("no body returned by op"),
+            "no-body case should explain why the field can't be read, got: {msg}"
+        );
+        assert!(
+            !msg.contains("body: "),
+            "no-body case should suppress the redundant body excerpt, got: {msg}"
+        );
     }
 
     #[test]
@@ -1785,9 +1867,7 @@ mod tests {
         let labels = Labels::of("activity", "test");
         // No `r:` in the relevancy config → the metric's
         // `r` label equals `k` (legacy first-k semantics).
-        let metrics = ValidationMetrics::new(
-            &labels, &[RelevancyFn::Recall], 100, None,
-        );
+        let metrics = ValidationMetrics::new(&labels, &[RelevancyFn::Recall], 100, None);
         let l = metrics.relevancy_stats["recall"].labels();
         assert_eq!(l.get("k"), Some("100"));
         assert_eq!(l.get("r"), Some("100"));
@@ -1829,12 +1909,15 @@ mod tests {
     #[test]
     fn parse_relevancy_from_params() {
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
-        template.params.insert("relevancy".into(), serde_json::json!({
-            "actual": "key",
-            "expected": "{ground_truth}",
-            "k": 10,
-            "functions": ["recall", "precision", "f1"]
-        }));
+        template.params.insert(
+            "relevancy".into(),
+            serde_json::json!({
+                "actual": "key",
+                "expected": "{ground_truth}",
+                "k": 10,
+                "functions": ["recall", "precision", "f1"]
+            }),
+        );
         let config = parse_relevancy(&template, None, None).unwrap().unwrap();
         assert_eq!(config.actual_field, "key");
         assert_eq!(config.expected_binding, "{ground_truth}");
@@ -1852,13 +1935,16 @@ mod tests {
         // 10. The `r` field is parsed alongside `k` from the
         // same numeric/`{name}` shapes.
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
-        template.params.insert("relevancy".into(), serde_json::json!({
-            "actual": "key",
-            "expected": "{ground_truth}",
-            "k": 10,
-            "r": 100,
-            "functions": ["recall"],
-        }));
+        template.params.insert(
+            "relevancy".into(),
+            serde_json::json!({
+                "actual": "key",
+                "expected": "{ground_truth}",
+                "k": 10,
+                "r": 100,
+                "functions": ["recall"],
+            }),
+        );
         let config = parse_relevancy(&template, None, None).unwrap().unwrap();
         assert_eq!(config.k, 10);
         assert_eq!(config.r, Some(100));
@@ -1867,12 +1953,15 @@ mod tests {
     #[test]
     fn parse_relevancy_r_accepts_string_form() {
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
-        template.params.insert("relevancy".into(), serde_json::json!({
-            "actual": "key",
-            "expected": "{ground_truth}",
-            "k": "10",
-            "r": "100",
-        }));
+        template.params.insert(
+            "relevancy".into(),
+            serde_json::json!({
+                "actual": "key",
+                "expected": "{ground_truth}",
+                "k": "10",
+                "r": "100",
+            }),
+        );
         let config = parse_relevancy(&template, None, None).unwrap().unwrap();
         assert_eq!(config.k, 10);
         assert_eq!(config.r, Some(100));
@@ -1895,18 +1984,24 @@ mod tests {
             "input cycle: u64\n\
              const k := 10\n\
              const limit := 100\n",
-        ).expect("compile_polydat wires");
+        )
+        .expect("compile_polydat wires");
         let wires: &dyn WireSource = &kernel;
 
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
-        template.params.insert("relevancy".into(), serde_json::json!({
-            "actual": "key",
-            "expected": "{ground_truth}",
-            "k": "k",            // bare wire-name
-            "r": "limit",        // bare wire-name
-            "functions": ["recall"],
-        }));
-        let config = parse_relevancy(&template, None, Some(wires)).unwrap().unwrap();
+        template.params.insert(
+            "relevancy".into(),
+            serde_json::json!({
+                "actual": "key",
+                "expected": "{ground_truth}",
+                "k": "k",            // bare wire-name
+                "r": "limit",        // bare wire-name
+                "functions": ["recall"],
+            }),
+        );
+        let config = parse_relevancy(&template, None, Some(wires))
+            .unwrap()
+            .unwrap();
         assert_eq!(config.k, 10, "bare `k:` resolved through wires");
         assert_eq!(config.r, Some(100), "bare `r:` resolved through wires");
     }
@@ -1917,15 +2012,20 @@ mod tests {
         // identifier in `k:` errors clearly — it can't be a wire
         // reference and isn't a valid integer either.
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
-        template.params.insert("relevancy".into(), serde_json::json!({
-            "actual": "key",
-            "expected": "{ground_truth}",
-            "k": "k",
-            "functions": ["recall"],
-        }));
+        template.params.insert(
+            "relevancy".into(),
+            serde_json::json!({
+                "actual": "key",
+                "expected": "{ground_truth}",
+                "k": "k",
+                "functions": ["recall"],
+            }),
+        );
         let err = parse_relevancy(&template, None, None).unwrap_err();
-        assert!(err.contains("'k' is not a valid non-negative integer"),
-            "diagnostic should describe the parse failure: {err}");
+        assert!(
+            err.contains("'k' is not a valid non-negative integer"),
+            "diagnostic should describe the parse failure: {err}"
+        );
     }
 
     /// A succeeding op that returns NO body must not be failed by a value
@@ -1935,7 +2035,10 @@ mod tests {
     /// failing them — it cost a live benchmark run at tier 6.
     #[test]
     fn value_predicates_are_vacuous_without_a_body() {
-        let result = OpResult { body: None, ..Default::default() };
+        let result = OpResult {
+            body: None,
+            ..Default::default()
+        };
         for predicate in [
             AssertionPredicate::Eq("200".into()),
             AssertionPredicate::Lte(5.0),
@@ -1943,9 +2046,15 @@ mod tests {
             AssertionPredicate::Contains("ok".into()),
             AssertionPredicate::IsNull,
         ] {
-            let spec = AssertionSpec { field: "status".into(), predicate };
-            assert!(spec.check(&result),
-                "a value predicate has nothing to contradict it: {:?}", spec.predicate);
+            let spec = AssertionSpec {
+                field: "status".into(),
+                predicate,
+            };
+            assert!(
+                spec.check(&result),
+                "a value predicate has nothing to contradict it: {:?}",
+                spec.predicate
+            );
         }
     }
 
@@ -1954,15 +2063,26 @@ mod tests {
     /// way to demand one.
     #[test]
     fn presence_predicates_still_fail_without_a_body() {
-        let result = OpResult { body: None, ..Default::default() };
+        let result = OpResult {
+            body: None,
+            ..Default::default()
+        };
         let not_null = AssertionSpec {
-            field: "status".into(), predicate: AssertionPredicate::NotNull };
-        assert!(!not_null.check(&result),
-            "`is: not_null` is how an author demands the field exist");
+            field: "status".into(),
+            predicate: AssertionPredicate::NotNull,
+        };
+        assert!(
+            !not_null.check(&result),
+            "`is: not_null` is how an author demands the field exist"
+        );
         let min_rows = AssertionSpec {
-            field: String::new(), predicate: AssertionPredicate::MinRows(1) };
-        assert!(!min_rows.check(&result),
-            "`min_rows: 1` is how an author demands a non-empty result");
+            field: String::new(),
+            predicate: AssertionPredicate::MinRows(1),
+        };
+        assert!(
+            !min_rows.check(&result),
+            "`min_rows: 1` is how an author demands a non-empty result"
+        );
     }
 
     /// A malformed bound can never pass, body or no body — otherwise a typo
@@ -1970,11 +2090,16 @@ mod tests {
     /// return nothing.
     #[test]
     fn malformed_bounds_fail_even_without_a_body() {
-        let result = OpResult { body: None, ..Default::default() };
+        let result = OpResult {
+            body: None,
+            ..Default::default()
+        };
         let spec = AssertionSpec {
             field: "value".into(),
             predicate: AssertionPredicate::MalformedBound {
-                key: "lte".into(), raw: "{unresolved}".into() },
+                key: "lte".into(),
+                raw: "{unresolved}".into(),
+            },
         };
         assert!(!spec.check(&result));
     }
@@ -1986,18 +2111,30 @@ mod tests {
     #[test]
     fn numeric_bounds_accept_quoted_numbers() {
         let mut template = nbrs_workload::model::ParsedOp::simple("t", "noop");
-        template.params.insert("verify".into(), serde_json::json!([
-            {"field": "value", "lte": "5"},
-            {"field": "value", "gte": " 2 "},
-            {"field": "other", "lte": 7},
-        ]));
+        template.params.insert(
+            "verify".into(),
+            serde_json::json!([
+                {"field": "value", "lte": "5"},
+                {"field": "value", "gte": " 2 "},
+                {"field": "other", "lte": 7},
+            ]),
+        );
         let a = parse_assertions(&template);
-        assert!(matches!(a[0].predicate, AssertionPredicate::Lte(t) if t == 5.0),
-            "quoted lte must parse: {:?}", a[0].predicate);
-        assert!(matches!(a[1].predicate, AssertionPredicate::Gte(t) if t == 2.0),
-            "surrounding whitespace is not a malformed bound: {:?}", a[1].predicate);
-        assert!(matches!(a[2].predicate, AssertionPredicate::Lte(t) if t == 7.0),
-            "the unquoted form is unchanged: {:?}", a[2].predicate);
+        assert!(
+            matches!(a[0].predicate, AssertionPredicate::Lte(t) if t == 5.0),
+            "quoted lte must parse: {:?}",
+            a[0].predicate
+        );
+        assert!(
+            matches!(a[1].predicate, AssertionPredicate::Gte(t) if t == 2.0),
+            "surrounding whitespace is not a malformed bound: {:?}",
+            a[1].predicate
+        );
+        assert!(
+            matches!(a[2].predicate, AssertionPredicate::Lte(t) if t == 7.0),
+            "the unquoted form is unchanged: {:?}",
+            a[2].predicate
+        );
     }
 
     /// A bound that is not a number at all must FAIL LOUDLY and name itself —
@@ -2007,15 +2144,21 @@ mod tests {
     #[test]
     fn non_numeric_bounds_are_malformed_not_zero() {
         let mut template = nbrs_workload::model::ParsedOp::simple("t", "noop");
-        template.params.insert("verify".into(), serde_json::json!([
-            {"field": "value", "lte": "{unresolved}"},
-            {"field": "value", "gte": "abc"},
-        ]));
+        template.params.insert(
+            "verify".into(),
+            serde_json::json!([
+                {"field": "value", "lte": "{unresolved}"},
+                {"field": "value", "gte": "abc"},
+            ]),
+        );
         let a = parse_assertions(&template);
         for spec in &a {
             match &spec.predicate {
                 AssertionPredicate::MalformedBound { raw, .. } => {
-                    assert!(!raw.is_empty(), "the offending text is carried for the message");
+                    assert!(
+                        !raw.is_empty(),
+                        "the offending text is carried for the message"
+                    );
                 }
                 other => panic!("expected MalformedBound, got {other:?}"),
             }
@@ -2023,22 +2166,30 @@ mod tests {
         // And the rendered failure names the malformed bound rather than
         // quoting a threshold the author never wrote.
         let msg = format!("{:?}", a[0].predicate);
-        assert!(msg.contains("MalformedBound"),
-            "the predicate stays malformed all the way to reporting: {msg}");
+        assert!(
+            msg.contains("MalformedBound"),
+            "the predicate stays malformed all the way to reporting: {msg}"
+        );
     }
 
     #[test]
     fn parse_assertions_from_params() {
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT");
-        template.params.insert("verify".into(), serde_json::json!([
-            {"field": "name", "is": "not_null"},
-            {"field": "balance", "gte": 0},
-            {"field": "status", "eq": "active"},
-        ]));
+        template.params.insert(
+            "verify".into(),
+            serde_json::json!([
+                {"field": "name", "is": "not_null"},
+                {"field": "balance", "gte": 0},
+                {"field": "status", "eq": "active"},
+            ]),
+        );
         let assertions = parse_assertions(&template);
         assert_eq!(assertions.len(), 3);
         assert_eq!(assertions[0].field, "name");
-        assert!(matches!(assertions[0].predicate, AssertionPredicate::NotNull));
+        assert!(matches!(
+            assertions[0].predicate,
+            AssertionPredicate::NotNull
+        ));
         assert_eq!(assertions[1].field, "balance");
         assert!(matches!(assertions[1].predicate, AssertionPredicate::Gte(v) if v == 0.0));
         assert_eq!(assertions[2].field, "status");

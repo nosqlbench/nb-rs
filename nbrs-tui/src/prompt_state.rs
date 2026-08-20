@@ -45,9 +45,9 @@
 //! | Ctrl-/     | Toggle keystroke help overlay            |
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rustyline::Word;
 use rustyline::history::{DefaultHistory, History, SearchDirection};
 use rustyline::line_buffer::{ChangeListener, DeleteListener, Direction, LineBuffer};
-use rustyline::Word;
 
 /// No-op listener for [`LineBuffer`] mutations. `LineBuffer`
 /// requires a `ChangeListener` / `DeleteListener` on most of
@@ -139,7 +139,8 @@ impl Completer for NbShellCompleter {
         // first non-whitespace char preceding `pos`. Tokens
         // are whitespace-delimited.
         let head = &line[..pos];
-        let start = head.rfind(|c: char| c.is_whitespace())
+        let start = head
+            .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
             .unwrap_or(0);
         // Only complete the FIRST token (the command name).
@@ -218,14 +219,20 @@ impl PromptState {
     }
 
     /// Current prompt-window height in rows (1..=10).
-    pub fn window_rows(&self) -> u16 { self.window_rows }
+    pub fn window_rows(&self) -> u16 {
+        self.window_rows
+    }
 
     #[allow(dead_code)] // WIP: SRD-77 refine REPL accessor
-    pub fn help_visible(&self) -> bool { self.help_visible }
+    pub fn help_visible(&self) -> bool {
+        self.help_visible
+    }
 
     /// The buffer's current contents (for tests / debug).
     #[allow(dead_code)] // WIP: SRD-77 refine REPL accessor
-    pub fn buffer(&self) -> &str { self.buffer.as_str() }
+    pub fn buffer(&self) -> &str {
+        self.buffer.as_str()
+    }
 
     /// Step the prompt window taller by one row, capped at
     /// [`MAX_WINDOW_ROWS`]. Returns the new height.
@@ -266,8 +273,8 @@ impl PromptState {
     /// should do externally — the prompt itself never side-
     /// effects beyond its own buffer / history / window state.
     pub fn handle_key(&mut self, ke: KeyEvent) -> PromptAction {
-        let alt   = ke.modifiers.contains(KeyModifiers::ALT);
-        let ctrl  = ke.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = ke.modifiers.contains(KeyModifiers::ALT);
+        let ctrl = ke.modifiers.contains(KeyModifiers::CONTROL);
         let shift = ke.modifiers.contains(KeyModifiers::SHIFT);
 
         // Alt + Up/Down: window resize chord. Caller surfaces
@@ -277,7 +284,7 @@ impl PromptState {
         // still routes correctly.
         if alt {
             return match ke.code {
-                KeyCode::Up   => PromptAction::GrowWindow,
+                KeyCode::Up => PromptAction::GrowWindow,
                 KeyCode::Down => PromptAction::ShrinkWindow,
                 _ => PromptAction::Continue,
             };
@@ -507,9 +514,9 @@ impl PromptState {
     /// `cursor_col()` returns the column where it goes on the
     /// input row.
     pub fn render(&self, out: &mut String, terminal_cols: usize, color: bool) {
-        let dim    = if color { "\x1b[2m"  } else { "" };
-        let cyan   = if color { "\x1b[36m" } else { "" };
-        let reset  = if color { "\x1b[0m"  } else { "" };
+        let dim = if color { "\x1b[2m" } else { "" };
+        let cyan = if color { "\x1b[36m" } else { "" };
+        let reset = if color { "\x1b[0m" } else { "" };
 
         let total_rows = self.window_rows as usize;
         let input_rows_above = total_rows.saturating_sub(1);
@@ -517,10 +524,14 @@ impl PromptState {
         if self.help_visible && input_rows_above > 0 {
             let help_rows = build_help_rows(input_rows_above, terminal_cols, color);
             for (i, row) in help_rows.iter().enumerate() {
-                if i > 0 { out.push_str("\r\n"); }
+                if i > 0 {
+                    out.push_str("\r\n");
+                }
                 out.push_str(row);
             }
-            if !help_rows.is_empty() { out.push_str("\r\n"); }
+            if !help_rows.is_empty() {
+                out.push_str("\r\n");
+            }
         } else {
             // Plain top rows are blank — the input is anchored
             // to the LAST row of the window.
@@ -546,9 +557,7 @@ impl PromptState {
     /// in chars (we treat each char as one cell — good for
     /// ASCII; multi-cell CJK width is a future refinement).
     pub fn cursor_col(&self) -> usize {
-        let buf_pos_chars = self.buffer.as_str()[..self.buffer.pos()]
-            .chars()
-            .count();
+        let buf_pos_chars = self.buffer.as_str()[..self.buffer.pos()].chars().count();
         2 + buf_pos_chars
     }
 }
@@ -558,7 +567,9 @@ impl PromptState {
 /// shared prefix (or no candidates).
 fn longest_common_prefix(candidates: &[String]) -> String {
     let mut iter = candidates.iter();
-    let Some(first) = iter.next() else { return String::new(); };
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
     let mut lcp_end = first.len();
     for s in iter {
         // Walk both strings in parallel by byte; truncate
@@ -573,7 +584,9 @@ fn longest_common_prefix(candidates: &[String]) -> String {
             common += 1;
         }
         lcp_end = common;
-        if lcp_end == 0 { break; }
+        if lcp_end == 0 {
+            break;
+        }
     }
     first[..lcp_end].to_string()
 }
@@ -581,28 +594,28 @@ fn longest_common_prefix(candidates: &[String]) -> String {
 /// Render the help overlay rows. Truncates to fit
 /// `max_rows`; soft-clamps each row to `cols`.
 fn build_help_rows(max_rows: usize, cols: usize, color: bool) -> Vec<String> {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let bold  = if color { "\x1b[1m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let entries: &[(&str, &str)] = &[
-        ("Enter",      "submit command"),
-        ("Up / Down",  "history previous / next"),
+        ("Enter", "submit command"),
+        ("Up / Down", "history previous / next"),
         ("Left / Right", "move cursor"),
         ("Home / Ctrl-A", "cursor to start"),
-        ("End / Ctrl-E",  "cursor to end"),
-        ("Backspace",  "delete previous char"),
-        ("Delete",     "delete char under cursor"),
-        ("Ctrl-U",     "kill to line start"),
-        ("Ctrl-K",     "kill to line end"),
-        ("Ctrl-W",     "kill previous word"),
-        ("Alt + Up",   "grow prompt window"),
+        ("End / Ctrl-E", "cursor to end"),
+        ("Backspace", "delete previous char"),
+        ("Delete", "delete char under cursor"),
+        ("Ctrl-U", "kill to line start"),
+        ("Ctrl-K", "kill to line end"),
+        ("Ctrl-W", "kill previous word"),
+        ("Alt + Up", "grow prompt window"),
         ("Alt + Down", "shrink prompt window"),
-        ("Ctrl-/",     "toggle this help overlay"),
-        ("Ctrl-C",     "interrupt run (re-raises SIGINT)"),
-        ("Ctrl-Z",     "suspend run"),
-        ("Ctrl-L",     "redraw screen"),
-        ("Ctrl-T",     "toggle full TUI mode"),
+        ("Ctrl-/", "toggle this help overlay"),
+        ("Ctrl-C", "interrupt run (re-raises SIGINT)"),
+        ("Ctrl-Z", "suspend run"),
+        ("Ctrl-L", "redraw screen"),
+        ("Ctrl-T", "toggle full TUI mode"),
     ];
 
     let mut rows: Vec<String> = Vec::with_capacity(max_rows);
@@ -610,10 +623,11 @@ fn build_help_rows(max_rows: usize, cols: usize, color: bool) -> Vec<String> {
     row.push_str(&format!("{bold}nb-shell keystrokes{reset}"));
     rows.push(row);
     for (key, descr) in entries {
-        if rows.len() >= max_rows { break; }
+        if rows.len() >= max_rows {
+            break;
+        }
         // Pad the key to 14 chars so descriptions columnise.
-        let line = format!("  {bold}{:14}{reset} {dim}{}{reset}",
-            key, descr);
+        let line = format!("  {bold}{:14}{reset} {dim}{}{reset}", key, descr);
         rows.push(line);
     }
     let _ = cols;
@@ -652,7 +666,9 @@ mod tests {
     #[test]
     fn backspace_removes_one_char() {
         let mut p = PromptState::new();
-        for c in "abc".chars() { p.handle_key(char_key(c)); }
+        for c in "abc".chars() {
+            p.handle_key(char_key(c));
+        }
         p.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE));
         assert_eq!(p.buffer(), "ab");
     }
@@ -660,7 +676,9 @@ mod tests {
     #[test]
     fn enter_returns_submit_and_clears_buffer() {
         let mut p = PromptState::new();
-        for c in "help".chars() { p.handle_key(char_key(c)); }
+        for c in "help".chars() {
+            p.handle_key(char_key(c));
+        }
         match p.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)) {
             PromptAction::Submit(line) => assert_eq!(line, "help"),
             other => panic!("expected Submit, got {other:?}"),
@@ -680,7 +698,9 @@ mod tests {
     #[test]
     fn ctrl_c_returns_interrupt() {
         let mut p = PromptState::new();
-        for c in "stuff".chars() { p.handle_key(char_key(c)); }
+        for c in "stuff".chars() {
+            p.handle_key(char_key(c));
+        }
         match p.handle_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)) {
             PromptAction::Interrupt => {}
             other => panic!("Ctrl-C should be Interrupt, got {other:?}"),
@@ -697,10 +717,17 @@ mod tests {
         }
         // Direct helper to actually mutate state (handle_key
         // returns the action; sink applies it).
-        for _ in 0..15 { p.grow_window(); }
-        assert_eq!(p.window_rows(), MAX_WINDOW_ROWS,
-            "grow clamps at MAX_WINDOW_ROWS");
-        for _ in 0..MAX_WINDOW_ROWS as usize + 5 { p.shrink_window(); }
+        for _ in 0..15 {
+            p.grow_window();
+        }
+        assert_eq!(
+            p.window_rows(),
+            MAX_WINDOW_ROWS,
+            "grow clamps at MAX_WINDOW_ROWS"
+        );
+        for _ in 0..MAX_WINDOW_ROWS as usize + 5 {
+            p.shrink_window();
+        }
         assert_eq!(p.window_rows(), 1, "shrink clamps at 1");
     }
 
@@ -721,7 +748,9 @@ mod tests {
     fn history_up_recalls_previous_entries() {
         let mut p = PromptState::new();
         for cmd in ["one", "two", "three"] {
-            for c in cmd.chars() { p.handle_key(char_key(c)); }
+            for c in cmd.chars() {
+                p.handle_key(char_key(c));
+            }
             p.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
         }
         // Up x1 → "three"
@@ -741,7 +770,9 @@ mod tests {
     #[test]
     fn ctrl_u_kills_from_start_to_cursor() {
         let mut p = PromptState::new();
-        for c in "hello world".chars() { p.handle_key(char_key(c)); }
+        for c in "hello world".chars() {
+            p.handle_key(char_key(c));
+        }
         // cursor at end; Ctrl-U kills the line.
         p.handle_key(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(p.buffer(), "");
@@ -750,27 +781,38 @@ mod tests {
     #[test]
     fn render_includes_prompt_glyph_and_buffer() {
         let mut p = PromptState::new();
-        for c in "ls".chars() { p.handle_key(char_key(c)); }
+        for c in "ls".chars() {
+            p.handle_key(char_key(c));
+        }
         let mut s = String::new();
         p.render(&mut s, 80, false);
-        assert!(s.contains("❯ ls"), "render should contain prompt + buffer: {s:?}");
+        assert!(
+            s.contains("❯ ls"),
+            "render should contain prompt + buffer: {s:?}"
+        );
     }
 
     #[test]
     fn render_help_overlay_when_window_grown_and_help_toggled() {
         let mut p = PromptState::new();
-        for _ in 0..5 { p.grow_window(); }
+        for _ in 0..5 {
+            p.grow_window();
+        }
         p.toggle_help();
         let mut s = String::new();
         p.render(&mut s, 80, false);
-        assert!(s.contains("nb-shell keystrokes"),
-            "help overlay should appear when grown + toggled: {s:?}");
+        assert!(
+            s.contains("nb-shell keystrokes"),
+            "help overlay should appear when grown + toggled: {s:?}"
+        );
     }
 
     #[test]
     fn cursor_col_accounts_for_prompt_glyph_width() {
         let mut p = PromptState::new();
-        for c in "abc".chars() { p.handle_key(char_key(c)); }
+        for c in "abc".chars() {
+            p.handle_key(char_key(c));
+        }
         // "❯ " = 2 cells, "abc" = 3 chars → cursor at col 5.
         assert_eq!(p.cursor_col(), 5);
     }
@@ -786,7 +828,9 @@ mod tests {
         // `metric` (which is itself a complete command —
         // `metric` is a prefix of `metrics`, so `metric` is
         // the LCP, not the unique resolution).
-        for c in "snapsho".chars() { p.handle_key(char_key(c)); }
+        for c in "snapsho".chars() {
+            p.handle_key(char_key(c));
+        }
         match p.handle_key(key(KeyCode::Tab, KeyModifiers::NONE)) {
             PromptAction::Continue => {}
             other => panic!("single-match Tab should Continue, got {other:?}"),
@@ -799,7 +843,9 @@ mod tests {
         let mut p = PromptState::new();
         // `m` matches: meta, metrics, metric
         // LCP = "met"
-        for c in "m".chars() { p.handle_key(char_key(c)); }
+        for c in "m".chars() {
+            p.handle_key(char_key(c));
+        }
         match p.handle_key(key(KeyCode::Tab, KeyModifiers::NONE)) {
             PromptAction::Continue => {}
             other => panic!("LCP-advance Tab should Continue, got {other:?}"),
@@ -813,7 +859,9 @@ mod tests {
         let mut p = PromptState::new();
         // After typing the LCP "met", another Tab can't
         // advance — sink should show the candidates.
-        for c in "met".chars() { p.handle_key(char_key(c)); }
+        for c in "met".chars() {
+            p.handle_key(char_key(c));
+        }
         match p.handle_key(key(KeyCode::Tab, KeyModifiers::NONE)) {
             PromptAction::ShowCompletions(list) => {
                 let names: Vec<&str> = list.iter().map(|s| s.as_str()).collect();
@@ -830,7 +878,9 @@ mod tests {
     #[test]
     fn tab_with_no_matches_is_noop() {
         let mut p = PromptState::new();
-        for c in "xyzzy".chars() { p.handle_key(char_key(c)); }
+        for c in "xyzzy".chars() {
+            p.handle_key(char_key(c));
+        }
         match p.handle_key(key(KeyCode::Tab, KeyModifiers::NONE)) {
             PromptAction::Continue => {}
             other => panic!("no-match Tab should Continue, got {other:?}"),
@@ -841,7 +891,9 @@ mod tests {
     #[test]
     fn tab_after_first_token_does_nothing() {
         let mut p = PromptState::new();
-        for c in "set fo".chars() { p.handle_key(char_key(c)); }
+        for c in "set fo".chars() {
+            p.handle_key(char_key(c));
+        }
         // `set <token>` — second-token completion isn't
         // wired yet, so Tab here returns Continue with no
         // buffer change.
@@ -860,10 +912,7 @@ mod tests {
             longest_common_prefix(&["meta".into(), "metric".into(), "metrics".into()]),
             "met",
         );
-        assert_eq!(
-            longest_common_prefix(&["abc".into(), "xyz".into()]),
-            "",
-        );
+        assert_eq!(longest_common_prefix(&["abc".into(), "xyz".into()]), "",);
         assert_eq!(
             longest_common_prefix(&["help".into(), "help".into()]),
             "help",

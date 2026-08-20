@@ -67,27 +67,30 @@ impl BinomialSummary {
     }
 
     /// Number of cells the buffer may ever hold simultaneously.
-    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 
     /// Record one sample at the tail. If the buffer is already at
     /// capacity, the whole buffer is pairwise-merged in place first
     /// (halving its length) and then the new sample is appended.
     pub fn record(&self, value: f64) {
-        let mut g = self.samples.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut g = self.samples.lock().unwrap_or_else(|e| e.into_inner());
         if g.len() >= self.capacity {
             let mut reduced: Vec<f64> = Vec::with_capacity(self.capacity / 2 + 1);
             let mut it = g.iter().copied();
             loop {
                 match (it.next(), it.next()) {
                     (Some(a), Some(b)) => reduced.push((a + b) * 0.5),
-                    (Some(a), None) => { reduced.push(a); break; }
+                    (Some(a), None) => {
+                        reduced.push(a);
+                        break;
+                    }
                     (None, _) => break,
                 }
             }
             *g = reduced;
-            let mut r = self.reductions.lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut r = self.reductions.lock().unwrap_or_else(|e| e.into_inner());
             *r += 1;
         }
         g.push(value);
@@ -97,20 +100,21 @@ impl BinomialSummary {
     /// arbitrarily often without perturbing the state — `record`
     /// is the only mutator.
     pub fn snapshot(&self) -> Vec<f64> {
-        self.samples.lock()
+        self.samples
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
     /// Number of samples currently held (never exceeds `capacity`).
     pub fn len(&self) -> usize {
-        self.samples.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.samples.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// True when no samples have been recorded yet.
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Number of pairwise reductions performed so far. Each
     /// reduction halves the buffer's effective time resolution —
@@ -118,8 +122,7 @@ impl BinomialSummary {
     /// per-cell wall time by `2^reductions()` to recover the
     /// original window's span.
     pub fn reductions(&self) -> u32 {
-        *self.reductions.lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *self.reductions.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -134,7 +137,9 @@ mod tests {
     #[test]
     fn records_up_to_capacity() {
         let b = BinomialSummary::new(8);
-        for i in 0..5 { b.record(i as f64); }
+        for i in 0..5 {
+            b.record(i as f64);
+        }
         assert_eq!(b.len(), 5);
         assert_eq!(b.reductions(), 0);
         assert_eq!(b.snapshot(), vec![0.0, 1.0, 2.0, 3.0, 4.0]);
@@ -144,7 +149,9 @@ mod tests {
     fn reduces_on_overflow() {
         let b = BinomialSummary::new(4);
         // Fill to capacity.
-        for i in 0..4 { b.record(i as f64); }
+        for i in 0..4 {
+            b.record(i as f64);
+        }
         assert_eq!(b.snapshot(), vec![0.0, 1.0, 2.0, 3.0]);
         assert_eq!(b.reductions(), 0);
 
@@ -160,7 +167,9 @@ mod tests {
     fn odd_length_carries_last() {
         let b = BinomialSummary::new(3);
         // Fill: [1, 2, 3]
-        for i in 1..=3 { b.record(i as f64); }
+        for i in 1..=3 {
+            b.record(i as f64);
+        }
         // Record 4 → reduce pairs of 3: (1+2)/2=1.5, leftover 3 → [1.5, 3]
         // then append 4 → [1.5, 3, 4]
         b.record(4.0);
@@ -171,7 +180,9 @@ mod tests {
     fn capacity_never_exceeded_across_many_records() {
         let cap = 16usize;
         let b = BinomialSummary::new(cap);
-        for i in 0..1_000 { b.record(i as f64); }
+        for i in 0..1_000 {
+            b.record(i as f64);
+        }
         assert!(b.len() <= cap, "len {} > capacity {}", b.len(), cap);
         // At least a few reductions should have fired — a lot more
         // in practice. Exact count depends on fill pattern.
@@ -181,7 +192,8 @@ mod tests {
     #[test]
     fn snapshot_does_not_drain() {
         let b = BinomialSummary::new(4);
-        b.record(10.0); b.record(20.0);
+        b.record(10.0);
+        b.record(20.0);
         let a = b.snapshot();
         let c = b.snapshot();
         assert_eq!(a, c);

@@ -26,18 +26,23 @@ fn nbrs_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nbrs"))
 }
 
-struct TempDir { path: PathBuf }
+struct TempDir {
+    path: PathBuf,
+}
 impl TempDir {
     fn new() -> Self {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir()
-            .join(format!("nbrs-lifecycle-events-{pid}-{nanos}"));
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nbrs-lifecycle-events-{pid}-{nanos}"));
         std::fs::create_dir_all(&path).expect("create tempdir");
         Self { path }
     }
-    fn path(&self) -> &std::path::Path { &self.path }
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 impl Drop for TempDir {
     fn drop(&mut self) {
@@ -53,7 +58,8 @@ fn run_workload(yaml: &str) -> String {
     let session_path = dir.path().join("session");
     let mut cmd = Command::new(nbrs_binary());
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd.arg("run");
     cmd.arg(format!("workload={}", yaml_path.display()));
@@ -62,14 +68,14 @@ fn run_workload(yaml: &str) -> String {
     cmd.arg("tui=off");
     cmd.arg("adapter=stdout");
     let output = cmd.output().expect("run nbrs");
-    let session_log = std::fs::read_to_string(session_path.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session_path.join("session.log")).unwrap_or_default();
     format!("{}\n{session_log}", String::from_utf8_lossy(&output.stderr))
 }
 
 #[test]
 fn session_start_and_end_fire_when_bound() {
-    let stderr = run_workload(r#"
+    let stderr = run_workload(
+        r#"
 readouts:
   on_session_start: trace
   on_session_end: trace
@@ -85,16 +91,22 @@ phases:
       c := (cycle)
     ops:
       out: { stmt: "x={c}" }
-"#);
-    assert!(stderr.contains("event=on_session_start"),
-        "session_start trace missing: {stderr}");
-    assert!(stderr.contains("event=on_session_end"),
-        "session_end trace missing: {stderr}");
+"#,
+    );
+    assert!(
+        stderr.contains("event=on_session_start"),
+        "session_start trace missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("event=on_session_end"),
+        "session_end trace missing: {stderr}"
+    );
 }
 
 #[test]
 fn phase_start_fires_when_bound() {
-    let stderr = run_workload(r#"
+    let stderr = run_workload(
+        r#"
 readouts:
   on_phase_start: trace
 
@@ -109,14 +121,18 @@ phases:
       c := (cycle)
     ops:
       out: { stmt: "x={c}" }
-"#);
-    assert!(stderr.contains("event=on_phase_start"),
-        "phase_start trace missing: {stderr}");
+"#,
+    );
+    assert!(
+        stderr.contains("event=on_phase_start"),
+        "phase_start trace missing: {stderr}"
+    );
 }
 
 #[test]
 fn each_start_and_end_fire_when_bound() {
-    let stderr = run_workload(r#"
+    let stderr = run_workload(
+        r#"
 readouts:
   each_*: trace
 
@@ -133,16 +149,22 @@ phases:
       c := (cycle)
     ops:
       out: { stmt: "p={p}/c={c}" }
-"#);
-    assert!(stderr.contains("event=on_each_start"),
-        "each_start trace missing: {stderr}");
-    assert!(stderr.contains("event=on_each_end"),
-        "each_end trace missing: {stderr}");
+"#,
+    );
+    assert!(
+        stderr.contains("event=on_each_start"),
+        "each_start trace missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("event=on_each_end"),
+        "each_end trace missing: {stderr}"
+    );
 }
 
 #[test]
 fn scope_start_and_end_fire_when_bound_to_do_loop() {
-    let stderr = run_workload(r#"
+    let stderr = run_workload(
+        r#"
 params:
   iter_count: "3"
 
@@ -163,16 +185,22 @@ phases:
       c := (cycle)
     ops:
       out: { stmt: "i={i}/c={c}" }
-"#);
-    assert!(stderr.contains("event=on_scope_start"),
-        "scope_start trace missing: {stderr}");
-    assert!(stderr.contains("event=on_scope_end"),
-        "scope_end trace missing: {stderr}");
+"#,
+    );
+    assert!(
+        stderr.contains("event=on_scope_start"),
+        "scope_start trace missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("event=on_scope_end"),
+        "scope_end trace missing: {stderr}"
+    );
 }
 
 #[test]
 fn universal_wildcard_binds_every_event() {
-    let stderr = run_workload(r#"
+    let stderr = run_workload(
+        r#"
 readouts:
   "*": trace
 
@@ -189,15 +217,21 @@ phases:
       c := (cycle)
     ops:
       out: { stmt: "p={p}/c={c}" }
-"#);
+"#,
+    );
     // Every lifecycle slot the executor reaches in this
     // workload should appear at least once.
     for slot in [
-        "on_session_start", "on_session_end",
-        "on_phase_start",   "on_phase_end",
-        "on_each_start",    "on_each_end",
+        "on_session_start",
+        "on_session_end",
+        "on_phase_start",
+        "on_phase_end",
+        "on_each_start",
+        "on_each_end",
     ] {
-        assert!(stderr.contains(&format!("event={slot}")),
-            "wildcard bind missing slot {slot}: {stderr}");
+        assert!(
+            stderr.contains(&format!("event={slot}")),
+            "wildcard bind missing slot {slot}: {stderr}"
+        );
     }
 }

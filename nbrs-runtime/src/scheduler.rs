@@ -56,7 +56,9 @@ impl ScheduleSpec {
     /// Equivalent to the pre-scheduler runner behavior; what
     /// callers get when no `schedule=` parameter is supplied.
     pub fn default_serial() -> Self {
-        Self { levels: vec![ConcurrencyLimit::Bounded(1)] }
+        Self {
+            levels: vec![ConcurrencyLimit::Bounded(1)],
+        }
     }
 
     /// Parse the slash-separated form, e.g. `"1/4/*"`. Empty
@@ -105,7 +107,9 @@ impl ScheduleSpec {
     /// spec is behaviorally equivalent to the default.
     #[allow(dead_code)] // used by unit tests; kept as spec-introspection API
     pub fn is_serial(&self) -> bool {
-        self.levels.iter().all(|l| matches!(l, ConcurrencyLimit::Bounded(1)))
+        self.levels
+            .iter()
+            .all(|l| matches!(l, ConcurrencyLimit::Bounded(1)))
     }
 }
 
@@ -170,7 +174,9 @@ pub fn build(_spec: &ScheduleSpec) -> Box<dyn PhaseScheduler> {
 
 #[cfg(test)]
 fn format_spec(spec: &ScheduleSpec) -> String {
-    let parts: Vec<String> = spec.levels.iter()
+    let parts: Vec<String> = spec
+        .levels
+        .iter()
         .map(|l| match l {
             ConcurrencyLimit::Bounded(n) => n.to_string(),
             ConcurrencyLimit::Unlimited => "*".into(),
@@ -202,11 +208,14 @@ mod tests {
     #[test]
     fn parse_multilevel() {
         let s = ScheduleSpec::parse("1/4/*").unwrap();
-        assert_eq!(s.levels, vec![
-            ConcurrencyLimit::Bounded(1),
-            ConcurrencyLimit::Bounded(4),
-            ConcurrencyLimit::Unlimited,
-        ]);
+        assert_eq!(
+            s.levels,
+            vec![
+                ConcurrencyLimit::Bounded(1),
+                ConcurrencyLimit::Bounded(4),
+                ConcurrencyLimit::Unlimited,
+            ]
+        );
     }
 
     #[test]
@@ -222,8 +231,10 @@ mod tests {
     #[test]
     fn rejects_zero() {
         let err = ScheduleSpec::parse("0").unwrap_err();
-        assert!(err.contains("0 is not a valid concurrency limit"),
-            "unexpected: {err}");
+        assert!(
+            err.contains("0 is not a valid concurrency limit"),
+            "unexpected: {err}"
+        );
     }
 
     #[test]

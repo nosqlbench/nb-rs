@@ -78,7 +78,9 @@ impl std::error::Error for SelectorParseError {}
 impl Selector {
     /// Empty selector — matches every label set.
     pub fn new() -> Self {
-        Self { clauses: Vec::new() }
+        Self {
+            clauses: Vec::new(),
+        }
     }
 
     /// Parse the text form:
@@ -98,22 +100,22 @@ impl Selector {
 
     /// Push `key = value` — exact match clause.
     pub fn eq(mut self, key: &str, value: &str) -> Self {
-        self.clauses.push(Clause::Eq(key.to_string(), value.to_string()));
+        self.clauses
+            .push(Clause::Eq(key.to_string(), value.to_string()));
         self
     }
 
     /// Push `key != value` — non-match (or absent) clause.
     pub fn ne(mut self, key: &str, value: &str) -> Self {
-        self.clauses.push(Clause::Ne(key.to_string(), value.to_string()));
+        self.clauses
+            .push(Clause::Ne(key.to_string(), value.to_string()));
         self
     }
 
     /// Push `key ~= pattern` — glob-match clause.
     pub fn glob(mut self, key: &str, pattern: &str) -> Self {
-        self.clauses.push(Clause::Glob(
-            key.to_string(),
-            GlobPattern::new(pattern),
-        ));
+        self.clauses
+            .push(Clause::Glob(key.to_string(), GlobPattern::new(pattern)));
         self
     }
 
@@ -153,7 +155,9 @@ impl fmt::Display for Selector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
         for clause in &self.clauses {
-            if !first { f.write_str(",")?; }
+            if !first {
+                f.write_str(",")?;
+            }
             first = false;
             match clause {
                 Clause::Eq(k, v) => write!(f, "{k}={v}")?,
@@ -193,7 +197,9 @@ struct GlobPattern {
 
 impl GlobPattern {
     fn new(pattern: &str) -> Self {
-        Self { pattern: pattern.to_string() }
+        Self {
+            pattern: pattern.to_string(),
+        }
     }
 
     fn matches(&self, s: &str) -> bool {
@@ -517,9 +523,7 @@ mod tests {
         assert!(sel.matches(&l));
 
         // Any single clause failing breaks the AND.
-        let miss = Selector::new()
-            .eq("phase", "rampup")
-            .eq("k", "999");
+        let miss = Selector::new().eq("phase", "rampup").eq("k", "999");
         assert!(!miss.matches(&l));
     }
 
@@ -650,9 +654,7 @@ mod tests {
     fn macro_basic_eq_chain() {
         let sel: Selector = crate::selector!(phase = "ann_query", k = "10");
         assert_eq!(sel.len(), 2);
-        assert!(sel.matches(&lbls(&[
-            ("phase", "ann_query"), ("k", "10"),
-        ])));
+        assert!(sel.matches(&lbls(&[("phase", "ann_query"), ("k", "10"),])));
     }
 
     #[test]

@@ -6,10 +6,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use hdrhistogram::Histogram as HdrHistogram;
-use crate::labels::Labels;
 use crate::instruments::histogram::Histogram;
+use crate::labels::Labels;
 use crate::summaries::live_window::{LiveWindowConfig, LiveWindowHistogram};
+use hdrhistogram::Histogram as HdrHistogram;
 
 pub struct Timer {
     labels: Labels,
@@ -53,10 +53,7 @@ impl Timer {
     /// [`crate::instruments::histogram::HDR_SIGDIGS_PROP`].
     /// Falls back to the default if no ancestor declares it.
     /// SRD 40 §"HDR significant digits — subtree-scoped setting".
-    pub fn with_sigdigs_from(
-        labels: Labels,
-        component: &crate::component::Component,
-    ) -> Self {
+    pub fn with_sigdigs_from(labels: Labels, component: &crate::component::Component) -> Self {
         let sigdigs = crate::instruments::histogram::resolve_hdr_sigdigs(component);
         Self::with_sigdigs(labels, sigdigs)
     }
@@ -127,7 +124,8 @@ impl Timer {
     /// histogram. Empty on the very first call (ring just created,
     /// no records captured yet).
     pub fn peek_live_window(&self) -> HdrHistogram<u64> {
-        let ring = self.live_window
+        let ring = self
+            .live_window
             .get_or_init(|| Arc::new(LiveWindowHistogram::new(LiveWindowConfig::default())));
         ring.peek()
     }

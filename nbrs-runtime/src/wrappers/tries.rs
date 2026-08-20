@@ -32,7 +32,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-
 use crate::activity::ActivityMetrics;
 use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult, WrappingDispenser};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
@@ -46,7 +45,9 @@ pub const NAME: WrapperName = WrapperName::new("tries");
 /// cannot see. The registry entry drives field validation + telemetry; the
 /// hand-placed innermost construction is authoritative.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(op) = s.op() else { return false; };
+    let Some(op) = s.op() else {
+        return false;
+    };
     op.params.contains_key("tries")
 }
 
@@ -117,8 +118,12 @@ impl TriesDispenser {
         stop: crate::session_signals::StopView,
     ) -> Arc<dyn OpDispenser> {
         Arc::new(Self {
-            inner, tries, metrics,
-            backoff_base_ms, backoff_max_ms, backoff_ratio,
+            inner,
+            tries,
+            metrics,
+            backoff_base_ms,
+            backoff_max_ms,
+            backoff_ratio,
             stop,
         })
     }
@@ -173,7 +178,9 @@ impl OpDispenser for TriesDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // `tries: 0` — the op is configured to fail without executing.
             // Accounted as one failed (zero-length) attempt so the att:%
@@ -260,8 +267,11 @@ impl OpDispenser for TriesDispenser {
                                 return Err(e);
                             }
                             let wait = backoff_wait_ms(
-                                self.backoff_base_ms, self.backoff_max_ms,
-                                self.backoff_ratio, attempt_no, cycle,
+                                self.backoff_base_ms,
+                                self.backoff_max_ms,
+                                self.backoff_ratio,
+                                attempt_no,
+                                cycle,
                             );
                             if wait > 0 {
                                 portable_sleep_ms(wait).await;
@@ -306,7 +316,9 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 let n = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
                 if n <= self.fail_first {
@@ -316,7 +328,10 @@ mod tests {
                         retryable: true,
                     }))
                 } else {
-                    Ok(OpResult { body: None::<Box<dyn ResultBody>>, skipped: false })
+                    Ok(OpResult {
+                        body: None::<Box<dyn ResultBody>>,
+                        skipped: false,
+                    })
                 }
             })
         }
@@ -340,8 +355,11 @@ mod tests {
         for (i, &cap) in caps.iter().enumerate() {
             let attempt = (i + 1) as u32;
             let w = backoff_wait_ms(100, 10_000, 2.0, attempt, 42);
-            assert!(w >= cap / 2 && w <= cap,
-                "attempt {attempt}: wait {w} out of [{},{cap}]", cap / 2);
+            assert!(
+                w >= cap / 2 && w <= cap,
+                "attempt {attempt}: wait {w} out of [{},{cap}]",
+                cap / 2
+            );
         }
         // ratio 1.0 holds the wait at the floor every attempt.
         for attempt in 1..=5u32 {
@@ -351,26 +369,44 @@ mod tests {
         // base 0 disables pacing entirely.
         assert_eq!(backoff_wait_ms(0, 10_000, 2.0, 3, 1), 0);
         // Deterministic: same (cycle, attempt) → same wait (replayable).
-        assert_eq!(backoff_wait_ms(100, 10_000, 2.0, 4, 99),
-                   backoff_wait_ms(100, 10_000, 2.0, 4, 99));
+        assert_eq!(
+            backoff_wait_ms(100, 10_000, 2.0, 4, 99),
+            backoff_wait_ms(100, 10_000, 2.0, 4, 99)
+        );
         // A misconfigured ratio < 1.0 is clamped, never shrinks the wait.
         let w = backoff_wait_ms(100, 10_000, 0.1, 5, 3);
-        assert!(w >= 50 && w <= 100, "sub-1.0 ratio should hold at floor: {w}");
+        assert!(
+            w >= 50 && w <= 100,
+            "sub-1.0 ratio should hold at floor: {w}"
+        );
     }
 
     /// `tries: 0` fails WITHOUT invoking the inner op.
     #[tokio::test]
     async fn tries_zero_fails_without_executing() {
-        let inner = Arc::new(FlakyInner { fail_first: 0, calls: AtomicU32::new(0) });
+        let inner = Arc::new(FlakyInner {
+            fail_first: 0,
+            calls: AtomicU32::new(0),
+        });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 0, metrics, 0, 0, 2.0,
-            crate::session_signals::StopView::default());
+        let d = TriesDispenser::wrap(
+            inner.clone(),
+            0,
+            metrics,
+            0,
+            0,
+            2.0,
+            crate::session_signals::StopView::default(),
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("tries:0 must fail");
         assert_eq!(err.error().error_name, "tries_zero");
-        assert_eq!(inner.calls.load(Ordering::Relaxed), 0,
-            "inner must never be invoked at tries:0");
+        assert_eq!(
+            inner.calls.load(Ordering::Relaxed),
+            0,
+            "inner must never be invoked at tries:0"
+        );
     }
 
     /// Session shutdown ends the retry loop: a retryable failure with
@@ -379,32 +415,56 @@ mod tests {
     #[tokio::test]
     async fn shutdown_stops_retries_immediately() {
         let _guard = crate::session_signals::STOP_GLOBAL_TEST_LOCK
-            .lock().unwrap_or_else(|e| e.into_inner());
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::session_signals::clear_session_stop_for_test();
         // Would fail retryably 50 times — but stop is raised, so the
         // very first failure must be terminal.
-        let inner = Arc::new(FlakyInner { fail_first: 50, calls: AtomicU32::new(0) });
+        let inner = Arc::new(FlakyInner {
+            fail_first: 50,
+            calls: AtomicU32::new(0),
+        });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 100, metrics, 0, 0, 2.0,
-            crate::session_signals::StopView::default());
+        let d = TriesDispenser::wrap(
+            inner.clone(),
+            100,
+            metrics,
+            0,
+            0,
+            2.0,
+            crate::session_signals::StopView::default(),
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         crate::session_signals::request_stop();
         let res = d.execute(0, &ctx).await;
         crate::session_signals::clear_session_stop_for_test();
         res.expect_err("failure under shutdown must be terminal");
-        assert_eq!(inner.calls.load(Ordering::Relaxed), 1,
-            "no fresh attempts once the session is stopping");
+        assert_eq!(
+            inner.calls.load(Ordering::Relaxed),
+            1,
+            "no fresh attempts once the session is stopping"
+        );
     }
 
     /// `tries: 3` retries a retryable failure up to 3 TOTAL attempts and
     /// succeeds when the third works.
     #[tokio::test]
     async fn tries_is_a_total_attempt_budget() {
-        let inner = Arc::new(FlakyInner { fail_first: 2, calls: AtomicU32::new(0) });
+        let inner = Arc::new(FlakyInner {
+            fail_first: 2,
+            calls: AtomicU32::new(0),
+        });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone(), 0, 0, 2.0,
-            crate::session_signals::StopView::default());
+        let d = TriesDispenser::wrap(
+            inner.clone(),
+            3,
+            metrics.clone(),
+            0,
+            0,
+            2.0,
+            crate::session_signals::StopView::default(),
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         d.execute(0, &ctx).await.expect("third attempt succeeds");
@@ -416,15 +476,28 @@ mod tests {
     /// third attempt fails after exactly 2 invocations.
     #[tokio::test]
     async fn budget_exhaustion_is_terminal() {
-        let inner = Arc::new(FlakyInner { fail_first: 5, calls: AtomicU32::new(0) });
+        let inner = Arc::new(FlakyInner {
+            fail_first: 5,
+            calls: AtomicU32::new(0),
+        });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 2, metrics, 0, 0, 2.0,
-            crate::session_signals::StopView::default());
+        let d = TriesDispenser::wrap(
+            inner.clone(),
+            2,
+            metrics,
+            0,
+            0,
+            2.0,
+            crate::session_signals::StopView::default(),
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("budget spent");
         assert_eq!(err.error().error_name, "Timeout");
-        assert_eq!(inner.calls.load(Ordering::Relaxed), 2,
-            "tries:2 = exactly two total attempts");
+        assert_eq!(
+            inner.calls.load(Ordering::Relaxed),
+            2,
+            "tries:2 = exactly two total attempts"
+        );
     }
 }

@@ -50,9 +50,13 @@ fn install_rate_control(initial: f64) -> std::sync::Arc<std::sync::RwLock<Compon
     root.read().unwrap().controls().declare(
         ControlBuilder::new("rate", initial)
             .reify_as_gauge(|v: &f64| Some(*v))
-            .from_f64(|v| if v <= 0.0 {
-                Err("rate must be positive".into())
-            } else { Ok(v) })
+            .from_f64(|v| {
+                if v <= 0.0 {
+                    Err("rate must be positive".into())
+                } else {
+                    Ok(v)
+                }
+            })
             .branch_scope(BranchScope::Subtree)
             .build(),
     );
@@ -66,16 +70,19 @@ async fn list_controls_empty_when_no_controls_declared() {
     // Install a session with no controls so the endpoint sees an
     // empty registry rather than picking up residue from another
     // test.
-    let root = Component::root(
-        Labels::of("session", "empty"),
-        HashMap::new(),
-    );
+    let root = Component::root(Labels::of("session", "empty"), HashMap::new());
     set_session_root(root);
 
     let app = build_router();
-    let resp = app.oneshot(
-        Request::builder().uri("/api/controls").body(Body::empty()).unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/controls")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = read_body(resp.into_body()).await;
     assert_eq!(body.trim(), "[]");
@@ -87,9 +94,15 @@ async fn list_controls_returns_every_declared_control() {
     install_rate_control(100.0);
 
     let app = build_router();
-    let resp = app.oneshot(
-        Request::builder().uri("/api/controls").body(Body::empty()).unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/controls")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = read_body(resp.into_body()).await;
     // JSON includes the rate control with expected metadata.
@@ -102,18 +115,21 @@ async fn list_controls_returns_every_declared_control() {
 async fn set_control_writes_and_returns_rev() {
     let _g = TEST_LOCK.lock().unwrap();
     let root = install_rate_control(100.0);
-    let control: nbrs_metrics::controls::Control<f64> = root.read().unwrap()
-        .controls().get("rate").unwrap();
+    let control: nbrs_metrics::controls::Control<f64> =
+        root.read().unwrap().controls().get("rate").unwrap();
 
     let app = build_router();
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/control/rate")
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"value":2500.0,"source":"itest"}"#))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/control/rate")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"value":2500.0,"source":"itest"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = read_body(resp.into_body()).await;
     assert!(body.contains("\"submitted_value\":2500"), "body: {body}");
@@ -133,14 +149,17 @@ async fn set_control_missing_name_returns_404() {
     install_rate_control(100.0);
 
     let app = build_router();
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/control/nonexistent")
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"value":1}"#))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/control/nonexistent")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"value":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let body = read_body(resp.into_body()).await;
     assert!(body.contains("\"code\":\"not_found\""), "body: {body}");
@@ -154,27 +173,30 @@ async fn set_control_validator_rejection_returns_400() {
     let app = build_router();
     // The converter rejects rate <= 0; the response surfaces
     // the error as a structured 400.
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/control/rate")
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"value":-1}"#))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/control/rate")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"value":-1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = read_body(resp.into_body()).await;
-    assert!(body.contains("\"code\":\"validation_failed\""), "body: {body}");
+    assert!(
+        body.contains("\"code\":\"validation_failed\""),
+        "body: {body}"
+    );
     assert!(body.contains("must be positive"), "body: {body}");
 }
 
 #[tokio::test]
 async fn set_control_final_scope_returns_400_with_code() {
     let _g = TEST_LOCK.lock().unwrap();
-    let root = Component::root(
-        Labels::of("session", "final_test"),
-        HashMap::new(),
-    );
+    let root = Component::root(Labels::of("session", "final_test"), HashMap::new());
     root.read().unwrap().controls().declare(
         ControlBuilder::new("rate", 100f64)
             .reify_as_gauge(|v: &f64| Some(*v))
@@ -186,16 +208,22 @@ async fn set_control_final_scope_returns_400_with_code() {
     set_session_root(root);
 
     let app = build_router();
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/control/rate")
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"value":500}"#))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/control/rate")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"value":500}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = read_body(resp.into_body()).await;
-    assert!(body.contains("\"code\":\"final_violation\""), "body: {body}");
+    assert!(
+        body.contains("\"code\":\"final_violation\""),
+        "body: {body}"
+    );
     assert!(body.contains("session_root"), "body: {body}");
 }

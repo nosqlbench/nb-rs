@@ -73,30 +73,30 @@
 //!   constructs (`for_each`, `do_while`, `do_until`,
 //!   `for_combinations`)
 
-pub mod model;
-pub mod template;
-pub mod parse;
-pub mod vocab;
-pub mod construction;
-pub mod verify;
-pub mod extends;
-pub mod implements;
-/// SRD-109 driver manifests (`driver=<name>` → adapter + library
-/// + defaults).
-pub mod drivers;
+pub mod bindpoints;
 /// SRD-85 bundled-workload catalog (embedded workloads,
 /// tiers, exact-name lookup).
 pub mod catalog;
+pub mod construction;
+/// SRD-109 driver manifests (`driver=<name>` → adapter + library
+/// + defaults).
+pub mod drivers;
+pub mod edit;
+pub mod extends;
+pub mod implements;
+pub mod inline;
+pub mod magnitude;
+pub mod metric_format;
+pub mod model;
+pub mod parse;
+pub mod polydat_matter;
+pub mod report;
+pub mod spectest;
 /// SRD-85 deep workload suggestions — the shared "did you mean"
 /// set over the local file hierarchy and the bundled catalog,
 /// used by completion and the resolver not-found paths.
 pub mod suggest;
-pub mod inline;
-pub mod bindpoints;
 pub mod tags;
-pub mod spectest;
-pub mod report;
-pub mod edit;
-pub mod metric_format;
-pub mod magnitude;
-pub mod polydat_matter;
+pub mod template;
+pub mod verify;
+pub mod vocab;

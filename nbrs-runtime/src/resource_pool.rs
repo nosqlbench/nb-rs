@@ -54,8 +54,8 @@ use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use crate::adapter::DriverAdapter;
@@ -95,7 +95,10 @@ impl ResourceKey {
     /// Construct a key for the given adapter with no fields
     /// yet. Chain [`Self::with`] to populate.
     pub fn new(adapter: impl Into<String>) -> Self {
-        Self { adapter: adapter.into(), fields: BTreeMap::new() }
+        Self {
+            adapter: adapter.into(),
+            fields: BTreeMap::new(),
+        }
     }
 
     /// Set or replace the value for one identity-bearing
@@ -115,7 +118,9 @@ impl ResourceKey {
         s.push('{');
         let mut first = true;
         for (k, v) in &self.fields {
-            if !first { s.push(','); }
+            if !first {
+                s.push(',');
+            }
             first = false;
             s.push_str(k);
             s.push('=');
@@ -150,7 +155,9 @@ impl ResourceKey {
         s.push('{');
         let mut first = true;
         for (k, v) in &self.fields {
-            if !first { s.push(','); }
+            if !first {
+                s.push(',');
+            }
             first = false;
             s.push_str(k);
             s.push('=');
@@ -212,10 +219,10 @@ impl ResourceSharePolicy {
     /// (`--resource-share <adapter>:<policy>`).
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "shared"        => Ok(Self::Shared),
+            "shared" => Ok(Self::Shared),
             "per-scenario" | "per_scenario" => Ok(Self::PerScenario),
-            "per-phase"    | "per_phase"    => Ok(Self::PerPhase),
-            "per-fiber"    | "per_fiber"    => Ok(Self::PerFiber),
+            "per-phase" | "per_phase" => Ok(Self::PerPhase),
+            "per-fiber" | "per_fiber" => Ok(Self::PerFiber),
             other => Err(format!(
                 "unknown resource-share policy '{other}' \
                  (expected: shared, per-scenario, per-phase, per-fiber)"
@@ -227,10 +234,10 @@ impl ResourceSharePolicy {
 impl std::fmt::Display for ResourceSharePolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Self::Shared      => "shared",
+            Self::Shared => "shared",
             Self::PerScenario => "per-scenario",
-            Self::PerPhase    => "per-phase",
-            Self::PerFiber    => "per-fiber",
+            Self::PerPhase => "per-phase",
+            Self::PerFiber => "per-fiber",
         };
         f.write_str(s)
     }
@@ -240,10 +247,10 @@ impl std::fmt::Display for ResourceSharePolicy {
 /// capability allows. Used when the user gives no override.
 pub fn default_policy_for(cap: ShareCapability) -> ResourceSharePolicy {
     match cap {
-        ShareCapability::Shared      => ResourceSharePolicy::Shared,
+        ShareCapability::Shared => ResourceSharePolicy::Shared,
         ShareCapability::PerScenario => ResourceSharePolicy::PerScenario,
-        ShareCapability::PerPhase    => ResourceSharePolicy::PerPhase,
-        ShareCapability::PerFiber    => ResourceSharePolicy::PerFiber,
+        ShareCapability::PerPhase => ResourceSharePolicy::PerPhase,
+        ShareCapability::PerFiber => ResourceSharePolicy::PerFiber,
     }
 }
 
@@ -252,10 +259,10 @@ pub fn default_policy_for(cap: ShareCapability) -> ResourceSharePolicy {
 /// session start.
 pub fn capability_floor(cap: ShareCapability) -> ResourceSharePolicy {
     match cap {
-        ShareCapability::Shared      => ResourceSharePolicy::Shared,
+        ShareCapability::Shared => ResourceSharePolicy::Shared,
         ShareCapability::PerScenario => ResourceSharePolicy::PerScenario,
-        ShareCapability::PerPhase    => ResourceSharePolicy::PerPhase,
-        ShareCapability::PerFiber    => ResourceSharePolicy::PerFiber,
+        ShareCapability::PerPhase => ResourceSharePolicy::PerPhase,
+        ShareCapability::PerFiber => ResourceSharePolicy::PerFiber,
     }
 }
 
@@ -266,8 +273,7 @@ pub fn capability_floor(cap: ShareCapability) -> ResourceSharePolicy {
 /// One async-init-and-close return type used by the
 /// trait. Returns a `Send` future so the pool can hold it
 /// across `.await` points without runtime fuss.
-pub type ResourceFuture<'a, T> =
-    Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type ResourceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// The trait every poolable resource implements.
 ///
@@ -286,7 +292,9 @@ pub trait SharedResource: Send + Sync + 'static {
     /// shared by multiple adapter shells concurrently?
     /// Default `true`. See SRD-35 §"Two trait methods on
     /// the live resource".
-    fn can_share(&self) -> bool { true }
+    fn can_share(&self) -> bool {
+        true
+    }
 
     /// **Live capacity** — can this instance accept *another*
     /// concurrent caller right now without substantial
@@ -312,7 +320,9 @@ pub trait SharedResource: Send + Sync + 'static {
     /// failure mode (driver returns `false` at quiescence)
     /// and emits a `Warn` event so operators can spot the
     /// driver bug.
-    fn can_support_more_load(&self) -> bool { true }
+    fn can_support_more_load(&self) -> bool {
+        true
+    }
 
     /// Optional async init beyond what construction
     /// already did. Called by the pool on first attach for
@@ -341,7 +351,9 @@ pub trait SharedResource: Send + Sync + 'static {
     /// this at the default — the pool layer is the right
     /// place to surface domain-specific handles, not the
     /// trait surface.
-    fn as_legacy_adapter(&self) -> Option<Arc<dyn DriverAdapter>> { None }
+    fn as_legacy_adapter(&self) -> Option<Arc<dyn DriverAdapter>> {
+        None
+    }
 
     /// SRD-104 — the resource's **accessor payload**: a type-erased handle
     /// (`Arc<dyn Any + Send + Sync>`) a kernel node can obtain by
@@ -351,7 +363,9 @@ pub trait SharedResource: Send + Sync + 'static {
     /// — a resource opts in only when it wants kernels to reach a live
     /// handle (the first consumer is a CQL session handle, SRD-103); no
     /// existing adapter is affected.
-    fn accessor_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> { None }
+    fn accessor_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
 }
 
 // =================================================================
@@ -409,7 +423,9 @@ struct Entry {
 impl Entry {
     fn new(key: ResourceKey, policy: ResourceSharePolicy, generation: usize) -> Self {
         Self {
-            key, policy, generation,
+            key,
+            policy,
+            generation,
             resource: Mutex::new(None),
             poisoned: AtomicBool::new(false),
             init_error: Mutex::new(None),
@@ -454,10 +470,7 @@ impl Entry {
 /// this helper lands now so Push D's spawn logic uses it
 /// from day one. Tests exercise it directly.
 #[allow(dead_code)]
-fn needs_sibling_spawn(
-    entry: &Entry,
-    resource: &dyn SharedResource,
-) -> bool {
+fn needs_sibling_spawn(entry: &Entry, resource: &dyn SharedResource) -> bool {
     if resource.can_support_more_load() {
         // Existing generation has capacity — route there.
         return false;
@@ -468,7 +481,8 @@ fn needs_sibling_spawn(
         // Log once per occurrence with the resource key so
         // the operator can attribute it. Don't spawn — the
         // existing idle generation is the right answer.
-        crate::diag!(LogLevel::Warn,
+        crate::diag!(
+            LogLevel::Warn,
             "{EVENT_FAMILY}.share.suppressed key={} generation={} \
              reason=quiescent-decline \
              note=can_support_more_load() returned false with live_attaches=0; \
@@ -496,8 +510,13 @@ const EVENT_FAMILY: &str = "resource";
 /// `generation`, and `policy`; per-event extra fields are
 /// appended to the formatted suffix.
 fn emit_event(level: LogLevel, name: &str, entry: &Entry, extra: &str) {
-    let suffix = if extra.is_empty() { String::new() } else { format!(" {extra}") };
-    crate::diag!(level,
+    let suffix = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(" {extra}")
+    };
+    crate::diag!(
+        level,
         "{EVENT_FAMILY}.{name} key={} generation={} policy={}{suffix}",
         entry.key.fmt_for_log(),
         entry.generation,
@@ -548,14 +567,21 @@ impl ResourcePool {
     /// Total attach count since pool construction. Useful
     /// for tests and post-mortem diagnostics.
     pub fn total_attaches(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).total_attaches
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .total_attaches
     }
 
     /// Number of distinct entries currently live in the
     /// pool. One per `(key, generation)` that's been
     /// attached at least once and not yet fully drained.
     pub fn live_entries(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).entries_by_key.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries_by_key
+            .len()
     }
 
     /// Drain every live entry, awaiting each resource's
@@ -584,8 +610,7 @@ impl ResourcePool {
             // already gone (concurrent close, or never
             // realised after init failure), skip.
             let resource = {
-                let mut slot = entry.resource.lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut slot = entry.resource.lock().unwrap_or_else(|e| e.into_inner());
                 slot.take()
             };
             let Some(resource) = resource else {
@@ -599,16 +624,28 @@ impl ResourcePool {
             // when it lands (Push D): if `pending > 0` at
             // session end, the walker over-predicted; if
             // `live > 0`, an attach guard wasn't dropped.
-            emit_event(LogLevel::Debug, "close.started", &entry,
-                &format!("reason=session-end live={live} pending={pending}"));
+            emit_event(
+                LogLevel::Debug,
+                "close.started",
+                &entry,
+                &format!("reason=session-end live={live} pending={pending}"),
+            );
             let started_at = Instant::now();
             let result = resource.close().await;
             let elapsed_ms = started_at.elapsed().as_millis() as u64;
             match result {
-                Ok(()) => emit_event(LogLevel::Debug, "close.completed",
-                    &entry, &format!("elapsed_ms={elapsed_ms}")),
-                Err(ref e) => emit_event(LogLevel::Warn, "close.failed",
-                    &entry, &format!("elapsed_ms={elapsed_ms} error={e:?}")),
+                Ok(()) => emit_event(
+                    LogLevel::Debug,
+                    "close.completed",
+                    &entry,
+                    &format!("elapsed_ms={elapsed_ms}"),
+                ),
+                Err(ref e) => emit_event(
+                    LogLevel::Warn,
+                    "close.failed",
+                    &entry,
+                    &format!("elapsed_ms={elapsed_ms} error={e:?}"),
+                ),
             }
             self.remove_entry(&entry.key, entry.generation);
         }
@@ -629,11 +666,7 @@ impl ResourcePool {
     /// created on first call, then increments on subsequent
     /// calls. The pre-map walker is the only declared caller;
     /// adapters never invoke this directly.
-    pub fn declare_pending_use(
-        &self,
-        key: ResourceKey,
-        policy: ResourceSharePolicy,
-    ) {
+    pub fn declare_pending_use(&self, key: ResourceKey, policy: ResourceSharePolicy) {
         let entry = self.get_or_create_entry(key, policy, 0);
         entry.pending_uses.fetch_add(1, Ordering::AcqRel);
     }
@@ -678,7 +711,9 @@ impl ResourcePool {
     /// without poking the pool internals.
     pub fn pending_uses_for(&self, key: &ResourceKey) -> Option<usize> {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.entries_by_key.get(&(key.clone(), 0))
+        inner
+            .entries_by_key
+            .get(&(key.clone(), 0))
             .map(|e| e.pending_uses.load(Ordering::Acquire))
     }
 
@@ -719,7 +754,9 @@ impl ResourcePool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for entry in inner.entries_by_key.values() {
             if entry.key.render_key() == key {
-                return entry.accessor_payload.lock()
+                return entry
+                    .accessor_payload
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
             }
@@ -739,20 +776,39 @@ impl ResourcePool {
         factory: ResourceFactory<'_>,
     ) -> Result<Arc<dyn SharedResource>, String> {
         // Fast path — already realised.
-        if let Some(existing) = entry.resource.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if let Some(existing) = entry
+            .resource
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
             return Ok(existing);
         }
         if entry.poisoned.load(Ordering::Acquire) {
-            let err = entry.init_error.lock().unwrap_or_else(|e| e.into_inner())
-                .clone().unwrap_or_else(|| "init poisoned".into());
+            let err = entry
+                .init_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_else(|| "init poisoned".into());
             return Err(err);
         }
 
-        let reason = if first_attach { "first-attach" } else { "capacity-declined" };
-        emit_event(LogLevel::Debug, "init.started", entry,
-            &format!("reason={reason}"));
-        *entry.init_started_at.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Instant::now());
+        let reason = if first_attach {
+            "first-attach"
+        } else {
+            "capacity-declined"
+        };
+        emit_event(
+            LogLevel::Debug,
+            "init.started",
+            entry,
+            &format!("reason={reason}"),
+        );
+        *entry
+            .init_started_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 
         // Run the factory + the resource's own `init()`.
         // Errors poison the entry so subsequent attaches
@@ -761,33 +817,44 @@ impl ResourcePool {
             let resource = factory.build().await?;
             resource.init().await?;
             Ok(resource)
-        }.await;
+        }
+        .await;
 
-        let elapsed_ms = entry.init_started_at.lock()
+        let elapsed_ms = entry
+            .init_started_at
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .map(|t| t.elapsed().as_millis() as u64)
             .unwrap_or(0);
 
         match outcome {
             Ok(resource) => {
-                *entry.resource.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(resource.clone());
+                *entry.resource.lock().unwrap_or_else(|e| e.into_inner()) = Some(resource.clone());
                 // SRD-104: capture the resource's accessor payload (if any)
                 // onto the entry so the pool's ResourceAccessor impl can hand
                 // it to kernel nodes by fingerprint. `None` for resources that
                 // don't opt in (the trait default) — no-op then.
-                *entry.accessor_payload.lock().unwrap_or_else(|e| e.into_inner()) =
-                    resource.accessor_payload();
-                emit_event(LogLevel::Debug, "init.completed", entry,
-                    &format!("elapsed_ms={elapsed_ms}"));
+                *entry
+                    .accessor_payload
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = resource.accessor_payload();
+                emit_event(
+                    LogLevel::Debug,
+                    "init.completed",
+                    entry,
+                    &format!("elapsed_ms={elapsed_ms}"),
+                );
                 Ok(resource)
             }
             Err(e) => {
                 entry.poisoned.store(true, Ordering::Release);
-                *entry.init_error.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(e.clone());
-                emit_event(LogLevel::Error, "init.failed", entry,
-                    &format!("elapsed_ms={elapsed_ms} error={e:?}"));
+                *entry.init_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
+                emit_event(
+                    LogLevel::Error,
+                    "init.failed",
+                    entry,
+                    &format!("elapsed_ms={elapsed_ms} error={e:?}"),
+                );
                 Err(e)
             }
         }
@@ -795,7 +862,9 @@ impl ResourcePool {
 }
 
 impl Default for ResourcePool {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Boxed, `Send` one-shot closure that builds a shared resource,
@@ -818,7 +887,9 @@ impl<'a> ResourceFactory<'a> {
         F: FnOnce() -> Fut + Send + 'a,
         Fut: Future<Output = Result<Arc<dyn SharedResource>, String>> + Send + 'a,
     {
-        Self { inner: Box::new(move || Box::pin(f()) as ResourceFuture<'a, _>) }
+        Self {
+            inner: Box::new(move || Box::pin(f()) as ResourceFuture<'a, _>),
+        }
     }
 
     fn build(self) -> ResourceFuture<'a, Result<Arc<dyn SharedResource>, String>> {
@@ -849,19 +920,25 @@ pub async fn attach(
 ) -> Result<AttachGuard, String> {
     let phase = phase.into();
     let entry = pool.get_or_create_entry(key.clone(), policy, 0);
-    let first_attach = entry.resource.lock()
+    let first_attach = entry
+        .resource
+        .lock()
         .unwrap_or_else(|e| e.into_inner())
         .is_none()
         && !entry.poisoned.load(Ordering::Acquire);
 
-    let resource = pool.ensure_initialized(&entry, first_attach, factory).await?;
+    let resource = pool
+        .ensure_initialized(&entry, first_attach, factory)
+        .await?;
 
     // Capability check: the live resource's can_share()
     // must agree with the policy. PerPhase / PerFiber
     // policies don't require can_share()=true; only
     // Shared / PerScenario do.
-    let needs_share = matches!(policy,
-        ResourceSharePolicy::Shared | ResourceSharePolicy::PerScenario);
+    let needs_share = matches!(
+        policy,
+        ResourceSharePolicy::Shared | ResourceSharePolicy::PerScenario
+    );
     if needs_share && !resource.can_share() {
         return Err(format!(
             "resource for {} declared can_share()=false but policy is {policy}; \
@@ -875,13 +952,19 @@ pub async fn attach(
     let pending_dec = entry.pending_uses.load(Ordering::Acquire);
     let pending = if pending_dec > 0 {
         entry.pending_uses.fetch_sub(1, Ordering::AcqRel) - 1
-    } else { 0 };
+    } else {
+        0
+    };
     {
         let mut inner = pool.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.total_attaches += 1;
     }
-    emit_event(LogLevel::Debug, "attach", &entry,
-        &format!("phase={phase:?} pending={pending} live={live}"));
+    emit_event(
+        LogLevel::Debug,
+        "attach",
+        &entry,
+        &format!("phase={phase:?} pending={pending} live={live}"),
+    );
 
     Ok(AttachGuard {
         pool: Arc::clone(pool),
@@ -933,7 +1016,9 @@ impl AttachGuard {
 
     /// Resource key for the attached entry. Useful for log
     /// correlation in adapter shells.
-    pub fn key(&self) -> &ResourceKey { &self.entry.key }
+    pub fn key(&self) -> &ResourceKey {
+        &self.entry.key
+    }
 
     /// Explicit detach. Calling this drains the refcount
     /// and (if it hits zero) awaits the resource's
@@ -946,13 +1031,19 @@ impl AttachGuard {
     }
 
     async fn detach_inner(&mut self, await_close: bool) -> Result<(), String> {
-        if self.detached { return Ok(()); }
+        if self.detached {
+            return Ok(());
+        }
         self.detached = true;
 
         let live = self.entry.live_attaches.fetch_sub(1, Ordering::AcqRel) - 1;
         let pending = self.entry.pending_uses.load(Ordering::Acquire);
-        emit_event(LogLevel::Debug, "detach", &self.entry,
-            &format!("phase={:?} pending={pending} live={live}", self.phase));
+        emit_event(
+            LogLevel::Debug,
+            "detach",
+            &self.entry,
+            &format!("phase={:?} pending={pending} live={live}", self.phase),
+        );
 
         // SRD-35 Push D: close trigger is unified across
         // every policy. The pool closes an entry the moment
@@ -991,19 +1082,27 @@ impl AttachGuard {
         // late attach would observe an empty slot and
         // re-init under a fresh generation.
         let resource_opt = {
-            let mut slot = self.entry.resource.lock()
+            let mut slot = self
+                .entry
+                .resource
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             slot.take()
         };
         let Some(resource) = resource_opt else {
             // Entry never realised (factory failed before
             // resource was set, or already closed).
-            self.pool.remove_entry(&self.entry.key, self.entry.generation);
+            self.pool
+                .remove_entry(&self.entry.key, self.entry.generation);
             return Ok(());
         };
 
-        emit_event(LogLevel::Debug, "close.started", &self.entry,
-            &format!("reason={reason}"));
+        emit_event(
+            LogLevel::Debug,
+            "close.started",
+            &self.entry,
+            &format!("reason={reason}"),
+        );
         let started_at = Instant::now();
 
         let entry_for_async = Arc::clone(&self.entry);
@@ -1014,12 +1113,21 @@ impl AttachGuard {
             let result = close_future.await;
             let elapsed_ms = started_at.elapsed().as_millis() as u64;
             match result {
-                Ok(()) => emit_event(LogLevel::Debug, "close.completed",
-                    &self.entry, &format!("elapsed_ms={elapsed_ms}")),
-                Err(ref e) => emit_event(LogLevel::Warn, "close.failed",
-                    &self.entry, &format!("elapsed_ms={elapsed_ms} error={e:?}")),
+                Ok(()) => emit_event(
+                    LogLevel::Debug,
+                    "close.completed",
+                    &self.entry,
+                    &format!("elapsed_ms={elapsed_ms}"),
+                ),
+                Err(ref e) => emit_event(
+                    LogLevel::Warn,
+                    "close.failed",
+                    &self.entry,
+                    &format!("elapsed_ms={elapsed_ms} error={e:?}"),
+                ),
             }
-            self.pool.remove_entry(&self.entry.key, self.entry.generation);
+            self.pool
+                .remove_entry(&self.entry.key, self.entry.generation);
             result
         } else {
             // Drop-path: spawn the close so we don't block
@@ -1030,10 +1138,18 @@ impl AttachGuard {
                 let result = close_future.await;
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 match result {
-                    Ok(()) => emit_event(LogLevel::Debug, "close.completed",
-                        &entry_for_async, &format!("elapsed_ms={elapsed_ms}")),
-                    Err(ref e) => emit_event(LogLevel::Warn, "close.failed",
-                        &entry_for_async, &format!("elapsed_ms={elapsed_ms} error={e:?}")),
+                    Ok(()) => emit_event(
+                        LogLevel::Debug,
+                        "close.completed",
+                        &entry_for_async,
+                        &format!("elapsed_ms={elapsed_ms}"),
+                    ),
+                    Err(ref e) => emit_event(
+                        LogLevel::Warn,
+                        "close.failed",
+                        &entry_for_async,
+                        &format!("elapsed_ms={elapsed_ms} error={e:?}"),
+                    ),
                 }
                 pool_for_async.remove_entry(&entry_for_async.key, entry_for_async.generation);
             });
@@ -1044,7 +1160,9 @@ impl AttachGuard {
 
 impl Drop for AttachGuard {
     fn drop(&mut self) {
-        if self.detached { return; }
+        if self.detached {
+            return;
+        }
         // Drop is sync; schedule the detach work onto the
         // current tokio runtime if there is one. If no
         // runtime is active (test fallback), do the
@@ -1054,8 +1172,12 @@ impl Drop for AttachGuard {
         let pending = self.entry.pending_uses.load(Ordering::Acquire);
         self.detached = true;
         let phase = &self.phase;
-        emit_event(LogLevel::Debug, "detach", &self.entry,
-            &format!("phase={phase:?} pending={pending} live={live}"));
+        emit_event(
+            LogLevel::Debug,
+            "detach",
+            &self.entry,
+            &format!("phase={phase:?} pending={pending} live={live}"),
+        );
 
         // SRD-35 Push D unified close gate (mirrors
         // `detach_inner`): close as soon as both counters
@@ -1068,12 +1190,16 @@ impl Drop for AttachGuard {
             // the close, the synchronous bookkeeping is
             // correct.
             let resource_opt = {
-                let mut slot = self.entry.resource.lock()
+                let mut slot = self
+                    .entry
+                    .resource
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 slot.take()
             };
             let Some(resource) = resource_opt else {
-                self.pool.remove_entry(&self.entry.key, self.entry.generation);
+                self.pool
+                    .remove_entry(&self.entry.key, self.entry.generation);
                 return;
             };
 
@@ -1083,8 +1209,12 @@ impl Drop for AttachGuard {
             // synchronously here.
             let entry = Arc::clone(&self.entry);
             let pool = Arc::clone(&self.pool);
-            emit_event(LogLevel::Debug, "close.started", &self.entry,
-                "reason=refcount-zero");
+            emit_event(
+                LogLevel::Debug,
+                "close.started",
+                &self.entry,
+                "reason=refcount-zero",
+            );
             let started_at = Instant::now();
 
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -1093,10 +1223,18 @@ impl Drop for AttachGuard {
                     let result = close_future.await;
                     let elapsed_ms = started_at.elapsed().as_millis() as u64;
                     match result {
-                        Ok(()) => emit_event(LogLevel::Debug, "close.completed",
-                            &entry, &format!("elapsed_ms={elapsed_ms}")),
-                        Err(ref e) => emit_event(LogLevel::Warn, "close.failed",
-                            &entry, &format!("elapsed_ms={elapsed_ms} error={e:?}")),
+                        Ok(()) => emit_event(
+                            LogLevel::Debug,
+                            "close.completed",
+                            &entry,
+                            &format!("elapsed_ms={elapsed_ms}"),
+                        ),
+                        Err(ref e) => emit_event(
+                            LogLevel::Warn,
+                            "close.failed",
+                            &entry,
+                            &format!("elapsed_ms={elapsed_ms} error={e:?}"),
+                        ),
                     }
                     pool.remove_entry(&entry.key, entry.generation);
                 });
@@ -1106,9 +1244,14 @@ impl Drop for AttachGuard {
                 // elapsed_ms=0 so log consumers still see
                 // a paired close event.
                 drop(resource);
-                emit_event(LogLevel::Debug, "close.completed", &self.entry,
-                    "elapsed_ms=0");
-                self.pool.remove_entry(&self.entry.key, self.entry.generation);
+                emit_event(
+                    LogLevel::Debug,
+                    "close.completed",
+                    &self.entry,
+                    "elapsed_ms=0",
+                );
+                self.pool
+                    .remove_entry(&self.entry.key, self.entry.generation);
             }
         }
     }
@@ -1146,25 +1289,36 @@ impl LegacyAdapterResource {
     /// Borrow the wrapped legacy adapter. Returns `None`
     /// after `close()` has consumed it.
     pub fn adapter(&self) -> Option<Arc<dyn DriverAdapter>> {
-        self.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.adapter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
 impl SharedResource for LegacyAdapterResource {
-    fn resource_key(&self) -> &ResourceKey { &self.key }
+    fn resource_key(&self) -> &ResourceKey {
+        &self.key
+    }
 
     /// Legacy adapters are NOT yet declared shareable —
     /// each phase gets its own. Push B / C migrate
     /// adapters out of this shim and into real
     /// `can_share() = true` impls.
-    fn can_share(&self) -> bool { false }
+    fn can_share(&self) -> bool {
+        false
+    }
 
     fn close(self: Arc<Self>) -> ResourceFuture<'static, Result<(), String>> {
         Box::pin(async move {
             // Drop the adapter Arc — the legacy factory
             // doesn't expose an async-close surface, so
             // this is best-effort sync teardown.
-            let _ = self.adapter.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let _ = self
+                .adapter
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             Ok(())
         })
     }
@@ -1196,21 +1350,31 @@ pub struct SharedAdapterResource {
 
 impl SharedAdapterResource {
     pub fn new(key: ResourceKey, adapter: Arc<dyn DriverAdapter>) -> Self {
-        Self { key, adapter: Mutex::new(Some(adapter)) }
+        Self {
+            key,
+            adapter: Mutex::new(Some(adapter)),
+        }
     }
 
     pub fn adapter(&self) -> Option<Arc<dyn DriverAdapter>> {
-        self.adapter.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.adapter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
 impl SharedResource for SharedAdapterResource {
-    fn resource_key(&self) -> &ResourceKey { &self.key }
+    fn resource_key(&self) -> &ResourceKey {
+        &self.key
+    }
 
     /// Push B: this wrapper declares the adapter shareable.
     /// The pool keeps one instance per `ResourceKey` and
     /// returns the same `Arc` to every matching attach.
-    fn can_share(&self) -> bool { true }
+    fn can_share(&self) -> bool {
+        true
+    }
 
     fn close(self: Arc<Self>) -> ResourceFuture<'static, Result<(), String>> {
         Box::pin(async move {
@@ -1219,7 +1383,9 @@ impl SharedResource for SharedAdapterResource {
             // Drop happens at the end of this scope; the
             // engine's Drop runs after `shutdown().await`
             // resolves.
-            let adapter = self.adapter.lock()
+            let adapter = self
+                .adapter
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take();
             if let Some(adapter) = adapter {
@@ -1269,10 +1435,12 @@ where
         Ok(Arc::new(res) as Arc<dyn SharedResource>)
     });
     let guard = attach(pool, key, ResourceSharePolicy::Shared, phase, factory).await?;
-    let adapter = guard.resource().as_legacy_adapter().ok_or_else(|| format!(
-        "internal: shared pool resource for adapter '{adapter_name}' did not surface \
+    let adapter = guard.resource().as_legacy_adapter().ok_or_else(|| {
+        format!(
+            "internal: shared pool resource for adapter '{adapter_name}' did not surface \
          a DriverAdapter handle — should be unreachable"
-    ))?;
+        )
+    })?;
     Ok((adapter, guard))
 }
 
@@ -1314,10 +1482,12 @@ where
 
     let guard = attach(pool, key, ResourceSharePolicy::PerPhase, phase, factory).await?;
     let resource = guard.resource();
-    let adapter = resource.as_legacy_adapter().ok_or_else(|| format!(
-        "internal: pool resource for adapter '{adapter_name}' did not surface \
+    let adapter = resource.as_legacy_adapter().ok_or_else(|| {
+        format!(
+            "internal: pool resource for adapter '{adapter_name}' did not surface \
          a legacy DriverAdapter handle — Push A path should be unreachable"
-    ))?;
+        )
+    })?;
     Ok((adapter, guard))
 }
 
@@ -1369,7 +1539,8 @@ pub fn pre_map_pending_uses(
         // default. Mirrors `executor::run_phase` (line 1903)
         // so the predicted key matches the runtime key
         // exactly.
-        let adapter = phases.get(&node.name)
+        let adapter = phases
+            .get(&node.name)
             .and_then(|p| p.adapter.clone())
             .unwrap_or_else(|| default_driver.to_string());
 
@@ -1378,9 +1549,9 @@ pub fn pre_map_pending_uses(
         // ranking). `None` here means the adapter has no
         // `DriverImpl` registered AND no fallback; skip.
         let selector = format!("{adapter}driver");
-        let Some(driver_name) = crate::adapter::resolve_driver_name(
-            &adapter, &selector, merged_params,
-        ) else {
+        let Some(driver_name) =
+            crate::adapter::resolve_driver_name(&adapter, &selector, merged_params)
+        else {
             continue;
         };
 
@@ -1388,13 +1559,16 @@ pub fn pre_map_pending_uses(
         // `SharedDriverRegistration`. Legacy adapters fall
         // through; their `PerPhase` close-on-detach path is
         // unaffected.
-        let Some(reg) = crate::adapter::find_shared_driver(&adapter, driver_name)
-        else { continue };
+        let Some(reg) = crate::adapter::find_shared_driver(&adapter, driver_name) else {
+            continue;
+        };
 
-        let key = (reg.resource_key)(merged_params).map_err(|e| format!(
-            "resource pool pre-map: phase '{}' adapter '{}' driver '{}': {}",
-            node.name, adapter, driver_name, e,
-        ))?;
+        let key = (reg.resource_key)(merged_params).map_err(|e| {
+            format!(
+                "resource pool pre-map: phase '{}' adapter '{}' driver '{}': {}",
+                node.name, adapter, driver_name, e,
+            )
+        })?;
         pool.declare_pending_use(key, default_policy_for(reg.share_capability));
     }
     Ok(())
@@ -1420,7 +1594,10 @@ struct PoolAccessorView;
 
 impl polydat::ResourceAccessor for PoolAccessorView {
     fn lookup(&self, key: &str) -> Option<Arc<dyn Any + Send + Sync>> {
-        let pool = ACTIVE_POOL.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+        let pool = ACTIVE_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade()?;
         pool.lookup_accessor_payload(key)
     }
 }
@@ -1480,7 +1657,8 @@ mod tests {
 
         fn with_can_share(key: ResourceKey, can_share: bool) -> Arc<Self> {
             Arc::new(Self {
-                key, can_share,
+                key,
+                can_share,
                 saturated_after_attaches: u32::MAX,
                 attach_count: AtomicU32::new(0),
                 init_calls: AtomicU32::new(0),
@@ -1503,8 +1681,12 @@ mod tests {
     }
 
     impl SharedResource for MockResource {
-        fn resource_key(&self) -> &ResourceKey { &self.key }
-        fn can_share(&self) -> bool { self.can_share }
+        fn resource_key(&self) -> &ResourceKey {
+            &self.key
+        }
+        fn can_share(&self) -> bool {
+            self.can_share
+        }
         fn can_support_more_load(&self) -> bool {
             // True (has capacity) until `attach_count`
             // crosses the saturation threshold; then
@@ -1518,7 +1700,11 @@ mod tests {
             self.init_calls.fetch_add(1, Ordering::AcqRel);
             let fail = self.init_should_fail;
             Box::pin(async move {
-                if fail { Err("simulated init failure".into()) } else { Ok(()) }
+                if fail {
+                    Err("simulated init failure".into())
+                } else {
+                    Ok(())
+                }
             })
         }
 
@@ -1557,14 +1743,22 @@ mod tests {
 
     #[test]
     fn policy_parse_accepts_canonical_and_underscore_forms() {
-        assert_eq!(ResourceSharePolicy::parse("shared").unwrap(),
-            ResourceSharePolicy::Shared);
-        assert_eq!(ResourceSharePolicy::parse("per-phase").unwrap(),
-            ResourceSharePolicy::PerPhase);
-        assert_eq!(ResourceSharePolicy::parse("per_phase").unwrap(),
-            ResourceSharePolicy::PerPhase);
-        assert_eq!(ResourceSharePolicy::parse("PER-FIBER").unwrap(),
-            ResourceSharePolicy::PerFiber);
+        assert_eq!(
+            ResourceSharePolicy::parse("shared").unwrap(),
+            ResourceSharePolicy::Shared
+        );
+        assert_eq!(
+            ResourceSharePolicy::parse("per-phase").unwrap(),
+            ResourceSharePolicy::PerPhase
+        );
+        assert_eq!(
+            ResourceSharePolicy::parse("per_phase").unwrap(),
+            ResourceSharePolicy::PerPhase
+        );
+        assert_eq!(
+            ResourceSharePolicy::parse("PER-FIBER").unwrap(),
+            ResourceSharePolicy::PerFiber
+        );
         ResourceSharePolicy::parse("nope").unwrap_err();
     }
 
@@ -1592,26 +1786,32 @@ mod tests {
         let mock_for_factory = Arc::clone(&mock);
 
         // Pre-map says: 2 phases will attach this key.
-        pool.declare_pending_use(mock.resource_key().clone(),
-            ResourceSharePolicy::Shared);
-        pool.declare_pending_use(mock.resource_key().clone(),
-            ResourceSharePolicy::Shared);
+        pool.declare_pending_use(mock.resource_key().clone(), ResourceSharePolicy::Shared);
+        pool.declare_pending_use(mock.resource_key().clone(), ResourceSharePolicy::Shared);
         assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(2));
 
         // Phase A: attach + detach. pending drops to 1, so
         // close must NOT fire — phase B is still expected.
-        let guard = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await.unwrap();
+        let guard = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(mock.init_calls.load(Ordering::Acquire), 1);
         guard.detach().await.unwrap();
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            0,
             "Shared-policy detach MUST NOT close while another \
-             phase is still predicted to attach");
+             phase is still predicted to attach"
+        );
         assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(1));
         assert_eq!(pool.live_entries(), 1);
 
@@ -1620,23 +1820,33 @@ mod tests {
         // shutdown. Promptly releases the resource the
         // moment its last user is done.
         let mock_for_factory2 = Arc::clone(&mock);
-        let guard2 = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_B",
+        let guard2 = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_B",
             ResourceFactory::new(move || async move {
                 Ok(mock_for_factory2 as Arc<dyn SharedResource>)
             }),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         guard2.detach().await.unwrap();
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            1,
             "close MUST fire when pending hits 0 AND live hits 0 — \
-             that's the SRD-35 Push D close-on-zero contract");
-        assert_eq!(pool.live_entries(), 0,
-            "entry removed once closed");
+             that's the SRD-35 Push D close-on-zero contract"
+        );
+        assert_eq!(pool.live_entries(), 0, "entry removed once closed");
 
         // Pool shutdown is now a no-op for this key.
         pool.shutdown().await;
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "shutdown() must NOT double-close an entry");
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            1,
+            "shutdown() must NOT double-close an entry"
+        );
     }
 
     #[tokio::test]
@@ -1654,15 +1864,19 @@ mod tests {
 
         // Pre-map says 3 phases, only 1 actually runs.
         for _ in 0..3 {
-            pool.declare_pending_use(mock.resource_key().clone(),
-                ResourceSharePolicy::Shared);
+            pool.declare_pending_use(mock.resource_key().clone(), ResourceSharePolicy::Shared);
         }
-        let guard = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await.unwrap();
+        let guard = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await
+        .unwrap();
         guard.detach().await.unwrap();
 
         // pending = 2 after one attach — close MUST NOT
@@ -1672,8 +1886,11 @@ mod tests {
         assert_eq!(pool.live_entries(), 1);
 
         pool.shutdown().await;
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "shutdown() drains residual entries with pending > 0");
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            1,
+            "shutdown() drains residual entries with pending > 0"
+        );
     }
 
     #[tokio::test]
@@ -1688,16 +1905,24 @@ mod tests {
         let mock = MockResource::new(key("legacy", "synthetic"));
         let mock_for_factory = Arc::clone(&mock);
 
-        let guard = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::PerPhase, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await.unwrap();
+        let guard = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::PerPhase,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await
+        .unwrap();
 
         guard.detach().await.unwrap();
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "PerPhase detach MUST close immediately");
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            1,
+            "PerPhase detach MUST close immediately"
+        );
         assert_eq!(pool.live_entries(), 0);
     }
 
@@ -1707,12 +1932,16 @@ mod tests {
         let mock = MockResource::with_init_failure(key("cql", "cassandra-cpp"));
         let mock_for_factory = Arc::clone(&mock);
 
-        let result = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await;
+        let result = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await;
 
         let err = result.expect_err("init failure must propagate");
         assert!(err.contains("simulated init failure"), "got: {err}");
@@ -1724,18 +1953,23 @@ mod tests {
         let mock = MockResource::with_can_share(key("legacy", "x"), false);
         let mock_for_factory = Arc::clone(&mock);
 
-        let result = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await;
+        let result = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await;
 
-        let err = result.expect_err(
-            "shared policy on can_share()=false resource must be rejected");
+        let err = result.expect_err("shared policy on can_share()=false resource must be rejected");
         assert!(err.contains("can_share()=false"), "got: {err}");
-        assert!(err.contains("per-phase") || err.contains("per-fiber"),
-            "error must point at the available policies, got: {err}");
+        assert!(
+            err.contains("per-phase") || err.contains("per-fiber"),
+            "error must point at the available policies, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1744,12 +1978,17 @@ mod tests {
         let mock = MockResource::with_can_share(key("legacy", "x"), false);
         let mock_for_factory = Arc::clone(&mock);
 
-        let guard = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::PerPhase, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await.expect("PerPhase must accept can_share()=false");
+        let guard = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::PerPhase,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await
+        .expect("PerPhase must accept can_share()=false");
 
         // PerPhase + can_share=false is exactly the
         // legacy-adapter shape; works without elevation.
@@ -1771,18 +2010,22 @@ mod tests {
         // policy holds across phases" without timing-coupling
         // the close trigger to detach order.
         for _ in 0..3 {
-            pool.declare_pending_use(mock.resource_key().clone(),
-                ResourceSharePolicy::Shared);
+            pool.declare_pending_use(mock.resource_key().clone(), ResourceSharePolicy::Shared);
         }
 
-        let g1 = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
+        let g1 = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
             ResourceFactory::new(move || {
                 factory_called_clone.fetch_add(1, Ordering::AcqRel);
                 let m = Arc::clone(&mock_for_factory);
                 async move { Ok(m as Arc<dyn SharedResource>) }
             }),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Second attach for the SAME key MUST reuse the
         // existing instance — factory MUST NOT be called
@@ -1792,19 +2035,30 @@ mod tests {
         // proves the contract end-to-end.
         let mock_for_factory2 = Arc::clone(&mock);
         let factory_called_clone2 = Arc::clone(&factory_called);
-        let g2 = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_B",
+        let g2 = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_B",
             ResourceFactory::new(move || {
                 factory_called_clone2.fetch_add(1, Ordering::AcqRel);
                 let m = Arc::clone(&mock_for_factory2);
                 async move { Ok(m as Arc<dyn SharedResource>) }
             }),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(factory_called.load(Ordering::Acquire), 1,
-            "factory must not be called twice for the same key under Shared policy");
-        assert_eq!(mock.init_calls.load(Ordering::Acquire), 1,
-            "init() must fire exactly once");
+        assert_eq!(
+            factory_called.load(Ordering::Acquire),
+            1,
+            "factory must not be called twice for the same key under Shared policy"
+        );
+        assert_eq!(
+            mock.init_calls.load(Ordering::Acquire),
+            1,
+            "init() must fire exactly once"
+        );
         assert_eq!(pool.total_attaches(), 2);
         assert_eq!(pool.live_entries(), 1);
 
@@ -1815,19 +2069,27 @@ mod tests {
         // resource closing on first detach, defeating
         // sharing across the next phase's attach.
         g1.detach().await.unwrap();
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
-            "close MUST NOT fire while another guard is live");
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            0,
+            "close MUST NOT fire while another guard is live"
+        );
         g2.detach().await.unwrap();
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            0,
             "close MUST NOT fire while pending uses remain — \
-             the resource stays alive for predicted future phases");
-        assert_eq!(pool.live_entries(), 1,
-            "entry stays cached across phases");
+             the resource stays alive for predicted future phases"
+        );
+        assert_eq!(pool.live_entries(), 1, "entry stays cached across phases");
 
         // The session-end shutdown drains the residual.
         pool.shutdown().await;
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "shutdown() drains the entry");
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            1,
+            "shutdown() drains the entry"
+        );
         assert_eq!(pool.live_entries(), 0);
     }
 
@@ -1838,13 +2100,23 @@ mod tests {
     /// hand to `LegacyAdapterResource::new`.
     struct LegacyDummy;
     impl crate::adapter::DriverAdapter for LegacyDummy {
-        fn name(&self) -> &str { "legacy_dummy" }
+        fn name(&self) -> &str {
+            "legacy_dummy"
+        }
         fn map_op<'a>(
             &'a self,
             _template: &'a nbrs_workload::model::ParsedOp,
             _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn crate::adapter::OpDispenser>, String>> + Send + 'a>>
-        { Box::pin(async move { Err("dummy".into()) }) }
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Box<dyn crate::adapter::OpDispenser>, String>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move { Err("dummy".into()) })
+        }
     }
 
     #[test]
@@ -1858,37 +2130,54 @@ mod tests {
         // attach to the existing idle generation instead
         // of wasting a spawn. Real saturation (decline +
         // live > 0) MUST trigger the spawn unchanged.
-        struct Reports { key: ResourceKey, has_capacity: bool }
+        struct Reports {
+            key: ResourceKey,
+            has_capacity: bool,
+        }
         impl SharedResource for Reports {
-            fn resource_key(&self) -> &ResourceKey { &self.key }
-            fn can_support_more_load(&self) -> bool { self.has_capacity }
+            fn resource_key(&self) -> &ResourceKey {
+                &self.key
+            }
+            fn can_support_more_load(&self) -> bool {
+                self.has_capacity
+            }
         }
 
-        let entry = Entry::new(
-            ResourceKey::new("buggy"),
-            ResourceSharePolicy::Shared,
-            0,
-        );
+        let entry = Entry::new(ResourceKey::new("buggy"), ResourceSharePolicy::Shared, 0);
 
         // Has capacity → never spawn, regardless of load.
-        let calm = Reports { key: ResourceKey::new("buggy"), has_capacity: true };
-        assert!(!needs_sibling_spawn(&entry, &calm),
-            "no spawn when the resource has capacity");
+        let calm = Reports {
+            key: ResourceKey::new("buggy"),
+            has_capacity: true,
+        };
+        assert!(
+            !needs_sibling_spawn(&entry, &calm),
+            "no spawn when the resource has capacity"
+        );
 
         // No capacity at quiescence → driver bug, suppressed.
-        let buggy = Reports { key: ResourceKey::new("buggy"), has_capacity: false };
+        let buggy = Reports {
+            key: ResourceKey::new("buggy"),
+            has_capacity: false,
+        };
         assert_eq!(entry.live_attaches.load(Ordering::Acquire), 0);
-        assert!(!needs_sibling_spawn(&entry, &buggy),
-            "quiescent decline must be suppressed (driver bug)");
+        assert!(
+            !needs_sibling_spawn(&entry, &buggy),
+            "quiescent decline must be suppressed (driver bug)"
+        );
 
         // No capacity + actual load → genuine saturation, spawn.
         entry.live_attaches.fetch_add(3, Ordering::AcqRel);
-        assert!(needs_sibling_spawn(&entry, &buggy),
-            "decline under live load is genuine saturation; spawn sibling");
+        assert!(
+            needs_sibling_spawn(&entry, &buggy),
+            "decline under live load is genuine saturation; spawn sibling"
+        );
 
         // Has capacity + load → still no spawn.
-        assert!(!needs_sibling_spawn(&entry, &calm),
-            "no spawn when there is capacity, even under load");
+        assert!(
+            !needs_sibling_spawn(&entry, &calm),
+            "no spawn when there is capacity, even under load"
+        );
     }
 
     #[tokio::test]
@@ -1910,51 +2199,60 @@ mod tests {
         // entry survives until shutdown — the assertion
         // shape this test was designed to verify.
         for _ in 0..3 {
-            pool.declare_pending_use(key.clone(),
-                ResourceSharePolicy::Shared);
+            pool.declare_pending_use(key.clone(), ResourceSharePolicy::Shared);
         }
 
         let factory_count_a = Arc::clone(&factory_call_count);
         let adapter_a = Arc::clone(&adapter);
-        let (got_a, guard_a) = attach_shared_adapter(
-            &pool, "cql", "phase_A", key.clone(),
-            move || {
+        let (got_a, guard_a) =
+            attach_shared_adapter(&pool, "cql", "phase_A", key.clone(), move || {
                 factory_count_a.fetch_add(1, Ordering::AcqRel);
                 let a = Arc::clone(&adapter_a);
                 async move { Ok(a) }
-            },
-        ).await.unwrap();
+            })
+            .await
+            .unwrap();
 
         let factory_count_b = Arc::clone(&factory_call_count);
         let adapter_b = Arc::clone(&adapter);
-        let (got_b, guard_b) = attach_shared_adapter(
-            &pool, "cql", "phase_B", key.clone(),
-            move || {
+        let (got_b, guard_b) =
+            attach_shared_adapter(&pool, "cql", "phase_B", key.clone(), move || {
                 factory_count_b.fetch_add(1, Ordering::AcqRel);
                 let a = Arc::clone(&adapter_b);
                 async move { Ok(a) }
-            },
-        ).await.unwrap();
+            })
+            .await
+            .unwrap();
 
         // The factory MUST be called exactly once even
         // though two phases attached.
-        assert_eq!(factory_call_count.load(Ordering::Acquire), 1,
-            "Shared policy MUST cache the factory output");
-        assert!(Arc::ptr_eq(&got_a, &got_b),
-            "both attaches MUST surface the SAME Arc<dyn DriverAdapter>");
+        assert_eq!(
+            factory_call_count.load(Ordering::Acquire),
+            1,
+            "Shared policy MUST cache the factory output"
+        );
+        assert!(
+            Arc::ptr_eq(&got_a, &got_b),
+            "both attaches MUST surface the SAME Arc<dyn DriverAdapter>"
+        );
         assert_eq!(pool.live_entries(), 1);
         assert_eq!(pool.total_attaches(), 2);
 
         guard_a.detach().await.unwrap();
-        assert_eq!(pool.live_entries(), 1,
-            "entry stays live while any guard holds it");
+        assert_eq!(
+            pool.live_entries(),
+            1,
+            "entry stays live while any guard holds it"
+        );
         guard_b.detach().await.unwrap();
-        assert_eq!(pool.live_entries(), 1,
+        assert_eq!(
+            pool.live_entries(),
+            1,
             "Shared-policy entry stays cached across phases — \
-             session shutdown is the close trigger, not last detach");
+             session shutdown is the close trigger, not last detach"
+        );
         pool.shutdown().await;
-        assert_eq!(pool.live_entries(), 0,
-            "shutdown drains the cached entry");
+        assert_eq!(pool.live_entries(), 0, "shutdown drains the cached entry");
     }
 
     #[test]
@@ -1970,16 +2268,22 @@ mod tests {
         // the assertion shape tight.
         let pool = Arc::new(ResourcePool::new());
         let k = ResourceKey::new("cql").with("hosts", "h1");
-        assert_eq!(pool.pending_uses_for(&k), None,
-            "no entry exists before declare");
+        assert_eq!(
+            pool.pending_uses_for(&k),
+            None,
+            "no entry exists before declare"
+        );
 
         // Pre-map walker declares: 3 phases will use this key.
         pool.declare_pending_use(k.clone(), ResourceSharePolicy::Shared);
         pool.declare_pending_use(k.clone(), ResourceSharePolicy::Shared);
         pool.declare_pending_use(k.clone(), ResourceSharePolicy::Shared);
         assert_eq!(pool.pending_uses_for(&k), Some(3));
-        assert_eq!(pool.live_entries(), 1,
-            "declare_pending_use creates the entry on first call");
+        assert_eq!(
+            pool.live_entries(),
+            1,
+            "declare_pending_use creates the entry on first call"
+        );
 
         // Drain phases 1 and 2: not yet eligible for close.
         let eligible = pool.complete_pending_use(&k);
@@ -1993,16 +2297,20 @@ mod tests {
         // Phase 3 drains: pending hits 0, live is 0 (no
         // real attach in this test) — eligible for close.
         let eligible = pool.complete_pending_use(&k);
-        assert!(eligible,
-            "pending == 0 && live == 0 — entry is eligible for close");
+        assert!(
+            eligible,
+            "pending == 0 && live == 0 — entry is eligible for close"
+        );
         assert_eq!(pool.pending_uses_for(&k), Some(0));
 
         // Saturation: extra completes are no-ops, not
         // underflow. Stays "eligible for close" because the
         // invariant still holds.
         let eligible = pool.complete_pending_use(&k);
-        assert!(eligible,
-            "saturating decrement: extra completes don't underflow");
+        assert!(
+            eligible,
+            "saturating decrement: extra completes don't underflow"
+        );
         assert_eq!(pool.pending_uses_for(&k), Some(0));
     }
 
@@ -2017,25 +2325,32 @@ mod tests {
         let mock = MockResource::new(key("cql", "cassandra-cpp"));
 
         // Pre-map: exactly 1 phase will use this key.
-        pool.declare_pending_use(mock.resource_key().clone(),
-            ResourceSharePolicy::Shared);
+        pool.declare_pending_use(mock.resource_key().clone(), ResourceSharePolicy::Shared);
 
         let mock_for_factory = Arc::clone(&mock);
-        let guard = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await.unwrap();
+        let guard = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await
+        .unwrap();
         // After attach, pending dropped from 1 to 0.
         assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(0));
 
         guard.detach().await.unwrap();
         // Detach drove live to 0; pending was already 0;
         // close fired without waiting for shutdown.
-        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
+        assert_eq!(
+            mock.close_calls.load(Ordering::Acquire),
+            1,
             "Push D: close fires the moment the last predicted \
-             phase detaches — not at session shutdown");
+             phase detaches — not at session shutdown"
+        );
         assert_eq!(pool.live_entries(), 0);
     }
 
@@ -2046,17 +2361,36 @@ mod tests {
         // differ only in an identity-bearing field would otherwise collide
         // in the accessor. `fmt_for_log()` redacts (safe for logs) and so
         // deliberately collides; `render_key()` must not.
-        let a = ResourceKey::new("cql").with("hosts", "h1").with("password", "p1");
-        let b = ResourceKey::new("cql").with("hosts", "h1").with("password", "p2");
-        assert_eq!(a.fmt_for_log(), b.fmt_for_log(),
-            "log format redacts password → collides (expected)");
-        assert_ne!(a.render_key(), b.render_key(),
-            "render_key must distinguish identity-bearing password");
-        assert!(a.render_key().contains("password=p1"), "got: {}", a.render_key());
+        let a = ResourceKey::new("cql")
+            .with("hosts", "h1")
+            .with("password", "p1");
+        let b = ResourceKey::new("cql")
+            .with("hosts", "h1")
+            .with("password", "p2");
+        assert_eq!(
+            a.fmt_for_log(),
+            b.fmt_for_log(),
+            "log format redacts password → collides (expected)"
+        );
+        assert_ne!(
+            a.render_key(),
+            b.render_key(),
+            "render_key must distinguish identity-bearing password"
+        );
+        assert!(
+            a.render_key().contains("password=p1"),
+            "got: {}",
+            a.render_key()
+        );
         // BTreeMap makes field order irrelevant to the rendering.
-        let c = ResourceKey::new("cql").with("password", "p1").with("hosts", "h1");
-        assert_eq!(a.render_key(), c.render_key(),
-            "render_key is field-order independent");
+        let c = ResourceKey::new("cql")
+            .with("password", "p1")
+            .with("hosts", "h1");
+        assert_eq!(
+            a.render_key(),
+            c.render_key(),
+            "render_key is field-order independent"
+        );
     }
 
     #[tokio::test]
@@ -2067,39 +2401,60 @@ mod tests {
         // — the same string a consumer node builds from the fingerprint in
         // scope. Exercises the pool half of the bridge directly, without the
         // process-global (which would race across parallel tests).
-        struct WithPayload { key: ResourceKey }
+        struct WithPayload {
+            key: ResourceKey,
+        }
         impl SharedResource for WithPayload {
-            fn resource_key(&self) -> &ResourceKey { &self.key }
+            fn resource_key(&self) -> &ResourceKey {
+                &self.key
+            }
             fn accessor_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> {
                 Some(Arc::new(4242u64) as Arc<dyn Any + Send + Sync>)
             }
         }
 
         let pool = Arc::new(ResourcePool::new());
-        let key = ResourceKey::new("cql").with("hosts", "h1").with("keyspace", "ks");
+        let key = ResourceKey::new("cql")
+            .with("hosts", "h1")
+            .with("keyspace", "ks");
         let rendered = key.render_key();
 
         // No entry yet → miss.
-        assert!(pool.lookup_accessor_payload(&rendered).is_none(),
-            "no live entry ⇒ None");
+        assert!(
+            pool.lookup_accessor_payload(&rendered).is_none(),
+            "no live entry ⇒ None"
+        );
 
         let key_for_factory = key.clone();
-        let guard = attach(&pool, key.clone(), ResourceSharePolicy::Shared, "phase_A",
+        let guard = attach(
+            &pool,
+            key.clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
             ResourceFactory::new(move || async move {
-                Ok(Arc::new(WithPayload { key: key_for_factory }) as Arc<dyn SharedResource>)
+                Ok(Arc::new(WithPayload {
+                    key: key_for_factory,
+                }) as Arc<dyn SharedResource>)
             }),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Hit by the canonical rendering; downcast to the concrete payload.
-        let payload = pool.lookup_accessor_payload(&rendered)
+        let payload = pool
+            .lookup_accessor_payload(&rendered)
             .expect("payload present after successful init");
-        let n = payload.downcast_ref::<u64>().expect("payload downcasts to u64");
+        let n = payload
+            .downcast_ref::<u64>()
+            .expect("payload downcasts to u64");
         assert_eq!(*n, 4242);
 
         // Detach with no pending uses drains the entry → miss again.
         guard.detach().await.unwrap();
-        assert!(pool.lookup_accessor_payload(&rendered).is_none(),
-            "closed entry ⇒ None");
+        assert!(
+            pool.lookup_accessor_payload(&rendered).is_none(),
+            "closed entry ⇒ None"
+        );
     }
 
     #[tokio::test]
@@ -2110,14 +2465,21 @@ mod tests {
         let mock = MockResource::new(key("cql", "cassandra-cpp"));
         let rendered = mock.resource_key().render_key();
         let mock_for_factory = Arc::clone(&mock);
-        let guard = attach(&pool, mock.resource_key().clone(),
-            ResourceSharePolicy::Shared, "phase_A",
-            ResourceFactory::new(move || async move {
-                Ok(mock_for_factory as Arc<dyn SharedResource>)
-            }),
-        ).await.unwrap();
-        assert!(pool.lookup_accessor_payload(&rendered).is_none(),
-            "default accessor_payload() ⇒ None even for a live entry");
+        let guard = attach(
+            &pool,
+            mock.resource_key().clone(),
+            ResourceSharePolicy::Shared,
+            "phase_A",
+            ResourceFactory::new(
+                move || async move { Ok(mock_for_factory as Arc<dyn SharedResource>) },
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(
+            pool.lookup_accessor_payload(&rendered).is_none(),
+            "default accessor_payload() ⇒ None even for a live entry"
+        );
         guard.detach().await.unwrap();
     }
 
@@ -2130,7 +2492,9 @@ mod tests {
         let key = ResourceKey::new("legacy");
         let adapter: Arc<dyn DriverAdapter> = Arc::new(LegacyDummy);
         let wrapped = Arc::new(LegacyAdapterResource::new(key, adapter));
-        assert!(!wrapped.can_share(),
-            "LegacyAdapterResource MUST declare can_share()=false");
+        assert!(
+            !wrapped.can_share(),
+            "LegacyAdapterResource MUST declare can_share()=false"
+        );
     }
 }

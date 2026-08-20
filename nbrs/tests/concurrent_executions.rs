@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use nbrs_runtime::concurrent::HeadlessObserver;
 use nbrs_runtime::observer::RunObserver;
-use nbrs_runtime::runner::{run_executions, ExecutionSpec};
+use nbrs_runtime::runner::{ExecutionSpec, run_executions};
 
 /// Tempdir under the project's redirected `TMPDIR` (`target/test-tmp`).
 struct TempDir {
@@ -50,8 +50,10 @@ async fn n_executions_share_one_session_with_separable_exec_ids() {
     let tmp = TempDir::new();
     let session = tmp.path.join("s");
     // Session-tier args — just where the shared session lives.
-    let session_args: Vec<String> =
-        vec!["--session-path".into(), session.to_string_lossy().into_owned()];
+    let session_args: Vec<String> = vec![
+        "--session-path".into(),
+        session.to_string_lossy().into_owned(),
+    ];
     let session_obs: Arc<dyn RunObserver> = Arc::new(HeadlessObserver::new());
 
     // Three executions, each its own workload, run concurrently (≤3).
@@ -78,18 +80,28 @@ async fn n_executions_share_one_session_with_separable_exec_ids() {
 
     // ONE shared session directory + db.
     let db = session.join("metrics.db");
-    assert!(db.exists(), "the shared session metrics.db is missing at {db:?}");
+    assert!(
+        db.exists(),
+        "the shared session metrics.db is missing at {db:?}"
+    );
     let conn = rusqlite::Connection::open(&db).expect("open shared metrics.db");
 
     // SRD-77/88 — three separable executions recorded in the ONE session.
     let n_exec: i64 = conn
         .query_row("SELECT COUNT(*) FROM executions", [], |r| r.get(0))
         .expect("count executions");
-    assert_eq!(n_exec, 3, "expected 3 executions rows in the shared session");
+    assert_eq!(
+        n_exec, 3,
+        "expected 3 executions rows in the shared session"
+    );
 
     // Each execution's metrics are separable by its distinct exec_id.
     let distinct_exec_ids: i64 = conn
-        .query_row("SELECT COUNT(DISTINCT exec_id) FROM metric_instance", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(DISTINCT exec_id) FROM metric_instance",
+            [],
+            |r| r.get(0),
+        )
         .expect("count distinct exec_id");
     assert_eq!(
         distinct_exec_ids, 3,

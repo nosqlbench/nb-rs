@@ -59,7 +59,9 @@ pub struct QueryError {
 
 impl QueryError {
     pub fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
+        Self {
+            message: msg.into(),
+        }
     }
 }
 
@@ -110,10 +112,10 @@ pub trait MetricAccess: Send + Sync {
             .into_series()
             .into_iter()
             .filter_map(|s| {
-                s.samples
-                    .last()
-                    .copied()
-                    .map(|last| Series { labels: s.labels, samples: vec![last] })
+                s.samples.last().copied().map(|last| Series {
+                    labels: s.labels,
+                    samples: vec![last],
+                })
             })
             .collect();
         Ok(Vector::new(reduced))
@@ -136,8 +138,7 @@ struct LiveHolder(Arc<dyn MetricAccess>);
 /// metricsql read hot path (every settle pulse / TUI refresh resolves it), so
 /// the read is a single lock-free atomic load, never a mutex acquire that could
 /// contend under concurrent executions.
-static LIVE: LazyLock<ArcSwapOption<LiveHolder>> =
-    LazyLock::new(ArcSwapOption::empty);
+static LIVE: LazyLock<ArcSwapOption<LiveHolder>> = LazyLock::new(ArcSwapOption::empty);
 
 /// Install the live in-process access service. Called once by the
 /// runner when the session's `MetricsQuery` is built.
@@ -272,7 +273,12 @@ mod tests {
     fn live_access_installs_and_reads_back() {
         struct Stub;
         impl MetricAccess for Stub {
-            fn select_instant(&self, _: &[Matcher], _: i64, _: Option<i64>) -> Result<Vector, QueryError> {
+            fn select_instant(
+                &self,
+                _: &[Matcher],
+                _: i64,
+                _: Option<i64>,
+            ) -> Result<Vector, QueryError> {
                 Ok(Vector::default())
             }
             fn select_range(&self, _: &[Matcher], _: i64, _: i64) -> Result<Vector, QueryError> {

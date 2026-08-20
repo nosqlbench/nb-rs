@@ -153,9 +153,7 @@ pub fn now_rfc3339() -> String {
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
     let (year, month, day) = days_to_ymd(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
@@ -178,13 +176,14 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 /// stop or continue. Truncated-tail recovery is handled by
 /// [`read`]'s fold; this function is the lower-level building
 /// block for diagnostics tools that want raw event streams.
-pub fn iter_events(
-    path: &Path,
-) -> Result<Option<EventIter>, String> {
+pub fn iter_events(path: &Path) -> Result<Option<EventIter>, String> {
     match std::fs::File::open(path) {
         Ok(f) => {
             let reader = BufReader::new(f);
-            Ok(Some(EventIter { lines: reader.lines(), path: path.to_path_buf() }))
+            Ok(Some(EventIter {
+                lines: reader.lines(),
+                path: path.to_path_buf(),
+            }))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("read checkpoint log {}: {e}", path.display())),
@@ -204,15 +203,15 @@ impl Iterator for EventIter {
         loop {
             let line = match self.lines.next()? {
                 Ok(l) => l,
-                Err(e) => return Some(Err(format!(
-                    "read line from {}: {e}", self.path.display()))),
+                Err(e) => return Some(Err(format!("read line from {}: {e}", self.path.display()))),
             };
             if line.trim().is_empty() {
                 continue;
             }
-            return Some(serde_json::from_str(&line).map_err(|e| {
-                format!("parse line in {}: {e}", self.path.display())
-            }));
+            return Some(
+                serde_json::from_str(&line)
+                    .map_err(|e| format!("parse line in {}: {e}", self.path.display())),
+            );
         }
     }
 }
@@ -235,7 +234,11 @@ pub fn read(path: &Path) -> Result<Option<Checkpoint>, String> {
     // `\n`) — this is the truncated-tail recovery. Anything
     // before the last `\n` is a complete record per the
     // append-mode write guarantee.
-    let cutoff = raw.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+    let cutoff = raw
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     if cutoff < raw.len() {
         eprintln!(
             "warning: checkpoint {}: truncated tail (last {} bytes lacked newline), dropping",
@@ -253,11 +256,22 @@ pub fn read(path: &Path) -> Result<Option<Checkpoint>, String> {
         Some(l) => l,
         None => return Ok(None), // empty log — treat as fresh
     };
-    let first_event: CheckpointData = serde_json::from_str(first_line)
-        .map_err(|e| format!("checkpoint log {}: malformed first record: {e}", path.display()))?;
+    let first_event: CheckpointData = serde_json::from_str(first_line).map_err(|e| {
+        format!(
+            "checkpoint log {}: malformed first record: {e}",
+            path.display()
+        )
+    })?;
 
     let mut doc = match first_event {
-        CheckpointData::SessionStart { version, session, started_at, invocation, at, .. } => {
+        CheckpointData::SessionStart {
+            version,
+            session,
+            started_at,
+            invocation,
+            at,
+            ..
+        } => {
             if version != 1 {
                 return Err(format!(
                     "checkpoint {}: unsupported version {version} (this build supports v1)",
@@ -273,10 +287,13 @@ pub fn read(path: &Path) -> Result<Option<Checkpoint>, String> {
                 phases: Vec::new(),
             }
         }
-        other => return Err(format!(
-            "checkpoint {}: first record must be session_start, got {:?}",
-            path.display(), discriminator(&other),
-        )),
+        other => {
+            return Err(format!(
+                "checkpoint {}: first record must be session_start, got {:?}",
+                path.display(),
+                discriminator(&other),
+            ));
+        }
     };
 
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -327,7 +344,13 @@ fn apply_event(
     event: CheckpointData,
 ) {
     match event {
-        CheckpointData::SessionStart { invocation, at, started_at, session, .. } => {
+        CheckpointData::SessionStart {
+            invocation,
+            at,
+            started_at,
+            session,
+            ..
+        } => {
             // Resume continuation: bump the invocation and
             // refresh the per-flush timestamps. The phase list
             // built so far stays as-is (fold semantics).
@@ -339,7 +362,11 @@ fn apply_event(
         CheckpointData::SessionEnd { at, .. } => {
             doc.checkpoint_at = at;
         }
-        CheckpointData::PhaseDeclared { at, identity, skip_eligible } => {
+        CheckpointData::PhaseDeclared {
+            at,
+            identity,
+            skip_eligible,
+        } => {
             let key = super::writer::identity_key(&identity);
             if let std::collections::hash_map::Entry::Vacant(e) = index.entry(key) {
                 doc.phases.push(PhaseEntry {
@@ -363,7 +390,12 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointData::PhaseProgress { at, identity, op_counts, cursor_state } => {
+        CheckpointData::PhaseProgress {
+            at,
+            identity,
+            op_counts,
+            cursor_state,
+        } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.op_counts = Some(op_counts);
                 if cursor_state.is_some() {
@@ -372,7 +404,12 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointData::PhaseCompleted { at, identity, duration_secs, op_counts } => {
+        CheckpointData::PhaseCompleted {
+            at,
+            identity,
+            duration_secs,
+            op_counts,
+        } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.status = PhaseStatus::Completed;
                 entry.duration_secs = Some(duration_secs);
@@ -382,7 +419,12 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointData::PhaseFailed { at, identity, error, op_counts } => {
+        CheckpointData::PhaseFailed {
+            at,
+            identity,
+            error,
+            op_counts,
+        } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.status = PhaseStatus::Failed;
                 entry.error = Some(error);
@@ -393,7 +435,12 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointData::PhaseHash { at, identity, hash_hex, params_consumed } => {
+        CheckpointData::PhaseHash {
+            at,
+            identity,
+            hash_hex,
+            params_consumed,
+        } => {
             if let Some(entry) = lookup_mut(doc, index, &identity)
                 && let Some(h) = hex_to_hash(&hash_hex)
             {
@@ -464,7 +511,10 @@ mod tests {
         let path = dir.join("checkpoint.jsonl");
         let snap_in_memory = {
             let w = CheckpointWriter::new(
-                path.clone(), "sess".into(), "2026-01-01T00:00:00Z".into(), 1,
+                path.clone(),
+                "sess".into(),
+                "2026-01-01T00:00:00Z".into(),
+                1,
             );
             let id1 = ident("schema");
             let id2 = ident("rampup");
@@ -473,7 +523,14 @@ mod tests {
             w.phase_started(&id1);
             w.phase_completed(&id1, 1.5);
             w.phase_started(&id2);
-            w.update_op_counts(&id2, OpCounts { started: 100, finished: 99, errors: 1 });
+            w.update_op_counts(
+                &id2,
+                OpCounts {
+                    started: 100,
+                    finished: 99,
+                    errors: 1,
+                },
+            );
             w.flush().expect("flush");
             w.snapshot()
         };
@@ -482,12 +539,19 @@ mod tests {
         assert_eq!(folded.invocation, snap_in_memory.invocation);
         assert_eq!(folded.phases.len(), snap_in_memory.phases.len());
         for (i, phase) in folded.phases.iter().enumerate() {
-            assert_eq!(phase.status, snap_in_memory.phases[i].status,
-                "status mismatch on phase {i}");
+            assert_eq!(
+                phase.status, snap_in_memory.phases[i].status,
+                "status mismatch on phase {i}"
+            );
             assert_eq!(phase.skip_eligible, snap_in_memory.phases[i].skip_eligible);
             assert_eq!(phase.duration_secs, snap_in_memory.phases[i].duration_secs);
-            assert_eq!(phase.op_counts.as_ref().map(|c| c.started),
-                snap_in_memory.phases[i].op_counts.as_ref().map(|c| c.started));
+            assert_eq!(
+                phase.op_counts.as_ref().map(|c| c.started),
+                snap_in_memory.phases[i]
+                    .op_counts
+                    .as_ref()
+                    .map(|c| c.started)
+            );
         }
     }
 
@@ -496,9 +560,8 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("checkpoint.jsonl");
         {
-            let w = CheckpointWriter::new(
-                path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1,
-            );
+            let w =
+                CheckpointWriter::new(path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1);
             w.declare_phase(ident("p"), true);
             w.flush().expect("flush");
         }
@@ -507,8 +570,10 @@ mod tests {
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .append(true)
-            .open(&path).unwrap();
-        f.write_all(b"{\"type\":\"phase_started\",\"at\":\"2026-").unwrap();
+            .open(&path)
+            .unwrap();
+        f.write_all(b"{\"type\":\"phase_started\",\"at\":\"2026-")
+            .unwrap();
         drop(f);
 
         let folded = read(&path).expect("read should recover").expect("present");
@@ -525,7 +590,10 @@ mod tests {
         let body = r#"{"type":"phase_started","at":"x","identity":{"yaml_path":[],"coords":""}}"#;
         std::fs::write(&path, format!("{body}\n")).expect("write");
         let err = read(&path).expect_err("first-record check must error");
-        assert!(err.contains("first record must be session_start"), "got: {err}");
+        assert!(
+            err.contains("first record must be session_start"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -546,7 +614,10 @@ mod tests {
 
     fn rand_suffix() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         format!("{n:x}")
     }
 }

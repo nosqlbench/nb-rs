@@ -8,17 +8,17 @@
 
 use std::sync::Arc;
 
+use nbrs_adapter_stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
+use nbrs_metrics::labels::Labels;
 use nbrs_runtime::activity::{Activity, ActivityConfig};
 use nbrs_runtime::adapter::DriverAdapter;
-use nbrs_adapter_stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
 use nbrs_runtime::opseq::{OpSequence, SequencerType};
 use nbrs_runtime::synthesis::OpBuilder;
-use nbrs_metrics::labels::Labels;
-use polydat::compile::assembly::{PolydatAssembler, WireRef};
-use polydat::library::hash::Hash;
-use polydat::library::arithmetic::Mod;
-use polydat::library::identity::Identity;
 use nbrs_workload::parse::parse_ops;
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
+use polydat::library::arithmetic::Mod;
+use polydat::library::hash::Hash;
+use polydat::library::identity::Identity;
 
 /// Parse a workload YAML, build a Polydat Kernel from bindings that
 /// cover all referenced bind points, wire up the activity, and
@@ -38,12 +38,15 @@ ops:
     assert_eq!(ops[0].name, "write_user");
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("user_id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
+    asm.add_node(
+        "user_id",
+        Box::new(Identity::new(polydat::ast::PortType::U64)),
+        vec![WireRef::input("cycle")],
+    );
     asm.add_output("user_id", WireRef::node("user_id"));
     let kernel = asm.compile().unwrap();
 
     let builder = Arc::new(OpBuilder::new(kernel));
-
 
     let config = ActivityConfig {
         name: "test".into(),
@@ -69,8 +72,14 @@ ops:
 
     for (i, line) in lines.iter().enumerate() {
         assert!(line.contains("INSERT INTO users"), "line {i}: {line}");
-        assert!(!line.contains("{user_id}"), "bind point should be resolved: {line}");
-        assert!(line.contains(&i.to_string()), "line {i} should contain cycle {i}: {line}");
+        assert!(
+            !line.contains("{user_id}"),
+            "bind point should be resolved: {line}"
+        );
+        assert!(
+            line.contains(&i.to_string()),
+            "line {i} should contain cycle {i}: {line}"
+        );
     }
 
     let _ = std::fs::remove_file(&path);
@@ -91,14 +100,17 @@ ops:
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h1", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
-    asm.add_node("user_id", Box::new(Mod::new(1_000_000)), vec![WireRef::node("h1")]);
+    asm.add_node(
+        "user_id",
+        Box::new(Mod::new(1_000_000)),
+        vec![WireRef::node("h1")],
+    );
     asm.add_node("h2", Box::new(Hash::new()), vec![WireRef::node("h1")]);
     asm.add_node("bucket", Box::new(Mod::new(64)), vec![WireRef::node("h2")]);
     asm.add_output("user_id", WireRef::node("user_id"));
     asm.add_output("bucket", WireRef::node("bucket"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
-
 
     let config = ActivityConfig {
         name: "readtest".into(),
@@ -147,11 +159,14 @@ ops:
     let ops = parse_ops(yaml).unwrap();
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
+    asm.add_node(
+        "id",
+        Box::new(Identity::new(polydat::ast::PortType::U64)),
+        vec![WireRef::input("cycle")],
+    );
     asm.add_output("id", WireRef::node("id"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
-
 
     let config = ActivityConfig {
         name: "weighted".into(),
@@ -199,11 +214,14 @@ ops:
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
-    asm.add_node("user_id", Box::new(Mod::new(10000)), vec![WireRef::node("h")]);
+    asm.add_node(
+        "user_id",
+        Box::new(Mod::new(10000)),
+        vec![WireRef::node("h")],
+    );
     asm.add_output("user_id", WireRef::node("user_id"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
-
 
     let config = ActivityConfig {
         name: "jsontest".into(),
@@ -229,9 +247,18 @@ ops:
 
     for line in &lines {
         assert!(line.starts_with('{'), "should be JSON: {line}");
-        assert!(line.contains("\"method\":\"POST\""), "should have method: {line}");
-        assert!(line.contains("/api/users/"), "should have url with resolved id: {line}");
-        assert!(!line.contains("{user_id}"), "bind point should be resolved: {line}");
+        assert!(
+            line.contains("\"method\":\"POST\""),
+            "should have method: {line}"
+        );
+        assert!(
+            line.contains("/api/users/"),
+            "should have url with resolved id: {line}"
+        );
+        assert!(
+            !line.contains("{user_id}"),
+            "bind point should be resolved: {line}"
+        );
     }
 
     let _ = std::fs::remove_file(&path);

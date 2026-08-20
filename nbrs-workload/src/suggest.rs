@@ -57,7 +57,15 @@ pub fn suggest_workloads(partial: &str) -> Vec<String> {
     let needle = leaf_of(partial);
     let mut out = Vec::new();
     let mut budget = MAX_ENTRIES_SCANNED;
-    walk(Path::new("."), String::new(), partial, needle, 0, &mut budget, &mut out);
+    walk(
+        Path::new("."),
+        String::new(),
+        partial,
+        needle,
+        0,
+        &mut budget,
+        &mut out,
+    );
     out.extend(bundled_matches(partial, needle));
     out.sort();
     out.dedup();
@@ -132,7 +140,9 @@ fn is_catalog_duplicate(rel: &str) -> bool {
 /// `workloads/<x>` → `<x>`, `examples/workloads/<x>` → `examples/<x>`,
 /// `adapters/<a>/workloads/<x>` → `<a>/<x>` (extension stripped).
 fn catalog_name_for_local(rel: &str) -> Option<String> {
-    let stem = rel.strip_suffix(".yaml").or_else(|| rel.strip_suffix(".yml"))?;
+    let stem = rel
+        .strip_suffix(".yaml")
+        .or_else(|| rel.strip_suffix(".yml"))?;
     if let Some(rest) = stem.strip_prefix("examples/workloads/") {
         return Some(format!("examples/{rest}"));
     }
@@ -160,7 +170,9 @@ fn walk(
     if *budget == 0 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         if *budget == 0 {
             return;
@@ -171,7 +183,11 @@ fn walk(
             continue;
         }
         let path = entry.path();
-        let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+        let child_rel = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
         if path.is_dir() {
             if SKIP_DIRS.contains(&name.as_str()) {
                 continue;
@@ -213,7 +229,15 @@ mod tests {
         let needle = leaf_of(partial);
         let mut out = Vec::new();
         let mut budget = MAX_ENTRIES_SCANNED;
-        walk(root, String::new(), partial, needle, 0, &mut budget, &mut out);
+        walk(
+            root,
+            String::new(),
+            partial,
+            needle,
+            0,
+            &mut budget,
+            &mut out,
+        );
         out.sort();
         out
     }
@@ -224,7 +248,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         touch(&dir.join("examples/workloads/controls/phase_poll_smoke.yaml"));
         let hits = local_hits(&dir, "phase_poll");
-        assert_eq!(hits, vec!["examples/workloads/controls/phase_poll_smoke.yaml"]);
+        assert_eq!(
+            hits,
+            vec!["examples/workloads/controls/phase_poll_smoke.yaml"]
+        );
     }
 
     #[test]
@@ -262,8 +289,7 @@ mod tests {
         // Inverse of build.rs's SRD-85 naming — the equivalence used to
         // dedup a repo example file against its embedded catalog twin.
         assert_eq!(
-            catalog_name_for_local("examples/workloads/controls/phase_poll_smoke.yaml")
-                .as_deref(),
+            catalog_name_for_local("examples/workloads/controls/phase_poll_smoke.yaml").as_deref(),
             Some("examples/controls/phase_poll_smoke")
         );
         assert_eq!(
@@ -295,6 +321,9 @@ mod tests {
         let many: Vec<String> = (0..MAX_LISTED + 3).map(|i| format!("w{i}")).collect();
         let tail = did_you_mean(&many);
         assert!(tail.contains("+3 more"), "overflow note: {tail}");
-        assert!(tail.contains("Did you mean one of:"), "capped phrasing: {tail}");
+        assert!(
+            tail.contains("Did you mean one of:"),
+            "capped phrasing: {tail}"
+        );
     }
 }

@@ -6,11 +6,11 @@
 //! shape so downstream wrappers see the same row/column surface
 //! regardless of which engine produced the result.
 
-use std::any::Any;
-use std::collections::HashMap;
 use nbrs_runtime::adapter::ResultBody;
 use scylla::response::query_result::QueryResult;
 use scylla::value::{CqlValue, Row};
+use std::any::Any;
+use std::collections::HashMap;
 
 /// Engine-agnostic result body. Holds resolved row data as
 /// rows × column-name maps. Each cell is converted to
@@ -42,7 +42,8 @@ impl ScyllaResultBody {
         // a single write/DDL statement acknowledges one written row.
         match result.into_rows_result() {
             Ok(rows_result) => {
-                let cols: Vec<String> = rows_result.column_specs()
+                let cols: Vec<String> = rows_result
+                    .column_specs()
                     .iter()
                     .map(|spec| spec.name().to_string())
                     .collect();
@@ -58,9 +59,15 @@ impl ScyllaResultBody {
                         row_maps.push(row_map);
                     }
                 }
-                Self { rows: row_maps, written_rows: 0 }
+                Self {
+                    rows: row_maps,
+                    written_rows: 0,
+                }
             }
-            Err(_) => Self { rows: Vec::new(), written_rows: 1 },
+            Err(_) => Self {
+                rows: Vec::new(),
+                written_rows: 1,
+            },
         }
     }
 
@@ -68,20 +75,26 @@ impl ScyllaResultBody {
     /// where the dispenser knows the count directly — a BATCH of `n`
     /// rows. No returned rows, so `element_count()` reports `n`.
     pub fn write_ack(rows_written: u64) -> Self {
-        Self { rows: Vec::new(), written_rows: rows_written }
+        Self {
+            rows: Vec::new(),
+            written_rows: rows_written,
+        }
     }
 }
 
 impl ResultBody for ScyllaResultBody {
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(
-            self.rows.iter()
+            self.rows
+                .iter()
                 .map(|row| serde_json::Value::Object(row.clone().into_iter().collect()))
                 .collect(),
         )
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     fn element_count(&self) -> u64 {
         // A read reports rows returned; a write reports rows written.
@@ -101,21 +114,27 @@ impl ResultBody for ScyllaResultBody {
 /// / captures see the same shape regardless of engine.
 fn cql_to_json(value: Option<&CqlValue>) -> serde_json::Value {
     use serde_json::Value as J;
-    let Some(v) = value else { return J::Null; };
+    let Some(v) = value else {
+        return J::Null;
+    };
     match v {
         CqlValue::Boolean(b) => J::Bool(*b),
-        CqlValue::TinyInt(n)  => J::from(*n),
+        CqlValue::TinyInt(n) => J::from(*n),
         CqlValue::SmallInt(n) => J::from(*n),
-        CqlValue::Int(n)      => J::from(*n),
-        CqlValue::BigInt(n)   => J::from(*n),
-        CqlValue::Counter(c)  => J::from(c.0),
-        CqlValue::Float(f)    => serde_json::Number::from_f64(*f as f64).map(J::Number).unwrap_or(J::Null),
-        CqlValue::Double(f)   => serde_json::Number::from_f64(*f).map(J::Number).unwrap_or(J::Null),
+        CqlValue::Int(n) => J::from(*n),
+        CqlValue::BigInt(n) => J::from(*n),
+        CqlValue::Counter(c) => J::from(c.0),
+        CqlValue::Float(f) => serde_json::Number::from_f64(*f as f64)
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        CqlValue::Double(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
         CqlValue::Text(s) | CqlValue::Ascii(s) => J::String(s.clone()),
-        CqlValue::Uuid(u)     => J::String(u.to_string()),
+        CqlValue::Uuid(u) => J::String(u.to_string()),
         CqlValue::Timeuuid(u) => J::String(u.to_string()),
-        CqlValue::Inet(ip)    => J::String(ip.to_string()),
-        CqlValue::Blob(b)     => J::String(hex_encode(b)),
+        CqlValue::Inet(ip) => J::String(ip.to_string()),
+        CqlValue::Blob(b) => J::String(hex_encode(b)),
         CqlValue::List(items) | CqlValue::Set(items) | CqlValue::Vector(items) => {
             J::Array(items.iter().map(|v| cql_to_json(Some(v))).collect())
         }
@@ -171,7 +190,10 @@ mod tests {
         // and ignores any written count.
         let mut row = HashMap::new();
         row.insert("key".to_string(), serde_json::json!("v"));
-        let body = ScyllaResultBody { rows: vec![row], written_rows: 0 };
+        let body = ScyllaResultBody {
+            rows: vec![row],
+            written_rows: 0,
+        };
         assert_eq!(body.element_count(), 1);
     }
 
@@ -180,7 +202,10 @@ mod tests {
         // A SELECT that matched no rows is still a read: no returned
         // rows AND no written count, so element_count is 0 (preserving
         // the pre-change no-body behavior for empty reads).
-        let body = ScyllaResultBody { rows: Vec::new(), written_rows: 0 };
+        let body = ScyllaResultBody {
+            rows: Vec::new(),
+            written_rows: 0,
+        };
         assert_eq!(body.element_count(), 0);
     }
 }

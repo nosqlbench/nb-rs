@@ -28,7 +28,8 @@ use std::process::Command;
 fn nbrs() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd.env("HOME", "/nonexistent");
     cmd
@@ -49,7 +50,9 @@ impl SessionGuard {
             "nbrs-m3-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::create_dir_all(&parent).expect("create session parent");
         let path = parent.join("session");
@@ -70,7 +73,9 @@ fn write_workload(label: &str, body: &str) -> PathBuf {
         "nbrs_m3_{label}_{}_{}.yaml",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     let mut f = std::fs::File::create(&dir).expect("workload file create");
     f.write_all(body.as_bytes()).expect("workload file write");
@@ -124,38 +129,60 @@ phases:
     let path = write_workload("dependent", yaml);
     let session = SessionGuard::new("dependent");
     let output = nbrs()
-        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .args([
+            "run",
+            &format!("workload={}", path.display()),
+            "scenario=default",
+        ])
         .arg("--session-path")
         .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(), "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
     // Total: |k=1's limits| + |k=10's limits| = 4 + 3 = 7
-    let emit_lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("k="))
-        .collect();
-    assert_eq!(emit_lines.len(), 7,
-        "expected 7 emit lines, got {}:\n{stdout}", emit_lines.len());
+    let emit_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("k=")).collect();
+    assert_eq!(
+        emit_lines.len(),
+        7,
+        "expected 7 emit lines, got {}:\n{stdout}",
+        emit_lines.len()
+    );
 
     // Every k=1 line should pair with a limit from {100, 200, 300, 400}.
-    let k1: Vec<&&str> = emit_lines.iter().filter(|l| l.starts_with("k=1 ")).collect();
-    let k10: Vec<&&str> = emit_lines.iter().filter(|l| l.starts_with("k=10 ")).collect();
+    let k1: Vec<&&str> = emit_lines
+        .iter()
+        .filter(|l| l.starts_with("k=1 "))
+        .collect();
+    let k10: Vec<&&str> = emit_lines
+        .iter()
+        .filter(|l| l.starts_with("k=10 "))
+        .collect();
     assert_eq!(k1.len(), 4, "k=1 should pair with 4 limits, got: {k1:?}");
     assert_eq!(k10.len(), 3, "k=10 should pair with 3 limits, got: {k10:?}");
 
     // No k=1 line should reference k=10's limits or vice versa.
     for line in &k1 {
-        assert!(!line.contains("limit=1000") && !line.contains("limit=2000")
-            && !line.contains("limit=3000"),
-            "k=1 line referenced a k=10 limit value: {line}");
+        assert!(
+            !line.contains("limit=1000")
+                && !line.contains("limit=2000")
+                && !line.contains("limit=3000"),
+            "k=1 line referenced a k=10 limit value: {line}"
+        );
     }
     for line in &k10 {
-        assert!(!line.contains("limit=100 ") && !line.contains("limit=200 ")
-            && !line.contains("limit=300 ") && !line.contains("limit=400"),
-            "k=10 line referenced a k=1 limit value: {line}");
+        assert!(
+            !line.contains("limit=100 ")
+                && !line.contains("limit=200 ")
+                && !line.contains("limit=300 ")
+                && !line.contains("limit=400"),
+            "k=10 line referenced a k=1 limit value: {line}"
+        );
     }
 
     // Cleanup
@@ -206,23 +233,35 @@ phases:
     let path = write_workload("dependent_bare", yaml);
     let session = SessionGuard::new("dependent_bare");
     let output = nbrs()
-        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .args([
+            "run",
+            &format!("workload={}", path.display()),
+            "scenario=default",
+        ])
         .arg("--session-path")
         .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(),
+    assert!(
+        output.status.success(),
         "bare-prior-clause dependent comprehension failed to synthesize \
-         (limit likely mis-typed as String):\nstdout: {stdout}\nstderr: {stderr}");
+         (limit likely mis-typed as String):\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
     // |k=1's limits| + |k=10's limits| = 2 + 3 = 5
     let emit_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("k=")).collect();
     assert_eq!(emit_lines.len(), 5, "expected 5 tuples, got:\n{stdout}");
     // The downstream u64 doubling proves numeric typing held.
-    assert!(stdout.contains("limit=100 doubled=200"), "k=1 first: {stdout}");
-    assert!(stdout.contains("limit=1000 doubled=2000"), "k=10 first: {stdout}");
+    assert!(
+        stdout.contains("limit=100 doubled=200"),
+        "k=1 first: {stdout}"
+    );
+    assert!(
+        stdout.contains("limit=1000 doubled=2000"),
+        "k=10 first: {stdout}"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -256,26 +295,38 @@ phases:
     let path = write_workload("cartesian", yaml);
     let session = SessionGuard::new("cartesian");
     let output = nbrs()
-        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .args([
+            "run",
+            &format!("workload={}", path.display()),
+            "scenario=default",
+        ])
         .arg("--session-path")
         .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(), "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
-    let tuple_lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("tuple="))
-        .collect();
+    let tuple_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("tuple=")).collect();
     // 3 alphas × 2 nums = 6 tuples
-    assert_eq!(tuple_lines.len(), 6,
-        "expected 6 cartesian tuples, got {}:\n{stdout}", tuple_lines.len());
+    assert_eq!(
+        tuple_lines.len(),
+        6,
+        "expected 6 cartesian tuples, got {}:\n{stdout}",
+        tuple_lines.len()
+    );
 
     // Spot-check a few combinations are present.
     let body = tuple_lines.join("\n");
     for expected in ["tuple=a/1", "tuple=a/2", "tuple=b/1", "tuple=c/2"] {
-        assert!(body.contains(expected), "missing combination {expected}:\n{body}");
+        assert!(
+            body.contains(expected),
+            "missing combination {expected}:\n{body}"
+        );
     }
 
     let _ = std::fs::remove_file(&path);
@@ -308,28 +359,39 @@ phases:
     let path = write_workload("union", yaml);
     let session = SessionGuard::new("union");
     let output = nbrs()
-        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .args([
+            "run",
+            &format!("workload={}", path.display()),
+            "scenario=default",
+        ])
         .arg("--session-path")
         .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(), "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
-    let lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("tup="))
-        .collect();
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("tup=")).collect();
     // Sub-space 1 = {1,2} × {a,b} = 4 tuples
     // Sub-space 2 = {9} × {z}    = 1 tuple
     // Union total = 5
-    assert_eq!(lines.len(), 5,
-        "expected 5 union tuples (4+1), got {}:\n{stdout}", lines.len());
+    assert_eq!(
+        lines.len(),
+        5,
+        "expected 5 union tuples (4+1), got {}:\n{stdout}",
+        lines.len()
+    );
 
     let body = lines.join("\n");
     for expected in ["tup=x1ya", "tup=x1yb", "tup=x2ya", "tup=x2yb", "tup=x9yz"] {
-        assert!(body.contains(expected),
-            "missing sub-space tuple {expected}:\n{body}");
+        assert!(
+            body.contains(expected),
+            "missing sub-space tuple {expected}:\n{body}"
+        );
     }
 
     let _ = std::fs::remove_file(&path);
@@ -364,25 +426,34 @@ phases:
     let path = write_workload("phase_for_each_bindings", yaml);
     let session = SessionGuard::new("phase_for_each_bindings");
     let output = nbrs()
-        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .args([
+            "run",
+            &format!("workload={}", path.display()),
+            "scenario=default",
+        ])
         .arg("--session-path")
         .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(),
-        "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}"
+    );
 
-    let lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("k="))
-        .collect();
-    assert_eq!(lines.len(), 3,
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("k=")).collect();
+    assert_eq!(
+        lines.len(),
+        3,
         "expected one line per iter-var value (3 lines), got {}:\n{stdout}",
-        lines.len());
+        lines.len()
+    );
     for expected in ["k=1 doubled=2", "k=2 doubled=4", "k=3 doubled=6"] {
-        assert!(lines.iter().any(|l| l.trim() == expected),
-            "missing line '{expected}':\n{stdout}");
+        assert!(
+            lines.iter().any(|l| l.trim() == expected),
+            "missing line '{expected}':\n{stdout}"
+        );
     }
 
     let _ = std::fs::remove_file(&path);

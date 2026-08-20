@@ -69,7 +69,10 @@ impl MetricsLogReporter {
             .append(true)
             .open(&path)
             .map_err(|e| format!("open metrics log {path:?}: {e}"))?;
-        Ok(Self { path, out: BufWriter::new(file) })
+        Ok(Self {
+            path,
+            out: BufWriter::new(file),
+        })
     }
 
     /// The log's path, for the startup diagnostic that tells an operator where
@@ -89,12 +92,19 @@ impl Reporter for MetricsLogReporter {
         for family in snapshot.families() {
             let name = family.name();
             for metric in family.metrics() {
-                let Some(point) = metric.point() else { continue };
+                let Some(point) = metric.point() else {
+                    continue;
+                };
                 let line = super::per_instance::render_record(
-                    now_ms, name, metric.labels(), point.value());
+                    now_ms,
+                    name,
+                    metric.labels(),
+                    point.value(),
+                );
                 if let Err(e) = writeln!(self.out, "{line}") {
                     crate::diag::warn(&format!(
-                        "warning: metrics log write failed for {name}: {e}"));
+                        "warning: metrics log write failed for {name}: {e}"
+                    ));
                     return;
                 }
             }
@@ -121,7 +131,11 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("nbrs-metrics-log-test-{}-{}", std::process::id(), name));
+        p.push(format!(
+            "nbrs-metrics-log-test-{}-{}",
+            std::process::id(),
+            name
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -149,11 +163,17 @@ mod tests {
         assert!(lines[0].contains("\"ops_total\""));
         assert!(lines[0].contains("ann") || lines[1].contains("ann"));
         assert!(lines[0].contains("pvs") || lines[1].contains("pvs"));
-        assert!(lines[2].contains("99"), "later tick appended after earlier: {body}");
+        assert!(
+            lines[2].contains("99"),
+            "later tick appended after earlier: {body}"
+        );
         // Every line is a standalone JSON object, so a reader can parse
         // line-by-line without buffering the file.
         for l in &lines {
-            assert!(l.starts_with('{') && l.ends_with('}'), "not a JSON record: {l}");
+            assert!(
+                l.starts_with('{') && l.ends_with('}'),
+                "not a JSON record: {l}"
+            );
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -178,7 +198,10 @@ mod tests {
             r.flush();
         }
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("first"), "earlier records must survive: {body}");
+        assert!(
+            body.contains("first"),
+            "earlier records must survive: {body}"
+        );
         assert!(body.contains("second"));
         let _ = std::fs::remove_file(&path);
     }
@@ -189,7 +212,10 @@ mod tests {
         dir.push(format!("nbrs-metrics-log-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("nested").join("metrics.jsonl");
-        assert!(MetricsLogReporter::new(&path).is_ok(), "should create parent dirs");
+        assert!(
+            MetricsLogReporter::new(&path).is_ok(),
+            "should create parent dirs"
+        );
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

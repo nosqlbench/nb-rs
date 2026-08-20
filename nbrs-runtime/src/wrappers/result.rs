@@ -10,16 +10,18 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
-use crate::adapter::WrappingDispenser;
 use super::traverse::json_to_value;
+use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name. Always present — no-op when the op
 /// declares no `result:` wires.
 pub const NAME: WrapperName = WrapperName::new("result");
 
-fn triggers(s: WrapperSubject) -> bool { s.op().is_some() }
+fn triggers(s: WrapperSubject) -> bool {
+    s.op().is_some()
+}
 
 fn describe_assignment(s: WrapperSubject) -> Option<String> {
     let template = s.op()?;
@@ -196,15 +198,18 @@ pub(crate) fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
                 iter.next();
                 let mut idx = String::new();
                 for c2 in iter.by_ref() {
-                    if c2 == ']' { break; }
+                    if c2 == ']' {
+                        break;
+                    }
                     idx.push(c2);
                 }
                 if idx.trim() == "*" {
                     segs.push(PathSeg::Wildcard);
                 } else {
-                    let n: usize = idx.trim().parse().map_err(|_| {
-                        format!("path '{src}': invalid index '[{idx}]'")
-                    })?;
+                    let n: usize = idx
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("path '{src}': invalid index '[{idx}]'"))?;
                     segs.push(PathSeg::Index(n));
                 }
             }
@@ -220,13 +225,15 @@ pub(crate) fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
     }
     // SRD-70 first wave: one wildcard per path. Two-level nested
     // projection is parked until a use case drives it.
-    let wildcards = segs.iter()
+    let wildcards = segs
+        .iter()
         .filter(|s| matches!(s, PathSeg::Wildcard))
         .count();
     if wildcards > 1 {
         return Err(format!(
             "path '{src}': at most one [*] wildcard per path \
-             (nested projection is not supported)"));
+             (nested projection is not supported)"
+        ));
     }
     Ok(segs)
 }
@@ -251,7 +258,11 @@ fn resolve_path_projection<'a>(
 ) -> Option<Vec<&'a serde_json::Value>> {
     let at = resolve_path(json, prefix)?;
     let arr = at.as_array()?;
-    Some(arr.iter().filter_map(|el| resolve_path(el, suffix)).collect())
+    Some(
+        arr.iter()
+            .filter_map(|el| resolve_path(el, suffix))
+            .collect(),
+    )
 }
 
 /// Coerce one JSON leaf to i64: native integer, or numeric string.
@@ -278,8 +289,7 @@ pub(crate) fn evaluate_path_value(
     target: Option<polydat::ast::PortType>,
 ) -> Option<polydat::ast::Value> {
     if let Some((prefix, suffix)) = wildcard_split(segs) {
-        let collected = resolve_path_projection(json, prefix, suffix)
-            .unwrap_or_default();
+        let collected = resolve_path_projection(json, prefix, suffix).unwrap_or_default();
         return Some(coerce_projection(&collected, target));
     }
     resolve_path(json, segs).map(json_to_value)
@@ -304,13 +314,23 @@ fn coerce_projection(
     };
     match target {
         Some(PortType::VecI64) => Value::VecI64(SliceArc::from_vec(
-            collected.iter().filter_map(|v| leaf_as_i64(v)).collect())),
+            collected.iter().filter_map(|v| leaf_as_i64(v)).collect(),
+        )),
         Some(PortType::VecI32) => Value::VecI32(SliceArc::from_vec(
-            collected.iter().filter_map(|v| leaf_as_i64(v).map(|n| n as i32)).collect())),
+            collected
+                .iter()
+                .filter_map(|v| leaf_as_i64(v).map(|n| n as i32))
+                .collect(),
+        )),
         Some(PortType::VecF64) => Value::VecF64(SliceArc::from_vec(
-            collected.iter().filter_map(|v| leaf_as_f64(v)).collect())),
+            collected.iter().filter_map(|v| leaf_as_f64(v)).collect(),
+        )),
         Some(PortType::VecF32) => Value::VecF32(SliceArc::from_vec(
-            collected.iter().filter_map(|v| leaf_as_f64(v).map(|n| n as f32)).collect())),
+            collected
+                .iter()
+                .filter_map(|v| leaf_as_f64(v).map(|n| n as f32))
+                .collect(),
+        )),
         Some(PortType::Json) => json_array(),
         // A declared scalar/other type on a wildcard projection is
         // rejected at load by the binder; reaching here means an
@@ -340,7 +360,7 @@ fn resolve_path<'a>(
     for seg in segs {
         cur = match (cur, seg) {
             (serde_json::Value::Object(m), PathSeg::Field(k)) => m.get(k)?,
-            (serde_json::Value::Array(a),  PathSeg::Index(i)) => a.get(*i)?,
+            (serde_json::Value::Array(a), PathSeg::Index(i)) => a.get(*i)?,
             // Bareword field on an array, or numeric on an object —
             // we don't try to coerce; the path doesn't match.
             _ => return None,
@@ -399,7 +419,12 @@ fn decode_slot(
             }
         }
     };
-    Some(ResultSlot { wire: name.to_string(), source, default: None, target })
+    Some(ResultSlot {
+        wire: name.to_string(),
+        source,
+        default: None,
+        target,
+    })
 }
 
 impl ResultDispenser {
@@ -481,10 +506,7 @@ impl ResultDispenser {
     /// Compute the Polydat value for one slot from the cycle's result.
     /// Returns `None` when the slot resolves to nothing and has no
     /// default — caller logs at debug and moves on.
-    fn evaluate(
-        slot: &ResultSlot,
-        result: &OpResult,
-    ) -> Option<polydat::ast::Value> {
+    fn evaluate(slot: &ResultSlot, result: &OpResult) -> Option<polydat::ast::Value> {
         match &slot.source {
             ResultSource::Count => {
                 let n = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
@@ -500,8 +522,7 @@ impl ResultDispenser {
             ResultSource::Path(segs) => {
                 let body = result.body.as_ref()?;
                 let json = body.to_json();
-                evaluate_path_value(&json, segs, slot.target)
-                    .or_else(|| slot.default.clone())
+                evaluate_path_value(&json, segs, slot.target).or_else(|| slot.default.clone())
             }
             ResultSource::PolydatCall(_) => slot.default.clone(),
         }
@@ -515,7 +536,9 @@ impl OpDispenser for ResultDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let result = self.inner.execute(cycle, ctx).await?;
             // Skipped ops carry no body; per SRD-40b §5.2 the
@@ -569,7 +592,10 @@ impl OpDispenser for ResultDispenser {
                     .as_ref()
                     .map(|b| b.to_json())
                     .unwrap_or(serde_json::Value::Null);
-                let _ = ctx.wires.write("body", polydat::ast::Value::Json(std::sync::Arc::new(body_json)));
+                let _ = ctx.wires.write(
+                    "body",
+                    polydat::ast::Value::Json(std::sync::Arc::new(body_json)),
+                );
                 let _ = ctx.wires.write("count", polydat::ast::Value::U64(count));
                 let _ = ctx.wires.write("ok", polydat::ast::Value::Bool(true));
             }
@@ -578,7 +604,9 @@ impl OpDispenser for ResultDispenser {
             Ok(result)
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -594,9 +622,15 @@ mod tests {
         count: u64,
     }
     impl ResultBody for ResultDispBody {
-        fn to_json(&self) -> serde_json::Value { self.value.clone() }
-        fn as_any(&self) -> &dyn std::any::Any { self }
-        fn element_count(&self) -> u64 { self.count }
+        fn to_json(&self) -> serde_json::Value {
+            self.value.clone()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn element_count(&self) -> u64 {
+            self.count
+        }
     }
 
     struct FakeInner {
@@ -608,7 +642,9 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 if let Some(msg) = self.error {
                     return Err(ExecutionError::Op(AdapterError {
@@ -618,10 +654,12 @@ mod tests {
                     }));
                 }
                 Ok(OpResult {
-                    body: self.body.as_ref().map(|b| Box::new(ResultDispBody {
-                        value: b.value.clone(),
-                        count: b.count,
-                    }) as Box<dyn ResultBody>),
+                    body: self.body.as_ref().map(|b| {
+                        Box::new(ResultDispBody {
+                            value: b.value.clone(),
+                            count: b.count,
+                        }) as Box<dyn ResultBody>
+                    }),
                     skipped: false,
                 })
             })
@@ -653,7 +691,9 @@ mod tests {
         let pulls = ResolvedPulls::empty();
         let cw = crate::wires::CycleWires::new(kernel);
         let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(dispenser.execute(0, &ctx))
     }
 
@@ -690,16 +730,10 @@ mod tests {
             }),
             error: None,
         });
-        let decl = map_spec(&[
-            ("row_count", "count"),
-            ("first_value", "rows[0].value"),
-        ]);
+        let decl = map_spec(&[("row_count", "count"), ("first_value", "rows[0].value")]);
 
         let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
-        let mut kernel = kernel_with_extern_inputs(&[
-            ("row_count", "u64"),
-            ("first_value", "u64"),
-        ]);
+        let mut kernel = kernel_with_extern_inputs(&[("row_count", "u64"), ("first_value", "u64")]);
         let _ = run_with_wires(wrapped, &mut kernel).unwrap();
 
         let cw = crate::wires::CycleWires::new(&mut kernel);
@@ -711,7 +745,10 @@ mod tests {
     #[test]
     fn result_dispenser_ok_builtin_on_success() {
         let inner = Arc::new(FakeInner {
-            body: Some(ResultDispBody { value: serde_json::json!({}), count: 0 }),
+            body: Some(ResultDispBody {
+                value: serde_json::json!({}),
+                count: 0,
+            }),
             error: None,
         });
         let decl = map_spec(&[("succeeded", "ok")]);
@@ -739,7 +776,9 @@ mod tests {
         let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         let err = rt.block_on(wrapped.execute(0, &ctx)).unwrap_err();
         assert!(format!("{err}").contains("boom"));
     }
@@ -753,9 +792,7 @@ mod tests {
             }),
             error: None,
         });
-        let decl = map_spec(&[
-            ("missing", "rows[0].value"),
-        ]);
+        let decl = map_spec(&[("missing", "rows[0].value")]);
 
         let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
         let mut kernel = kernel_with_extern_inputs(&[("missing", "u64")]);
@@ -763,19 +800,28 @@ mod tests {
 
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
-        assert!(matches!(w.get("missing"), Some(polydat::ast::Value::None) | None));
+        assert!(matches!(
+            w.get("missing"),
+            Some(polydat::ast::Value::None) | None
+        ));
     }
 
     #[test]
     fn result_dispenser_always_wraps_per_srd_40b() {
         let inner: Arc<dyn OpDispenser> = Arc::new(FakeInner {
-            body: Some(ResultDispBody { value: serde_json::json!({}), count: 0 }),
+            body: Some(ResultDispBody {
+                value: serde_json::json!({}),
+                count: 0,
+            }),
             error: None,
         });
         let inner_ptr = Arc::as_ptr(&inner);
         let wrapped = ResultDispenser::wrap(inner.clone(), None, None);
-        assert_ne!(Arc::as_ptr(&wrapped), inner_ptr,
-            "ResultDispenser must always wrap so magic-extern population fires");
+        assert_ne!(
+            Arc::as_ptr(&wrapped),
+            inner_ptr,
+            "ResultDispenser must always wrap so magic-extern population fires"
+        );
     }
 
     #[test]
@@ -786,7 +832,9 @@ mod tests {
                 &'a self,
                 _cycle: u64,
                 _ctx: &'a ExecCtx<'a>,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+            > {
                 Box::pin(async move { Ok(OpResult::skipped()) })
             }
         }
@@ -812,13 +860,21 @@ mod tests {
 
     #[test]
     fn parse_wildcard_forms_and_reject_nested() {
-        for src in ["rows[*].key", "rows.*.key", "[*].key", "[*]", "result[*].id"] {
-            let segs = parse_path_expr(src).unwrap_or_else(|e| {
-                panic!("'{src}' should parse: {e}")
-            });
+        for src in [
+            "rows[*].key",
+            "rows.*.key",
+            "[*].key",
+            "[*]",
+            "result[*].id",
+        ] {
+            let segs = parse_path_expr(src).unwrap_or_else(|e| panic!("'{src}' should parse: {e}"));
             assert_eq!(
-                segs.iter().filter(|s| matches!(s, PathSeg::Wildcard)).count(),
-                1, "'{src}' carries one wildcard");
+                segs.iter()
+                    .filter(|s| matches!(s, PathSeg::Wildcard))
+                    .count(),
+                1,
+                "'{src}' carries one wildcard"
+            );
         }
         let err = parse_path_expr("rows[*].items[*].id").unwrap_err();
         assert!(err.contains("at most one"), "err: {err}");
@@ -847,8 +903,7 @@ mod tests {
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
         match w.get("keys") {
-            Some(polydat::ast::Value::VecI64(slice)) =>
-                assert_eq!(slice.as_slice(), &[7, 3]),
+            Some(polydat::ast::Value::VecI64(slice)) => assert_eq!(slice.as_slice(), &[7, 3]),
             other => panic!("expected VecI64([7,3]), got {other:?}"),
         }
     }
@@ -867,20 +922,17 @@ mod tests {
         // No interface types — the inference ladder applies.
         let decl = map_spec(&[("ids", "result[*].id"), ("scores", "result[*].score")]);
         let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
-        let mut kernel = kernel_with_extern_inputs(&[
-            ("ids", "vec_i64"), ("scores", "vec_f64")]);
+        let mut kernel = kernel_with_extern_inputs(&[("ids", "vec_i64"), ("scores", "vec_f64")]);
         let _ = run_with_wires(wrapped, &mut kernel).unwrap();
 
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
         match w.get("ids") {
-            Some(polydat::ast::Value::VecI64(slice)) =>
-                assert_eq!(slice.as_slice(), &[12, 5]),
+            Some(polydat::ast::Value::VecI64(slice)) => assert_eq!(slice.as_slice(), &[12, 5]),
             other => panic!("expected VecI64, got {other:?}"),
         }
         match w.get("scores") {
-            Some(polydat::ast::Value::VecF64(slice)) =>
-                assert_eq!(slice.as_slice(), &[0.9, 0.7]),
+            Some(polydat::ast::Value::VecF64(slice)) => assert_eq!(slice.as_slice(), &[0.9, 0.7]),
             other => panic!("expected VecF64, got {other:?}"),
         }
     }
@@ -904,9 +956,10 @@ mod tests {
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
         match w.get("keys") {
-            Some(polydat::ast::Value::VecI64(slice)) =>
-                assert!(slice.as_slice().is_empty(),
-                    "missing projection target must land the EMPTY typed form"),
+            Some(polydat::ast::Value::VecI64(slice)) => assert!(
+                slice.as_slice().is_empty(),
+                "missing projection target must land the EMPTY typed form"
+            ),
             other => panic!("expected empty VecI64, got {other:?}"),
         }
     }

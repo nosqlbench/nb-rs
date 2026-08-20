@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 use nbrs_workload::model::DelaySpec;
 
@@ -22,7 +22,9 @@ pub const NAME: WrapperName = WrapperName::new("delay");
 
 /// Trigger: an op declares any `delay:` spec.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template.delay.is_some()
 }
 
@@ -86,9 +88,10 @@ impl DelayDispenser {
         delay_field: &str,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
-        let before_handle = Some(fx.register_pull(delay_field).map_err(|e| {
-            format!("delay: {e}")
-        })?);
+        let before_handle = Some(
+            fx.register_pull(delay_field)
+                .map_err(|e| format!("delay: {e}"))?,
+        );
         Ok(Arc::new(Self {
             inner,
             before_handle,
@@ -106,15 +109,17 @@ impl DelayDispenser {
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
         let before_handle = match before_name {
-            Some(name) => Some(fx.register_pull(name).map_err(|e| {
-                format!("delay.before: {e}")
-            })?),
+            Some(name) => Some(
+                fx.register_pull(name)
+                    .map_err(|e| format!("delay.before: {e}"))?,
+            ),
             None => None,
         };
         let after_handle = match after_name {
-            Some(name) => Some(fx.register_pull(name).map_err(|e| {
-                format!("delay.after: {e}")
-            })?),
+            Some(name) => Some(
+                fx.register_pull(name)
+                    .map_err(|e| format!("delay.after: {e}"))?,
+            ),
             None => None,
         };
         if before_handle.is_none() && after_handle.is_none() {
@@ -143,7 +148,9 @@ impl OpDispenser for DelayDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             if let Some(h) = self.before_handle {
                 let nanos = value_to_nanos(ctx.pulls.get(h));
@@ -161,5 +168,7 @@ impl OpDispenser for DelayDispenser {
             Ok(result)
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }

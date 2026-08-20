@@ -196,7 +196,9 @@ fn nbrs_check_dedups_repo_example_against_its_catalog_twin() {
     // shared prefix, eating the operator's typed filter.
     let sb = Sandbox::new();
     // phase_poll_smoke is a real bundled example: examples/controls/phase_poll_smoke.
-    let twin = sb.path.join("examples/workloads/controls/phase_poll_smoke.yaml");
+    let twin = sb
+        .path
+        .join("examples/workloads/controls/phase_poll_smoke.yaml");
     std::fs::create_dir_all(twin.parent().unwrap()).unwrap();
     std::fs::write(&twin, "ops: { a: { raw: x } }\n").unwrap();
 

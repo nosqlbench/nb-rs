@@ -45,7 +45,7 @@ pub mod cascade_emit;
 pub mod for_each;
 pub mod helpers;
 
-pub use cascade::{cascade_parent_into_source, CascadeInputs, CascadeOutputs};
+pub use cascade::{CascadeInputs, CascadeOutputs, cascade_parent_into_source};
 pub use cascade_emit::emit_workload_param_chain_aware;
 pub use for_each::build_for_each_scope_kernel;
 pub use helpers::{

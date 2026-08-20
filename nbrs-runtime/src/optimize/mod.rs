@@ -30,12 +30,12 @@
 
 pub mod contract;
 pub mod phase_pulse;
-pub mod settle;
 pub mod servo;
+pub mod settle;
 
 pub use contract::{
-    by_name, describe, registered_names, Axis, AxisImpact, AxisKind, AxisValue, Budget, Changeover,
-    Coord, CoordinateSource, FeedbackSource, LexSource, Objective, Observation, SweepOptimizer,
-    Optimizer, OptimizerInfo, OptimizerParams, OptimizerRegistration, PullOnly, PullSource, Report,
-    SearchSpace, StopReason,
+    Axis, AxisImpact, AxisKind, AxisValue, Budget, Changeover, Coord, CoordinateSource,
+    FeedbackSource, LexSource, Objective, Observation, Optimizer, OptimizerInfo, OptimizerParams,
+    OptimizerRegistration, PullOnly, PullSource, Report, SearchSpace, StopReason, SweepOptimizer,
+    by_name, describe, registered_names,
 };

@@ -33,9 +33,7 @@ pub type StopFlag = Arc<AtomicBool>;
 /// Spawner closure: builds and `tokio::spawn`s a fiber given
 /// its stop-flag. Returns the join handle so the pool can wait
 /// for the fiber to exit if needed.
-pub type FiberSpawner = Box<
-    dyn Fn(StopFlag) -> tokio::task::JoinHandle<()> + Send + Sync,
->;
+pub type FiberSpawner = Box<dyn Fn(StopFlag) -> tokio::task::JoinHandle<()> + Send + Sync>;
 
 /// Owner of the running set of fibers for one activity. The
 /// pool exposes `resize(target)` for the applier and
@@ -72,7 +70,9 @@ impl FiberPool {
     /// completing its current op.
     pub fn active_count(&self) -> usize {
         let g = self.fibers.lock().unwrap_or_else(|e| e.into_inner());
-        g.iter().filter(|(flag, _)| !flag.load(Ordering::Relaxed)).count()
+        g.iter()
+            .filter(|(flag, _)| !flag.load(Ordering::Relaxed))
+            .count()
     }
 
     /// Total count including fibers that have been flagged for
@@ -95,7 +95,9 @@ impl FiberPool {
     /// if no change was needed).
     pub fn resize(&self, target: usize) -> usize {
         let active = self.active_count();
-        if target == active { return active; }
+        if target == active {
+            return active;
+        }
         if target > active {
             for _ in 0..(target - active) {
                 self.spawn_one();
@@ -108,7 +110,9 @@ impl FiberPool {
             let mut g = self.fibers.lock().unwrap_or_else(|e| e.into_inner());
             let mut to_signal = active - target;
             for (flag, _) in g.iter_mut().rev() {
-                if to_signal == 0 { break; }
+                if to_signal == 0 {
+                    break;
+                }
                 if !flag.load(Ordering::Relaxed) {
                     flag.store(true, Ordering::Release);
                     to_signal -= 1;
@@ -154,10 +158,7 @@ impl ConcurrencyApplier {
 }
 
 impl ControlApplier<u32> for ConcurrencyApplier {
-    fn apply(
-        &self,
-        value: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+    fn apply(&self, value: u32) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         let pool = self.pool.clone();
         Box::pin(async move {
             // resize itself is sync; wrap in async to satisfy
@@ -182,9 +183,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
-    fn worker_spawner(
-        ops_counter: Arc<AtomicUsize>,
-    ) -> FiberSpawner {
+    fn worker_spawner(ops_counter: Arc<AtomicUsize>) -> FiberSpawner {
         Box::new(move |stop: StopFlag| {
             let counter = ops_counter.clone();
             tokio::spawn(async move {
@@ -241,7 +240,9 @@ mod tests {
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(5)).await;
             pool.reap_finished();
-            if pool.tracked_count() == 2 { break; }
+            if pool.tracked_count() == 2 {
+                break;
+            }
         }
         assert_eq!(pool.tracked_count(), 2);
 

@@ -68,14 +68,23 @@ pub enum RowGutter {
     /// only in the row body's chips (single placement); the cell
     /// carries what the body can't — the history. `key` persists
     /// the sink-side sample ring across ticks like `Spark`.
-    Metric { key: String, name: String, value: f64 },
+    Metric {
+        key: String,
+        name: String,
+        value: f64,
+    },
     /// Metered phase: completion-bar fill fraction.
     Bar(f64),
     /// Open-ended phase (daemon poller): latency trend. `key`
     /// identifies the phase so the sink's sample ring persists
     /// across ticks; p50/p99 are the current service-time
     /// percentiles in nanos.
-    Latency { key: String, p50: u64, p99: u64, count: u64 },
+    Latency {
+        key: String,
+        p50: u64,
+        p99: u64,
+        count: u64,
+    },
     /// Workload-declared layout text (`gutter: "<template>"`),
     /// placed in the cell verbatim (truncated to fit).
     Text(String),
@@ -135,10 +144,15 @@ pub fn strip_ansi(s: &str) -> String {
     let mut esc = false;
     for c in s.chars() {
         if esc {
-            if c.is_ascii_alphabetic() { esc = false; }
+            if c.is_ascii_alphabetic() {
+                esc = false;
+            }
             continue;
         }
-        if c == '\u{1b}' { esc = true; continue; }
+        if c == '\u{1b}' {
+            esc = true;
+            continue;
+        }
         plain.push(c);
     }
     plain
@@ -172,9 +186,7 @@ pub fn classify_block(rows: &[&str]) -> Vec<RowRole> {
 /// As [`render_active_status`], additionally returning one
 /// [`RowGutter`] per rendered line (indices align with the '\n'
 /// split of the returned text).
-pub fn render_active_status_with_gutters(
-    snap: &RunState,
-) -> Option<(String, Vec<RowGutter>)> {
+pub fn render_active_status_with_gutters(snap: &RunState) -> Option<(String, Vec<RowGutter>)> {
     let mut lines: Vec<String> = Vec::new();
     let mut gutters: Vec<RowGutter> = Vec::new();
     let session_now = snap.elapsed_secs();
@@ -186,7 +198,9 @@ pub fn render_active_status_with_gutters(
     // status record.)
     if let Some(sm) = &snap.sysmon {
         lines.push(sysmon_detail_line(sm));
-        gutters.push(RowGutter::Sysmon { items: sysmon_items(sm) });
+        gutters.push(RowGutter::Sysmon {
+            items: sysmon_items(sm),
+        });
     }
     for p in active_phases_ordered(snap) {
         if let Some((status, chips)) = render_phase_status_parts(p, session_now) {
@@ -216,7 +230,6 @@ pub fn render_active_status_with_gutters(
         Some((lines.join("\n"), gutters))
     }
 }
-
 
 /// The sysmon glyphs, defined ONCE.
 ///
@@ -278,7 +291,11 @@ pub fn sysmon_detail_line(s: &nbrs_runtime::sysmon::SysmonSample) -> String {
     // right without being told the mapping.
     if let Some(c) = &s.cpu {
         parts.push(format!(
-            "{GLYPH_CPU} cpu {} (max c{} {})", pct(c.mean), c.top_core, pct(c.max_core)));
+            "{GLYPH_CPU} cpu {} (max c{} {})",
+            pct(c.mean),
+            c.top_core,
+            pct(c.max_core)
+        ));
     }
     if let Some((dev, u)) = &s.io {
         parts.push(if dev.is_empty() {
@@ -289,7 +306,10 @@ pub fn sysmon_detail_line(s: &nbrs_runtime::sysmon::SysmonSample) -> String {
     }
     if let Some((committed, cached)) = &s.ram {
         parts.push(format!(
-            "{GLYPH_RAM} ram {} (+cache {})", pct(*committed), pct(*cached)));
+            "{GLYPH_RAM} ram {} (+cache {})",
+            pct(*committed),
+            pct(*cached)
+        ));
     }
     if let Some(bw) = s.rambw {
         parts.push(format!("{GLYPH_RAMBW} rambw {}", pct(bw)));
@@ -311,7 +331,11 @@ fn phase_header_gutter(p: &ActivePhase, session_now: f64) -> RowGutter {
     };
     let elapsed = (session_now - p.session_started).max(0.0);
     RowGutter::Header(crate::widgets::margin_body(
-        n, &format!("[{s}/{n}]"), Some(elapsed), Some(session_now)))
+        n,
+        &format!("[{s}/{n}]"),
+        Some(elapsed),
+        Some(session_now),
+    ))
 }
 
 /// SRD-92 R4 — the key-metric detail row's default gutter cell: the
@@ -323,8 +347,13 @@ fn phase_metric_gutter(p: &ActivePhase, chips: &str) -> RowGutter {
     if strip_ansi(chips).trim().is_empty() {
         return RowGutter::Blank;
     }
-    let Some(handle) = p.render.as_ref() else { return RowGutter::Blank };
-    match handle.metrics.collect_status_primary(&handle.status_metrics) {
+    let Some(handle) = p.render.as_ref() else {
+        return RowGutter::Blank;
+    };
+    match handle
+        .metrics
+        .collect_status_primary(&handle.status_metrics)
+    {
         Some((name, value)) => RowGutter::Metric {
             key: format!("metric:{}@{}", p.name, p.labels),
             name,
@@ -339,7 +368,9 @@ fn phase_metric_gutter(p: &ActivePhase, chips: &str) -> RowGutter {
 /// basis mirrors `ReadoutContext::progress_fraction`: override →
 /// rows → cycles), Blank when nothing meaningful exists.
 fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
-    let Some(handle) = p.render.as_ref() else { return RowGutter::Blank };
+    let Some(handle) = p.render.as_ref() else {
+        return RowGutter::Blank;
+    };
     // A workload-declared `gutter:` wrapper spec overrides the
     // automatic derivation — the phase owns its cell. A TEXT spec on
     // a metered phase COMPOSES with the completion fraction instead
@@ -348,10 +379,16 @@ fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
     if let Some(spec) = handle.gutter.load_full() {
         use nbrs_runtime::wrappers::gutter::GutterSpec;
         return match spec.as_ref() {
-            GutterSpec::Labeled { name, value } =>
-                RowGutter::Labeled { name: name.clone(), value: value.clone() },
-            GutterSpec::Text(s) => match (!p.daemon).then(|| metered_fraction(p, handle)).flatten() {
-                Some(f) => RowGutter::BarText { frac: f, text: s.clone() },
+            GutterSpec::Labeled { name, value } => RowGutter::Labeled {
+                name: name.clone(),
+                value: value.clone(),
+            },
+            GutterSpec::Text(s) => match (!p.daemon).then(|| metered_fraction(p, handle)).flatten()
+            {
+                Some(f) => RowGutter::BarText {
+                    frac: f,
+                    text: s.clone(),
+                },
                 None => RowGutter::Text(s.clone()),
             },
             GutterSpec::Bar(f) => RowGutter::Bar(*f),
@@ -372,7 +409,8 @@ fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
             nbrs_metrics::summaries::live_window::LiveWindowConfig {
                 window: std::time::Duration::from_secs(10),
                 ..Default::default()
-            });
+            },
+        );
         let h = ring.peek();
         if h.is_empty() {
             return RowGutter::Blank;
@@ -399,14 +437,18 @@ fn metered_fraction(
     p: &ActivePhase,
     handle: &nbrs_runtime::observer::PhaseRenderHandle,
 ) -> Option<f64> {
-    handle.metrics.progress_override()
-        .or_else(|| (p.rows_total > 0).then(|| {
-            (p.rows_consumed as f64 / p.rows_total as f64).clamp(0.0, 1.0)
-        }))
-        .or_else(|| (p.cursor_extent > 0).then(|| {
-            (handle.metrics.cycles_completed() as f64 / p.cursor_extent as f64)
-                .clamp(0.0, 1.0)
-        }))
+    handle
+        .metrics
+        .progress_override()
+        .or_else(|| {
+            (p.rows_total > 0)
+                .then(|| (p.rows_consumed as f64 / p.rows_total as f64).clamp(0.0, 1.0))
+        })
+        .or_else(|| {
+            (p.cursor_extent > 0).then(|| {
+                (handle.metrics.cycles_completed() as f64 / p.cursor_extent as f64).clamp(0.0, 1.0)
+            })
+        })
 }
 
 /// SRD-63 / SRD-92 — render an active phase's op-level status leaves (ops
@@ -423,9 +465,7 @@ fn metered_fraction(
 /// the phase has no row yet or no opted-in ops.
 fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<(String, RowGutter)> {
     let node_id = match snap.phases.iter().find(|e| {
-        e.name == phase.name
-            && e.labels == phase.labels
-            && matches!(e.status, PhaseStatus::Running)
+        e.name == phase.name && e.labels == phase.labels && matches!(e.status, PhaseStatus::Running)
     }) {
         Some(e) => e.node_id,
         None => return Vec::new(),
@@ -456,8 +496,7 @@ fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<(String, RowGut
             // hang", which is the less interesting question once a step has
             // settled. Ops with no `measure:` render exactly as before.
             let cell = match (op.measure.as_deref(), leaf) {
-                (Some(m), Some(v)) => RowGutter::Text(
-                    format!("[{m}] {}", format_dur_compact(v))),
+                (Some(m), Some(v)) => RowGutter::Text(format!("[{m}] {}", format_dur_compact(v))),
                 (Some(m), None) => RowGutter::Text(format!("[{m}]")),
                 (None, Some(v)) => RowGutter::Text(format_dur_compact(v)),
                 (None, None) => RowGutter::Blank,
@@ -591,9 +630,9 @@ mod tests {
             labels: String::new(),
             activity_name: name.to_string(),
             metrics: Arc::new(ActivityMetrics::new(&Labels::empty())),
-            bodies: Arc::new(vec![BakedBody::from_steps(vec![
-                RenderStep::Literal(t.to_string()),
-            ])]),
+            bodies: Arc::new(vec![BakedBody::from_steps(vec![RenderStep::Literal(
+                t.to_string(),
+            )])]),
             memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
             gutter: Arc::new(arc_swap::ArcSwapOption::empty()),
             status_metrics: Arc::from(Vec::<String>::new()),
@@ -676,28 +715,44 @@ mod tests {
 
         with.sysmon = Some(nbrs_runtime::sysmon::SysmonSample {
             cpu: Some(nbrs_runtime::sysmon::CpuReading {
-                mean: 0.34, max_core: 0.89, top_core: 7 }),
+                mean: 0.34,
+                max_core: 0.89,
+                top_core: 7,
+            }),
             io: Some(("nvme1n1".into(), 0.97)),
             ram: Some((0.41, 0.93)),
             rambw: None,
             storage: Some(("/mnt/nvme".into(), 0.71)),
         });
-        let (lines, gutters) =
-            render_active_status_with_gutters(&with).expect("renders");
+        let (lines, gutters) = render_active_status_with_gutters(&with).expect("renders");
         let lines: Vec<&str> = lines.split('\n').collect();
-        assert_eq!(lines.len(), gutters.len(), "rows and gutters must stay zipped");
-        let strips: Vec<usize> = gutters.iter().enumerate()
+        assert_eq!(
+            lines.len(),
+            gutters.len(),
+            "rows and gutters must stay zipped"
+        );
+        let strips: Vec<usize> = gutters
+            .iter()
+            .enumerate()
             .filter(|(_, g)| matches!(g, RowGutter::Sysmon { .. }))
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(strips, vec![0],
-            "one session band, leading the fold — never per phase");
+        assert_eq!(
+            strips,
+            vec![0],
+            "one session band, leading the fold — never per phase"
+        );
         let body = lines[0];
-        assert!(body.contains("nvme1n1") && body.contains("max c7 89%"),
-            "the band body names the subjects: {body:?}");
+        assert!(
+            body.contains("nvme1n1") && body.contains("max c7 89%"),
+            "the band body names the subjects: {body:?}"
+        );
         // The band is additive: exactly one row over the baseline.
-        assert_eq!(lines.len(), base_lines.split('\n').count() + 1,
-            "two active phases add exactly ONE band row, not two");
+        assert_eq!(
+            lines.len(),
+            base_lines.split('\n').count() + 1,
+            "two active phases add exactly ONE band row, not two"
+        );
     }
 
     /// The edification contract: every glyph in the gutter strip appears in
@@ -708,7 +763,10 @@ mod tests {
     fn strip_and_body_agree_on_every_glyph() {
         let sample = nbrs_runtime::sysmon::SysmonSample {
             cpu: Some(nbrs_runtime::sysmon::CpuReading {
-                mean: 0.02, max_core: 0.70, top_core: 5 }),
+                mean: 0.02,
+                max_core: 0.70,
+                top_core: 5,
+            }),
             io: Some(("loop0".into(), 0.0)),
             ram: Some((0.22, 0.61)),
             rambw: Some(0.33),
@@ -719,16 +777,23 @@ mod tests {
 
         // Same glyphs, same order, on both sides.
         let in_body: Vec<char> = body.chars().filter(|c| strip.contains(c)).collect();
-        assert_eq!(in_body, strip,
-            "body must echo every strip glyph once, in strip order:\n{body}");
+        assert_eq!(
+            in_body, strip,
+            "body must echo every strip glyph once, in strip order:\n{body}"
+        );
 
         // And each one actually labels its own measurement.
         for (glyph, name) in [
-            (GLYPH_CPU, "cpu"), (GLYPH_IO, "io"), (GLYPH_RAM, "ram"),
-            (GLYPH_RAMBW, "rambw"), (GLYPH_STORAGE, "storage"),
+            (GLYPH_CPU, "cpu"),
+            (GLYPH_IO, "io"),
+            (GLYPH_RAM, "ram"),
+            (GLYPH_RAMBW, "rambw"),
+            (GLYPH_STORAGE, "storage"),
         ] {
-            assert!(body.contains(&format!("{glyph} {name}")),
-                "{glyph} must sit immediately before `{name}`:\n{body}");
+            assert!(
+                body.contains(&format!("{glyph} {name}")),
+                "{glyph} must sit immediately before `{name}`:\n{body}"
+            );
         }
     }
 
@@ -738,7 +803,10 @@ mod tests {
     fn disabled_categories_appear_in_neither_strip_nor_body() {
         let sample = nbrs_runtime::sysmon::SysmonSample {
             cpu: Some(nbrs_runtime::sysmon::CpuReading {
-                mean: 0.5, max_core: 0.5, top_core: 0 }),
+                mean: 0.5,
+                max_core: 0.5,
+                top_core: 0,
+            }),
             io: None,
             ram: None,
             rambw: None,
@@ -758,21 +826,29 @@ mod tests {
     fn sysmon_strip_omits_unavailable_bandwidth() {
         let mut sample = nbrs_runtime::sysmon::SysmonSample {
             cpu: Some(nbrs_runtime::sysmon::CpuReading {
-                mean: 0.2, max_core: 0.3, top_core: 0 }),
+                mean: 0.2,
+                max_core: 0.3,
+                top_core: 0,
+            }),
             io: Some(("sda".into(), 0.5)),
             ram: Some((0.4, 0.8)),
             rambw: None,
             storage: None,
         };
-        assert_eq!(sysmon_items(&sample).len(), 3,
-            "disabled categories are absent, not zero");
+        assert_eq!(
+            sysmon_items(&sample).len(),
+            3,
+            "disabled categories are absent, not zero"
+        );
         sample.rambw = Some(0.12);
         sample.storage = Some(("/".into(), 0.7));
         let items = sysmon_items(&sample);
         assert_eq!(items.len(), 5);
         // Category order is the order the setting names them.
-        assert_eq!(items.iter().map(|(g, _)| *g).collect::<Vec<_>>(),
-                   vec!['⚙', '⛃', '▤', '⇅', '⛁']);
+        assert_eq!(
+            items.iter().map(|(g, _)| *g).collect::<Vec<_>>(),
+            vec!['⚙', '⛃', '▤', '⇅', '⛁']
+        );
     }
 
     #[test]
@@ -837,7 +913,7 @@ mod tests {
                     name: "encode".into(),
                     status: PhaseStatus::Completed,
                     started_at: Instant::now(),
-            session_started: 0.0,
+                    session_started: 0.0,
                     duration_secs: Some(1.5),
                     session_elapsed: Some(10.0),
                     seq: 0,
@@ -847,7 +923,7 @@ mod tests {
                     name: "write".into(),
                     status: PhaseStatus::Running,
                     started_at: Instant::now(),
-            session_started: 0.0,
+                    session_started: 0.0,
                     duration_secs: None,
                     session_elapsed: None,
                     seq: 1,
@@ -916,7 +992,8 @@ mod tests {
         let p = literal_phase("run", Some(1), Some("body"));
         let handle = p.render.as_ref().unwrap();
         handle.gutter.store(Some(std::sync::Arc::new(
-            nbrs_runtime::wrappers::gutter::GutterSpec::Text("≈42 units/s".into()))));
+            nbrs_runtime::wrappers::gutter::GutterSpec::Text("≈42 units/s".into()),
+        )));
         match phase_context_gutter(&p) {
             RowGutter::BarText { frac, text } => {
                 assert_eq!(text, "≈42 units/s");
@@ -928,10 +1005,17 @@ mod tests {
         // A daemon (no fraction) keeps the bare text cell.
         let mut d = literal_phase("watch", Some(2), Some("body"));
         d.daemon = true;
-        d.render.as_ref().unwrap().gutter.store(Some(std::sync::Arc::new(
-            nbrs_runtime::wrappers::gutter::GutterSpec::Text("t".into()))));
-        assert!(matches!(phase_context_gutter(&d), RowGutter::Text(_)),
-            "open-ended phase has no fraction to compose");
+        d.render
+            .as_ref()
+            .unwrap()
+            .gutter
+            .store(Some(std::sync::Arc::new(
+                nbrs_runtime::wrappers::gutter::GutterSpec::Text("t".into()),
+            )));
+        assert!(
+            matches!(phase_context_gutter(&d), RowGutter::Text(_)),
+            "open-ended phase has no fraction to compose"
+        );
     }
 
     #[test]

@@ -18,10 +18,10 @@
 //! locals the runtime sets during bootstrap and on every cycle
 //! tick.
 
-use std::future::Future;
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
-use std::sync::atomic::{AtomicU64, Ordering};
 use polydat::Const;
+use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 // All nodes here are authored via `#[polydat::polydat_node]` (fully-qualified
 // `polydat::…` paths), so no `polydat::ast` imports are needed in module
@@ -64,7 +64,10 @@ pub fn set_session_root(root: Arc<RwLock<Component>>) {
 }
 
 fn session_root() -> Option<Arc<RwLock<Component>>> {
-    SESSION_ROOT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    SESSION_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Public accessor for the runner-installed session root.
@@ -117,10 +120,10 @@ pub type ControlMap =
 /// [`ControlMap`]. Deadlock-safe: [`Component::control_snapshot`] acquires one
 /// tier's lock at a time, never nested — so it is safe on the cadence-contended
 /// component tree. Computed once per phase, shared across the phase's fibers.
-pub fn snapshot_controls(
-    component: &Arc<RwLock<Component>>,
-) -> ControlMap {
-    Arc::new(nbrs_metrics::component::Component::control_snapshot(component))
+pub fn snapshot_controls(component: &Arc<RwLock<Component>>) -> ControlMap {
+    Arc::new(nbrs_metrics::component::Component::control_snapshot(
+        component,
+    ))
 }
 
 /// An empty [`ControlMap`] for fibers / call sites that have no component (the
@@ -147,19 +150,26 @@ pub async fn with_fiber_context<F>(phase: Arc<str>, controls: ControlMap, fut: F
 where
     F: Future,
 {
-    FIBER_CTX.scope(
-        FiberContext { phase, cycle: AtomicU64::new(0), controls },
-        fut,
-    ).await
+    FIBER_CTX
+        .scope(
+            FiberContext {
+                phase,
+                cycle: AtomicU64::new(0),
+                controls,
+            },
+            fut,
+        )
+        .await
 }
 
 /// Resolve a control from the running fiber's **current component** snapshot
 /// (lock-free). `None` outside a fiber scope, or when the snapshot doesn't carry
 /// `name` — the caller then falls back to the session-root walk.
-fn current_phase_control(name: &str)
-    -> Option<Arc<dyn nbrs_metrics::controls::ErasedControl>>
-{
-    FIBER_CTX.try_with(|ctx| ctx.controls.get(name).cloned()).ok().flatten()
+fn current_phase_control(name: &str) -> Option<Arc<dyn nbrs_metrics::controls::ErasedControl>> {
+    FIBER_CTX
+        .try_with(|ctx| ctx.controls.get(name).cloned())
+        .ok()
+        .flatten()
 }
 
 /// Update the cycle counter in the enclosing [`FiberContext`].
@@ -175,7 +185,9 @@ fn task_phase() -> Option<Arc<str>> {
 }
 
 fn task_cycle() -> u64 {
-    FIBER_CTX.try_with(|ctx| ctx.cycle.load(Ordering::Relaxed)).unwrap_or(0)
+    FIBER_CTX
+        .try_with(|ctx| ctx.cycle.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 // =========================================================================
@@ -189,8 +201,7 @@ fn task_cycle() -> u64 {
 /// compile context before each builder runs; falls back to the control name
 /// when no binding scope is active (e.g. a library test).
 fn capture_binding(name: &str) -> String {
-    polydat::dsl::factory::compile_ctx::current_binding()
-        .unwrap_or_else(|| name.to_string())
+    polydat::dsl::factory::compile_ctx::current_binding().unwrap_or_else(|| name.to_string())
 }
 
 /// Polydat write node: submit an f64 write against the named control via the
@@ -315,9 +326,7 @@ fn control_set(
 /// pre-SRD-89 path, so single-run output is byte-identical (axiom A1). The walk
 /// holds a single, non-nested read guard on the session root (which has no
 /// parent), released before the caller projects the value.
-fn resolve_control(name: &str)
-    -> Option<Arc<dyn nbrs_metrics::controls::ErasedControl>>
-{
+fn resolve_control(name: &str) -> Option<Arc<dyn nbrs_metrics::controls::ErasedControl>> {
     // Resolve from the running fiber's **current component** — its phase-tier
     // control snapshot (walk-up from its own phase component, first match), read
     // lock-free. Uniform for single-run and concurrent: each execution's fibers
@@ -339,13 +348,17 @@ fn resolve_control(name: &str)
 /// no reified gauge. The single read path for every control-reader node
 /// (`control` / `control_u64` / `control_bool` / `rate` / `concurrency`).
 fn control_gauge_f64(name: &str) -> f64 {
-    resolve_control(name).and_then(|c| c.gauge_f64()).unwrap_or(0.0)
+    resolve_control(name)
+        .and_then(|c| c.gauge_f64())
+        .unwrap_or(0.0)
 }
 
 /// Read a dynamic control's current value as its human-readable string
 /// rendering (the erased-control `value_string()`), or `""` when absent.
 fn control_value_string(name: &str) -> String {
-    resolve_control(name).map(|c| c.value_string()).unwrap_or_default()
+    resolve_control(name)
+        .map(|c| c.value_string())
+        .unwrap_or_default()
 }
 
 /// Read a dynamic control's current reified-gauge value as `f64`, by
@@ -548,9 +561,9 @@ mod tests {
     // awaited code never locks it, so there's no deadlock.
     #![allow(clippy::await_holding_lock)]
     use super::*;
-    use polydat::ast::Value;
     use nbrs_metrics::controls::{BranchScope, ControlBuilder};
     use nbrs_metrics::labels::Labels;
+    use polydat::ast::Value;
     use std::collections::HashMap;
     use std::sync::MutexGuard;
 
@@ -565,14 +578,8 @@ mod tests {
     /// Build a session root with a declared control, install it
     /// as the global, and return the root handle so callers can
     /// mutate the control further.
-    fn install_session_with_control(
-        name: &str,
-        initial: u32,
-    ) -> Arc<RwLock<Component>> {
-        let root = Component::root(
-            Labels::empty().with("session", "t"),
-            HashMap::new(),
-        );
+    fn install_session_with_control(name: &str, initial: u32) -> Arc<RwLock<Component>> {
+        let root = Component::root(Labels::empty().with("session", "t"), HashMap::new());
         root.read().unwrap().controls().declare(
             ControlBuilder::new(name, initial)
                 .reify_as_gauge(|v| Some(*v as f64))
@@ -595,7 +602,8 @@ mod tests {
     fn control_missing_name_returns_zero() {
         let _g = serial_test();
         install_session_with_control("rate", 500);
-        let mut k = polydat::dsl::compile_polydat("x := control(\"not_declared\")").expect("compile");
+        let mut k =
+            polydat::dsl::compile_polydat("x := control(\"not_declared\")").expect("compile");
         assert_eq!(k.pull("x").as_f64(), 0.0);
     }
 
@@ -631,7 +639,8 @@ mod tests {
                 .expect("compile phase/cycle");
             assert_eq!(k.pull("p").as_str(), "rampup");
             assert_eq!(k.pull("c").as_u64(), 4242);
-        }).await;
+        })
+        .await;
     }
 
     #[test]
@@ -668,8 +677,8 @@ mod tests {
             Labels::empty().with("session", "s_cs"),
             std::collections::HashMap::new(),
         );
-        let c: nbrs_metrics::controls::Control<u32> = nbrs_metrics::controls::
-            ControlBuilder::new("concurrency", 4u32)
+        let c: nbrs_metrics::controls::Control<u32> =
+            nbrs_metrics::controls::ControlBuilder::new("concurrency", 4u32)
                 .reify_as_gauge(|v| Some(*v as f64))
                 .from_f64(|v| {
                     if v < 0.0 || v > u32::MAX as f64 {
@@ -697,7 +706,9 @@ mod tests {
         // task to run through validate → fanout → commit.
         for _ in 0..10 {
             tokio::task::yield_now().await;
-            if c.value() == 64u32 { break; }
+            if c.value() == 64u32 {
+                break;
+            }
         }
         assert_eq!(c.value(), 64u32);
         let committed = c.get();
@@ -712,15 +723,23 @@ mod tests {
         // dispatches again.
         let rev_before = c.get().rev;
         node.eval(&[Value::F64(64.0)], &mut out);
-        assert_eq!(out[0].as_u64(), 0,
-            "write of the committed value must be elided");
-        assert_eq!(c.get().rev, rev_before,
-            "an elided write must not touch the control");
+        assert_eq!(
+            out[0].as_u64(),
+            0,
+            "write of the committed value must be elided"
+        );
+        assert_eq!(
+            c.get().rev,
+            rev_before,
+            "an elided write must not touch the control"
+        );
         node.eval(&[Value::F64(32.0)], &mut out);
         assert_eq!(out[0].as_u64(), 1, "a real change dispatches");
         for _ in 0..10 {
             tokio::task::yield_now().await;
-            if c.value() == 32u32 { break; }
+            if c.value() == 32u32 {
+                break;
+            }
         }
         assert_eq!(c.value(), 32u32);
     }
@@ -765,7 +784,8 @@ mod tests {
     fn control_bool_projects_gauge_to_boolean() {
         let _g = serial_test();
         install_session_with_control("enabled", 1);
-        let mut k = polydat::dsl::compile_polydat("x := control_bool(\"enabled\")").expect("compile");
+        let mut k =
+            polydat::dsl::compile_polydat("x := control_bool(\"enabled\")").expect("compile");
         assert!(k.pull("x").as_bool());
     }
 
@@ -773,7 +793,8 @@ mod tests {
     fn control_bool_zero_is_false() {
         let _g = serial_test();
         install_session_with_control("enabled", 0);
-        let mut k = polydat::dsl::compile_polydat("x := control_bool(\"enabled\")").expect("compile");
+        let mut k =
+            polydat::dsl::compile_polydat("x := control_bool(\"enabled\")").expect("compile");
         assert!(!k.pull("x").as_bool());
     }
 
@@ -781,7 +802,8 @@ mod tests {
     fn control_bool_missing_name_is_false() {
         let _g = serial_test();
         install_session_with_control("enabled", 1);
-        let mut k = polydat::dsl::compile_polydat("x := control_bool(\"absent\")").expect("compile");
+        let mut k =
+            polydat::dsl::compile_polydat("x := control_bool(\"absent\")").expect("compile");
         assert!(!k.pull("x").as_bool());
     }
 
@@ -789,7 +811,8 @@ mod tests {
     fn control_str_renders_value_string() {
         let _g = serial_test();
         install_session_with_control("concurrency", 42);
-        let mut k = polydat::dsl::compile_polydat("x := control_str(\"concurrency\")").expect("compile");
+        let mut k =
+            polydat::dsl::compile_polydat("x := control_str(\"concurrency\")").expect("compile");
         // u32's Debug rendering is its decimal representation.
         assert_eq!(k.pull("x").as_str(), "42");
     }
@@ -798,7 +821,8 @@ mod tests {
     fn control_str_missing_name_returns_empty() {
         let _g = serial_test();
         install_session_with_control("concurrency", 42);
-        let mut k = polydat::dsl::compile_polydat("x := control_str(\"log_level\")").expect("compile");
+        let mut k =
+            polydat::dsl::compile_polydat("x := control_str(\"log_level\")").expect("compile");
         assert_eq!(k.pull("x").as_str(), "");
     }
 
@@ -811,8 +835,8 @@ mod tests {
             Labels::empty().with("session", "attr"),
             std::collections::HashMap::new(),
         );
-        let c: nbrs_metrics::controls::Control<f64> = nbrs_metrics::controls::
-            ControlBuilder::new("rate", 100.0)
+        let c: nbrs_metrics::controls::Control<f64> =
+            nbrs_metrics::controls::ControlBuilder::new("rate", 100.0)
                 .reify_as_gauge(|v| Some(*v))
                 .from_f64(Ok)
                 .branch_scope(nbrs_metrics::controls::BranchScope::Subtree)
@@ -828,22 +852,25 @@ mod tests {
         // the compiler uses.
         let _scope = polydat::dsl::factory::compile_ctx::scoped_binding("rate_adj");
         let consts = [polydat::dsl::factory::ConstArg::Str("rate".into())];
-        let node = polydat::dsl::factory::build_node(
-            "control_set", &[], &[], &consts,
-        ).expect("control_set should build");
+        let node = polydat::dsl::factory::build_node("control_set", &[], &[], &consts)
+            .expect("control_set should build");
         let mut out = [Value::None];
         node.eval(&[Value::F64(4242.0)], &mut out);
 
         // Let the spawned write complete.
         for _ in 0..40 {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            if c.value() == 4242.0 { break; }
+            if c.value() == 4242.0 {
+                break;
+            }
         }
         assert_eq!(c.value(), 4242.0);
         match c.get().origin {
             nbrs_metrics::controls::ControlOrigin::Polydat { ref binding } => {
-                assert_eq!(binding, "rate_adj",
-                    "attribution should be the DSL binding name, not the control name");
+                assert_eq!(
+                    binding, "rate_adj",
+                    "attribution should be the DSL binding name, not the control name"
+                );
             }
             other => panic!("expected Polydat origin, got {other:?}"),
         }
@@ -872,12 +899,15 @@ mod tests {
     /// `val` — the per-execution phase component a fiber resolves against.
     fn component_with_concurrency(val: u32) -> Arc<RwLock<Component>> {
         let comp = Component::root(Labels::empty().with("phase", "p"), HashMap::new());
-        comp.read().unwrap_or_else(|e| e.into_inner()).controls().declare(
-            ControlBuilder::new("concurrency", val)
-                .reify_as_gauge(|v| Some(*v as f64))
-                .branch_scope(BranchScope::Subtree)
-                .build(),
-        );
+        comp.read()
+            .unwrap_or_else(|e| e.into_inner())
+            .controls()
+            .declare(
+                ControlBuilder::new("concurrency", val)
+                    .reify_as_gauge(|v| Some(*v as f64))
+                    .branch_scope(BranchScope::Subtree)
+                    .build(),
+            );
         comp
     }
 

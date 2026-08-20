@@ -31,8 +31,8 @@
 //! `dryrun=phase`) can already start consuming it.
 
 use nbrs_workload::model::ScenarioNode;
-use polydat::iteration::comprehension::Comprehension;
 use polydat::dsl::pragmas::PragmaSet;
+use polydat::iteration::comprehension::Comprehension;
 
 /// Index into the `ScopeTree.nodes` vector. Stable for the
 /// lifetime of the tree.
@@ -107,9 +107,7 @@ pub enum ScopeKind {
     /// `set: { ... }` sugar form), derived bindings spanning a
     /// subtree, shared cells, etc. — the Polydat grammar is the
     /// only constraint on what the source may contain.
-    Bindings {
-        source: String,
-    },
+    Bindings { source: String },
 }
 
 impl ScopeKind {
@@ -128,9 +126,7 @@ impl ScopeKind {
             ScopeKind::Session => "session".into(),
             ScopeKind::Workload => "workload".into(),
             ScopeKind::Scenario { name } => format!("scenario '{name}'"),
-            ScopeKind::Comprehension { comprehension } => {
-                label_for_comprehension(comprehension)
-            },
+            ScopeKind::Comprehension { comprehension } => label_for_comprehension(comprehension),
             ScopeKind::IncludedScenario { name } => format!("scenario '{name}'"),
             ScopeKind::DoWhile { condition, counter } => match counter {
                 Some(c) => format!("do_while {condition} ({c})"),
@@ -203,17 +199,21 @@ fn label_for_comprehension(comp: &Comprehension) -> String {
             format!("each {}", vars.join(", "))
         }
         Comprehension::Union { children } => {
-            let parts: Vec<String> = children.iter().map(|sub| {
-                // Each Union child is itself a Cartesian (or
-                // single Clause/Zip). Render its dims.
-                let dims: Vec<String> = match sub {
-                    Comprehension::Cartesian { children: c } => {
-                        c.iter().map(|n| format!("{} in {}", var_of(n), expr_of(n))).collect()
-                    }
-                    other => vec![format!("{} in {}", var_of(other), expr_of(other))],
-                };
-                format!("[{}]", dims.join(", "))
-            }).collect();
+            let parts: Vec<String> = children
+                .iter()
+                .map(|sub| {
+                    // Each Union child is itself a Cartesian (or
+                    // single Clause/Zip). Render its dims.
+                    let dims: Vec<String> = match sub {
+                        Comprehension::Cartesian { children: c } => c
+                            .iter()
+                            .map(|n| format!("{} in {}", var_of(n), expr_of(n)))
+                            .collect(),
+                        other => vec![format!("{} in {}", var_of(other), expr_of(other))],
+                    };
+                    format!("[{}]", dims.join(", "))
+                })
+                .collect();
             format!("for_each_union {{{}}}", parts.join(" | "))
         }
         Comprehension::Zip { .. } => format!("each {}", var_of(body)),
@@ -352,7 +352,9 @@ impl ScopeTree {
         // "lost grouping" the user called out — a real scope
         // ancestor named after the scenario.
         let scenario_idx = tree.add_node(ScopeNode {
-            kind: ScopeKind::Scenario { name: scenario_name.into() },
+            kind: ScopeKind::Scenario {
+                name: scenario_name.into(),
+            },
             parent: Some(workload_idx),
             children: Vec::new(),
             depth: 2,
@@ -388,7 +390,11 @@ impl ScopeTree {
     pub fn scenario_root_idx(&self) -> ScopeNodeIdx {
         // Session(0) → Workload → Scenario. Walk two layers down.
         let workload = self.workload_root_idx();
-        self.nodes[workload].children.first().copied().unwrap_or(workload)
+        self.nodes[workload]
+            .children
+            .first()
+            .copied()
+            .unwrap_or(workload)
     }
 
     /// Append the subtree rooted at `node` as a child of `parent_idx`.
@@ -405,13 +411,17 @@ impl ScopeTree {
                     children: Vec::new(),
                     depth,
                     pragmas: PragmaSet::default(),
-            cached_kernel: std::sync::OnceLock::new(),
-            materialised: None,
-            logical_name: String::new(),
+                    cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
             }
-            ScenarioNode::Comprehension { comprehension, children, .. } => {
+            ScenarioNode::Comprehension {
+                comprehension,
+                children,
+                ..
+            } => {
                 let idx = self.add_node(ScopeNode {
                     kind: ScopeKind::Comprehension {
                         comprehension: comprehension.clone(),
@@ -445,7 +455,11 @@ impl ScopeTree {
                     self.append_subtree(idx, child);
                 }
             }
-            ScenarioNode::DoWhile { condition, counter, children } => {
+            ScenarioNode::DoWhile {
+                condition,
+                counter,
+                children,
+            } => {
                 let idx = self.add_node(ScopeNode {
                     kind: ScopeKind::DoWhile {
                         condition: condition.clone(),
@@ -455,16 +469,20 @@ impl ScopeTree {
                     children: Vec::new(),
                     depth,
                     pragmas: PragmaSet::default(),
-            cached_kernel: std::sync::OnceLock::new(),
-            materialised: None,
-            logical_name: String::new(),
+                    cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
                 for child in children {
                     self.append_subtree(idx, child);
                 }
             }
-            ScenarioNode::DoUntil { condition, counter, children } => {
+            ScenarioNode::DoUntil {
+                condition,
+                counter,
+                children,
+            } => {
                 let idx = self.add_node(ScopeNode {
                     kind: ScopeKind::DoUntil {
                         condition: condition.clone(),
@@ -474,9 +492,9 @@ impl ScopeTree {
                     children: Vec::new(),
                     depth,
                     pragmas: PragmaSet::default(),
-            cached_kernel: std::sync::OnceLock::new(),
-            materialised: None,
-            logical_name: String::new(),
+                    cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
                 for child in children {
@@ -530,7 +548,9 @@ impl ScopeTree {
     ) {
         // Snapshot the indices first — we'll mutate `nodes`
         // during the loop.
-        let phase_nodes: Vec<(ScopeNodeIdx, String, usize)> = self.nodes.iter()
+        let phase_nodes: Vec<(ScopeNodeIdx, String, usize)> = self
+            .nodes
+            .iter()
             .enumerate()
             .filter_map(|(i, n)| match &n.kind {
                 ScopeKind::Phase { name } => Some((i, name.clone(), n.depth)),
@@ -540,7 +560,9 @@ impl ScopeTree {
 
         for (phase_idx, phase_name, phase_depth) in phase_nodes {
             // Skip phases that already have OpTemplate children.
-            let already_has_ops = self.nodes[phase_idx].children.iter()
+            let already_has_ops = self.nodes[phase_idx]
+                .children
+                .iter()
                 .any(|&c| matches!(self.nodes[c].kind, ScopeKind::OpTemplate { .. }));
             if already_has_ops {
                 continue;
@@ -550,10 +572,14 @@ impl ScopeTree {
             // `default` scenario including a phase that's
             // declared elsewhere) just get no op children —
             // not a structural error.
-            let Some(phase) = phases.get(&phase_name) else { continue; };
+            let Some(phase) = phases.get(&phase_name) else {
+                continue;
+            };
             for op in &phase.ops {
                 let op_idx = self.add_node(ScopeNode {
-                    kind: ScopeKind::OpTemplate { name: op.name.clone() },
+                    kind: ScopeKind::OpTemplate {
+                        name: op.name.clone(),
+                    },
                     parent: Some(phase_idx),
                     children: Vec::new(),
                     depth: phase_depth + 1,
@@ -587,7 +613,8 @@ impl ScopeTree {
     /// ancestor regardless of how aggressively descendants
     /// elide.
     pub fn mark_scope_elision<F>(&mut self, mut is_materialising: F)
-    where F: FnMut(&ScopeKind, ScopeNodeIdx) -> bool,
+    where
+        F: FnMut(&ScopeKind, ScopeNodeIdx) -> bool,
     {
         // Walk in DFS order; logical names depend on parent
         // names being assigned first, which DFS pre-order
@@ -608,15 +635,15 @@ impl ScopeTree {
             // installed workload kernel (SRD-88: it's the per-execution
             // root beneath the session, the old always-materialised
             // root's role). Descendants elide INTO it as before.
-            let materialise = matches!(kind, ScopeKind::Workload)
-                || is_materialising(&kind, idx);
+            let materialise = matches!(kind, ScopeKind::Workload) || is_materialising(&kind, idx);
             self.nodes[idx].materialised = Some(materialise);
 
             // Logical name = parent's logical name + "."
             // + per-kind segment. The segment shape follows
             // SRD-13d §5.3's table (`phase.<n>`,
             // `for_each.<var>`, `op.<o>`).
-            let parent_name = self.nodes[idx].parent
+            let parent_name = self.nodes[idx]
+                .parent
                 .map(|p| self.nodes[p].logical_name.clone())
                 .unwrap_or_default();
             let segment = match &kind {
@@ -642,7 +669,8 @@ impl ScopeTree {
                     // with `const mode := …` so the segment is
                     // `bindings.mode`. Sources with no clear
                     // first name fall back to a positional tag.
-                    let first_name = source.lines()
+                    let first_name = source
+                        .lines()
                         .map(str::trim)
                         .find(|l| !l.is_empty())
                         .and_then(|line| {
@@ -723,11 +751,10 @@ impl ScopeTree {
     /// callers, who use the result to fetch the chain-walked
     /// `PragmaSet`.
     pub fn phase_node_by_name(&self, name: &str) -> Option<ScopeNodeIdx> {
-        self.iter_dfs()
-            .find_map(|(idx, node)| match &node.kind {
-                ScopeKind::Phase { name: n } if n == name => Some(idx),
-                _ => None,
-            })
+        self.iter_dfs().find_map(|(idx, node)| match &node.kind {
+            ScopeKind::Phase { name: n } if n == name => Some(idx),
+            _ => None,
+        })
     }
 
     /// Op-template kernel programs for every materialised
@@ -752,8 +779,12 @@ impl ScopeTree {
         let mut out = std::collections::HashMap::new();
         for &child_idx in &self.nodes[phase_idx].children {
             let child = &self.nodes[child_idx];
-            let ScopeKind::OpTemplate { name } = &child.kind else { continue };
-            if child.materialised != Some(true) { continue; }
+            let ScopeKind::OpTemplate { name } = &child.kind else {
+                continue;
+            };
+            if child.materialised != Some(true) {
+                continue;
+            }
             if let Some(kernel) = child.cached_kernel.get() {
                 out.insert(name.clone(), kernel.program().clone());
             }
@@ -848,10 +879,7 @@ impl ScopeTree {
     /// Find a `Comprehension` scope by structural-equality match
     /// against its [`Comprehension`] AST. Returns the **first**
     /// DFS-pre-order match.
-    pub fn find_comprehension_scope(
-        &self,
-        comprehension: &Comprehension,
-    ) -> Option<ScopeNodeIdx> {
+    pub fn find_comprehension_scope(&self, comprehension: &Comprehension) -> Option<ScopeNodeIdx> {
         self.iter_dfs().find_map(|(idx, node)| match &node.kind {
             ScopeKind::Comprehension { comprehension: c } if c == comprehension => Some(idx),
             _ => None,
@@ -866,10 +894,7 @@ impl ScopeTree {
     /// executor's current scope position is known — see that
     /// method's doc for why a global content-only lookup is
     /// currently unsafe.
-    pub fn find_bindings_scope(
-        &self,
-        source: &str,
-    ) -> Option<ScopeNodeIdx> {
+    pub fn find_bindings_scope(&self, source: &str) -> Option<ScopeNodeIdx> {
         self.iter_dfs().find_map(|(idx, node)| match &node.kind {
             ScopeKind::Bindings { source: s } if s == source => Some(idx),
             _ => None,
@@ -934,7 +959,8 @@ impl ScopeTree {
         parent: ScopeNodeIdx,
         predicate: &mut dyn FnMut(&ScopeNode) -> bool,
     ) -> Option<ScopeNodeIdx> {
-        let mut stack: Vec<ScopeNodeIdx> = self.nodes[parent].children.iter().rev().copied().collect();
+        let mut stack: Vec<ScopeNodeIdx> =
+            self.nodes[parent].children.iter().rev().copied().collect();
         while let Some(idx) = stack.pop() {
             if predicate(&self.nodes[idx]) {
                 return Some(idx);
@@ -985,11 +1011,13 @@ impl ScopeTree {
             // — there's no single backing slice to borrow
             // from), so this block is owned-string throughout.
             let own_iter_vars: Vec<String> = match &node.kind {
-                ScopeKind::Comprehension { comprehension } => {
-                    comprehension.coordinate_names()
+                ScopeKind::Comprehension { comprehension } => comprehension.coordinate_names(),
+                ScopeKind::DoWhile {
+                    counter: Some(c), ..
                 }
-                ScopeKind::DoWhile { counter: Some(c), .. }
-                | ScopeKind::DoUntil { counter: Some(c), .. } => vec![c.clone()],
+                | ScopeKind::DoUntil {
+                    counter: Some(c), ..
+                } => vec![c.clone()],
                 _ => Vec::new(),
             };
             for var in &own_iter_vars {
@@ -1020,7 +1048,12 @@ impl ScopeTree {
             }
             Ok(())
         }
-        walk(self, self.root, &std::collections::HashSet::new(), workload_params)
+        walk(
+            self,
+            self.root,
+            &std::collections::HashSet::new(),
+            workload_params,
+        )
     }
 
     /// Install the canonical compiled kernel for `scope_idx`.
@@ -1159,7 +1192,10 @@ fn extract_phase_pragmas(phase: &nbrs_workload::model::WorkloadPhase) -> PragmaS
         let local = polydat::dsl::pragmas::collect_from_ast(&ast);
         entries.extend(local.entries);
     }
-    PragmaSet { entries, parent: None }
+    PragmaSet {
+        entries,
+        parent: None,
+    }
 }
 
 /// Ride-along visitor for kernel-installation events. Set by
@@ -1167,10 +1203,11 @@ fn extract_phase_pragmas(phase: &nbrs_workload::model::WorkloadPhase) -> PragmaS
 /// `install_kernel` fires the printer as the planning walk
 /// encounters the scope. `None` (the default) keeps install
 /// a no-cost hot path.
-pub type KernelInstallVisitor = Box<dyn Fn(&ScopeNode, ScopeNodeIdx, &polydat::kernel::PolydatKernel) + Send + Sync>;
+pub type KernelInstallVisitor =
+    Box<dyn Fn(&ScopeNode, ScopeNodeIdx, &polydat::kernel::PolydatKernel) + Send + Sync>;
 
-static KERNEL_INSTALL_VISITOR: std::sync::OnceLock<std::sync::Mutex<Option<KernelInstallVisitor>>>
-    = std::sync::OnceLock::new();
+static KERNEL_INSTALL_VISITOR: std::sync::OnceLock<std::sync::Mutex<Option<KernelInstallVisitor>>> =
+    std::sync::OnceLock::new();
 
 fn visitor_slot() -> &'static std::sync::Mutex<Option<KernelInstallVisitor>> {
     KERNEL_INSTALL_VISITOR.get_or_init(|| std::sync::Mutex::new(None))
@@ -1234,7 +1271,6 @@ impl<'a> Iterator for AncestorsIter<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1248,8 +1284,14 @@ mod tests {
             r#for: ForSpec::Inline(spec.to_string()),
             r#where: None,
             order: None,
-        }.into_algebra().unwrap();
-        ScenarioNode::Comprehension { comprehension, children, continue_if: None }
+        }
+        .into_algebra()
+        .unwrap();
+        ScenarioNode::Comprehension {
+            comprehension,
+            children,
+            continue_if: None,
+        }
     }
 
     #[test]
@@ -1281,11 +1323,13 @@ mod tests {
     #[test]
     fn nested_for_each_preserves_depth() {
         // for_each x in xs { for_each y in ys { phase P } }
-        let tree = ScopeTree::build("default", &[
-            for_each("x in xs", vec![
-                for_each("y in ys", vec![phase("P")]),
-            ]),
-        ]);
+        let tree = ScopeTree::build(
+            "default",
+            &[for_each(
+                "x in xs",
+                vec![for_each("y in ys", vec![phase("P")])],
+            )],
+        );
         // session(0) → workload(1) → scenario(2) → for_each_x(3) → for_each_y(4) → phase_P(5)
         assert_eq!(tree.nodes.len(), 6);
         assert_eq!(tree.nodes[3].depth, 3);
@@ -1305,49 +1349,57 @@ mod tests {
 
     #[test]
     fn dfs_pre_order_matches_authored_order() {
-        let tree = ScopeTree::build("default", &[
-            for_each("x in xs", vec![phase("a"), phase("b")]),
-            phase("c"),
-        ]);
-        let names: Vec<String> = tree
-            .iter_dfs()
-            .map(|(_, n)| n.kind.label())
-            .collect();
-        assert_eq!(names, vec![
-            "session".to_string(),
-            "workload".into(),
-            "scenario 'default'".into(),
-            "each x".into(),
-            "phase 'a'".into(),
-            "phase 'b'".into(),
-            "phase 'c'".into(),
-        ]);
+        let tree = ScopeTree::build(
+            "default",
+            &[
+                for_each("x in xs", vec![phase("a"), phase("b")]),
+                phase("c"),
+            ],
+        );
+        let names: Vec<String> = tree.iter_dfs().map(|(_, n)| n.kind.label()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "session".to_string(),
+                "workload".into(),
+                "scenario 'default'".into(),
+                "each x".into(),
+                "phase 'a'".into(),
+                "phase 'b'".into(),
+                "phase 'c'".into(),
+            ]
+        );
     }
 
     #[test]
     fn ancestors_walk_to_root() {
-        let tree = ScopeTree::build("default", &[
-            for_each("x in xs", vec![phase("a")]),
-        ]);
+        let tree = ScopeTree::build("default", &[for_each("x in xs", vec![phase("a")])]);
         let phase_idx = tree.phase_leaves()[0];
-        let ancestors: Vec<String> = tree.ancestors(phase_idx)
+        let ancestors: Vec<String> = tree
+            .ancestors(phase_idx)
             .map(|(_, n)| n.kind.label())
             .collect();
-        assert_eq!(ancestors, vec![
-            "phase 'a'".to_string(),
-            "each x".into(),
-            "scenario 'default'".into(),
-            "workload".into(),
-            "session".into(),
-        ]);
+        assert_eq!(
+            ancestors,
+            vec![
+                "phase 'a'".to_string(),
+                "each x".into(),
+                "scenario 'default'".into(),
+                "workload".into(),
+                "session".into(),
+            ]
+        );
     }
 
     #[test]
     fn phase_leaves_returns_only_phases() {
-        let tree = ScopeTree::build("default", &[
-            for_each("x in xs", vec![phase("a"), phase("b")]),
-            phase("c"),
-        ]);
+        let tree = ScopeTree::build(
+            "default",
+            &[
+                for_each("x in xs", vec![phase("a"), phase("b")]),
+                phase("c"),
+            ],
+        );
         let leaves = tree.phase_leaves();
         assert_eq!(leaves.len(), 3);
         for idx in leaves {
@@ -1406,9 +1458,7 @@ mod tests {
             "p".to_string(),
             make_phase_with_source("pragma strict\n id := cycle\n"),
         )]);
-        let mut tree = ScopeTree::build("default", &[
-            for_each("x in xs", vec![phase("p")]),
-        ]);
+        let mut tree = ScopeTree::build("default", &[for_each("x in xs", vec![phase("p")])]);
         tree.populate_pragmas(&phases);
         let phase_idx = tree.phase_leaves()[0];
         // Phase declares strict (alias for both). Confirm:
@@ -1423,8 +1473,8 @@ mod tests {
     /// suffices to populate `output_map` so `get_constant`
     /// returns the folded value.
     fn compile_kernel(source: &str) -> std::sync::Arc<polydat::kernel::PolydatKernel> {
-        let kernel = polydat::dsl::compile::compile_polydat(source)
-            .expect("test source should compile");
+        let kernel =
+            polydat::dsl::compile::compile_polydat(source).expect("test source should compile");
         std::sync::Arc::new(kernel)
     }
 
@@ -1441,7 +1491,9 @@ mod tests {
         let workload_kernel = compile_kernel("const dataset := \"example\"\n");
         assert!(tree.install_kernel(0, workload_kernel));
 
-        let cached = tree.nodes[0].cached_kernel.get()
+        let cached = tree.nodes[0]
+            .cached_kernel
+            .get()
             .expect("install populated the slot");
         match cached.get_constant("dataset") {
             Some(polydat::ast::Value::Str(s)) => assert_eq!(&**s, "example"),
@@ -1463,9 +1515,8 @@ mod tests {
 
         // Parent: a workload-shaped kernel exposing `k_values`.
         let parent_src = "const k_values := \"1, 10\"\n";
-        let parent: Arc<PolydatKernel> = Arc::new(
-            polydat::dsl::compile::compile_polydat(parent_src).unwrap(),
-        );
+        let parent: Arc<PolydatKernel> =
+            Arc::new(polydat::dsl::compile::compile_polydat(parent_src).unwrap());
 
         // Build the for_each scope kernel as the runner would.
         let parent_manifest = crate::runner::extract_manifest(parent.program());
@@ -1479,7 +1530,8 @@ mod tests {
             false,
             "test",
             None,
-        ).expect("synthesis should succeed");
+        )
+        .expect("synthesis should succeed");
 
         // After `materialize_wiring_from_outer` (called inside the helper),
         // the inherited extern is populated with the parent's
@@ -1495,8 +1547,10 @@ mod tests {
         // (Runtime semantics test belongs in executor.rs once
         // M3.4 wires this up; M3.2 only verifies the install +
         // chain mechanics.)
-        assert!(kernel.program().find_input("k").is_some(),
-            "iter var should be declared as an extern input");
+        assert!(
+            kernel.program().find_input("k").is_some(),
+            "iter var should be declared as an extern input"
+        );
 
         // Polydat's `extern` declaration auto-installs a passthrough
         // node that exposes the name as an output too — so
@@ -1507,10 +1561,14 @@ mod tests {
         let manifest = crate::runner::extract_manifest(kernel.program());
         let output_names: std::collections::HashSet<_> =
             manifest.iter().map(|e| e.name.as_str()).collect();
-        assert!(output_names.contains("k_values"),
-            "inherited name appears as output via extern's auto-passthrough");
-        assert!(output_names.contains("k"),
-            "iter var appears as output via extern's auto-passthrough");
+        assert!(
+            output_names.contains("k_values"),
+            "inherited name appears as output via extern's auto-passthrough"
+        );
+        assert!(
+            output_names.contains("k"),
+            "iter var appears as output via extern's auto-passthrough"
+        );
     }
 
     #[test]
@@ -1523,9 +1581,8 @@ mod tests {
         use std::sync::Arc;
 
         let parent_src = "const k_values := \"1, 10\"\n";
-        let parent: Arc<PolydatKernel> = Arc::new(
-            polydat::dsl::compile::compile_polydat(parent_src).unwrap(),
-        );
+        let parent: Arc<PolydatKernel> =
+            Arc::new(polydat::dsl::compile::compile_polydat(parent_src).unwrap());
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
         let kernel = crate::scope_synth::build_for_each_scope_kernel(
@@ -1538,14 +1595,20 @@ mod tests {
             false,
             "test",
             None,
-        ).expect("synthesis should succeed");
+        )
+        .expect("synthesis should succeed");
 
         // Assert k's input port is u64-typed, not String.
         let manifest = crate::runner::extract_manifest(kernel.program());
-        let k_entry = manifest.iter().find(|e| e.name == "k")
+        let k_entry = manifest
+            .iter()
+            .find(|e| e.name == "k")
             .expect("k must appear in manifest");
-        assert_eq!(k_entry.port_type, polydat::ast::PortType::U64,
-            "iter var over numeric values should be typed u64, not String");
+        assert_eq!(
+            k_entry.port_type,
+            polydat::ast::PortType::U64,
+            "iter var over numeric values should be typed u64, not String"
+        );
     }
 
     #[test]
@@ -1565,14 +1628,13 @@ mod tests {
             "const k_1_limits := \"1, 2, 4, 8\"\n",
             "const k_10_limits := \"10, 20, 30\"\n",
         );
-        let parent: Arc<PolydatKernel> = Arc::new(
-            polydat::dsl::compile::compile_polydat(parent_src).unwrap(),
-        );
+        let parent: Arc<PolydatKernel> =
+            Arc::new(polydat::dsl::compile::compile_polydat(parent_src).unwrap());
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
         let kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[
-                ("k".to_string(),     "{k_values}".to_string()),
+                ("k".to_string(), "{k_values}".to_string()),
                 ("limit".to_string(), "{k_{k}_limits}".to_string()),
             ],
             &parent_manifest,
@@ -1583,15 +1645,22 @@ mod tests {
             false,
             "test",
             None,
-        ).expect("synthesis should succeed");
+        )
+        .expect("synthesis should succeed");
 
         let manifest = crate::runner::extract_manifest(kernel.program());
         let k_entry = manifest.iter().find(|e| e.name == "k").unwrap();
         let limit_entry = manifest.iter().find(|e| e.name == "limit").unwrap();
-        assert_eq!(k_entry.port_type, polydat::ast::PortType::U64,
-            "k typed u64 from k_values pre-eval");
-        assert_eq!(limit_entry.port_type, polydat::ast::PortType::U64,
-            "limit typed u64 via recursive probe k=1 → k_1_limits → \"1, 2, 4, 8\"");
+        assert_eq!(
+            k_entry.port_type,
+            polydat::ast::PortType::U64,
+            "k typed u64 from k_values pre-eval"
+        );
+        assert_eq!(
+            limit_entry.port_type,
+            polydat::ast::PortType::U64,
+            "limit typed u64 via recursive probe k=1 → k_1_limits → \"1, 2, 4, 8\""
+        );
     }
 
     // ── SRD-13d Phase 4 + 5: scope elision marks ──
@@ -1609,21 +1678,23 @@ mod tests {
         assert_eq!(tree.nodes[workload_idx].logical_name, "workload");
         // Scenario is named after its scenario tag.
         let scenario_idx = tree.nodes[workload_idx].children[0];
-        assert_eq!(tree.nodes[scenario_idx].logical_name,
-            "workload.scenario.default");
+        assert_eq!(
+            tree.nodes[scenario_idx].logical_name,
+            "workload.scenario.default"
+        );
         // Phase descends from scenario.
         let phase_idx = tree.nodes[scenario_idx].children[0];
-        assert_eq!(tree.nodes[phase_idx].logical_name,
-            "workload.scenario.default.phase.p");
+        assert_eq!(
+            tree.nodes[phase_idx].logical_name,
+            "workload.scenario.default.phase.p"
+        );
     }
 
     #[test]
     fn mark_scope_elision_records_predicate_decisions() {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         // Predicate: only Phase scopes materialise.
-        tree.mark_scope_elision(|kind, _idx| {
-            matches!(kind, ScopeKind::Phase { .. })
-        });
+        tree.mark_scope_elision(|kind, _idx| matches!(kind, ScopeKind::Phase { .. }));
         let workload_idx = tree.nodes[0].children[0];
         let scenario_idx = tree.nodes[workload_idx].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
@@ -1635,9 +1706,7 @@ mod tests {
     fn nearest_materialised_walks_past_elided_layers() {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         // Predicate: only the workload tier materialises.
-        tree.mark_scope_elision(|kind, _idx| {
-            matches!(kind, ScopeKind::Workload)
-        });
+        tree.mark_scope_elision(|kind, _idx| matches!(kind, ScopeKind::Workload));
         let workload_idx = tree.nodes[0].children[0];
         let scenario_idx = tree.nodes[workload_idx].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
@@ -1678,24 +1747,44 @@ mod tests {
 
     #[test]
     fn extend_with_op_templates_adds_one_child_per_op() {
+        use nbrs_workload::model::{BindingsDef, ParsedOp, WorkloadPhase};
         use std::collections::HashMap;
-        use nbrs_workload::model::{ParsedOp, WorkloadPhase, BindingsDef};
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         let mut phases = HashMap::new();
-        phases.insert("p".into(), WorkloadPhase {
-            dimensions: Default::default(),
-            cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, timeout: None, stop_when: Vec::new(), tags: None,
-            ops: vec![
-                ParsedOp::simple("alpha", "noop"),
-                ParsedOp::simple("beta", "noop"),
-            ],
-            for_each: None, continue_if: None, loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
-            poll: None,
-            bindings: BindingsDef::default(),
-            optimize: None,
-                    });
+        phases.insert(
+            "p".into(),
+            WorkloadPhase {
+                dimensions: Default::default(),
+                cycles: None,
+                concurrency: None,
+                rate: None,
+                daemon: false,
+                adapter: None,
+                errors: None,
+                tries: None,
+                tries_backoff: None,
+                interval: None,
+                repeat: None,
+                error_rate_max: None,
+                timeout: None,
+                stop_when: Vec::new(),
+                tags: None,
+                ops: vec![
+                    ParsedOp::simple("alpha", "noop"),
+                    ParsedOp::simple("beta", "noop"),
+                ],
+                for_each: None,
+                continue_if: None,
+                loop_scope: None,
+                iter_scope: None,
+                checkpoint: None,
+                status_metrics: vec![],
+                metrics: Default::default(),
+                poll: None,
+                bindings: BindingsDef::default(),
+                optimize: None,
+            },
+        );
         tree.extend_with_op_templates(&phases);
         let workload_idx = tree.nodes[0].children[0];
         let scenario_idx = tree.nodes[workload_idx].children[0];
@@ -1714,54 +1803,100 @@ mod tests {
 
     #[test]
     fn extend_with_op_templates_is_idempotent() {
+        use nbrs_workload::model::{BindingsDef, ParsedOp, WorkloadPhase};
         use std::collections::HashMap;
-        use nbrs_workload::model::{ParsedOp, WorkloadPhase, BindingsDef};
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         let mut phases = HashMap::new();
-        phases.insert("p".into(), WorkloadPhase {
-            dimensions: Default::default(),
-            cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, timeout: None, stop_when: Vec::new(), tags: None,
-            ops: vec![ParsedOp::simple("only", "noop")],
-            for_each: None, continue_if: None, loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
-            poll: None,
-            bindings: BindingsDef::default(),
-            optimize: None,
-                    });
+        phases.insert(
+            "p".into(),
+            WorkloadPhase {
+                dimensions: Default::default(),
+                cycles: None,
+                concurrency: None,
+                rate: None,
+                daemon: false,
+                adapter: None,
+                errors: None,
+                tries: None,
+                tries_backoff: None,
+                interval: None,
+                repeat: None,
+                error_rate_max: None,
+                timeout: None,
+                stop_when: Vec::new(),
+                tags: None,
+                ops: vec![ParsedOp::simple("only", "noop")],
+                for_each: None,
+                continue_if: None,
+                loop_scope: None,
+                iter_scope: None,
+                checkpoint: None,
+                status_metrics: vec![],
+                metrics: Default::default(),
+                poll: None,
+                bindings: BindingsDef::default(),
+                optimize: None,
+            },
+        );
         tree.extend_with_op_templates(&phases);
         let n_after_first = tree.nodes.len();
         tree.extend_with_op_templates(&phases); // Second call.
-        assert_eq!(tree.nodes.len(), n_after_first,
-            "second call should not add nodes");
+        assert_eq!(
+            tree.nodes.len(),
+            n_after_first,
+            "second call should not add nodes"
+        );
     }
 
     #[test]
     fn op_template_logical_name_uses_op_segment() {
+        use nbrs_workload::model::{BindingsDef, ParsedOp, WorkloadPhase};
         use std::collections::HashMap;
-        use nbrs_workload::model::{ParsedOp, WorkloadPhase, BindingsDef};
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         let mut phases = HashMap::new();
-        phases.insert("p".into(), WorkloadPhase {
-            dimensions: Default::default(),
-            cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, timeout: None, stop_when: Vec::new(), tags: None,
-            ops: vec![ParsedOp::simple("foo", "noop")],
-            for_each: None, continue_if: None, loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
-            poll: None,
-            bindings: BindingsDef::default(),
-            optimize: None,
-                    });
+        phases.insert(
+            "p".into(),
+            WorkloadPhase {
+                dimensions: Default::default(),
+                cycles: None,
+                concurrency: None,
+                rate: None,
+                daemon: false,
+                adapter: None,
+                errors: None,
+                tries: None,
+                tries_backoff: None,
+                interval: None,
+                repeat: None,
+                error_rate_max: None,
+                timeout: None,
+                stop_when: Vec::new(),
+                tags: None,
+                ops: vec![ParsedOp::simple("foo", "noop")],
+                for_each: None,
+                continue_if: None,
+                loop_scope: None,
+                iter_scope: None,
+                checkpoint: None,
+                status_metrics: vec![],
+                metrics: Default::default(),
+                poll: None,
+                bindings: BindingsDef::default(),
+                optimize: None,
+            },
+        );
         tree.extend_with_op_templates(&phases);
         tree.mark_scope_elision(|_kind, _idx| true);
         // Find the op node and check its logical name.
-        let op_idx = tree.iter_dfs()
+        let op_idx = tree
+            .iter_dfs()
             .find(|(_, n)| matches!(&n.kind, ScopeKind::OpTemplate { name } if name == "foo"))
             .map(|(i, _)| i)
             .expect("op-template node");
-        assert_eq!(tree.nodes[op_idx].logical_name,
-            "workload.scenario.default.phase.p.op.foo");
+        assert_eq!(
+            tree.nodes[op_idx].logical_name,
+            "workload.scenario.default.phase.p.op.foo"
+        );
     }
 
     #[test]
@@ -1822,14 +1957,13 @@ mod tests {
     /// context — and the global lookup will work.
     #[test]
     fn find_comprehension_scope_under_disambiguates_identical_ast() {
-        let tree = ScopeTree::build("default", &[
-            for_each("a in [1]", vec![
-                for_each("x in xs", vec![phase("P")]),
-            ]),
-            for_each("b in [2]", vec![
-                for_each("x in xs", vec![phase("P")]),
-            ]),
-        ]);
+        let tree = ScopeTree::build(
+            "default",
+            &[
+                for_each("a in [1]", vec![for_each("x in xs", vec![phase("P")])]),
+                for_each("b in [2]", vec![for_each("x in xs", vec![phase("P")])]),
+            ],
+        );
         // Tree layout (DFS):
         //   0 session
         //   1 workload
@@ -1848,27 +1982,41 @@ mod tests {
             r#for: polydat::iteration::comprehension::spec::ForSpec::Inline("x in xs".to_string()),
             r#where: None,
             order: None,
-        }.into_algebra().unwrap();
+        }
+        .into_algebra()
+        .unwrap();
 
         // Sanity: the legacy global lookup picks #1 (first DFS
         // match) for both — this is the buggy behavior.
-        assert_eq!(tree.find_comprehension_scope(&x_comp), Some(4),
-            "legacy lookup returns FIRST match — documented bug");
+        assert_eq!(
+            tree.find_comprehension_scope(&x_comp),
+            Some(4),
+            "legacy lookup returns FIRST match — documented bug"
+        );
 
         // The fix: searching under the A outer (idx 3) returns
         // #1 (idx 4); searching under the B outer (idx 6)
         // returns #2 (idx 7). The same x AST resolves to
         // different scope idx based on the parent context.
-        assert_eq!(tree.find_comprehension_scope_under(3, &x_comp), Some(4),
-            "under A outer, x-comprehension is the descendant at idx 4");
-        assert_eq!(tree.find_comprehension_scope_under(6, &x_comp), Some(7),
-            "under B outer, x-comprehension is the descendant at idx 7");
+        assert_eq!(
+            tree.find_comprehension_scope_under(3, &x_comp),
+            Some(4),
+            "under A outer, x-comprehension is the descendant at idx 4"
+        );
+        assert_eq!(
+            tree.find_comprehension_scope_under(6, &x_comp),
+            Some(7),
+            "under B outer, x-comprehension is the descendant at idx 7"
+        );
 
         // Cross-search: looking for x under the OTHER side's
         // sub-tree should return None (the comprehension isn't
         // a descendant).
-        assert_eq!(tree.find_comprehension_scope_under(4, &x_comp), None,
-            "x-comp is not a descendant of itself");
+        assert_eq!(
+            tree.find_comprehension_scope_under(4, &x_comp),
+            None,
+            "x-comp is not a descendant of itself"
+        );
     }
 
     /// **WORKAROUND-PINNING TEST — retire when AST becomes
@@ -1884,10 +2032,13 @@ mod tests {
             source: bindings_source.clone(),
             children: vec![phase("P")],
         };
-        let tree = ScopeTree::build("default", &[
-            for_each("a in [1]", vec![bindings_node()]),
-            for_each("b in [2]", vec![bindings_node()]),
-        ]);
+        let tree = ScopeTree::build(
+            "default",
+            &[
+                for_each("a in [1]", vec![bindings_node()]),
+                for_each("b in [2]", vec![bindings_node()]),
+            ],
+        );
         // Layout:
         //   0 session
         //   1 workload
@@ -1922,11 +2073,19 @@ pub fn bindings_label(source: &str) -> String {
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
-        let t = t.strip_prefix("shared ").or_else(|| t.strip_prefix("volatile "))
+        let t = t
+            .strip_prefix("shared ")
+            .or_else(|| t.strip_prefix("volatile "))
             .or_else(|| t.strip_prefix("const "))
-            .or_else(|| t.strip_prefix("final ")).unwrap_or(t);
-        let t = t.strip_prefix("extern ").or_else(|| t.strip_prefix("input ")).unwrap_or(t);
-        let ident_end = t.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(t.len());
+            .or_else(|| t.strip_prefix("final "))
+            .unwrap_or(t);
+        let t = t
+            .strip_prefix("extern ")
+            .or_else(|| t.strip_prefix("input "))
+            .unwrap_or(t);
+        let ident_end = t
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(t.len());
         if ident_end == 0 {
             continue;
         }

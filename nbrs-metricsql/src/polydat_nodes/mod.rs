@@ -18,4 +18,4 @@
 pub mod nodes;
 pub mod project;
 
-pub use project::{Shape, project, ProjectError};
+pub use project::{ProjectError, Shape, project};

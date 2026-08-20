@@ -17,8 +17,8 @@ use std::sync::atomic::AtomicBool;
 use cassandra_cpp as cass;
 
 use crate::common::session_handle::{
-    bytes_from_kb_value, bytes_from_unit_value, in_kb_setting_name,
-    warn_settings_unavailable, CqlSettingsSource,
+    CqlSettingsSource, bytes_from_kb_value, bytes_from_unit_value, in_kb_setting_name,
+    warn_settings_unavailable,
 };
 
 /// Settings-read surface over a pooled cassandra-cpp session.
@@ -35,33 +35,42 @@ pub(crate) struct CassSettingsSource {
 
 impl CassSettingsSource {
     pub(crate) fn new(session: cass::Session) -> Self {
-        Self { session, warned: AtomicBool::new(false) }
+        Self {
+            session,
+            warned: AtomicBool::new(false),
+        }
     }
 
     /// Run `SELECT value FROM system_views.settings WHERE name = ?`, returning
     /// the value text. `Ok(None)` = query ran but the row is absent;
     /// `Err(_)` = the query itself failed (view missing / perms / timeout).
     async fn query_value(&self, name: &str) -> Result<Option<String>, String> {
-        let mut stmt = self.session
+        let mut stmt = self
+            .session
             .statement("SELECT value FROM system_views.settings WHERE name = ?");
         stmt.bind_string(0, name).map_err(|e| e.to_string())?;
         let result = stmt.execute().await.map_err(|e| e.to_string())?;
-        Ok(result.first_row()
+        Ok(result
+            .first_row()
             .and_then(|row| row.get_column(0).ok())
             .and_then(|col| col.get_string().ok()))
     }
 }
 
 impl CqlSettingsSource for CassSettingsSource {
-    fn driver(&self) -> &'static str { "cassandra-cpp" }
+    fn driver(&self) -> &'static str {
+        "cassandra-cpp"
+    }
 
-    fn read<'a>(&'a self, name: &'a str)
-        -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>
-    {
+    fn read<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>> {
         Box::pin(async move {
             // C* 5.0 unit-typed form (`batch_size_fail_threshold` = "50KiB").
             match self.query_value(name).await {
-                Ok(Some(v)) => if let Some(b) = bytes_from_unit_value(&v) { return Some(b); },
+                Ok(Some(v)) => {
+                    if let Some(b) = bytes_from_unit_value(&v) {
+                        return Some(b);
+                    }
+                }
                 Ok(None) => {}
                 Err(e) => {
                     warn_settings_unavailable(&self.warned, self.driver(), &e);
@@ -70,7 +79,11 @@ impl CqlSettingsSource for CassSettingsSource {
             }
             // C* 4.x integer-KB form (`batch_size_fail_threshold_in_kb` = "50").
             match self.query_value(&in_kb_setting_name(name)).await {
-                Ok(Some(v)) => if let Some(b) = bytes_from_kb_value(&v) { return Some(b); },
+                Ok(Some(v)) => {
+                    if let Some(b) = bytes_from_kb_value(&v) {
+                        return Some(b);
+                    }
+                }
                 Ok(None) => {}
                 Err(e) => {
                     warn_settings_unavailable(&self.warned, self.driver(), &e);

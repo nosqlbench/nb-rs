@@ -36,7 +36,9 @@ pub enum Lod {
 /// hard-coded fallback when a step has no `lod=` option,
 /// and the registry's `BakedBody::from_single` baseline.
 impl Default for Lod {
-    fn default() -> Self { Lod::Labeled }
+    fn default() -> Self {
+        Lod::Labeled
+    }
 }
 
 /// Content axis, orthogonal to [`Lod`]. See SRD-63 §3.2.
@@ -88,8 +90,13 @@ pub struct OptionTypeMismatch {
 
 impl std::fmt::Display for OptionTypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "option {key:?} expected {exp}, got {act:?}",
-            key = self.key, exp = self.expected, act = self.actual)
+        write!(
+            f,
+            "option {key:?} expected {exp}, got {act:?}",
+            key = self.key,
+            exp = self.expected,
+            act = self.actual
+        )
     }
 }
 
@@ -97,7 +104,9 @@ impl std::error::Error for OptionTypeMismatch {}
 
 impl ReadoutOptions {
     /// Construct an empty option set.
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Insert / overwrite. Last-one-wins on duplicate
     /// keys, matching the standard YAML / kv-list
@@ -140,7 +149,7 @@ impl ReadoutOptions {
     pub fn get_float(&self, key: &str) -> Option<f64> {
         match self.get(key)? {
             OptionValue::Float(f) => Some(*f),
-            OptionValue::Int(n)   => Some(*n as f64),
+            OptionValue::Int(n) => Some(*n as f64),
             _ => None,
         }
     }
@@ -189,7 +198,7 @@ impl ReadoutOptions {
         match self.get(key) {
             None => Ok(None),
             Some(OptionValue::Float(f)) => Ok(Some(*f)),
-            Some(OptionValue::Int(n))   => Ok(Some(*n as f64)),
+            Some(OptionValue::Int(n)) => Ok(Some(*n as f64)),
             Some(other) => Err(OptionTypeMismatch {
                 key: key.to_string(),
                 expected: "number",
@@ -212,7 +221,9 @@ impl ReadoutOptions {
     }
 
     /// True iff at least one option is set.
-    pub fn is_empty(&self) -> bool { self.kv.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.kv.is_empty()
+    }
 
     /// Iterate every (key, value) pair.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &OptionValue)> {
@@ -286,8 +297,8 @@ mod tests {
         opts.set("present", OptionValue::Str("hi".into()));
         opts.set("wrong_type", OptionValue::Int(7));
 
-        assert!(matches!(opts.try_get_str("absent"),     Ok(None)));
-        assert!(matches!(opts.try_get_str("present"),    Ok(Some("hi"))));
+        assert!(matches!(opts.try_get_str("absent"), Ok(None)));
+        assert!(matches!(opts.try_get_str("present"), Ok(Some("hi"))));
         assert!(opts.try_get_str("wrong_type").is_err());
     }
 

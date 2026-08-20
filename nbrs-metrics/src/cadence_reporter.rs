@@ -136,7 +136,9 @@ impl CadenceWindow {
     /// distribution families from windows past `hist_retain` (keeping their
     /// cheap counter/gauge points). A hard count cap is the final backstop.
     fn evict_and_compact(&mut self) {
-        let Some(newest) = self.ring.back().map(|w| w.captured_at()) else { return; };
+        let Some(newest) = self.ring.back().map(|w| w.captured_at()) else {
+            return;
+        };
         // 1. Drop whole windows older than the counter/gauge horizon.
         if let Some(cutoff) = newest.checked_sub(self.retain) {
             while self.ring.front().is_some_and(|w| w.captured_at() < cutoff) {
@@ -147,7 +149,8 @@ impl CadenceWindow {
         //    points. Already-stripped windows have no distributions, so this is
         //    amortized to the few windows that newly cross the boundary.
         if self.retain > self.hist_retain
-            && let Some(hist_cutoff) = newest.checked_sub(self.hist_retain) {
+            && let Some(hist_cutoff) = newest.checked_sub(self.hist_retain)
+        {
             for slot in self.ring.iter_mut() {
                 if slot.captured_at() >= hist_cutoff {
                     break; // ring is time-ordered; nothing newer needs stripping
@@ -222,7 +225,9 @@ impl CadenceWindow {
     }
 
     /// Latest closed snapshot for this cadence, if any.
-    fn latest(&self) -> Option<Arc<MetricSet>> { self.latest.clone() }
+    fn latest(&self) -> Option<Arc<MetricSet>> {
+        self.latest.clone()
+    }
 
     /// Read-only ring of past closed snapshots, oldest first.
     fn ring(&self) -> impl Iterator<Item = &Arc<MetricSet>> {
@@ -260,10 +265,8 @@ pub enum SubscribeError {
 impl std::fmt::Display for SubscribeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownCadence(d) =>
-                write!(f, "cadence {d:?} is not a layer of this reporter"),
-            Self::SpawnFailed(e) =>
-                write!(f, "failed to spawn subscription dispatch thread: {e}"),
+            Self::UnknownCadence(d) => write!(f, "cadence {d:?} is not a layer of this reporter"),
+            Self::SpawnFailed(e) => write!(f, "failed to spawn subscription dispatch thread: {e}"),
         }
     }
 }
@@ -382,7 +385,8 @@ impl SubscriptionState {
 
     /// Snapshots queued but not yet committed by the dispatch worker.
     fn pending(&self) -> u64 {
-        self.sent.load(Ordering::Relaxed)
+        self.sent
+            .load(Ordering::Relaxed)
             .saturating_sub(self.delivered.load(Ordering::Relaxed))
     }
 }
@@ -426,9 +430,7 @@ pub(crate) fn block_compensated<R>(f: impl FnOnce() -> R) -> R {
 /// Component path key — derived from a `Labels` value by joining
 /// every `(k, v)` pair into a stable string.
 pub fn component_path_of(labels: &Labels) -> String {
-    let mut parts: Vec<String> = labels.iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let mut parts: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
     parts.sort_unstable();
     parts.join(",")
 }
@@ -524,9 +526,7 @@ enum Cmd {
     /// callers. The owner thread acks after publishing the
     /// reader-state, guaranteeing all prior FIFO commands have
     /// been processed.
-    Barrier {
-        ack: crossbeam_channel::Sender<()>,
-    },
+    Barrier { ack: crossbeam_channel::Sender<()> },
 }
 
 /// An acknowledgement sink the owner signals after publishing reader state.
@@ -546,8 +546,12 @@ impl FlushAck {
     /// timed out) are ignored: the ack is best-effort.
     fn signal(self) {
         match self {
-            FlushAck::Sync(s) => { let _ = s.send(()); }
-            FlushAck::Async(s) => { let _ = s.send(()); }
+            FlushAck::Sync(s) => {
+                let _ = s.send(());
+            }
+            FlushAck::Async(s) => {
+                let _ = s.send(());
+            }
         }
     }
 }
@@ -621,9 +625,7 @@ impl CadenceReporter {
         // `#[tokio::test(multi_thread)]`). Delivery fibers it spawns use
         // the ambient runtime (it runs on it), so no handle to thread
         // through.
-        let owner_task = tokio::spawn(run_owner(
-            cmd_rx, owner_layers, owner_state, owner_subs,
-        ));
+        let owner_task = tokio::spawn(run_owner(cmd_rx, owner_layers, owner_state, owner_subs));
 
         Self {
             layers,
@@ -638,13 +640,19 @@ impl CadenceReporter {
     }
 
     /// All layers (declared + hidden), smallest first.
-    pub fn layers(&self) -> &[CadenceLayer] { &self.layers }
+    pub fn layers(&self) -> &[CadenceLayer] {
+        &self.layers
+    }
 
     /// User-declared cadences in original order.
-    pub fn declared_cadences(&self) -> &Cadences { &self.declared }
+    pub fn declared_cadences(&self) -> &Cadences {
+        &self.declared
+    }
 
     /// Wall-clock instant the reporter was constructed (run start).
-    pub fn started_at(&self) -> Instant { self.started_at }
+    pub fn started_at(&self) -> Instant {
+        self.started_at
+    }
 
     /// Ingest a per-component snapshot at the smallest cadence.
     /// Cascades the close-then-promote chain per SRD-42, fanning out
@@ -699,7 +707,9 @@ impl CadenceReporter {
         let _ = self.cmd_tx.send(Cmd::Barrier { ack: ack_tx });
         // The owner is a runtime task; block_in_place so it gets a worker
         // to process the barrier while this call waits.
-        block_compensated(|| { let _ = ack_rx.recv(); });
+        block_compensated(|| {
+            let _ = ack_rx.recv();
+        });
     }
 
     /// Register a push subscriber for the given cadence. Each closed
@@ -732,7 +742,10 @@ impl CadenceReporter {
             state: Arc::new(SubscriptionState::new()),
             opts,
         };
-        self.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).insert(id, sub);
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, sub);
         Ok(id)
     }
 
@@ -743,12 +756,13 @@ impl CadenceReporter {
     /// uncontended.
     pub fn unsubscribe(&self, id: SubscriberId) {
         let sub = {
-            let mut map = self.subscriptions.lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut map = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
             map.remove(&id)
         };
         if let Some(sub) = sub {
-            if let Ok(mut g) = sub.reporter.try_lock() { g.flush(); }
+            if let Ok(mut g) = sub.reporter.try_lock() {
+                g.flush();
+            }
         }
     }
 
@@ -764,12 +778,13 @@ impl CadenceReporter {
         // this works on a current-thread runtime too.
         self.quiesce(Duration::from_secs(5)).await;
         let subs = {
-            let mut map = self.subscriptions.lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut map = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *map)
         };
         for (_id, sub) in subs {
-            if let Ok(mut g) = sub.reporter.try_lock() { g.flush(); }
+            if let Ok(mut g) = sub.reporter.try_lock() {
+                g.flush();
+            }
         }
     }
 
@@ -924,8 +939,11 @@ impl CadenceReporter {
         let path = component_path_of(labels);
         let idx = self.layer_index(cadence)?;
         let state = self.state.load_full();
-        state.windows.get(&(path, idx))?
-            .prebuffer.as_ref()
+        state
+            .windows
+            .get(&(path, idx))?
+            .prebuffer
+            .as_ref()
             .map(|arc| (**arc).clone())
     }
 
@@ -934,9 +952,13 @@ impl CadenceReporter {
     /// merge the most-recent N.
     pub fn ring(&self, labels: &Labels, cadence: Duration) -> Vec<Arc<MetricSet>> {
         let path = component_path_of(labels);
-        let Some(idx) = self.layer_index(cadence) else { return Vec::new() };
+        let Some(idx) = self.layer_index(cadence) else {
+            return Vec::new();
+        };
         let state = self.state.load_full();
-        state.windows.get(&(path, idx))
+        state
+            .windows
+            .get(&(path, idx))
             .map(|w| (*w.ring).clone())
             .unwrap_or_default()
     }
@@ -947,9 +969,11 @@ impl CadenceReporter {
     /// `latest` + `prebuffer` + `ring` separately — each of those rebuilds the
     /// component-path string and re-hashes it, so three calls pay that cost
     /// three times for the same key.
-    pub(crate) fn window_view(&self, labels: &Labels, cadence: Duration)
-        -> Option<Arc<WindowReaderView>>
-    {
+    pub(crate) fn window_view(
+        &self,
+        labels: &Labels,
+        cadence: Duration,
+    ) -> Option<Arc<WindowReaderView>> {
         let path = component_path_of(labels);
         let idx = self.layer_index(cadence)?;
         self.state.load_full().windows.get(&(path, idx)).cloned()
@@ -1038,18 +1062,23 @@ impl Drop for CadenceReporter {
         // Abort the owner task (it's exiting on its own now too). We're
         // in a sync `drop`, so we can't await it; abort is immediate.
         if let Ok(mut guard) = self.owner_task.lock()
-            && let Some(task) = guard.take() {
-                task.abort();
-            }
+            && let Some(task) = guard.take()
+        {
+            task.abort();
+        }
 
         // Drain subscriptions, flushing each sink. Delivery fibers are
         // ephemeral and the owner is stopped, so the `flush` lock is
         // uncontended.
-        let subs = self.subscriptions.lock()
+        let subs = self
+            .subscriptions
+            .lock()
             .map(|mut g| std::mem::take(&mut *g))
             .unwrap_or_default();
         for (_id, sub) in subs {
-            if let Ok(mut g) = sub.reporter.try_lock() { g.flush(); }
+            if let Ok(mut g) = sub.reporter.try_lock() {
+                g.flush();
+            }
         }
     }
 }
@@ -1085,33 +1114,39 @@ async fn run_owner(
         let mut acks: Vec<FlushAck> = Vec::new();
         loop {
             match cmd {
-                Cmd::Ingest { path, labels, snapshot, ack } => {
+                Cmd::Ingest {
+                    path,
+                    labels,
+                    snapshot,
+                    ack,
+                } => {
                     component_labels.entry(path.clone()).or_insert(labels);
-                    let closed_by_cadence = ingest_cascade(
-                        &mut windows, &layers, path, snapshot,
-                    );
+                    let closed_by_cadence = ingest_cascade(&mut windows, &layers, path, snapshot);
                     fanout_owner(&subscriptions, &closed_by_cadence);
-                    if let Some(a) = ack { acks.push(FlushAck::Sync(a)); }
+                    if let Some(a) = ack {
+                        acks.push(FlushAck::Sync(a));
+                    }
                 }
                 Cmd::ClosePath { path, ack, reason } => {
-                    let closed_by_cadence = close_path_cascade(
-                        &mut windows, &layers, &path, reason,
-                    );
+                    let closed_by_cadence =
+                        close_path_cascade(&mut windows, &layers, &path, reason);
                     fanout_owner(&subscriptions, &closed_by_cadence);
-                    if let Some(a) = ack { acks.push(FlushAck::Sync(a)); }
+                    if let Some(a) = ack {
+                        acks.push(FlushAck::Sync(a));
+                    }
                 }
                 Cmd::ShutdownFlushAll { ack, reason } => {
                     let paths: Vec<String> = {
                         let mut set: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
-                        for (p, _) in windows.keys() { set.insert(p.clone()); }
+                        for (p, _) in windows.keys() {
+                            set.insert(p.clone());
+                        }
                         set.into_iter().collect()
                     };
                     let mut all_closed = Vec::new();
                     for path in &paths {
-                        all_closed.extend(close_path_cascade(
-                            &mut windows, &layers, path, reason,
-                        ));
+                        all_closed.extend(close_path_cascade(&mut windows, &layers, path, reason));
                     }
                     fanout_owner(&subscriptions, &all_closed);
                     acks.push(ack);
@@ -1158,7 +1193,8 @@ fn ingest_cascade(
     let mut to_propagate: Option<(usize, Arc<MetricSet>)> = None;
 
     let key = (path.clone(), smallest_idx);
-    let entry = windows.entry(key)
+    let entry = windows
+        .entry(key)
         .or_insert_with(|| CadenceWindow::new(layers[smallest_idx].interval));
     if let Some(closed) = entry.ingest(snapshot) {
         closed_by_cadence.push((layers[smallest_idx].interval, closed.clone()));
@@ -1166,9 +1202,12 @@ fn ingest_cascade(
     }
 
     while let Some((idx, snapshot_arc)) = to_propagate.take() {
-        if idx >= layers.len() { break; }
+        if idx >= layers.len() {
+            break;
+        }
         let key = (path.clone(), idx);
-        let entry = windows.entry(key)
+        let entry = windows
+            .entry(key)
             .or_insert_with(|| CadenceWindow::new(layers[idx].interval));
         if let Some(closed) = entry.ingest((*snapshot_arc).clone()) {
             closed_by_cadence.push((layers[idx].interval, closed.clone()));
@@ -1191,18 +1230,21 @@ fn close_path_cascade(
     for idx in 0..layers.len() {
         let key = (path.to_string(), idx);
         if let Some((carry_idx, carry)) = to_propagate.take()
-            && carry_idx == idx {
-                let entry = windows.entry(key.clone())
-                    .or_insert_with(|| CadenceWindow::new(layers[idx].interval));
-                let _ = entry.ingest((*carry).clone());
-            }
+            && carry_idx == idx
+        {
+            let entry = windows
+                .entry(key.clone())
+                .or_insert_with(|| CadenceWindow::new(layers[idx].interval));
+            let _ = entry.ingest((*carry).clone());
+        }
         if let Some(window) = windows.get_mut(&key)
-            && let Some(snap) = window.force_close(reason) {
-                closed.push((layers[idx].interval, snap.clone()));
-                if idx + 1 < layers.len() {
-                    to_propagate = Some((idx + 1, snap));
-                }
+            && let Some(snap) = window.force_close(reason)
+        {
+            closed.push((layers[idx].interval, snap.clone()));
+            if idx + 1 < layers.len() {
+                to_propagate = Some((idx + 1, snap));
             }
+        }
     }
     closed
 }
@@ -1221,15 +1263,23 @@ fn fanout_owner(
     subscriptions: &Arc<Mutex<HashMap<SubscriberId, Subscription>>>,
     closed: &[(Duration, Arc<MetricSet>)],
 ) {
-    if closed.is_empty() { return; }
+    if closed.is_empty() {
+        return;
+    }
     // Runs inside the owner task, so delivery fibers spawn onto the
     // ambient runtime.
-    let Ok(map) = subscriptions.lock() else { return };
+    let Ok(map) = subscriptions.lock() else {
+        return;
+    };
     for (cadence, snapshot) in closed {
         for sub in map.values() {
-            if sub.cadence != *cadence { continue; }
+            if sub.cadence != *cadence {
+                continue;
+            }
             // Stop feeding a one-shot subscriber that already terminated.
-            if sub.state.finished.load(Ordering::Relaxed) { continue; }
+            if sub.state.finished.load(Ordering::Relaxed) {
+                continue;
+            }
 
             // Bounded backpressure: while in-flight deliveries (pending =
             // sent − delivered) are at capacity, drop this window and
@@ -1239,12 +1289,14 @@ fn fanout_owner(
             if sub.state.pending() >= sub.opts.channel_capacity as u64 {
                 let drops = sub.state.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Some(timeout) = sub.opts.timeout {
-                    let last = sub.state.last_delivered.lock()
-                        .map(|g| *g).unwrap_or_else(|_| Instant::now());
+                    let last = sub
+                        .state
+                        .last_delivered
+                        .lock()
+                        .map(|g| *g)
+                        .unwrap_or_else(|_| Instant::now());
                     let age = last.elapsed();
-                    if age >= timeout
-                        && !sub.state.timeout_fired.swap(true, Ordering::Relaxed)
-                    {
+                    if age >= timeout && !sub.state.timeout_fired.swap(true, Ordering::Relaxed) {
                         if let Some(cb) = &sub.opts.on_timeout {
                             cb(TimeoutEvent {
                                 subscriber_id: sub.id,
@@ -1344,10 +1396,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ingest_promotes_at_smallest_cadence_boundary() {
-        let cadences = Cadences::new(&[
-            Duration::from_millis(100),
-            Duration::from_millis(400),
-        ]).unwrap();
+        let cadences =
+            Cadences::new(&[Duration::from_millis(100), Duration::from_millis(400)]).unwrap();
         let tree = CadenceTree::plan_default(cadences);
         let reporter = CadenceReporter::new(tree);
         let labels = Labels::of("phase", "load");
@@ -1359,14 +1409,23 @@ mod tests {
         }
         reporter.flush_for_tests();
 
-        let latest_100 = reporter.latest(&labels, Duration::from_millis(100))
+        let latest_100 = reporter
+            .latest(&labels, Duration::from_millis(100))
             .expect("100ms cadence should have a latest");
-        assert_eq!(first_counter_total(&latest_100), 20, "last 100ms window's cumulative");
+        assert_eq!(
+            first_counter_total(&latest_100),
+            20,
+            "last 100ms window's cumulative"
+        );
 
-        let latest_400 = reporter.latest(&labels, Duration::from_millis(400))
+        let latest_400 = reporter
+            .latest(&labels, Duration::from_millis(400))
             .expect("400ms cadence should have promoted after 4 ticks");
-        assert_eq!(first_counter_total(&latest_400), 20,
-            "promoted 400ms window holds the latest cumulative");
+        assert_eq!(
+            first_counter_total(&latest_400),
+            20,
+            "promoted 400ms window holds the latest cumulative"
+        );
     }
 
     /// Build a counter snapshot stamped at an explicit `captured_at`, so a
@@ -1391,13 +1450,17 @@ mod tests {
         let base = Instant::now();
         for i in 0..(HISTORY_RING_CAP + 5) {
             let at = base + Duration::from_millis(i as u64);
-            reporter.ingest(&labels, counter_set_at(at, Duration::from_millis(50), (i as u64) + 1));
+            reporter.ingest(
+                &labels,
+                counter_set_at(at, Duration::from_millis(50), (i as u64) + 1),
+            );
         }
         reporter.flush_for_tests();
 
         let ring = reporter.ring(&labels, Duration::from_millis(50));
         assert_eq!(
-            ring.len(), HISTORY_RING_CAP + 5,
+            ring.len(),
+            HISTORY_RING_CAP + 5,
             "time-bounded ring keeps all recent windows, not just HISTORY_RING_CAP",
         );
         let newest_total = first_counter_total(ring.last().unwrap());
@@ -1420,14 +1483,22 @@ mod tests {
         reporter.ingest(&labels, counter_set_at(base, Duration::from_millis(50), 1));
         for i in 1..=5u64 {
             let at = base + Duration::from_secs(100) + Duration::from_millis(i);
-            reporter.ingest(&labels, counter_set_at(at, Duration::from_millis(50), 1 + i));
+            reporter.ingest(
+                &labels,
+                counter_set_at(at, Duration::from_millis(50), 1 + i),
+            );
         }
         reporter.flush_for_tests();
 
         let ring = reporter.ring(&labels, Duration::from_millis(50));
-        assert_eq!(ring.len(), 5, "the window past the retain horizon is evicted");
         assert_eq!(
-            first_counter_total(ring.first().unwrap()), 2,
+            ring.len(),
+            5,
+            "the window past the retain horizon is evicted"
+        );
+        assert_eq!(
+            first_counter_total(ring.first().unwrap()),
+            2,
             "oldest retained window is the first of the recent cluster",
         );
     }
@@ -1458,19 +1529,32 @@ mod tests {
         let base = Instant::now();
         // Old window (both families), then one 2s later: 2s > 1.6s hist horizon
         // but well under the 60s counter horizon.
-        reporter.ingest(&labels, counter_and_hist_at(base, Duration::from_millis(50), 1));
-        reporter.ingest(&labels,
-            counter_and_hist_at(base + Duration::from_secs(2), Duration::from_millis(50), 2));
+        reporter.ingest(
+            &labels,
+            counter_and_hist_at(base, Duration::from_millis(50), 1),
+        );
+        reporter.ingest(
+            &labels,
+            counter_and_hist_at(base + Duration::from_secs(2), Duration::from_millis(50), 2),
+        );
         reporter.flush_for_tests();
 
         let ring = reporter.ring(&labels, Duration::from_millis(50));
         assert_eq!(ring.len(), 2, "both windows are within the counter horizon");
         let old = ring.first().unwrap();
-        assert!(old.family("ops").is_some(), "old window keeps its cumulative counter");
-        assert!(old.family("latency").is_none(),
-            "old window's HDR histogram is stripped past the distribution horizon");
+        assert!(
+            old.family("ops").is_some(),
+            "old window keeps its cumulative counter"
+        );
+        assert!(
+            old.family("latency").is_none(),
+            "old window's HDR histogram is stripped past the distribution horizon"
+        );
         let recent = ring.last().unwrap();
-        assert!(recent.family("latency").is_some(), "the recent window keeps its histogram");
+        assert!(
+            recent.family("latency").is_some(),
+            "the recent window keeps its histogram"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1494,13 +1578,26 @@ mod tests {
         reporter.flush_for_tests();
 
         let ring = reporter.ring(&labels, Duration::from_secs(1));
-        assert_eq!(ring.len(), 2, "the pulse window AND the partial flush are both retained");
+        assert_eq!(
+            ring.len(),
+            2,
+            "the pulse window AND the partial flush are both retained"
+        );
         assert!(!ring[0].is_partial(), "first is the pulse-closed window");
         assert_eq!(first_counter_total(&ring[0]), 10);
-        assert!(ring[1].is_partial(), "second is the scope_close partial, flagged");
+        assert!(
+            ring[1].is_partial(),
+            "second is the scope_close partial, flagged"
+        );
         assert_eq!(first_counter_total(&ring[1]), 5);
-        assert!(ring[1].interval() < Duration::from_secs(1), "partial carries its own sub-cadence interval");
-        assert!(ring[0].captured_at() < ring[1].captured_at(), "distinct timestamps, not coalesced");
+        assert!(
+            ring[1].interval() < Duration::from_secs(1),
+            "partial carries its own sub-cadence interval"
+        );
+        assert!(
+            ring[0].captured_at() < ring[1].captured_at(),
+            "distinct timestamps, not coalesced"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1513,7 +1610,8 @@ mod tests {
         struct Recorder(Arc<AtomicU64>);
         impl MetricSink for Recorder {
             fn submit(&self, _labels: &Labels, snapshot: MetricSet) {
-                self.0.fetch_add(first_counter_total(&snapshot), Ordering::SeqCst);
+                self.0
+                    .fetch_add(first_counter_total(&snapshot), Ordering::SeqCst);
             }
         }
 
@@ -1531,9 +1629,18 @@ mod tests {
         fan.submit(&labels, counter_set(Duration::from_millis(50), 7));
         reporter.flush_for_tests();
 
-        assert_eq!(rec_a.load(Ordering::SeqCst), 7, "fan-out reached recorder A");
-        assert_eq!(rec_b.load(Ordering::SeqCst), 7, "fan-out reached recorder B");
-        let latest = reporter.latest(&labels, Duration::from_millis(50))
+        assert_eq!(
+            rec_a.load(Ordering::SeqCst),
+            7,
+            "fan-out reached recorder A"
+        );
+        assert_eq!(
+            rec_b.load(Ordering::SeqCst),
+            7,
+            "fan-out reached recorder B"
+        );
+        let latest = reporter
+            .latest(&labels, Duration::from_millis(50))
             .expect("cadence reporter ingested via MetricSink::submit");
         assert_eq!(first_counter_total(&latest), 7);
     }
@@ -1548,14 +1655,22 @@ mod tests {
         // Only 200ms of data — won't naturally promote at 1000ms.
         reporter.ingest(&labels, counter_set(Duration::from_millis(200), 3));
         reporter.flush_for_tests();
-        assert!(reporter.latest(&labels, Duration::from_millis(1000)).is_none());
+        assert!(
+            reporter
+                .latest(&labels, Duration::from_millis(1000))
+                .is_none()
+        );
 
         reporter.shutdown_flush().await;
-        let partial = reporter.latest(&labels, Duration::from_millis(1000))
+        let partial = reporter
+            .latest(&labels, Duration::from_millis(1000))
             .expect("shutdown must publish trailing partial");
         assert_eq!(first_counter_total(&partial), 3);
-        assert!(partial.interval() < Duration::from_millis(1000),
-            "partial interval must be < cadence: {:?}", partial.interval());
+        assert!(
+            partial.interval() < Duration::from_millis(1000),
+            "partial interval must be < cadence: {:?}",
+            partial.interval()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1569,11 +1684,20 @@ mod tests {
         reporter.ingest(&labels, counter_set(Duration::from_millis(300), 8));
         reporter.flush_for_tests();
 
-        let pb = reporter.prebuffer(&labels, Duration::from_millis(1000))
+        let pb = reporter
+            .prebuffer(&labels, Duration::from_millis(1000))
             .expect("prebuffer present");
-        assert_eq!(first_counter_total(&pb), 8, "in-flight prebuffer holds the latest cumulative");
+        assert_eq!(
+            first_counter_total(&pb),
+            8,
+            "in-flight prebuffer holds the latest cumulative"
+        );
         // Latest still empty — no full cadence elapsed.
-        assert!(reporter.latest(&labels, Duration::from_millis(1000)).is_none());
+        assert!(
+            reporter
+                .latest(&labels, Duration::from_millis(1000))
+                .is_none()
+        );
     }
 
     // ---- subscription tests -----------------------------------
@@ -1594,11 +1718,15 @@ mod tests {
         let labels = Labels::of("phase", "sub");
 
         let count = Arc::new(AtomicU64::new(0));
-        let _id = reporter.subscribe(
-            Duration::from_millis(100),
-            Box::new(CountingReporter { count: count.clone() }),
-            SubscriptionOpts::default(),
-        ).unwrap();
+        let _id = reporter
+            .subscribe(
+                Duration::from_millis(100),
+                Box::new(CountingReporter {
+                    count: count.clone(),
+                }),
+                SubscriptionOpts::default(),
+            )
+            .unwrap();
 
         for _ in 0..5 {
             reporter.ingest(&labels, counter_set(Duration::from_millis(100), 1));
@@ -1621,11 +1749,15 @@ mod tests {
         let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
         let labels = Labels::of("phase", "q");
         let count = Arc::new(AtomicU64::new(0));
-        let _id = reporter.subscribe(
-            Duration::from_millis(100),
-            Box::new(CountingReporter { count: count.clone() }),
-            SubscriptionOpts::default(),
-        ).unwrap();
+        let _id = reporter
+            .subscribe(
+                Duration::from_millis(100),
+                Box::new(CountingReporter {
+                    count: count.clone(),
+                }),
+                SubscriptionOpts::default(),
+            )
+            .unwrap();
 
         // A few partials — the 100ms window hasn't elapsed, so nothing
         // has closed by cadence yet.
@@ -1637,14 +1769,18 @@ mod tests {
         // loop, unlike `subscribe_receives_snapshots_on_dispatch_thread`.
         reporter.quiesce(Duration::from_secs(2)).await;
         let after_first = count.load(Ordering::Relaxed);
-        assert!(after_first >= 1,
-            "quiesce must synchronously deliver the force-closed window; got {after_first}");
+        assert!(
+            after_first >= 1,
+            "quiesce must synchronously deliver the force-closed window; got {after_first}"
+        );
 
         // Non-terminal: the subscriber is still registered — more data flows.
         reporter.ingest(&labels, counter_set(Duration::from_millis(100), 1));
         reporter.quiesce(Duration::from_secs(2)).await;
-        assert!(count.load(Ordering::Relaxed) > after_first,
-            "subscriber must remain alive + receiving after quiesce");
+        assert!(
+            count.load(Ordering::Relaxed) > after_first,
+            "subscriber must remain alive + receiving after quiesce"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1652,11 +1788,15 @@ mod tests {
         let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
         let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
 
-        let err = reporter.subscribe(
-            Duration::from_millis(250),
-            Box::new(CountingReporter { count: Arc::new(AtomicU64::new(0)) }),
-            SubscriptionOpts::default(),
-        ).unwrap_err();
+        let err = reporter
+            .subscribe(
+                Duration::from_millis(250),
+                Box::new(CountingReporter {
+                    count: Arc::new(AtomicU64::new(0)),
+                }),
+                SubscriptionOpts::default(),
+            )
+            .unwrap_err();
         assert!(matches!(err, SubscribeError::UnknownCadence(_)));
     }
 
@@ -1691,11 +1831,15 @@ mod tests {
             })),
             context_wrap: None,
         };
-        let _id = reporter.subscribe(
-            Duration::from_millis(50),
-            Box::new(SlowReporter { block: block.clone() }),
-            opts,
-        ).unwrap();
+        let _id = reporter
+            .subscribe(
+                Duration::from_millis(50),
+                Box::new(SlowReporter {
+                    block: block.clone(),
+                }),
+                opts,
+            )
+            .unwrap();
 
         // Pump ingests — the cascade must keep running even though
         // the subscriber is blocked on its first snapshot.
@@ -1706,11 +1850,17 @@ mod tests {
         }
         // Cascade wall-clock should be roughly 20 * 20ms = 400ms; if
         // the subscriber were synchronous it would be >20 * cadence.
-        assert!(start.elapsed() < Duration::from_secs(2),
-            "cascade took {:?} — subscriber must have blocked it", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "cascade took {:?} — subscriber must have blocked it",
+            start.elapsed()
+        );
         // Timeout callback should have fired at least once.
-        assert!(fired.load(Ordering::Relaxed) >= 1,
-            "expected timeout callback to fire; got {}", fired.load(Ordering::Relaxed));
+        assert!(
+            fired.load(Ordering::Relaxed) >= 1,
+            "expected timeout callback to fire; got {}",
+            fired.load(Ordering::Relaxed)
+        );
 
         // Unblock so the worker can drain before shutdown.
         block.store(false, Ordering::Relaxed);
@@ -1723,11 +1873,15 @@ mod tests {
         let labels = Labels::of("phase", "unsub");
 
         let count = Arc::new(AtomicU64::new(0));
-        let id = reporter.subscribe(
-            Duration::from_millis(50),
-            Box::new(CountingReporter { count: count.clone() }),
-            SubscriptionOpts::default(),
-        ).unwrap();
+        let id = reporter
+            .subscribe(
+                Duration::from_millis(50),
+                Box::new(CountingReporter {
+                    count: count.clone(),
+                }),
+                SubscriptionOpts::default(),
+            )
+            .unwrap();
 
         reporter.ingest(&labels, counter_set(Duration::from_millis(50), 1));
         // Wait briefly for delivery.
@@ -1765,7 +1919,9 @@ mod tests {
     fn histogram_set(interval: Duration, samples: &[u64]) -> MetricSet {
         use hdrhistogram::Histogram as HdrHistogram;
         let mut h = HdrHistogram::<u64>::new(3).unwrap();
-        for v in samples { h.record(*v).unwrap(); }
+        for v in samples {
+            h.record(*v).unwrap();
+        }
         let mut s = MetricSet::new(interval);
         s.insert_histogram("latency", Labels::default(), h, Instant::now());
         s
@@ -1787,14 +1943,24 @@ mod tests {
         reporter.scope_close(&labels, delta);
         reporter.flush_for_tests();
 
-        let latest = reporter.latest(&labels, Duration::from_secs(1))
+        let latest = reporter
+            .latest(&labels, Duration::from_secs(1))
             .expect("scope_close must publish a partial snapshot at smallest cadence");
-        assert!(latest.is_partial(), "scope-close snapshot must be marked partial");
+        assert!(
+            latest.is_partial(),
+            "scope-close snapshot must be marked partial"
+        );
         assert_eq!(first_counter_total(&latest), 7);
-        assert!(latest.interval() < Duration::from_secs(1),
-            "partial interval must be < cadence, got {:?}", latest.interval());
-        assert_eq!(latest.close_reason(), Some(CloseReason::ScopeClose),
-            "scope_close must stamp the typed reason (SRD-93 M4)");
+        assert!(
+            latest.interval() < Duration::from_secs(1),
+            "partial interval must be < cadence, got {:?}",
+            latest.interval()
+        );
+        assert_eq!(
+            latest.close_reason(),
+            Some(CloseReason::ScopeClose),
+            "scope_close must stamp the typed reason (SRD-93 M4)"
+        );
     }
 
     /// SRD-93 M4/A6 — the typed close reason distinguishes the three
@@ -1816,8 +1982,11 @@ mod tests {
         }
         reporter.flush_for_tests();
         let w = reporter.latest(&nat, Duration::from_millis(100)).unwrap();
-        assert_eq!(w.close_reason(), None,
-            "a cadence-closed window carries no lifecycle reason");
+        assert_eq!(
+            w.close_reason(),
+            None,
+            "a cadence-closed window carries no lifecycle reason"
+        );
 
         // Quiesce seals a partial but is not an exit signal.
         let qui = Labels::of("phase", "quiescing");
@@ -1861,10 +2030,8 @@ mod tests {
         //   3. After 4 natural 100ms pulses of 3 each, 400ms
         //      latest = 12 (4×3) and is NOT partial — fresh
         //      window after the partial was already published.
-        let cadences = Cadences::new(&[
-            Duration::from_millis(100),
-            Duration::from_millis(400),
-        ]).unwrap();
+        let cadences =
+            Cadences::new(&[Duration::from_millis(100), Duration::from_millis(400)]).unwrap();
         let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
         let labels = Labels::of("phase", "burst");
 
@@ -1873,16 +2040,27 @@ mod tests {
         reporter.scope_close(&labels, partial);
         reporter.flush_for_tests();
 
-        let p100 = reporter.latest(&labels, Duration::from_millis(100)).unwrap();
+        let p100 = reporter
+            .latest(&labels, Duration::from_millis(100))
+            .unwrap();
         assert_eq!(first_counter_total(&p100), 5);
-        assert!(p100.is_partial(), "smallest-cadence publish must be partial");
+        assert!(
+            p100.is_partial(),
+            "smallest-cadence publish must be partial"
+        );
 
-        let p400 = reporter.latest(&labels, Duration::from_millis(400))
+        let p400 = reporter
+            .latest(&labels, Duration::from_millis(400))
             .expect("close_path cascade publishes at every layer");
-        assert_eq!(first_counter_total(&p400), 5,
-            "partial cascades unchanged through the chain");
-        assert!(p400.is_partial(),
-            "partial flag is sticky across the cascade fold");
+        assert_eq!(
+            first_counter_total(&p400),
+            5,
+            "partial cascades unchanged through the chain"
+        );
+        assert!(
+            p400.is_partial(),
+            "partial flag is sticky across the cascade fold"
+        );
 
         // Natural cadence pulse: a counter climbing 6→15 over four 100ms
         // windows. The 400ms close holds the latest cumulative — no sum,
@@ -1892,11 +2070,18 @@ mod tests {
         }
         reporter.flush_for_tests();
 
-        let np400 = reporter.latest(&labels, Duration::from_millis(400)).unwrap();
-        assert_eq!(first_counter_total(&np400), 15,
-            "natural-pulse window holds the latest cumulative");
-        assert!(!np400.is_partial(),
-            "natural-pulse close must NOT be marked partial");
+        let np400 = reporter
+            .latest(&labels, Duration::from_millis(400))
+            .unwrap();
+        assert_eq!(
+            first_counter_total(&np400),
+            15,
+            "natural-pulse window holds the latest cumulative"
+        );
+        assert!(
+            !np400.is_partial(),
+            "natural-pulse close must NOT be marked partial"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1926,11 +2111,19 @@ mod tests {
         reporter.flush_for_tests();
 
         let latest = reporter.latest(&labels, Duration::from_secs(1)).unwrap();
-        assert!(latest.is_partial(),
-            "scope_close must publish prebuffer as partial");
-        let g = latest.family("temp").unwrap()
-            .metrics().next().unwrap()
-            .point().unwrap().value();
+        assert!(
+            latest.is_partial(),
+            "scope_close must publish prebuffer as partial"
+        );
+        let g = latest
+            .family("temp")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value();
         let value = match g {
             MetricValue::Gauge(g) => g.value,
             _ => panic!("expected gauge, got {:?}", g),
@@ -1948,15 +2141,28 @@ mod tests {
         let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
         let labels = Labels::of("phase", "h");
 
-        reporter.ingest(&labels, histogram_set(Duration::from_millis(100), &[10, 20, 30]));
-        reporter.ingest(&labels, histogram_set(Duration::from_millis(100), &[100, 200, 300]));
+        reporter.ingest(
+            &labels,
+            histogram_set(Duration::from_millis(100), &[10, 20, 30]),
+        );
+        reporter.ingest(
+            &labels,
+            histogram_set(Duration::from_millis(100), &[100, 200, 300]),
+        );
         reporter.scope_close(&labels, MetricSet::new(Duration::ZERO));
         reporter.flush_for_tests();
 
         let latest = reporter.latest(&labels, Duration::from_secs(1)).unwrap();
         assert!(latest.is_partial());
-        let v = latest.family("latency").unwrap()
-            .metrics().next().unwrap().point().unwrap().value();
+        let v = latest
+            .family("latency")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value();
         let h: &HdrHistogram<u64> = match v {
             MetricValue::Histogram(h) => h.reservoir.as_ref(),
             _ => panic!("expected histogram"),
@@ -1984,8 +2190,12 @@ mod tests {
 
         // No data was ever ingested — nothing to publish. latest
         // returns None.
-        assert!(reporter.latest(&labels, Duration::from_millis(100)).is_none(),
-            "empty-delta scope_close on never-seen path must not invent a snapshot");
+        assert!(
+            reporter
+                .latest(&labels, Duration::from_millis(100))
+                .is_none(),
+            "empty-delta scope_close on never-seen path must not invent a snapshot"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1994,11 +2204,31 @@ mod tests {
         let tree = CadenceTree::plan_default(cadences);
         let reporter = CadenceReporter::new(tree);
 
-        reporter.ingest(&Labels::of("phase", "a"), counter_set(Duration::from_millis(100), 1));
-        reporter.ingest(&Labels::of("phase", "b"), counter_set(Duration::from_millis(100), 99));
+        reporter.ingest(
+            &Labels::of("phase", "a"),
+            counter_set(Duration::from_millis(100), 1),
+        );
+        reporter.ingest(
+            &Labels::of("phase", "b"),
+            counter_set(Duration::from_millis(100), 99),
+        );
         reporter.flush_for_tests();
 
-        assert_eq!(first_counter_total(&reporter.latest(&Labels::of("phase", "a"), Duration::from_millis(100)).unwrap()), 1);
-        assert_eq!(first_counter_total(&reporter.latest(&Labels::of("phase", "b"), Duration::from_millis(100)).unwrap()), 99);
+        assert_eq!(
+            first_counter_total(
+                &reporter
+                    .latest(&Labels::of("phase", "a"), Duration::from_millis(100))
+                    .unwrap()
+            ),
+            1
+        );
+        assert_eq!(
+            first_counter_total(
+                &reporter
+                    .latest(&Labels::of("phase", "b"), Duration::from_millis(100))
+                    .unwrap()
+            ),
+            99
+        );
     }
 }

@@ -37,7 +37,8 @@ impl Reporter for OpenMetricsPushReporter {
         if body.is_empty() {
             return;
         }
-        match self.client
+        match self
+            .client
             .post(&self.endpoint)
             .header("Content-Type", "text/plain; charset=utf-8")
             .body(body)

@@ -86,7 +86,12 @@ pub struct NoisyFidelity<F: FnMut(&[f64]) -> f64> {
 
 impl<F: FnMut(&[f64]) -> f64> NoisyFidelity<F> {
     pub fn new(f: F, noise: f64, seed: u64) -> Self {
-        Self { f, noise, rng: Rng::new(seed), calls: 0 }
+        Self {
+            f,
+            noise,
+            rng: Rng::new(seed),
+            calls: 0,
+        }
     }
 }
 
@@ -113,7 +118,11 @@ mod tests {
         assert!(rosenbrock(&[1.0, 1.0, 1.0]).abs() < 1e-9);
         assert!(rastrigin(&[0.0, 0.0]).abs() < 1e-9);
         // Branin's three global minimizers.
-        for p in [[-std::f64::consts::PI, 12.275], [std::f64::consts::PI, 2.275], [9.42478, 2.475]] {
+        for p in [
+            [-std::f64::consts::PI, 12.275],
+            [std::f64::consts::PI, 2.275],
+            [9.42478, 2.475],
+        ] {
             assert!((branin(&p) - BRANIN_MIN).abs() < 1e-3, "branin at {p:?}");
         }
     }

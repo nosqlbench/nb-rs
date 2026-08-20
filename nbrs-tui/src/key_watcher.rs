@@ -40,9 +40,9 @@
 //! [`render_line`]: crate::log_only_sink
 
 use std::io::IsTerminal;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -167,7 +167,10 @@ impl KeyWatcher {
             .name("key-watcher".into())
             .spawn(move || run_loop(tx, stop_for_thread))
             .expect("spawn key-watcher thread");
-        Some(Self { stop, join: Some(join) })
+        Some(Self {
+            stop,
+            join: Some(join),
+        })
     }
 
     /// Cooperative stop. Disables raw mode after the polling
@@ -189,8 +192,7 @@ impl KeyWatcher {
     pub fn shutdown(mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
-            let deadline = std::time::Instant::now()
-                + Duration::from_millis(500);
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
             loop {
                 if join.is_finished() {
                     let _ = join.join();
@@ -227,7 +229,9 @@ fn run_loop(tx: mpsc::Sender<WatcherSignal>, stop: Arc<AtomicBool>) {
                 continue;
             }
         };
-        if !ready { continue; }
+        if !ready {
+            continue;
+        }
         let evt = match event::read() {
             Ok(e) => e,
             Err(_) => {
@@ -264,12 +268,13 @@ fn run_loop(tx: mpsc::Sender<WatcherSignal>, stop: Arc<AtomicBool>) {
                     {
                         WatcherSignal::Redraw
                     }
-                    (KeyCode::Up, m) if m.contains(KeyModifiers::ALT) =>
-                        WatcherSignal::GrowPrompt,
-                    (KeyCode::Down, m) if m.contains(KeyModifiers::ALT) =>
-                        WatcherSignal::ShrinkPrompt,
-                    (KeyCode::Char('/'), m) if m.contains(KeyModifiers::CONTROL) =>
-                        WatcherSignal::ToggleHelp,
+                    (KeyCode::Up, m) if m.contains(KeyModifiers::ALT) => WatcherSignal::GrowPrompt,
+                    (KeyCode::Down, m) if m.contains(KeyModifiers::ALT) => {
+                        WatcherSignal::ShrinkPrompt
+                    }
+                    (KeyCode::Char('/'), m) if m.contains(KeyModifiers::CONTROL) => {
+                        WatcherSignal::ToggleHelp
+                    }
                     // `?` (no modifier) — explainer-overlay hold.
                     // Each press / auto-repeat extends the
                     // deadline; the readout binder reads
@@ -294,7 +299,9 @@ fn run_loop(tx: mpsc::Sender<WatcherSignal>, stop: Arc<AtomicBool>) {
                 };
                 // Supervisor receiver dropped → run is over,
                 // exit the loop cleanly.
-                if tx.send(signal).is_err() { return; }
+                if tx.send(signal).is_err() {
+                    return;
+                }
             }
             _ => {}
         }

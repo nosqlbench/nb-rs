@@ -64,8 +64,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cassandra_cpp as cass;
 use cass::LendingIterator;
+use cassandra_cpp as cass;
 use tokio::sync::mpsc;
 
 /// A single traced-op record submitted by a dispenser to the
@@ -123,9 +123,7 @@ const BIND_INLINE_CAP: usize = 96;
 /// log, not a re-execution transcript.
 pub(super) fn format_bind_value(name: &str, value: &polydat::ast::Value) -> String {
     use polydat::ast::Value;
-    let summary = |kind: &str, len: usize| {
-        format!("{name}=<{kind}, len={len}>")
-    };
+    let summary = |kind: &str, len: usize| format!("{name}=<{kind}, len={len}>");
     match value {
         Value::Str(s) => {
             if s.len() <= BIND_INLINE_CAP {
@@ -212,7 +210,11 @@ impl LazyTraceLog {
     /// Record the inputs; do NOT touch the cluster or filesystem. Cheap and
     /// side-effect-free — safe to build at connect regardless of trace rate.
     pub(super) fn new(path: PathBuf, session: cass::Session) -> Self {
-        Self { path, session, cell: tokio::sync::OnceCell::new() }
+        Self {
+            path,
+            session,
+            cell: tokio::sync::OnceCell::new(),
+        }
     }
 
     /// The initialised [`TraceLog`], creating it on first call: open the
@@ -231,7 +233,8 @@ impl LazyTraceLog {
                             &format!(
                                 "cql tracing log unavailable at {}: {} \
                                  — traces for this run will be dropped",
-                                self.path.display(), e,
+                                self.path.display(),
+                                e,
                             ),
                         );
                         None
@@ -311,8 +314,7 @@ impl TraceLog {
         let prev_depth = self.inner.queue_depth.load(Ordering::Acquire);
         match self.inner.tx.try_send(record) {
             Ok(()) => {
-                let new_depth = self.inner.queue_depth
-                    .fetch_add(1, Ordering::AcqRel) + 1;
+                let new_depth = self.inner.queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
                 if prev_depth >= 1 {
                     nbrs_runtime::diag!(
                         nbrs_runtime::observer::LogLevel::Warn,
@@ -323,8 +325,7 @@ impl TraceLog {
                 }
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                let dropped = self.inner.dropped
-                    .fetch_add(1, Ordering::AcqRel) + 1;
+                let dropped = self.inner.dropped.fetch_add(1, Ordering::AcqRel) + 1;
                 nbrs_runtime::diag!(
                     nbrs_runtime::observer::LogLevel::Error,
                     "cql_trace: queue full at capacity {cap}, \
@@ -339,7 +340,6 @@ impl TraceLog {
             }
         }
     }
-
 }
 
 // =========================================================================
@@ -400,7 +400,9 @@ async fn fetch_session_meta(
     s.bind_uuid(0, trace_uuid)?;
     let result = s.execute().await?;
     let mut iter = result.iter();
-    let Some(row) = iter.next() else { return Ok(None); };
+    let Some(row) = iter.next() else {
+        return Ok(None);
+    };
     let mut meta = SessionMeta::default();
     // Index order matches the prepared SELECT:
     //   0=coordinator 1=duration 2=started_at 3=request 4=parameters 5=client
@@ -463,21 +465,27 @@ async fn fetch_events(
         let mut events: Vec<EventRow> = Vec::new();
         let mut iter = result.iter();
         while let Some(row) = iter.next() {
-            let source = row.get_column(1).ok()
+            let source = row
+                .get_column(1)
+                .ok()
                 .and_then(|c| c.get_inet().ok())
                 .map(|i| format!("{i:?}"));
-            let source_elapsed_us = row.get_column(2).ok()
+            let source_elapsed_us = row
+                .get_column(2)
+                .ok()
                 .and_then(|c| c.get_i32().ok())
                 .map(|n| n as i64);
-            let activity = row.get_column(3).ok()
-                .and_then(|c| c.get_string().ok());
-            let thread = row.get_column(4).ok()
-                .and_then(|c| c.get_string().ok());
+            let activity = row.get_column(3).ok().and_then(|c| c.get_string().ok());
+            let thread = row.get_column(4).ok().and_then(|c| c.get_string().ok());
             events.push(EventRow {
-                source, source_elapsed_us, activity, thread,
+                source,
+                source_elapsed_us,
+                activity,
+                thread,
             });
         }
-        let complete = events.last()
+        let complete = events
+            .last()
             .and_then(|e| e.activity.as_deref())
             .map(is_complete_marker)
             .unwrap_or(false);
@@ -533,9 +541,7 @@ async fn retirement_worker(
         // `trace_id` is None (cpp-driver returned NO_TRACING_ID)
         // or when prepares failed at startup.
         let (session_meta, events) = match (&prepared, record.trace_id.as_deref()) {
-            (Some(p), Some(tid_str)) => {
-                fetch_server_side(p, tid_str).await
-            }
+            (Some(p), Some(tid_str)) => fetch_server_side(p, tid_str).await,
             _ => (None, Vec::new()),
         };
 
@@ -568,15 +574,19 @@ struct PreparedTraceQueries {
 async fn prepare_trace_queries(
     session: &cass::Session,
 ) -> Result<PreparedTraceQueries, cass::Error> {
-    let sessions = session.prepare(
-        "SELECT coordinator, duration, started_at, request, \
+    let sessions = session
+        .prepare(
+            "SELECT coordinator, duration, started_at, request, \
          parameters, client \
          FROM system_traces.sessions WHERE session_id = ?",
-    ).await?;
-    let events = session.prepare(
-        "SELECT event_id, source, source_elapsed, activity, thread \
+        )
+        .await?;
+    let events = session
+        .prepare(
+            "SELECT event_id, source, source_elapsed, activity, thread \
          FROM system_traces.events WHERE session_id = ?",
-    ).await?;
+        )
+        .await?;
     Ok(PreparedTraceQueries { sessions, events })
 }
 
@@ -651,7 +661,8 @@ fn format_record_jsonl(
     // @<seconds>` and most JSON tooling round-trip this without
     // requiring a humantime / chrono dep on the cassandra-cpp
     // adapter. Pre-1970 timestamps (impossible here) clamp to 0.
-    let started_unix_nanos = record.started_at
+    let started_unix_nanos = record
+        .started_at
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
@@ -662,7 +673,7 @@ fn format_record_jsonl(
     };
     let mut s = String::with_capacity(512 + query.len());
     s.push('{');
-    fmt_kv_u64(&mut s, "ts_ns", started_unix_nanos, /*first=*/true);
+    fmt_kv_u64(&mut s, "ts_ns", started_unix_nanos, /*first=*/ true);
     fmt_kv_u64(&mut s, "cycle", record.cycle, false);
     fmt_kv_u64(&mut s, "latency_ns", record.latency_nanos, false);
     fmt_kv_bool(&mut s, "ok", record.ok, false);
@@ -675,7 +686,9 @@ fn format_record_jsonl(
     fmt_kv_str(&mut s, "query", &query, false);
     s.push_str(",\"binds\":[");
     for (i, bind) in record.binds.iter().enumerate() {
-        if i > 0 { s.push(','); }
+        if i > 0 {
+            s.push(',');
+        }
         s.push('"');
         write_escaped(&mut s, bind);
         s.push('"');
@@ -688,7 +701,9 @@ fn format_record_jsonl(
     if !events.is_empty() {
         s.push_str(",\"events\":[");
         for (i, ev) in events.iter().enumerate() {
-            if i > 0 { s.push(','); }
+            if i > 0 {
+                s.push(',');
+            }
             write_event(&mut s, ev);
         }
         s.push(']');
@@ -706,22 +721,30 @@ fn write_session_meta(out: &mut String, meta: &SessionMeta) {
     out.push('{');
     let mut first = true;
     if let Some(v) = &meta.coordinator {
-        fmt_kv_str(out, "coordinator", v, first); first = false;
+        fmt_kv_str(out, "coordinator", v, first);
+        first = false;
     }
     if let Some(v) = meta.duration_us {
-        fmt_kv_i64(out, "duration", v, first); first = false;
+        fmt_kv_i64(out, "duration", v, first);
+        first = false;
     }
     if let Some(v) = meta.started_at_ms {
-        fmt_kv_i64(out, "started_at_ms", v, first); first = false;
+        fmt_kv_i64(out, "started_at_ms", v, first);
+        first = false;
     }
     if let Some(v) = &meta.request {
-        fmt_kv_str(out, "request", v, first); first = false;
+        fmt_kv_str(out, "request", v, first);
+        first = false;
     }
     if !meta.parameters.is_empty() {
-        if !first { out.push(','); }
+        if !first {
+            out.push(',');
+        }
         out.push_str("\"parameters\":{");
         for (i, (k, v)) in meta.parameters.iter().enumerate() {
-            if i > 0 { out.push(','); }
+            if i > 0 {
+                out.push(',');
+            }
             out.push('"');
             write_escaped(out, k);
             out.push_str("\":\"");
@@ -742,13 +765,16 @@ fn write_event(out: &mut String, ev: &EventRow) {
     out.push('{');
     let mut first = true;
     if let Some(v) = &ev.source {
-        fmt_kv_str(out, "source", v, first); first = false;
+        fmt_kv_str(out, "source", v, first);
+        first = false;
     }
     if let Some(v) = ev.source_elapsed_us {
-        fmt_kv_i64(out, "source_elapsed", v, first); first = false;
+        fmt_kv_i64(out, "source_elapsed", v, first);
+        first = false;
     }
     if let Some(v) = &ev.activity {
-        fmt_kv_str(out, "activity", v, first); first = false;
+        fmt_kv_str(out, "activity", v, first);
+        first = false;
     }
     if let Some(v) = &ev.thread {
         fmt_kv_str(out, "thread", v, first);
@@ -774,7 +800,9 @@ fn write_escaped(out: &mut String, value: &str) {
 }
 
 fn fmt_kv_str(out: &mut String, key: &str, value: &str, first: bool) {
-    if !first { out.push(','); }
+    if !first {
+        out.push(',');
+    }
     out.push('"');
     out.push_str(key);
     out.push_str("\":\"");
@@ -783,7 +811,9 @@ fn fmt_kv_str(out: &mut String, key: &str, value: &str, first: bool) {
 }
 
 fn fmt_kv_u64(out: &mut String, key: &str, value: u64, first: bool) {
-    if !first { out.push(','); }
+    if !first {
+        out.push(',');
+    }
     out.push('"');
     out.push_str(key);
     out.push_str("\":");
@@ -791,7 +821,9 @@ fn fmt_kv_u64(out: &mut String, key: &str, value: u64, first: bool) {
 }
 
 fn fmt_kv_i64(out: &mut String, key: &str, value: i64, first: bool) {
-    if !first { out.push(','); }
+    if !first {
+        out.push(',');
+    }
     out.push('"');
     out.push_str(key);
     out.push_str("\":");
@@ -799,7 +831,9 @@ fn fmt_kv_i64(out: &mut String, key: &str, value: i64, first: bool) {
 }
 
 fn fmt_kv_bool(out: &mut String, key: &str, value: bool, first: bool) {
-    if !first { out.push(','); }
+    if !first {
+        out.push(',');
+    }
     out.push('"');
     out.push_str(key);
     out.push_str("\":");

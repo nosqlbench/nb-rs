@@ -22,12 +22,11 @@
 //! grow.
 
 use crate::ast::{
-    AggrModifier, AggrModifierOp, BinaryOp, BinaryOpExpr, DurationExpr, Expr,
-    FuncExpr, GroupModifier, GroupOp, JoinModifier, JoinOp, LabelFilter,
-    LabelFilterOp, MetricExpr, NumberExpr, ParensExpr, RollupExpr, StringExpr,
-    WithArgExpr, WithExpr,
+    AggrModifier, AggrModifierOp, BinaryOp, BinaryOpExpr, DurationExpr, Expr, FuncExpr,
+    GroupModifier, GroupOp, JoinModifier, JoinOp, LabelFilter, LabelFilterOp, MetricExpr,
+    NumberExpr, ParensExpr, RollupExpr, StringExpr, WithArgExpr, WithExpr,
 };
-use crate::lexer::{lex, LexError, Token};
+use crate::lexer::{LexError, Token, lex};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
@@ -45,7 +44,10 @@ impl std::error::Error for ParseError {}
 
 impl From<LexError> for ParseError {
     fn from(e: LexError) -> Self {
-        ParseError { message: e.message, at: e.at }
+        ParseError {
+            message: e.message,
+            at: e.at,
+        }
     }
 }
 
@@ -70,7 +72,9 @@ fn strip_quoted_label_flags(e: Expr) -> Expr {
     match e {
         Expr::Metric(mut m) => {
             for g in m.label_filterss.iter_mut() {
-                for lf in g.iter_mut() { lf.was_quoted = false; }
+                for lf in g.iter_mut() {
+                    lf.was_quoted = false;
+                }
             }
             Expr::Metric(m)
         }
@@ -82,9 +86,13 @@ fn strip_quoted_label_flags(e: Expr) -> Expr {
             Expr::String(s)
         }
         Expr::Rollup(mut r) => {
-            let inner = std::mem::replace(&mut *r.expr, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let inner = std::mem::replace(
+                &mut *r.expr,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             r.expr = Box::new(strip_quoted_label_flags(inner));
             if let Some(at) = r.at.take() {
                 r.at = Some(Box::new(strip_quoted_label_flags(*at)));
@@ -96,12 +104,20 @@ fn strip_quoted_label_flags(e: Expr) -> Expr {
             Expr::Func(f)
         }
         Expr::Binary(mut b) => {
-            let l = std::mem::replace(&mut *b.left, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
-            let r = std::mem::replace(&mut *b.right, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let l = std::mem::replace(
+                &mut *b.left,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
+            let r = std::mem::replace(
+                &mut *b.right,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             b.left = Box::new(strip_quoted_label_flags(l));
             b.right = Box::new(strip_quoted_label_flags(r));
             if let Some(p) = b.join_modifier_prefix.take() {
@@ -154,7 +170,10 @@ fn default_with_arg_exprs() -> Result<Vec<WithArgExpr>, ParseError> {
         // the existing WITH-binding parser.
         let wrapped = format!("with ({src}) 0");
         let toks = lex(&wrapped)?;
-        let mut wp = Parser { tokens: toks, pos: 0 };
+        let mut wp = Parser {
+            tokens: toks,
+            pos: 0,
+        };
         let e = wp.parse_expr()?;
         wp.expect_eof()?;
         let Expr::With(w) = e else {
@@ -229,15 +248,16 @@ impl Parser {
             // modifier.
             let join_modifier = if group_modifier.is_some() {
                 self.maybe_parse_join_modifier()?
-            } else { None };
+            } else {
+                None
+            };
             // Optional `prefix <string-expr>` after a join
             // modifier. The expression is restricted to
             // strings or bare-ident WITH-template refs joined
             // by `+`, so we don't accidentally swallow the
             // right operand of the outer binary op.
             let mut join_modifier_prefix: Option<Box<Expr>> = None;
-            if join_modifier.is_some()
-                && self.peek().raw.eq_ignore_ascii_case("prefix") {
+            if join_modifier.is_some() && self.peek().raw.eq_ignore_ascii_case("prefix") {
                 self.advance();
                 join_modifier_prefix = Some(Box::new(self.parse_prefix_expr()?));
             }
@@ -321,13 +341,21 @@ impl Parser {
                 "," => {
                     self.advance();
                     // Trailing comma: `on (a, b,)` is allowed.
-                    if self.peek().raw == ")" { self.advance(); break; }
+                    if self.peek().raw == ")" {
+                        self.advance();
+                        break;
+                    }
                 }
-                ")" => { self.advance(); break; }
-                other => return Err(ParseError {
-                    message: format!("expected ',' or ')' in label list, got {other:?}"),
-                    at: self.peek().start,
-                }),
+                ")" => {
+                    self.advance();
+                    break;
+                }
+                other => {
+                    return Err(ParseError {
+                        message: format!("expected ',' or ')' in label list, got {other:?}"),
+                        at: self.peek().start,
+                    });
+                }
             }
         }
         Ok(labels)
@@ -390,7 +418,10 @@ impl Parser {
             self.advance();
             let single_quoted = tok.raw.starts_with('\'');
             let value = unquote_string(&tok.raw)?;
-            return Ok(Expr::String(StringExpr { value, single_quoted }));
+            return Ok(Expr::String(StringExpr {
+                value,
+                single_quoted,
+            }));
         }
         // Grafana-style `$__interval` / `$__rate_interval`
         // placeholders. Upstream substitutes both with the
@@ -442,15 +473,19 @@ impl Parser {
             // keyword; consumes the second `(` so it must be
             // checked before the generic `name(...)` arm.
             if tok.raw.eq_ignore_ascii_case("with") {
-                let second = self.tokens.get(self.pos + 1).cloned()
-                    .unwrap_or(Token { raw: String::new(), start: 0 });
+                let second = self.tokens.get(self.pos + 1).cloned().unwrap_or(Token {
+                    raw: String::new(),
+                    start: 0,
+                });
                 if second.raw == "(" {
                     return self.parse_with_expr();
                 }
             }
             // Peek the second token without committing.
-            let second = self.tokens.get(self.pos + 1).cloned()
-                .unwrap_or(Token { raw: String::new(), start: 0 });
+            let second = self.tokens.get(self.pos + 1).cloned().unwrap_or(Token {
+                raw: String::new(),
+                start: 0,
+            });
             if second.raw == "(" {
                 return self.parse_func_call();
             }
@@ -461,7 +496,8 @@ impl Parser {
             let ident = unescape_ident(&tok.raw);
             if is_aggr_func(&ident)
                 && (second.raw.eq_ignore_ascii_case("by")
-                    || second.raw.eq_ignore_ascii_case("without")) {
+                    || second.raw.eq_ignore_ascii_case("without"))
+            {
                 return self.parse_func_call();
             }
             return self.parse_metric_expr();
@@ -533,7 +569,8 @@ impl Parser {
                 // fills it in at evaluation time.
                 self.advance();
             } else if let Some(colon) = tok.raw.find(':')
-                && colon > 0 {
+                && colon > 0
+            {
                 // Lexer treats `:` as an ident continuation
                 // char (so metric names like `node:cpu` work),
                 // which means `[w1:w2]` lands here as a single
@@ -542,10 +579,16 @@ impl Parser {
                 // matching upstream's behaviour.
                 self.advance();
                 let (w, s) = tok.raw.split_at(colon);
-                window = Some(DurationExpr { value: w.into(), requires_step: false });
+                window = Some(DurationExpr {
+                    value: w.into(),
+                    requires_step: false,
+                });
                 let s_after = &s[1..]; // skip the colon
                 if !s_after.is_empty() {
-                    step = Some(DurationExpr { value: s_after.into(), requires_step: false });
+                    step = Some(DurationExpr {
+                        value: s_after.into(),
+                        requires_step: false,
+                    });
                 } else if self.peek().raw == "]" {
                     inherit_step = true;
                 }
@@ -593,7 +636,10 @@ impl Parser {
         // number used as seconds (`30`), or — when reached via
         // a rollup-step token like `:1s` already split off —
         // the residue after the leading `:`.
-        Ok(DurationExpr { value: tok.raw, requires_step: false })
+        Ok(DurationExpr {
+            value: tok.raw,
+            requires_step: false,
+        })
     }
 
     fn parse_offset(&mut self) -> Result<DurationExpr, ParseError> {
@@ -619,7 +665,10 @@ impl Parser {
         if is_dollar_interval(&tok.raw) {
             self.advance();
             let value = if negative { "-1i".into() } else { "1i".into() };
-            return Ok(DurationExpr { value, requires_step: false });
+            return Ok(DurationExpr {
+                value,
+                requires_step: false,
+            });
         }
         let mut d = self.parse_positive_duration()?;
         if negative {
@@ -646,13 +695,21 @@ impl Parser {
                 "," => {
                     self.advance();
                     // Trailing comma: `(a, b,)` is allowed.
-                    if self.peek().raw == ")" { self.advance(); break; }
+                    if self.peek().raw == ")" {
+                        self.advance();
+                        break;
+                    }
                 }
-                ")" => { self.advance(); break; }
-                other => return Err(ParseError {
-                    message: format!("expected ',' or ')' in parens, got {other:?}"),
-                    at: self.peek().start,
-                }),
+                ")" => {
+                    self.advance();
+                    break;
+                }
+                other => {
+                    return Err(ParseError {
+                        message: format!("expected ',' or ')' in parens, got {other:?}"),
+                        at: self.peek().start,
+                    });
+                }
             }
         }
         // `(expr) keep_metric_names` — when the parens
@@ -665,7 +722,8 @@ impl Parser {
         // `... + (Func keep_metric_names) keep_metric_names`.
         if exprs.len() == 1
             && matches!(&exprs[0], Expr::Binary(_))
-            && self.peek().raw.eq_ignore_ascii_case("keep_metric_names") {
+            && self.peek().raw.eq_ignore_ascii_case("keep_metric_names")
+        {
             self.advance();
             let single = exprs.pop().unwrap();
             if let Expr::Binary(mut b) = single {
@@ -700,13 +758,21 @@ impl Parser {
                 match self.peek().raw.as_str() {
                     "," => {
                         self.advance();
-                        if self.peek().raw == ")" { self.advance(); break; }
+                        if self.peek().raw == ")" {
+                            self.advance();
+                            break;
+                        }
                     }
-                    ")" => { self.advance(); break; }
-                    other => return Err(ParseError {
-                        message: format!("expected ',' or ')' in WITH bindings, got {other:?}"),
-                        at: self.peek().start,
-                    }),
+                    ")" => {
+                        self.advance();
+                        break;
+                    }
+                    other => {
+                        return Err(ParseError {
+                            message: format!("expected ',' or ')' in WITH bindings, got {other:?}"),
+                            at: self.peek().start,
+                        });
+                    }
                 }
             }
         }
@@ -735,7 +801,10 @@ impl Parser {
                     let t = self.advance();
                     if !is_ident_token(&t) {
                         return Err(ParseError {
-                            message: format!("expected ident in WITH binding args, got {:?}", t.raw),
+                            message: format!(
+                                "expected ident in WITH binding args, got {:?}",
+                                t.raw
+                            ),
                             at: t.start,
                         });
                     }
@@ -743,13 +812,19 @@ impl Parser {
                     match self.peek().raw.as_str() {
                         "," => {
                             self.advance();
-                            if self.peek().raw == ")" { break; }
+                            if self.peek().raw == ")" {
+                                break;
+                            }
                         }
                         ")" => break,
-                        other => return Err(ParseError {
-                            message: format!("expected ',' or ')' in WITH binding args, got {other:?}"),
-                            at: self.peek().start,
-                        }),
+                        other => {
+                            return Err(ParseError {
+                                message: format!(
+                                    "expected ',' or ')' in WITH binding args, got {other:?}"
+                                ),
+                                at: self.peek().start,
+                            });
+                        }
                     }
                 }
             }
@@ -757,7 +832,11 @@ impl Parser {
         }
         if self.peek().raw != "=" {
             return Err(ParseError {
-                message: format!("expected `=` in WITH binding for {:?}, got {:?}", name, self.peek().raw),
+                message: format!(
+                    "expected `=` in WITH binding for {:?}, got {:?}",
+                    name,
+                    self.peek().raw
+                ),
                 at: self.peek().start,
             });
         }
@@ -801,13 +880,17 @@ impl Parser {
                     "," => {
                         self.advance();
                         // Trailing comma: `sum(x,)` is allowed.
-                        if self.peek().raw == ")" { break; }
+                        if self.peek().raw == ")" {
+                            break;
+                        }
                     }
                     ")" => break,
-                    other => return Err(ParseError {
-                        message: format!("expected ',' or ')' in func args, got {other:?}"),
-                        at: self.peek().start,
-                    }),
+                    other => {
+                        return Err(ParseError {
+                            message: format!("expected ',' or ')' in func args, got {other:?}"),
+                            at: self.peek().start,
+                        });
+                    }
                 }
             }
         }
@@ -825,7 +908,11 @@ impl Parser {
         // Aggregate `limit N` — caps result series count.
         let limit = self.maybe_parse_limit()?;
         Ok(Expr::Func(FuncExpr {
-            name, args, keep_metric_names, modifier, limit,
+            name,
+            args,
+            keep_metric_names,
+            modifier,
+            limit,
         }))
     }
 
@@ -870,13 +957,17 @@ impl Parser {
                     "," => {
                         self.advance();
                         // Trailing comma: `by (a, b,)` is allowed.
-                        if self.peek().raw == ")" { break; }
+                        if self.peek().raw == ")" {
+                            break;
+                        }
                     }
                     ")" => break,
-                    other => return Err(ParseError {
-                        message: format!("expected ',' or ')' in aggr modifier, got {other:?}"),
-                        at: self.peek().start,
-                    }),
+                    other => {
+                        return Err(ParseError {
+                            message: format!("expected ',' or ')' in aggr modifier, got {other:?}"),
+                            at: self.peek().start,
+                        });
+                    }
                 }
             }
         }
@@ -949,9 +1040,9 @@ impl Parser {
             // treat it the same as a leading bare-ident
             // metric name for the purposes of replicating
             // into subsequent `or` groups.
-            let first_metric_filter: Option<LabelFilter> = groups[0].iter()
-                .find(|lf| lf.label == "__name__"
-                    && matches!(lf.op, LabelFilterOp::Eq))
+            let first_metric_filter: Option<LabelFilter> = groups[0]
+                .iter()
+                .find(|lf| lf.label == "__name__" && matches!(lf.op, LabelFilterOp::Eq))
                 .cloned();
             // Subsequent `or`-prefixed groups.
             while self.peek().raw.eq_ignore_ascii_case("or") {
@@ -968,8 +1059,7 @@ impl Parser {
                 // untouched so the prettifier can detect the
                 // mixed case and decline the bare-name form.
                 if let Some(name_filter) = &first_metric_filter {
-                    let has_name = next_group.iter()
-                        .any(|lf| lf.label == "__name__");
+                    let has_name = next_group.iter().any(|lf| lf.label == "__name__");
                     if !has_name {
                         next_group.insert(0, name_filter.clone());
                     }
@@ -980,7 +1070,8 @@ impl Parser {
                 return Err(ParseError {
                     message: format!(
                         "expected '}}' or 'or' in label-filter list, got {:?}",
-                        self.peek().raw),
+                        self.peek().raw
+                    ),
                     at: self.peek().start,
                 });
             }
@@ -1033,10 +1124,11 @@ impl Parser {
             // `__name__="<string>"`.
             let cur = self.peek().clone();
             if is_string_token(&cur) {
-                let next = self.tokens.get(self.pos + 1).cloned()
-                    .unwrap_or(Token { raw: String::new(), start: 0 });
-                if next.raw == "," || next.raw == "}"
-                    || next.raw.eq_ignore_ascii_case("or") {
+                let next = self.tokens.get(self.pos + 1).cloned().unwrap_or(Token {
+                    raw: String::new(),
+                    start: 0,
+                });
+                if next.raw == "," || next.raw == "}" || next.raw.eq_ignore_ascii_case("or") {
                     self.advance();
                     let value = unquote_string(&cur.raw)?;
                     out.push(LabelFilter {
@@ -1044,14 +1136,17 @@ impl Parser {
                         op: LabelFilterOp::Eq,
                         value,
                         is_template_ref: false,
-                value_expr: None,
+                        value_expr: None,
                         // Metric-name-as-string slot uses the
                         // Prometheus 3.x quoted form;
                         // remember it for round-trip output.
                         was_quoted: true,
                     });
                     match self.peek().raw.as_str() {
-                        "," => { self.advance(); continue; }
+                        "," => {
+                            self.advance();
+                            continue;
+                        }
                         "}" => return Ok(()),
                         kw if kw.eq_ignore_ascii_case("or") => return Ok(()),
                         _ => {}
@@ -1062,14 +1157,17 @@ impl Parser {
             let lf = self.parse_label_filter()?;
             out.push(lf);
             match self.peek().raw.as_str() {
-                "," => { self.advance(); }
+                "," => {
+                    self.advance();
+                }
                 "}" => return Ok(()),
                 kw if kw.eq_ignore_ascii_case("or") => return Ok(()),
                 other => {
                     return Err(ParseError {
                         message: format!(
                             "expected ',', '}}' or 'or' in label-filter list, got {:?}",
-                            other),
+                            other
+                        ),
                         at: self.peek().start,
                     });
                 }
@@ -1085,10 +1183,16 @@ impl Parser {
     fn parse_prefix_expr(&mut self) -> Result<Expr, ParseError> {
         let mut acc = self.parse_prefix_atom()?;
         loop {
-            if self.peek().raw != "+" { break; }
-            let next = self.tokens.get(self.pos + 1).cloned()
-                .unwrap_or(Token { raw: String::new(), start: 0 });
-            if !is_prefix_atom_token(&next) { break; }
+            if self.peek().raw != "+" {
+                break;
+            }
+            let next = self.tokens.get(self.pos + 1).cloned().unwrap_or(Token {
+                raw: String::new(),
+                start: 0,
+            });
+            if !is_prefix_atom_token(&next) {
+                break;
+            }
             self.advance(); // consume '+'
             let rhs = self.parse_prefix_atom()?;
             acc = Expr::Binary(BinaryOpExpr {
@@ -1120,13 +1224,16 @@ impl Parser {
                     op: LabelFilterOp::Eq,
                     value: unescape_ident(&tok.raw),
                     is_template_ref: false,
-                value_expr: None,
+                    value_expr: None,
                     was_quoted: false,
                 }]],
             }))
         } else {
             Err(ParseError {
-                message: format!("expected string or ident in `prefix` expression, got {:?}", tok.raw),
+                message: format!(
+                    "expected string or ident in `prefix` expression, got {:?}",
+                    tok.raw
+                ),
                 at: tok.start,
             })
         }
@@ -1162,21 +1269,23 @@ impl Parser {
                     op: LabelFilterOp::Eq,
                     value: String::new(),
                     is_template_ref: true,
-                value_expr: None,
+                    value_expr: None,
                     was_quoted: false,
                 });
             }
         }
         let op_tok = self.advance();
         let op = match op_tok.raw.as_str() {
-            "="  => LabelFilterOp::Eq,
+            "=" => LabelFilterOp::Eq,
             "!=" => LabelFilterOp::Ne,
             "=~" => LabelFilterOp::EqRegex,
             "!~" => LabelFilterOp::NeRegex,
-            other => return Err(ParseError {
-                message: format!("expected label-filter op, got {other:?}"),
-                at: op_tok.start,
-            }),
+            other => {
+                return Err(ParseError {
+                    message: format!("expected label-filter op, got {other:?}"),
+                    at: op_tok.start,
+                });
+            }
         };
         // Label values may be a single string literal, a
         // chain of strings joined by `+`, or a mixed chain of
@@ -1187,7 +1296,10 @@ impl Parser {
         // folding.
         let (value, value_expr) = self.parse_label_filter_value()?;
         Ok(LabelFilter {
-            label, op, value, value_expr,
+            label,
+            op,
+            value,
+            value_expr,
             is_template_ref: false,
             was_quoted: is_quoted_label,
         })
@@ -1205,9 +1317,13 @@ impl Parser {
         let mut atoms: Vec<Expr> = Vec::new();
         atoms.push(self.parse_label_value_atom()?);
         while self.peek().raw == "+" {
-            let next = self.tokens.get(self.pos + 1).cloned()
-                .unwrap_or(Token { raw: String::new(), start: 0 });
-            if !is_label_value_atom_token(&next) { break; }
+            let next = self.tokens.get(self.pos + 1).cloned().unwrap_or(Token {
+                raw: String::new(),
+                start: 0,
+            });
+            if !is_label_value_atom_token(&next) {
+                break;
+            }
             self.advance(); // consume '+'
             atoms.push(self.parse_label_value_atom()?);
         }
@@ -1215,7 +1331,9 @@ impl Parser {
         if all_strings {
             let mut value = String::new();
             for a in atoms {
-                if let Expr::String(s) = a { value.push_str(&s.value); }
+                if let Expr::String(s) = a {
+                    value.push_str(&s.value);
+                }
             }
             return Ok((value, None));
         }
@@ -1264,7 +1382,6 @@ impl Parser {
             at: tok.start,
         })
     }
-
 }
 
 /// Names of all MetricsQL aggregate functions, mirroring
@@ -1272,15 +1389,45 @@ impl Parser {
 /// whether `sum by (l) (...)` (modifier-before-args form) is
 /// legal — only known aggregates can take that shape.
 fn is_aggr_func(name: &str) -> bool {
-    matches!(name.to_ascii_lowercase().as_str(),
-        "any" | "avg" | "bottomk" | "bottomk_avg" | "bottomk_max"
-        | "bottomk_median" | "bottomk_last" | "bottomk_min" | "count"
-        | "count_values" | "distinct" | "geomean" | "group" | "histogram"
-        | "limitk" | "mad" | "max" | "median" | "min" | "mode"
-        | "outliers_iqr" | "outliers_mad" | "outliersk" | "quantile"
-        | "quantiles" | "share" | "stddev" | "stdvar" | "sum" | "sum2"
-        | "topk" | "topk_avg" | "topk_max" | "topk_median" | "topk_last"
-        | "topk_min" | "zscore"
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "any"
+            | "avg"
+            | "bottomk"
+            | "bottomk_avg"
+            | "bottomk_max"
+            | "bottomk_median"
+            | "bottomk_last"
+            | "bottomk_min"
+            | "count"
+            | "count_values"
+            | "distinct"
+            | "geomean"
+            | "group"
+            | "histogram"
+            | "limitk"
+            | "mad"
+            | "max"
+            | "median"
+            | "min"
+            | "mode"
+            | "outliers_iqr"
+            | "outliers_mad"
+            | "outliersk"
+            | "quantile"
+            | "quantiles"
+            | "share"
+            | "stddev"
+            | "stdvar"
+            | "sum"
+            | "sum2"
+            | "topk"
+            | "topk_avg"
+            | "topk_max"
+            | "topk_median"
+            | "topk_last"
+            | "topk_min"
+            | "zscore"
     )
 }
 
@@ -1301,7 +1448,9 @@ fn is_label_value_atom_token(t: &Token) -> bool {
 }
 
 fn is_ident_token(t: &Token) -> bool {
-    if t.is_eof() { return false; }
+    if t.is_eof() {
+        return false;
+    }
     let first = t.raw.chars().next().unwrap_or('\0');
     // `:` is a valid first-ident-char in MetricsQL — that's
     // how stuff like `m_e:tri44:_c123` lex as one token.
@@ -1312,7 +1461,9 @@ fn is_ident_token(t: &Token) -> bool {
 }
 
 fn is_rollup_start(t: &Token) -> bool {
-    if t.is_eof() { return false; }
+    if t.is_eof() {
+        return false;
+    }
     matches!(t.raw.as_str(), "[" | "@") || is_offset_keyword(&t.raw)
 }
 
@@ -1322,8 +1473,12 @@ fn is_offset_keyword(raw: &str) -> bool {
 
 fn is_number_prefix(raw: &str) -> bool {
     let bytes = raw.as_bytes();
-    if bytes.is_empty() { return false; }
-    if bytes[0].is_ascii_digit() { return true; }
+    if bytes.is_empty() {
+        return false;
+    }
+    if bytes[0].is_ascii_digit() {
+        return true;
+    }
     bytes[0] == b'.' && bytes.len() >= 2 && bytes[1].is_ascii_digit()
 }
 
@@ -1336,7 +1491,9 @@ fn is_inf_or_nan(raw: &str) -> bool {
 /// duration-literal exprs to `Expr::Duration` rather than
 /// number / identifier paths.
 fn is_full_duration_literal(raw: &str) -> bool {
-    if raw.is_empty() { return false; }
+    if raw.is_empty() {
+        return false;
+    }
     // Re-run the lexer's duration scanner over this exact
     // token; consider it "full" only when the scan covers
     // the entire token.
@@ -1352,44 +1509,57 @@ fn is_full_duration_literal(raw: &str) -> bool {
 /// `parsePositiveNumber`.
 fn parse_number_literal(s: &str) -> Result<f64, ParseError> {
     let lower = s.to_lowercase();
-    if lower == "inf" { return Ok(f64::INFINITY); }
-    if lower == "nan" { return Ok(f64::NAN); }
+    if lower == "inf" {
+        return Ok(f64::INFINITY);
+    }
+    if lower == "nan" {
+        return Ok(f64::NAN);
+    }
     // Special integer prefixes.
     if let Some(stripped) = lower.strip_prefix("0x") {
         return i64::from_str_radix(stripped, 16)
             .map(|v| v as f64)
-            .map_err(|e| ParseError { message: format!("hex: {e}"), at: 0 });
+            .map_err(|e| ParseError {
+                message: format!("hex: {e}"),
+                at: 0,
+            });
     }
     if let Some(stripped) = lower.strip_prefix("0b") {
         return i64::from_str_radix(stripped, 2)
             .map(|v| v as f64)
-            .map_err(|e| ParseError { message: format!("bin: {e}"), at: 0 });
+            .map_err(|e| ParseError {
+                message: format!("bin: {e}"),
+                at: 0,
+            });
     }
     if let Some(stripped) = lower.strip_prefix("0o") {
         return i64::from_str_radix(stripped, 8)
             .map(|v| v as f64)
-            .map_err(|e| ParseError { message: format!("oct: {e}"), at: 0 });
+            .map_err(|e| ParseError {
+                message: format!("oct: {e}"),
+                at: 0,
+            });
     }
     // Byte-multiplier suffixes — upstream `parsePositiveNumber`.
     let mut mantissa = lower.as_str();
     let mut multiplier: f64 = 1.0;
     for (suffix, m) in &[
         ("kib", 1024_f64),
-        ("ki",  1024_f64),
-        ("kb",  1000_f64),
-        ("k",   1000_f64),
+        ("ki", 1024_f64),
+        ("kb", 1000_f64),
+        ("k", 1000_f64),
         ("mib", 1024.0 * 1024.0),
-        ("mi",  1024.0 * 1024.0),
-        ("mb",  1000.0 * 1000.0),
-        ("m",   1000.0 * 1000.0),
+        ("mi", 1024.0 * 1024.0),
+        ("mb", 1000.0 * 1000.0),
+        ("m", 1000.0 * 1000.0),
         ("gib", 1024.0_f64.powi(3)),
-        ("gi",  1024.0_f64.powi(3)),
-        ("gb",  1000.0_f64.powi(3)),
-        ("g",   1000.0_f64.powi(3)),
+        ("gi", 1024.0_f64.powi(3)),
+        ("gb", 1000.0_f64.powi(3)),
+        ("g", 1000.0_f64.powi(3)),
         ("tib", 1024.0_f64.powi(4)),
-        ("ti",  1024.0_f64.powi(4)),
-        ("tb",  1000.0_f64.powi(4)),
-        ("t",   1000.0_f64.powi(4)),
+        ("ti", 1024.0_f64.powi(4)),
+        ("tb", 1000.0_f64.powi(4)),
+        ("t", 1000.0_f64.powi(4)),
     ] {
         if let Some(stripped) = mantissa.strip_suffix(suffix) {
             mantissa = stripped;
@@ -1422,21 +1592,23 @@ fn parse_binary_op(raw: &str) -> Option<BinaryOp> {
         "^" => Some(BinaryOp::Pow),
         "==" => Some(BinaryOp::Eq),
         "!=" => Some(BinaryOp::Ne),
-        "<"  => Some(BinaryOp::Lt),
+        "<" => Some(BinaryOp::Lt),
         "<=" => Some(BinaryOp::Le),
-        ">"  => Some(BinaryOp::Gt),
+        ">" => Some(BinaryOp::Gt),
         ">=" => Some(BinaryOp::Ge),
         _ => None,
-    } { return Some(op); }
+    } {
+        return Some(op);
+    }
     let lower = raw.to_ascii_lowercase();
     match lower.as_str() {
-        "and"     => Some(BinaryOp::And),
-        "or"      => Some(BinaryOp::Or),
-        "unless"  => Some(BinaryOp::Unless),
-        "if"      => Some(BinaryOp::If),
-        "ifnot"   => Some(BinaryOp::IfNot),
+        "and" => Some(BinaryOp::And),
+        "or" => Some(BinaryOp::Or),
+        "unless" => Some(BinaryOp::Unless),
+        "if" => Some(BinaryOp::If),
+        "ifnot" => Some(BinaryOp::IfNot),
         "default" => Some(BinaryOp::Default),
-        "atan2"   => Some(BinaryOp::Atan2),
+        "atan2" => Some(BinaryOp::Atan2),
         _ => None,
     }
 }
@@ -1478,7 +1650,9 @@ fn balance_binary_op(be: BinaryOpExpr) -> Expr {
     }
     // Rotate: take be.left, swap its right with the
     // re-balanced node.
-    let Expr::Binary(mut bel) = *be.left else { unreachable!() };
+    let Expr::Binary(mut bel) = *be.left else {
+        unreachable!()
+    };
     let new_right = balance_binary_op(BinaryOpExpr {
         op: be.op,
         left: bel.right,
@@ -1518,12 +1692,20 @@ fn expand_with_expr(was: &[WithArgExpr], e: Expr) -> Result<Expr, ParseError> {
             expand_with_expr(&combined, *w.body)
         }
         Expr::Binary(mut b) => {
-            let l = std::mem::replace(&mut *b.left, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
-            let r = std::mem::replace(&mut *b.right, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let l = std::mem::replace(
+                &mut *b.left,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
+            let r = std::mem::replace(
+                &mut *b.right,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             b.left = Box::new(expand_with_expr(was, l)?);
             b.right = Box::new(expand_with_expr(was, r)?);
             if let Some(g) = b.group_modifier.as_mut() {
@@ -1539,7 +1721,9 @@ fn expand_with_expr(was: &[WithArgExpr], e: Expr) -> Result<Expr, ParseError> {
         }
         Expr::Func(mut f) => {
             // Expand each arg first.
-            let new_args: Result<Vec<Expr>, ParseError> = f.args.into_iter()
+            let new_args: Result<Vec<Expr>, ParseError> = f
+                .args
+                .into_iter()
                 .map(|a| expand_with_expr(was, a))
                 .collect();
             let mut new_args = new_args?;
@@ -1554,9 +1738,10 @@ fn expand_with_expr(was: &[WithArgExpr], e: Expr) -> Result<Expr, ParseError> {
                     && new_args.len() == 1
                     && matches!(&new_args[0], Expr::Paren(_))
                     && wa.args.len() != 1
-                    && let Expr::Paren(p) = new_args.pop().unwrap() {
-                        new_args = p.exprs;
-                    }
+                    && let Expr::Paren(p) = new_args.pop().unwrap()
+                {
+                    new_args = p.exprs;
+                }
                 // Pass `was[..idx]` so the binding can't see
                 // itself or any later binding — prevents
                 // cycles like `with (x = x+1) ...`.
@@ -1571,16 +1756,22 @@ fn expand_with_expr(was: &[WithArgExpr], e: Expr) -> Result<Expr, ParseError> {
             Ok(Expr::Func(f))
         }
         Expr::Paren(mut p) => {
-            let new_exprs: Result<Vec<Expr>, ParseError> = p.exprs.into_iter()
+            let new_exprs: Result<Vec<Expr>, ParseError> = p
+                .exprs
+                .into_iter()
                 .map(|x| expand_with_expr(was, x))
                 .collect();
             p.exprs = new_exprs?;
             Ok(Expr::Paren(p))
         }
         Expr::Rollup(mut r) => {
-            let inner = std::mem::replace(&mut *r.expr, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let inner = std::mem::replace(
+                &mut *r.expr,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             r.expr = Box::new(expand_with_expr(was, inner)?);
             r.window = r.window.map(|d| expand_duration(was, d));
             r.step = r.step.map(|d| expand_duration(was, d));
@@ -1625,7 +1816,8 @@ fn expand_modifier_args(was: &[WithArgExpr], args: &[String]) -> Vec<String> {
             Expr::Paren(p) => {
                 for inner in &p.exprs {
                     if let Expr::Metric(me) = inner
-                        && let Some(name) = metric_only_name(me) {
+                        && let Some(name) = metric_only_name(me)
+                    {
                         out.push(name);
                     }
                 }
@@ -1648,9 +1840,13 @@ fn expand_modifier_args(was: &[WithArgExpr], args: &[String]) -> Vec<String> {
 /// return that name. Used by modifier-arg expansion to detect
 /// when a WITH binding is a usable metric-name template.
 fn metric_only_name(me: &MetricExpr) -> Option<String> {
-    if me.label_filterss.len() != 1 { return None; }
+    if me.label_filterss.len() != 1 {
+        return None;
+    }
     let g = &me.label_filterss[0];
-    if g.len() != 1 { return None; }
+    if g.len() != 1 {
+        return None;
+    }
     let lf = &g[0];
     if lf.label != "__name__" || !matches!(lf.op, LabelFilterOp::Eq) {
         return None;
@@ -1668,14 +1864,20 @@ fn expand_duration(was: &[WithArgExpr], d: DurationExpr) -> DurationExpr {
     let Some((idx, wa)) = lookup_with_arg(was, &d.value) else {
         return d;
     };
-    if !wa.args.is_empty() { return d; }
+    if !wa.args.is_empty() {
+        return d;
+    }
     // Re-expand the binding under the prior scope so chained
     // duration aliases resolve (`with (w=5m, w2=w) m[w2]`).
     let expanded = expand_with_expr(&was[..idx], wa.expr.clone()).unwrap_or(wa.expr.clone());
     match expanded {
         Expr::Duration(d2) => d2,
         Expr::Number(n) => DurationExpr {
-            value: if !n.literal.is_empty() { n.literal } else { format!("{}", n.value) },
+            value: if !n.literal.is_empty() {
+                n.literal
+            } else {
+                format!("{}", n.value)
+            },
             requires_step: false,
         },
         _ => d,
@@ -1708,8 +1910,7 @@ fn expand_metric_expr(was: &[WithArgExpr], m: MetricExpr) -> Result<Expr, ParseE
     let bound = expand_with_expr(&was[..idx], wa.expr.clone())?;
     // Pure bare-name swap (no extra filters or `or` groups in
     // the original): hand back the bound expression directly.
-    let is_pure_bare = m.label_filterss.len() == 1
-        && m.label_filterss[0].len() == 1;
+    let is_pure_bare = m.label_filterss.len() == 1 && m.label_filterss[0].len() == 1;
     if is_pure_bare {
         return Ok(bound);
     }
@@ -1726,15 +1927,19 @@ fn expand_metric_expr(was: &[WithArgExpr], m: MetricExpr) -> Result<Expr, ParseE
                 Ok(Expr::Rollup(r))
             } else {
                 Err(ParseError {
-                    message: format!("WITH binding {:?} must expand to a metric expr to be merged with extra filters",
-                        name),
+                    message: format!(
+                        "WITH binding {:?} must expand to a metric expr to be merged with extra filters",
+                        name
+                    ),
                     at: 0,
                 })
             }
         }
         _ => Err(ParseError {
-            message: format!("WITH binding {:?} must expand to a metric expr to be merged with extra filters",
-                name),
+            message: format!(
+                "WITH binding {:?} must expand to a metric expr to be merged with extra filters",
+                name
+            ),
             at: 0,
         }),
     }
@@ -1764,8 +1969,10 @@ fn expand_label_filter_value_exprs(
                     lf.value = s.value;
                 } else {
                     return Err(ParseError {
-                        message: format!("label value for {:?} did not reduce to a string after WITH expansion",
-                            lf.label),
+                        message: format!(
+                            "label value for {:?} did not reduce to a string after WITH expansion",
+                            lf.label
+                        ),
                         at: 0,
                     });
                 }
@@ -1795,26 +2002,34 @@ fn expand_label_filter_template_refs(
             }
             let Some((idx, wa)) = lookup_with_arg(was, &lf.label) else {
                 return Err(ParseError {
-                    message: format!("WITH template {:?} not found inside label-filter list",
-                        lf.label),
+                    message: format!(
+                        "WITH template {:?} not found inside label-filter list",
+                        lf.label
+                    ),
                     at: 0,
                 });
             };
             if !wa.args.is_empty() {
                 return Err(ParseError {
-                    message: format!("WITH template {:?} cannot be used as a label filter — function templates are not supported here",
-                        lf.label),
+                    message: format!(
+                        "WITH template {:?} cannot be used as a label filter — function templates are not supported here",
+                        lf.label
+                    ),
                     at: 0,
                 });
             }
             let bound = expand_with_expr(&was[..idx], wa.expr.clone())?;
             let bound_groups = match bound {
                 Expr::Metric(me) => me.label_filterss,
-                _ => return Err(ParseError {
-                    message: format!("WITH template {:?} must expand to a label-filter set",
-                        lf.label),
-                    at: 0,
-                }),
+                _ => {
+                    return Err(ParseError {
+                        message: format!(
+                            "WITH template {:?} must expand to a label-filter set",
+                            lf.label
+                        ),
+                        at: 0,
+                    });
+                }
             };
             // Drop the binding's `__name__` filter — only
             // label filters get carried into the caller.
@@ -1842,7 +2057,9 @@ fn expand_label_filter_template_refs(
         }
         out_groups.extend(combined);
     }
-    let mut me = MetricExpr { label_filterss: out_groups };
+    let mut me = MetricExpr {
+        label_filterss: out_groups,
+    };
     me.label_filterss = canonicalize_metric_name_groups(me.label_filterss);
     Ok(me)
 }
@@ -1867,8 +2084,10 @@ fn merge_metric_filters(bound: MetricExpr, mut caller: MetricExpr) -> MetricExpr
     // Drop the leading `__name__` from caller (we're replacing
     // it with the bound expr's name(s)).
     for g in caller.label_filterss.iter_mut() {
-        if let Some(idx) = g.iter().position(|lf| lf.label == "__name__"
-            && matches!(lf.op, LabelFilterOp::Eq)) {
+        if let Some(idx) = g
+            .iter()
+            .position(|lf| lf.label == "__name__" && matches!(lf.op, LabelFilterOp::Eq))
+        {
             g.remove(idx);
         }
     }
@@ -1885,7 +2104,9 @@ fn merge_metric_filters(bound: MetricExpr, mut caller: MetricExpr) -> MetricExpr
         // one filter group always exists). Fall back to bound.
         return bound;
     }
-    let mut me = MetricExpr { label_filterss: out };
+    let mut me = MetricExpr {
+        label_filterss: out,
+    };
     // Re-run canonicalization so the merged groups carry the
     // same shape the parser produces (name at position 0,
     // duplicates removed).
@@ -1893,10 +2114,7 @@ fn merge_metric_filters(bound: MetricExpr, mut caller: MetricExpr) -> MetricExpr
     me
 }
 
-fn lookup_with_arg<'a>(
-    was: &'a [WithArgExpr],
-    name: &str,
-) -> Option<(usize, &'a WithArgExpr)> {
+fn lookup_with_arg<'a>(was: &'a [WithArgExpr], name: &str) -> Option<(usize, &'a WithArgExpr)> {
     // Innermost binding wins — search from the end and report
     // the index so the caller can slice the scope to exclude
     // the matched binding (and anything defined after it).
@@ -1916,8 +2134,12 @@ fn expand_with_template(
 ) -> Result<Expr, ParseError> {
     if wa.args.len() != args.len() {
         return Err(ParseError {
-            message: format!("WITH template {:?} expects {} args, got {}",
-                wa.name, wa.args.len(), args.len()),
+            message: format!(
+                "WITH template {:?} expects {} args, got {}",
+                wa.name,
+                wa.args.len(),
+                args.len()
+            ),
             at: 0,
         });
     }
@@ -1942,9 +2164,13 @@ fn expand_with_template(
 fn remove_parens_expr(e: Expr) -> Expr {
     match e {
         Expr::Rollup(mut r) => {
-            let inner = std::mem::replace(&mut *r.expr, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let inner = std::mem::replace(
+                &mut *r.expr,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             r.expr = Box::new(remove_parens_expr(inner));
             if let Some(at) = r.at.take() {
                 r.at = Some(Box::new(remove_parens_expr(*at)));
@@ -1952,12 +2178,20 @@ fn remove_parens_expr(e: Expr) -> Expr {
             Expr::Rollup(r)
         }
         Expr::Binary(mut b) => {
-            let l = std::mem::replace(&mut *b.left, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
-            let r = std::mem::replace(&mut *b.right, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let l = std::mem::replace(
+                &mut *b.left,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
+            let r = std::mem::replace(
+                &mut *b.right,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             b.left = Box::new(remove_parens_expr(l));
             b.right = Box::new(remove_parens_expr(r));
             Expr::Binary(b)
@@ -1982,14 +2216,22 @@ fn remove_parens_expr(e: Expr) -> Expr {
         }
         Expr::With(mut w) => {
             for b in &mut w.bindings {
-                let inner = std::mem::replace(&mut b.expr, Expr::Number(NumberExpr {
-                    value: 0.0, literal: "0".into(),
-                }));
+                let inner = std::mem::replace(
+                    &mut b.expr,
+                    Expr::Number(NumberExpr {
+                        value: 0.0,
+                        literal: "0".into(),
+                    }),
+                );
                 b.expr = remove_parens_expr(inner);
             }
-            let body = std::mem::replace(&mut *w.body, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let body = std::mem::replace(
+                &mut *w.body,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             w.body = Box::new(remove_parens_expr(body));
             Expr::With(w)
         }
@@ -2005,9 +2247,13 @@ fn remove_parens_expr(e: Expr) -> Expr {
 fn simplify_constants(e: Expr) -> Expr {
     match e {
         Expr::Rollup(mut r) => {
-            let inner = std::mem::replace(&mut *r.expr, Expr::Number(NumberExpr {
-                value: 0.0, literal: "0".into(),
-            }));
+            let inner = std::mem::replace(
+                &mut *r.expr,
+                Expr::Number(NumberExpr {
+                    value: 0.0,
+                    literal: "0".into(),
+                }),
+            );
             r.expr = Box::new(simplify_constants(inner));
             if let Some(at) = r.at.take() {
                 r.at = Some(Box::new(simplify_constants(*at)));
@@ -2036,7 +2282,10 @@ fn simplify_binary(mut be: BinaryOpExpr) -> Expr {
     // Both numbers: fold to a single number.
     if let (Expr::Number(l), Expr::Number(r)) = (&left, &right) {
         let n = binary_op_eval_number(be.op, l.value, r.value, be.bool_modifier);
-        return Expr::Number(NumberExpr { value: n, literal: String::new() });
+        return Expr::Number(NumberExpr {
+            value: n,
+            literal: String::new(),
+        });
     }
     // Both strings: handle `+` concat and comparisons.
     if let (Expr::String(l), Expr::String(r)) = (&left, &right) {
@@ -2050,15 +2299,20 @@ fn simplify_binary(mut be: BinaryOpExpr) -> Expr {
             let ok = match be.op {
                 BinaryOp::Eq => l.value == r.value,
                 BinaryOp::Ne => l.value != r.value,
-                BinaryOp::Gt => l.value >  r.value,
-                BinaryOp::Lt => l.value <  r.value,
+                BinaryOp::Gt => l.value > r.value,
+                BinaryOp::Lt => l.value < r.value,
                 BinaryOp::Ge => l.value >= r.value,
                 BinaryOp::Le => l.value <= r.value,
                 _ => unreachable!(),
             };
             let mut n = if ok { 1.0 } else { 0.0 };
-            if !be.bool_modifier && n == 0.0 { n = f64::NAN; }
-            return Expr::Number(NumberExpr { value: n, literal: String::new() });
+            if !be.bool_modifier && n == 0.0 {
+                n = f64::NAN;
+            }
+            return Expr::Number(NumberExpr {
+                value: n,
+                literal: String::new(),
+            });
         }
         // Fall through — non-comparison op on two strings is a
         // type error at eval time, but the parser keeps the
@@ -2070,7 +2324,10 @@ fn simplify_binary(mut be: BinaryOpExpr) -> Expr {
 }
 
 fn is_cmp_op(op: BinaryOp) -> bool {
-    matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge)
+    matches!(
+        op,
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+    )
 }
 
 /// Mirrors upstream `binaryOpEvalNumber`. Folds two number
@@ -2099,25 +2356,67 @@ fn binary_op_eval_number(op: BinaryOp, left: f64, right: f64, is_bool: bool) -> 
         Div => left / right,
         Mod => left % right,
         Atan2 => left.atan2(right),
-        Pow => if left.is_nan() { f64::NAN } else { left.powf(right) },
-        And => if left.is_nan() || right.is_nan() { f64::NAN } else { left },
-        Or => if !left.is_nan() { left } else { right },
+        Pow => {
+            if left.is_nan() {
+                f64::NAN
+            } else {
+                left.powf(right)
+            }
+        }
+        And => {
+            if left.is_nan() || right.is_nan() {
+                f64::NAN
+            } else {
+                left
+            }
+        }
+        Or => {
+            if !left.is_nan() {
+                left
+            } else {
+                right
+            }
+        }
         Unless => f64::NAN,
-        Default => if left.is_nan() { right } else { left },
-        If => if right.is_nan() { f64::NAN } else { left },
-        IfNot => if right.is_nan() { left } else { f64::NAN },
+        Default => {
+            if left.is_nan() {
+                right
+            } else {
+                left
+            }
+        }
+        If => {
+            if right.is_nan() {
+                f64::NAN
+            } else {
+                left
+            }
+        }
+        IfNot => {
+            if right.is_nan() {
+                left
+            } else {
+                f64::NAN
+            }
+        }
         _ => unreachable!(),
     }
 }
 
 fn bin_eq(l: f64, r: f64) -> bool {
-    if l.is_nan() { return r.is_nan(); }
+    if l.is_nan() {
+        return r.is_nan();
+    }
     l == r
 }
 
 fn bin_neq(l: f64, r: f64) -> bool {
-    if l.is_nan() { return !r.is_nan(); }
-    if r.is_nan() { return true; }
+    if l.is_nan() {
+        return !r.is_nan();
+    }
+    if r.is_nan() {
+        return true;
+    }
     l != r
 }
 
@@ -2127,32 +2426,37 @@ fn bin_neq(l: f64, r: f64) -> bool {
 ///
 /// Mirrors upstream's `prependMetricNameFilter` +
 /// `removeDuplicateLabelFilters` passes.
-fn canonicalize_metric_name_groups(
-    groups: Vec<Vec<LabelFilter>>,
-) -> Vec<Vec<LabelFilter>> {
-    groups.into_iter().map(|group| {
-        let mut g: Vec<LabelFilter> = group;
-        let name_idx = g.iter().position(|lf| {
-            lf.label == "__name__" && matches!(lf.op, LabelFilterOp::Eq)
-        });
-        if let Some(i) = name_idx
-            && i > 0 {
-            let name = g.remove(i);
-            g.insert(0, name);
-        }
-        // Dedup — preserve first occurrence's order.
-        // Compare on (label, op, value) only; the auxiliary
-        // round-trip flags (`was_quoted`, `is_template_ref`)
-        // shouldn't keep two semantically identical filters
-        // separate.
-        let mut seen: Vec<LabelFilter> = Vec::with_capacity(g.len());
-        for lf in g {
-            let dup = seen.iter().any(|s|
-                s.label == lf.label && s.op == lf.op && s.value == lf.value);
-            if !dup { seen.push(lf); }
-        }
-        seen
-    }).collect()
+fn canonicalize_metric_name_groups(groups: Vec<Vec<LabelFilter>>) -> Vec<Vec<LabelFilter>> {
+    groups
+        .into_iter()
+        .map(|group| {
+            let mut g: Vec<LabelFilter> = group;
+            let name_idx = g
+                .iter()
+                .position(|lf| lf.label == "__name__" && matches!(lf.op, LabelFilterOp::Eq));
+            if let Some(i) = name_idx
+                && i > 0
+            {
+                let name = g.remove(i);
+                g.insert(0, name);
+            }
+            // Dedup — preserve first occurrence's order.
+            // Compare on (label, op, value) only; the auxiliary
+            // round-trip flags (`was_quoted`, `is_template_ref`)
+            // shouldn't keep two semantically identical filters
+            // separate.
+            let mut seen: Vec<LabelFilter> = Vec::with_capacity(g.len());
+            for lf in g {
+                let dup = seen
+                    .iter()
+                    .any(|s| s.label == lf.label && s.op == lf.op && s.value == lf.value);
+                if !dup {
+                    seen.push(lf);
+                }
+            }
+            seen
+        })
+        .collect()
 }
 
 fn is_string_token(t: &Token) -> bool {
@@ -2185,7 +2489,10 @@ fn unescape_ident(s: &str) -> String {
             let h2 = chars.next().and_then(|c| c.to_digit(16));
             if let (Some(a), Some(b)) = (h1, h2) {
                 let v = (a << 4) | b;
-                if let Some(c) = char::from_u32(v) { out.push(c); continue; }
+                if let Some(c) = char::from_u32(v) {
+                    out.push(c);
+                    continue;
+                }
             }
             out.push('\\');
             out.push(next);
@@ -2197,14 +2504,16 @@ fn unescape_ident(s: &str) -> String {
             for _ in 0..4 {
                 match chars.next().and_then(|c| c.to_digit(16)) {
                     Some(d) => v = (v << 4) | d,
-                    None => { ok = false; break; }
+                    None => {
+                        ok = false;
+                        break;
+                    }
                 }
             }
-            if ok
-                && let Some(c) = char::from_u32(v) {
-                    out.push(c);
-                    continue;
-                }
+            if ok && let Some(c) = char::from_u32(v) {
+                out.push(c);
+                continue;
+            }
             out.push('\\');
             out.push(next);
             continue;
@@ -2273,7 +2582,9 @@ pub(crate) fn unquote_string(raw: &str) -> Result<String, ParseError> {
                 let h2 = chars.next().and_then(|c| c.to_digit(16));
                 if let (Some(a), Some(b)) = (h1, h2) {
                     let v = (a << 4) | b;
-                    if let Some(c) = char::from_u32(v) { out.push(c); }
+                    if let Some(c) = char::from_u32(v) {
+                        out.push(c);
+                    }
                 }
             }
             'u' => {
@@ -2284,7 +2595,9 @@ pub(crate) fn unquote_string(raw: &str) -> Result<String, ParseError> {
                         v = (v << 4) | d;
                     }
                 }
-                if let Some(c) = char::from_u32(v) { out.push(c); }
+                if let Some(c) = char::from_u32(v) {
+                    out.push(c);
+                }
             }
             // Anything else: passthrough the backslash + char.
             other => {

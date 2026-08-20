@@ -3,8 +3,8 @@
 
 //! Gauge: instantaneous value, either settable or function-based.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::labels::Labels;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A gauge backed by a closure (sampled at capture time).
 pub struct FnGauge {
@@ -14,7 +14,10 @@ pub struct FnGauge {
 
 impl FnGauge {
     pub fn new(labels: Labels, f: impl Fn() -> f64 + Send + Sync + 'static) -> Self {
-        Self { labels, f: Box::new(f) }
+        Self {
+            labels,
+            f: Box::new(f),
+        }
     }
 
     pub fn sample(&self) -> f64 {
@@ -35,7 +38,10 @@ pub struct ValueGauge {
 
 impl ValueGauge {
     pub fn new(labels: Labels) -> Self {
-        Self { labels, bits: AtomicU64::new(0.0f64.to_bits()) }
+        Self {
+            labels,
+            bits: AtomicU64::new(0.0f64.to_bits()),
+        }
     }
 
     pub fn set(&self, value: f64) {

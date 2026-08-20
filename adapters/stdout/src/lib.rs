@@ -29,16 +29,16 @@
 //!                        line is just diagnostic.
 //!   stdout=silent      — drop output entirely; op still executes.
 
-use std::io::{self, Write, BufWriter};
 use std::fs::File;
-use std::sync::{Arc, Mutex};
+use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use nbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, TextBody,
 };
-use nbrs_runtime::wires::resolve_op_fields_via_wires;
 use nbrs_runtime::observer::LogLevel;
+use nbrs_runtime::wires::resolve_op_fields_via_wires;
 use nbrs_workload::model::ParsedOp;
 
 /// Where the stdout adapter routes its rendered output for a
@@ -138,7 +138,8 @@ impl Default for StdoutConfig {
 impl StdoutConfig {
     /// Construct a config from CLI/workload params.
     pub fn from_params(params: &std::collections::HashMap<String, String>) -> Self {
-        let format = params.get("format")
+        let format = params
+            .get("format")
             .map(|s| StdoutFormat::parse(s).unwrap_or(StdoutFormat::Assignments))
             .unwrap_or(StdoutFormat::Statement);
         Self {
@@ -147,8 +148,14 @@ impl StdoutConfig {
             format,
             fields_filter: Vec::new(),
             separator: params.get("separator").cloned().unwrap_or(",".into()),
-            header: params.get("header").map(|s| s == "true" || s == "1" || s == "yes").unwrap_or(false),
-            color: params.get("color").map(|s| s == "true" || s == "1" || s == "yes").unwrap_or(false),
+            header: params
+                .get("header")
+                .map(|s| s == "true" || s == "1" || s == "yes")
+                .unwrap_or(false),
+            color: params
+                .get("color")
+                .map(|s| s == "true" || s == "1" || s == "yes")
+                .unwrap_or(false),
         }
     }
 }
@@ -176,8 +183,15 @@ pub enum StdoutFormat {
 /// Canonical format names accepted by [`StdoutFormat::parse`], in
 /// declaration order. Single source for the parse error message AND
 /// `format=` shell-completion suggestions, so the two never drift.
-pub const FORMAT_NAMES: &[&str] =
-    &["stmt", "readout", "assignments", "json", "csv", "tsv", "raw"];
+pub const FORMAT_NAMES: &[&str] = &[
+    "stmt",
+    "readout",
+    "assignments",
+    "json",
+    "csv",
+    "tsv",
+    "raw",
+];
 
 impl StdoutFormat {
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -190,7 +204,8 @@ impl StdoutFormat {
             "tsv" => Ok(Self::Tsv),
             "raw" => Ok(Self::Raw),
             other => Err(format!(
-                "unknown format: '{other}'. Available: {}", FORMAT_NAMES.join(", ")
+                "unknown format: '{other}'. Available: {}",
+                FORMAT_NAMES.join(", ")
             )),
         }
     }
@@ -213,17 +228,21 @@ impl StdoutFormat {
             Self::Readout => {
                 // Aligned name = value, one per line
                 let max_name_len = fields.names.iter().map(|n| n.len()).max().unwrap_or(0);
-                fields.names.iter().zip(fields.strings().iter())
+                fields
+                    .names
+                    .iter()
+                    .zip(fields.strings().iter())
                     .map(|(k, v)| format!("  {:width$} = {v}", k, width = max_name_len))
                     .collect::<Vec<_>>()
                     .join("\n")
             }
-            Self::Assignments => {
-                fields.names.iter().zip(fields.strings().iter())
-                    .map(|(k, v): (&String, &String)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
+            Self::Assignments => fields
+                .names
+                .iter()
+                .zip(fields.strings().iter())
+                .map(|(k, v): (&String, &String)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(", "),
             Self::Json => {
                 // Proper JSON with typed values (numbers, bools, not all strings)
                 let obj = fields.to_json();
@@ -231,21 +250,23 @@ impl StdoutFormat {
             }
             Self::Csv => {
                 // CSV: quote fields that contain commas or quotes
-                fields.strings().iter()
+                fields
+                    .strings()
+                    .iter()
                     .map(|v| csv_escape(v, ','))
                     .collect::<Vec<_>>()
                     .join(",")
             }
             Self::Tsv => {
                 // TSV: escape tabs in values
-                fields.strings().iter()
+                fields
+                    .strings()
+                    .iter()
                     .map(|v| v.replace('\t', "\\t"))
                     .collect::<Vec<_>>()
                     .join("\t")
             }
-            Self::Raw => {
-                fields.strings().join(separator)
-            }
+            Self::Raw => fields.strings().join(separator),
         }
     }
 
@@ -326,14 +347,16 @@ impl StdoutAdapter {
             if let Some(parent) = std::path::Path::new(&config.filename).parent()
                 && !parent.as_os_str().is_empty()
             {
-                std::fs::create_dir_all(parent)
-                    .unwrap_or_else(|e| panic!(
+                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    panic!(
                         "failed to create output directory '{}': {e}",
                         parent.display()
-                    ));
+                    )
+                });
             }
-            let file = File::create(&config.filename)
-                .unwrap_or_else(|e| panic!("failed to create output file '{}': {e}", config.filename));
+            let file = File::create(&config.filename).unwrap_or_else(|e| {
+                panic!("failed to create output file '{}': {e}", config.filename)
+            });
             OutputTarget::File(BufWriter::new(file))
         };
         Self {
@@ -350,13 +373,17 @@ impl StdoutAdapter {
 }
 
 impl DriverAdapter for StdoutAdapter {
-    fn name(&self) -> &str { "stdout" }
+    fn name(&self) -> &str {
+        "stdout"
+    }
 
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
         parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // SRD-40b §9: per-op-template channel routing. The
             // op-template parameter `stdout: <channel>` selects where
@@ -365,10 +392,12 @@ impl DriverAdapter for StdoutAdapter {
                 None => StdoutChannel::Terminal,
                 Some(serde_json::Value::String(s)) => StdoutChannel::parse(s)
                     .map_err(|e| format!("op '{}' params.stdout: {e}", template.name))?,
-                Some(other) => return Err(format!(
-                    "op '{}' params.stdout must be a string (one of terminal/eventlog/silent), got {other}",
-                    template.name
-                )),
+                Some(other) => {
+                    return Err(format!(
+                        "op '{}' params.stdout must be a string (one of terminal/eventlog/silent), got {other}",
+                        template.name
+                    ));
+                }
             };
             // SRD-68 Push 5: snapshot the op-field templates at
             // construction. At cycle time the dispenser walks this list
@@ -377,7 +406,9 @@ impl DriverAdapter for StdoutAdapter {
             // `substitute_via_wires` for embedded references). No
             // synthesis-layer ResolvedFields needed — wires answers
             // every name directly.
-            let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            let op_fields: Vec<(String, serde_json::Value)> = template
+                .op
+                .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             Ok(Box::new(StdoutDispenser {
@@ -407,7 +438,9 @@ impl DriverAdapter for StdoutAdapter {
 
     /// Declare the SRD-40b §9 channel-routing op-template param
     /// so it survives the core's unknown-param guard.
-    fn known_op_params(&self) -> &'static [&'static str] { &["stdout"] }
+    fn known_op_params(&self) -> &'static [&'static str] {
+        &["stdout"]
+    }
 }
 
 /// Op dispenser for the stdout adapter.
@@ -446,18 +479,22 @@ impl OpDispenser for StdoutDispenser {
         &'a self,
         _cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             // SRD-68 Push 5: resolve each op field through the
             // generic wires API. No ctx.fields lookup.
             let resolved = match resolve_op_fields_via_wires(&self.op_fields, wires) {
                 Ok(r) => r,
-                Err(msg) => return Err(ExecutionError::Op(AdapterError {
-                    error_name: "BindError".into(),
-                    message: msg,
-                    retryable: false,
-                })),
+                Err(msg) => {
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: "BindError".into(),
+                        message: msg,
+                        retryable: false,
+                    }));
+                }
             };
 
             // Apply field filter if configured
@@ -506,7 +543,8 @@ impl OpDispenser for StdoutDispenser {
                         OutputTarget::Stdout(_)
                     );
                     if to_stdout {
-                        if self.header && self.format.supports_header()
+                        if self.header
+                            && self.format.supports_header()
                             && !self.header_emitted.swap(true, Ordering::Relaxed)
                         {
                             let header = self.format.render_header(render_fields, &self.separator);
@@ -517,12 +555,13 @@ impl OpDispenser for StdoutDispenser {
                         nbrs_runtime::observer::op_output(&text);
                     } else {
                         let result = {
-                            let mut writer = self.writer.lock()
-                                .unwrap_or_else(|e| e.into_inner());
-                            if self.header && self.format.supports_header()
+                            let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+                            if self.header
+                                && self.format.supports_header()
                                 && !self.header_emitted.swap(true, Ordering::Relaxed)
                             {
-                                let header = self.format.render_header(render_fields, &self.separator);
+                                let header =
+                                    self.format.render_header(render_fields, &self.separator);
                                 if !header.is_empty() {
                                     let _ = writeln!(writer, "{header}");
                                 }
@@ -557,7 +596,8 @@ impl OpDispenser for StdoutDispenser {
                     // behaviour — operators that switch channels
                     // mid-development don't get surprised by
                     // header rows reappearing.
-                    if self.header && self.format.supports_header()
+                    if self.header
+                        && self.format.supports_header()
                         && !self.header_emitted.swap(true, Ordering::Relaxed)
                     {
                         let header = self.format.render_header(render_fields, &self.separator);
@@ -591,7 +631,10 @@ mod tests {
     fn test_fields(fields: &[(&str, &str)]) -> ResolvedFields {
         ResolvedFields::new(
             fields.iter().map(|(k, _)| k.to_string()).collect(),
-            fields.iter().map(|(_, v)| polydat::ast::Value::Str((*v).into())).collect(),
+            fields
+                .iter()
+                .map(|(_, v)| polydat::ast::Value::Str((*v).into()))
+                .collect(),
         )
     }
 
@@ -601,9 +644,7 @@ mod tests {
     /// signature as `Arc<PolydatKernel>`; tests pass this fixture so
     /// they don't need to stand up the full activity-init pipeline.
     fn test_kernel() -> std::sync::Arc<polydat::kernel::PolydatKernel> {
-        std::sync::Arc::new(
-            polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap()
-        )
+        std::sync::Arc::new(polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap())
     }
 
     fn typed_fields() -> ResolvedFields {
@@ -694,14 +735,38 @@ mod tests {
 
     #[test]
     fn format_parse_all() {
-        assert!(matches!(StdoutFormat::parse("stmt").unwrap(), StdoutFormat::Statement));
-        assert!(matches!(StdoutFormat::parse("readout").unwrap(), StdoutFormat::Readout));
-        assert!(matches!(StdoutFormat::parse("assignments").unwrap(), StdoutFormat::Assignments));
-        assert!(matches!(StdoutFormat::parse("json").unwrap(), StdoutFormat::Json));
-        assert!(matches!(StdoutFormat::parse("jsonl").unwrap(), StdoutFormat::Json));
-        assert!(matches!(StdoutFormat::parse("csv").unwrap(), StdoutFormat::Csv));
-        assert!(matches!(StdoutFormat::parse("tsv").unwrap(), StdoutFormat::Tsv));
-        assert!(matches!(StdoutFormat::parse("raw").unwrap(), StdoutFormat::Raw));
+        assert!(matches!(
+            StdoutFormat::parse("stmt").unwrap(),
+            StdoutFormat::Statement
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("readout").unwrap(),
+            StdoutFormat::Readout
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("assignments").unwrap(),
+            StdoutFormat::Assignments
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("json").unwrap(),
+            StdoutFormat::Json
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("jsonl").unwrap(),
+            StdoutFormat::Json
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("csv").unwrap(),
+            StdoutFormat::Csv
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("tsv").unwrap(),
+            StdoutFormat::Tsv
+        ));
+        assert!(matches!(
+            StdoutFormat::parse("raw").unwrap(),
+            StdoutFormat::Raw
+        ));
         assert!(StdoutFormat::parse("bogus").is_err());
     }
 
@@ -746,8 +811,12 @@ mod tests {
         // kernel whose `cycle` input drives the strings.
         let mut template = ParsedOp::simple("test", "test");
         template.op.remove("stmt");
-        template.op.insert("name".into(), serde_json::Value::String("{name}".into()));
-        template.op.insert("age".into(),  serde_json::Value::String("{age}".into()));
+        template
+            .op
+            .insert("name".into(), serde_json::Value::String("{name}".into()));
+        template
+            .op
+            .insert("age".into(), serde_json::Value::String("{age}".into()));
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
 
         // Two compiled kernels — one per row's wire values.
@@ -755,12 +824,14 @@ mod tests {
             "input cycle: u64\n\
              name := \"alice\"\n\
              age := \"30\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let mut k2 = polydat::dsl::compile::compile_polydat(
             "input cycle: u64\n\
              name := \"bob\"\n\
              age := \"25\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let cw1 = nbrs_runtime::wires::CycleWires::new(&mut k1);
         let cw2 = nbrs_runtime::wires::CycleWires::new(&mut k2);
         let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
@@ -775,12 +846,19 @@ mod tests {
         // CSV header pairs match HashMap iteration order; assert
         // membership rather than position so the test isn't tied
         // to non-deterministic op-field ordering.
-        assert!(lines[0].contains("name") && lines[0].contains("age"),
-            "header row should list both fields: {:?}", lines[0]);
-        assert!(content.contains("alice") && content.contains("30"),
-            "row 1 should render name=alice, age=30: {content:?}");
-        assert!(content.contains("bob") && content.contains("25"),
-            "row 2 should render name=bob, age=25: {content:?}");
+        assert!(
+            lines[0].contains("name") && lines[0].contains("age"),
+            "header row should list both fields: {:?}",
+            lines[0]
+        );
+        assert!(
+            content.contains("alice") && content.contains("30"),
+            "row 1 should render name=alice, age=30: {content:?}"
+        );
+        assert!(
+            content.contains("bob") && content.contains("25"),
+            "row 2 should render name=bob, age=25: {content:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -809,9 +887,32 @@ mod tests {
     }
 
     impl nbrs_runtime::observer::RunObserver for CapturingObserver {
-        fn phase_starting(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: usize, _: u64, _: usize) {}
-        fn phase_completed(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: f64) {}
-        fn phase_failed(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: &str) {}
+        fn phase_starting(
+            &self,
+            _: nbrs_runtime::scene_tree::SceneNodeId,
+            _: &str,
+            _: &str,
+            _: usize,
+            _: u64,
+            _: usize,
+        ) {
+        }
+        fn phase_completed(
+            &self,
+            _: nbrs_runtime::scene_tree::SceneNodeId,
+            _: &str,
+            _: &str,
+            _: f64,
+        ) {
+        }
+        fn phase_failed(
+            &self,
+            _: nbrs_runtime::scene_tree::SceneNodeId,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) {
+        }
         fn phase_progress(&self, _: &nbrs_runtime::observer::PhaseProgressUpdate) {}
         fn run_finished(&self) {}
         fn log(&self, level: LogLevel, message: &str) {
@@ -834,13 +935,31 @@ mod tests {
 
     #[test]
     fn channel_parse_accepts_documented_aliases() {
-        assert_eq!(StdoutChannel::parse("terminal").unwrap(), StdoutChannel::Terminal);
-        assert_eq!(StdoutChannel::parse("eventlog").unwrap(), StdoutChannel::EventLog);
-        assert_eq!(StdoutChannel::parse("silent").unwrap(), StdoutChannel::Silent);
+        assert_eq!(
+            StdoutChannel::parse("terminal").unwrap(),
+            StdoutChannel::Terminal
+        );
+        assert_eq!(
+            StdoutChannel::parse("eventlog").unwrap(),
+            StdoutChannel::EventLog
+        );
+        assert_eq!(
+            StdoutChannel::parse("silent").unwrap(),
+            StdoutChannel::Silent
+        );
         // Aliases — lets workloads reach for the natural word.
-        assert_eq!(StdoutChannel::parse("LOG").unwrap(), StdoutChannel::EventLog);
-        assert_eq!(StdoutChannel::parse(" Drop ").unwrap(), StdoutChannel::Silent);
-        assert_eq!(StdoutChannel::parse("default").unwrap(), StdoutChannel::Terminal);
+        assert_eq!(
+            StdoutChannel::parse("LOG").unwrap(),
+            StdoutChannel::EventLog
+        );
+        assert_eq!(
+            StdoutChannel::parse(" Drop ").unwrap(),
+            StdoutChannel::Silent
+        );
+        assert_eq!(
+            StdoutChannel::parse("default").unwrap(),
+            StdoutChannel::Terminal
+        );
         // Typo is rejected, not silently treated as terminal.
         assert!(StdoutChannel::parse("eventlogg").is_err());
         assert!(StdoutChannel::parse("").is_err());
@@ -859,14 +978,18 @@ mod tests {
         });
         let template = ParsedOp::simple("t", "stmt");
         // No `params.stdout` set.
-        assert!(!template.params.contains_key("stdout"),
-            "guard: this test relies on the param being absent");
+        assert!(
+            !template.params.contains_key("stdout"),
+            "guard: this test relies on the param being absent"
+        );
 
         // Re-bind the template stmt to the marker so the rendered
         // line carries it (op-field text is the source of truth).
         let mut template = template;
-        template.op.insert("stmt".into(),
-            serde_json::Value::String("default_terminal_marker_abc".into()));
+        template.op.insert(
+            "stmt".into(),
+            serde_json::Value::String("default_terminal_marker_abc".into()),
+        );
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
@@ -965,10 +1088,9 @@ mod tests {
             ..Default::default()
         });
         let mut template = ParsedOp::simple("silent_op", "must_not_appear_unique_marker_pq987");
-        template.params.insert(
-            "stdout".into(),
-            serde_json::Value::String("silent".into()),
-        );
+        template
+            .params
+            .insert("stdout".into(), serde_json::Value::String("silent".into()));
 
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
@@ -979,33 +1101,50 @@ mod tests {
         dispenser.execute(0, &ctx).await.unwrap();
 
         let file_contents = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(file_contents.is_empty(),
-            "silent channel must not write to file: {file_contents:?}");
+        assert!(
+            file_contents.is_empty(),
+            "silent channel must not write to file: {file_contents:?}"
+        );
         let _ = std::fs::remove_file(&path);
 
         let logs = sink.lock().unwrap().clone();
-        let leaked = logs.iter().any(|(_, msg)| msg.contains("must_not_appear_unique_marker_pq987"));
-        assert!(!leaked, "silent channel must not emit through observer; logs: {logs:?}");
+        let leaked = logs
+            .iter()
+            .any(|(_, msg)| msg.contains("must_not_appear_unique_marker_pq987"));
+        assert!(
+            !leaked,
+            "silent channel must not emit through observer; logs: {logs:?}"
+        );
     }
 
     #[tokio::test]
     async fn map_op_rejects_unknown_channel_value() {
         let adapter = StdoutAdapter::new();
         let mut template = ParsedOp::simple("bad", "ignored");
-        template.params.insert("stdout".into(), serde_json::Value::String("nope".into()));
+        template
+            .params
+            .insert("stdout".into(), serde_json::Value::String("nope".into()));
         let err = match adapter.map_op(&template, test_kernel()).await {
             Ok(_) => panic!("unknown channel must error"),
             Err(e) => e,
         };
-        assert!(err.contains("unknown stdout channel"), "diagnostic should explain: {err}");
-        assert!(err.contains("'bad'"), "diagnostic should name the op: {err}");
+        assert!(
+            err.contains("unknown stdout channel"),
+            "diagnostic should explain: {err}"
+        );
+        assert!(
+            err.contains("'bad'"),
+            "diagnostic should name the op: {err}"
+        );
     }
 
     #[tokio::test]
     async fn map_op_rejects_non_string_channel_value() {
         let adapter = StdoutAdapter::new();
         let mut template = ParsedOp::simple("bad", "ignored");
-        template.params.insert("stdout".into(), serde_json::Value::Bool(true));
+        template
+            .params
+            .insert("stdout".into(), serde_json::Value::Bool(true));
         let err = match adapter.map_op(&template, test_kernel()).await {
             Ok(_) => panic!("non-string channel must error"),
             Err(e) => e,

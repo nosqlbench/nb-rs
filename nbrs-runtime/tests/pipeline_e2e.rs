@@ -9,15 +9,13 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use nbrs_runtime::activity::{Activity, ActivityConfig};
-use nbrs_runtime::adapter::{
-    DriverAdapter, ExecutionError, OpDispenser, OpResult, ResultBody,
-};
-use nbrs_runtime::opseq::{OpSequence, SequencerType};
 use nbrs_metrics::labels::Labels;
+use nbrs_runtime::activity::{Activity, ActivityConfig};
+use nbrs_runtime::adapter::{DriverAdapter, ExecutionError, OpDispenser, OpResult, ResultBody};
+use nbrs_runtime::opseq::{OpSequence, SequencerType};
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::identity::Identity;
 
@@ -44,15 +42,20 @@ impl RecordingAdapter {
 }
 
 impl DriverAdapter for RecordingAdapter {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn map_op<'a>(
         &'a self,
         template: &'a nbrs_workload::model::ParsedOp,
         _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>
-    {
-        let stmt_template = template.op.get("stmt")
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
+        let stmt_template = template
+            .op
+            .get("stmt")
             .and_then(|v| v.as_str())
             .map(String::from);
         let adapter_name = self.name.clone();
@@ -88,10 +91,18 @@ struct JsonResultBody {
 }
 
 impl ResultBody for JsonResultBody {
-    fn to_json(&self) -> serde_json::Value { self.json.clone() }
-    fn as_any(&self) -> &dyn Any { self }
-    fn element_count(&self) -> u64 { self.elements }
-    fn byte_count(&self) -> Option<u64> { Some(self.bytes) }
+    fn to_json(&self) -> serde_json::Value {
+        self.json.clone()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn element_count(&self) -> u64 {
+        self.elements
+    }
+    fn byte_count(&self) -> Option<u64> {
+        Some(self.bytes)
+    }
 }
 
 impl OpDispenser for RecordingDispenser {
@@ -99,7 +110,9 @@ impl OpDispenser for RecordingDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         let adapter_name = self.adapter_name.clone();
         let log = self.log.clone();
@@ -118,16 +131,18 @@ impl OpDispenser for RecordingDispenser {
         Box::pin(async move {
             let stmt = match stmt_result {
                 Ok(s) => s,
-                Err(msg) => return Err(ExecutionError::Op(
-                    nbrs_runtime::adapter::AdapterError {
+                Err(msg) => {
+                    return Err(ExecutionError::Op(nbrs_runtime::adapter::AdapterError {
                         error_name: "BindError".into(),
                         message: msg,
                         retryable: false,
-                    },
-                )),
+                    }));
+                }
             };
             call_count.fetch_add(1, Ordering::Relaxed);
-            log.lock().unwrap().push(format!("{adapter_name}:{cycle}:{stmt}"));
+            log.lock()
+                .unwrap()
+                .push(format!("{adapter_name}:{cycle}:{stmt}"));
 
             // Return a structured JSON result body that the traverser
             // can count and the capture extractor can read
@@ -138,7 +153,7 @@ impl OpDispenser for RecordingDispenser {
                     "user_id": cycle * 10 + 1,
                     "name": format!("user_{cycle}"),
                 }),
-                elements: 3,  // simulating 3 rows
+                elements: 3, // simulating 3 rows
                 bytes: 128,
             };
 
@@ -156,7 +171,11 @@ impl OpDispenser for RecordingDispenser {
 
 fn test_kernel() -> polydat::kernel::PolydatKernel {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
+    asm.add_node(
+        "id",
+        Box::new(Identity::new(polydat::ast::PortType::U64)),
+        vec![WireRef::input("cycle")],
+    );
     asm.add_output("id", WireRef::node("id"));
     asm.compile().unwrap()
 }
@@ -200,10 +219,21 @@ ops:
     assert_eq!(seq.stanza_length(), 2);
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-    activity.run_with_adapters(adapters, "alpha", std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+    activity
+        .run_with_adapters(
+            adapters,
+            "alpha",
+            std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
+        .await;
 
     let entries = log.lock().unwrap().clone();
-    assert_eq!(entries.len(), 4, "expected 4 ops (2 stanzas × 2 ops), got {}", entries.len());
+    assert_eq!(
+        entries.len(),
+        4,
+        "expected 4 ops (2 stanzas × 2 ops), got {}",
+        entries.len()
+    );
 
     // Verify both adapters were used
     let alpha_count = entries.iter().filter(|e| e.starts_with("alpha:")).count();
@@ -245,7 +275,12 @@ ops:
     let shared_metrics = {
         let activity = Activity::new(config, &Labels::of("session", "test"), seq);
         let metrics = activity.shared_metrics();
-        activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                adapter,
+                std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
         metrics
     };
 
@@ -281,13 +316,22 @@ ops:
     let seq = OpSequence::from_ops(ops, SequencerType::Bucket);
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+    activity
+        .run_with_driver(
+            adapter,
+            std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
+        .await;
 
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries.len(), 2);
     // With sequential execution and bucket sequencer, first op runs first
     assert!(entries[0].contains("FIRST"), "first entry: {}", entries[0]);
-    assert!(entries[1].contains("SECOND"), "second entry: {}", entries[1]);
+    assert!(
+        entries[1].contains("SECOND"),
+        "second entry: {}",
+        entries[1]
+    );
 }
 
 // =========================================================================
@@ -316,10 +360,19 @@ ops:
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
     let metrics = activity.shared_metrics();
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+    activity
+        .run_with_driver(
+            adapter,
+            std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
+        .await;
 
     // Each op returns element_count=3, byte_count=128
-    assert_eq!(metrics.result_elements.get(), 30, "10 ops × 3 elements each");
+    assert_eq!(
+        metrics.result_elements.get(),
+        30,
+        "10 ops × 3 elements each"
+    );
     assert_eq!(metrics.result_bytes.get(), 1280, "10 ops × 128 bytes each");
     assert_eq!(metrics.cycles_total.get(), 10);
 }
@@ -358,7 +411,12 @@ ops:
     // checking that the activity completes without error (the capture
     // extraction code runs). For a deeper test, we'd need a multi-op
     // stanza where the second op reads from the capture context.
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+    activity
+        .run_with_driver(
+            adapter,
+            std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
+        .await;
 
     // Verify the op executed
     let entries = log.lock().unwrap().clone();
@@ -401,13 +459,19 @@ ops:
     let seq = OpSequence::from_ops(ops, SequencerType::Bucket);
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+    activity
+        .run_with_driver(
+            adapter,
+            std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
+        .await;
 
     // Only the first op (write) executes; the read op's
     // `{capture:user_id}` reference fails fast and stops the phase.
     let entries = log.lock().unwrap().clone();
     assert_eq!(
-        entries.len(), 1,
+        entries.len(),
+        1,
         "expected only the write op to execute; the read op's \
          unresolved capture should have stopped the phase"
     );
@@ -446,8 +510,8 @@ ops:
 
     let config = ActivityConfig {
         name: "mixed_concurrent".into(),
-        cycles: 6, // 2 stanzas of 3 ops
-        concurrency: 2, // 2 fibers
+        cycles: 6,             // 2 stanzas of 3 ops
+        concurrency: 2,        // 2 fibers
         stanza_concurrency: 3, // all ops in stanza run concurrently
         ..Default::default()
     };
@@ -457,7 +521,13 @@ ops:
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
     let metrics = activity.shared_metrics();
 
-    activity.run_with_adapters(adapters, "db", std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel()))).await;
+    activity
+        .run_with_adapters(
+            adapters,
+            "db",
+            std::sync::Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
+        .await;
 
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries.len(), 6);

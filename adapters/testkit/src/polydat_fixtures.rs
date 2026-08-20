@@ -61,12 +61,9 @@ use polydat::Const;
 /// threshold).
 static SEQUENCE_VALUE_CACHE: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
-fn cached_or_advance(
-    path: &str,
-    values: &[u64],
-    cycling: bool,
-) -> Result<u64, String> {
-    let mut guard = SEQUENCE_VALUE_CACHE.lock()
+fn cached_or_advance(path: &str, values: &[u64], cycling: bool) -> Result<u64, String> {
+    let mut guard = SEQUENCE_VALUE_CACHE
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     if let Some(&v) = map.get(path) {
@@ -88,7 +85,8 @@ fn cached_or_advance(
 /// process. Real workloads must not call this — it's a test-
 /// affordance only.
 pub fn clear_sequence_cache_for(path: &str) {
-    let mut guard = SEQUENCE_VALUE_CACHE.lock()
+    let mut guard = SEQUENCE_VALUE_CACHE
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(map) = guard.as_mut() {
         map.remove(path);
@@ -112,7 +110,10 @@ fn testkit_throw_at(value: u64, threshold: u64, errorname: Const<&str>) -> u64 {
         // Synthesized failure surfaces through the standard errors cascade —
         // which classifies via regex on the panic payload's string form.
         // Including the threshold value gives a reproducible signature.
-        panic!("testkit_throw_at[{}]: value reached threshold {threshold}", errorname.0);
+        panic!(
+            "testkit_throw_at[{}]: value reached threshold {threshold}",
+            errorname.0
+        );
     }
     value
 }
@@ -158,10 +159,12 @@ fn testkit_side_effect_sequence_reset(statefile_path: Const<&str>) -> Result<u64
     match std::fs::remove_file(statefile_path.0) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!(
-            "testkit_side_effect_sequence_reset: failed to remove {}: {e}",
-            statefile_path.0,
-        )),
+        Err(e) => {
+            return Err(format!(
+                "testkit_side_effect_sequence_reset: failed to remove {}: {e}",
+                statefile_path.0,
+            ));
+        }
     }
     Ok(0)
 }
@@ -182,9 +185,9 @@ fn parse_csv_values(csv: &str) -> Result<Vec<u64>, String> {
                 "side_effect_sequence: empty element at position {i} in csv: {csv:?}",
             ));
         }
-        let v: u64 = s.parse().map_err(|_| format!(
-            "side_effect_sequence: element {i} is not a u64: {s:?}",
-        ))?;
+        let v: u64 = s
+            .parse()
+            .map_err(|_| format!("side_effect_sequence: element {i} is not a u64: {s:?}",))?;
         out.push(v);
     }
     if out.is_empty() {
@@ -204,11 +207,7 @@ fn parse_csv_values(csv: &str) -> Result<Vec<u64>, String> {
 ///
 /// Errors when the file says we're already past-the-end and
 /// `cycling = false`.
-fn advance_state_file(
-    path: &str,
-    values: &[u64],
-    cycling: bool,
-) -> Result<u64, String> {
+fn advance_state_file(path: &str, values: &[u64], cycling: bool) -> Result<u64, String> {
     let n = values.len();
     let current_index = read_index(path)?;
     if current_index >= n {
@@ -239,9 +238,11 @@ fn advance_state_file(
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!(
-                "testkit_side_effect_sequence_next_cycling: failed to remove {path} after exhaustion: {e}",
-            )),
+            Err(e) => {
+                return Err(format!(
+                    "testkit_side_effect_sequence_next_cycling: failed to remove {path} after exhaustion: {e}",
+                ));
+            }
         }
     } else {
         write_index(path, next_index)?;
@@ -251,9 +252,9 @@ fn advance_state_file(
 
 fn read_index(path: &str) -> Result<usize, String> {
     match std::fs::read_to_string(path) {
-        Ok(s) => s.trim().parse::<usize>().map_err(|_| format!(
-            "side_effect_sequence: state file {path} contains non-integer content: {s:?}",
-        )),
+        Ok(s) => s.trim().parse::<usize>().map_err(|_| {
+            format!("side_effect_sequence: state file {path} contains non-integer content: {s:?}",)
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(format!(
             "side_effect_sequence: failed to read state file {path}: {e}",
@@ -263,14 +264,15 @@ fn read_index(path: &str) -> Result<usize, String> {
 
 fn write_index(path: &str, index: usize) -> Result<(), String> {
     if let Some(parent) = std::path::Path::new(path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!(
-            "side_effect_sequence: failed to create parent {}: {e}",
-            parent.display(),
-        ))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "side_effect_sequence: failed to create parent {}: {e}",
+                parent.display(),
+            )
+        })?;
     }
-    std::fs::write(path, index.to_string()).map_err(|e| format!(
-        "side_effect_sequence: failed to write state file {path}: {e}",
-    ))
+    std::fs::write(path, index.to_string())
+        .map_err(|e| format!("side_effect_sequence: failed to write state file {path}: {e}",))
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +295,9 @@ mod tests {
 
     fn tmpfile(tag: &str) -> String {
         let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let p = std::env::temp_dir().join(format!("nbrs-fixture-{tag}-{n:x}.txt"));
         let _ = std::fs::remove_file(&p);
         // Forward slashes: the path gets embedded in a polydat
@@ -322,29 +326,42 @@ mod tests {
         // value == threshold → the node panics with the errorname-tagged
         // payload when evaluated (on pull here; per-cycle in a live workload).
         let r = std::panic::catch_unwind(|| {
-            let mut k = compile_polydat("out := testkit_throw_at(10, 10, \"staircase\")")
-                .expect("compile");
+            let mut k =
+                compile_polydat("out := testkit_throw_at(10, 10, \"staircase\")").expect("compile");
             k.pull("out").as_u64()
         });
         assert!(r.is_err(), "testkit_throw_at at threshold must panic");
         let payload = r.unwrap_err();
-        let msg = payload.downcast_ref::<String>().cloned()
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
             .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
             .unwrap_or_default();
-        assert!(msg.contains("staircase"), "expected errorname in payload: {msg}");
+        assert!(
+            msg.contains("staircase"),
+            "expected errorname in payload: {msg}"
+        );
     }
 
     #[test]
     fn cycling_walks_through_then_loops() {
         let path = tmpfile("cycle");
-        let src = format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
+        let src =
+            format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
         // Each compile constructs the node (= advances once); clearing the
         // cache between models a fresh process (each `nbrs run`).
-        let session = |s: &str| { let v = pull_u64(s); clear_sequence_cache_for(&path); v };
+        let session = |s: &str| {
+            let v = pull_u64(s);
+            clear_sequence_cache_for(&path);
+            v
+        };
         assert_eq!(session(&src), 10);
         assert_eq!(session(&src), 20);
         assert_eq!(session(&src), 30);
-        assert!(!std::path::Path::new(&path).exists(), "state file removed after exhaustion");
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "state file removed after exhaustion"
+        );
         assert_eq!(session(&src), 10, "cycling variant loops back");
         let _ = std::fs::remove_file(&path);
     }
@@ -352,9 +369,12 @@ mod tests {
     #[test]
     fn noncycling_walks_through_then_errors() {
         let path = tmpfile("noncycle");
-        let src = format!("out := testkit_side_effect_sequence_next_noncycling(\"{path}\", \"10,20\")");
-        assert_eq!(pull_u64(&src), 10); clear_sequence_cache_for(&path);
-        assert_eq!(pull_u64(&src), 20); clear_sequence_cache_for(&path);
+        let src =
+            format!("out := testkit_side_effect_sequence_next_noncycling(\"{path}\", \"10,20\")");
+        assert_eq!(pull_u64(&src), 10);
+        clear_sequence_cache_for(&path);
+        assert_eq!(pull_u64(&src), 20);
+        clear_sequence_cache_for(&path);
         // Exhausted → construction (compile) hard-errors.
         let err = compile_polydat(&src).expect_err("noncycling should hard-error after exhaustion");
         assert!(format!("{err:?}").contains("past the end"), "got: {err:?}");
@@ -364,10 +384,14 @@ mod tests {
     #[test]
     fn reset_clears_state_file() {
         let path = tmpfile("reset");
-        let next = format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
-        assert_eq!(pull_u64(&next), 10); clear_sequence_cache_for(&path);
+        let next =
+            format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
+        assert_eq!(pull_u64(&next), 10);
+        clear_sequence_cache_for(&path);
         // Reset deletes the state file at construction.
-        let _ = pull_u64(&format!("out := testkit_side_effect_sequence_reset(\"{path}\")"));
+        let _ = pull_u64(&format!(
+            "out := testkit_side_effect_sequence_reset(\"{path}\")"
+        ));
         clear_sequence_cache_for(&path);
         assert_eq!(pull_u64(&next), 10, "reset rewinds to index 0");
         let _ = std::fs::remove_file(&path);
@@ -377,7 +401,9 @@ mod tests {
     fn reset_is_no_op_when_file_missing() {
         let path = tmpfile("reset-missing");
         // Compiles (construction deletes a nonexistent file → Ok).
-        let _ = pull_u64(&format!("out := testkit_side_effect_sequence_reset(\"{path}\")"));
+        let _ = pull_u64(&format!(
+            "out := testkit_side_effect_sequence_reset(\"{path}\")"
+        ));
     }
 
     #[test]
@@ -401,11 +427,15 @@ mod tests {
         // Multiple constructions in one session (no cache clear) advance the
         // file ONCE; every read returns the same cached value.
         let path = tmpfile("cache");
-        let src = format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
+        let src =
+            format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
         assert_eq!(pull_u64(&src), 10);
         assert_eq!(pull_u64(&src), 10);
         assert_eq!(pull_u64(&src), 10);
-        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default().trim(), "1");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default().trim(),
+            "1"
+        );
         let _ = std::fs::remove_file(&path);
         clear_sequence_cache_for(&path);
     }

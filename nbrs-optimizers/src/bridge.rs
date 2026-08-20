@@ -12,17 +12,23 @@
 //! so the core discovers them at link time without ever naming this crate.
 
 use nbrs_runtime::optimize as core;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 // ── local ↔ core type conversions (the contracts are structurally
 //    identical; the duplication is the price of full decoupling) ──────────
 
 fn to_local_params(p: &core::OptimizerParams) -> crate::OptimizerParams {
-    crate::OptimizerParams { overrides: p.overrides.clone() }
+    crate::OptimizerParams {
+        overrides: p.overrides.clone(),
+    }
 }
 
 fn to_local_budget(b: &core::Budget) -> crate::Budget {
-    crate::Budget { max_evals: b.max_evals, max_seconds: b.max_seconds, seed: b.seed }
+    crate::Budget {
+        max_evals: b.max_evals,
+        max_seconds: b.max_seconds,
+        seed: b.seed,
+    }
 }
 
 fn to_local_changeover(c: core::Changeover) -> crate::Changeover {
@@ -35,18 +41,20 @@ fn to_local_changeover(c: core::Changeover) -> crate::Changeover {
 
 fn to_local_kind(k: &core::AxisKind) -> crate::AxisKind {
     match k {
-        core::AxisKind::Continuous { lo, hi, min_step } => {
-            crate::AxisKind::Continuous { lo: *lo, hi: *hi, min_step: *min_step }
-        }
+        core::AxisKind::Continuous { lo, hi, min_step } => crate::AxisKind::Continuous {
+            lo: *lo,
+            hi: *hi,
+            min_step: *min_step,
+        },
         // Ordinal detents project to their numbers; the local algorithms are f64.
-        core::AxisKind::Discrete { detents } => {
-            crate::AxisKind::Discrete { detents: detents.iter().map(core::AxisValue::as_num).collect() }
-        }
+        core::AxisKind::Discrete { detents } => crate::AxisKind::Discrete {
+            detents: detents.iter().map(core::AxisValue::as_num).collect(),
+        },
         // Nominal options project to their STABLE positional indices `0..N`; the
         // numeric stub maps back to the same position (order preserved, not sorted).
-        core::AxisKind::Categorical { options } => {
-            crate::AxisKind::Discrete { detents: (0..options.len()).map(|i| i as f64).collect() }
-        }
+        core::AxisKind::Categorical { options } => crate::AxisKind::Discrete {
+            detents: (0..options.len()).map(|i| i as f64).collect(),
+        },
     }
 }
 
@@ -155,11 +163,19 @@ impl ThreadBridge {
         let (coord_tx, coord_rx) = channel::<Option<Vec<f64>>>();
         let (value_tx, value_rx) = channel::<f64>();
         std::thread::spawn(move || {
-            let mut obj = ChannelObjective { coord_tx: coord_tx.clone(), value_rx };
+            let mut obj = ChannelObjective {
+                coord_tx: coord_tx.clone(),
+                value_rx,
+            };
             let _ = inner.optimize(&local_space, &mut obj, &budget);
             let _ = coord_tx.send(None); // loop finished — no more coordinates
         });
-        Self { coord_rx, value_tx, core_space, done: false }
+        Self {
+            coord_rx,
+            value_tx,
+            core_space,
+            done: false,
+        }
     }
 }
 
@@ -238,9 +254,11 @@ macro_rules! register_optimizer {
     };
 }
 
-register_optimizer!("cost_greedy_traversal", crate::docs::COST_GREEDY_TRAVERSAL, |_p| {
-    crate::algos::traversal::CostGreedyTraversal
-});
+register_optimizer!(
+    "cost_greedy_traversal",
+    crate::docs::COST_GREEDY_TRAVERSAL,
+    |_p| { crate::algos::traversal::CostGreedyTraversal }
+);
 register_optimizer!("centroid_variant", crate::docs::CENTROID_VARIANT, |p| {
     crate::algos::centroid::CentroidVariant::from_params(&p)
 });
@@ -288,7 +306,11 @@ mod tests {
             (0..dims)
                 .map(|i| core::Axis {
                     name: format!("x{i}"),
-                    kind: core::AxisKind::Continuous { lo, hi, min_step: 0.0 },
+                    kind: core::AxisKind::Continuous {
+                        lo,
+                        hi,
+                        min_step: 0.0,
+                    },
                     changeover: core::Changeover::Coordinate,
                 })
                 .collect(),
@@ -308,7 +330,9 @@ mod tests {
             doc: crate::docs::CMAES,
         };
         let space = cont_space(2, -5.0, 5.0);
-        let mut obj = ShiftedSphere { target: vec![1.5, -2.0] };
+        let mut obj = ShiftedSphere {
+            target: vec![1.5, -2.0],
+        };
         let report = core::Optimizer::optimize(
             &bridge,
             &space,
@@ -346,12 +370,18 @@ mod tests {
             matches!(&local.axes[0].kind, crate::AxisKind::Discrete { detents } if *detents == vec![0.0, 1.0, 2.0])
         );
         // Up: index → label, with rounding and clamping.
-        assert_eq!(project_to_coord(&space, &[1.0]), vec![core::AxisValue::Label("dot".into())]);
+        assert_eq!(
+            project_to_coord(&space, &[1.0]),
+            vec![core::AxisValue::Label("dot".into())]
+        );
         assert_eq!(
             project_to_coord(&space, &[2.4]),
             vec![core::AxisValue::Label("euclidean".into())]
         );
-        assert_eq!(project_to_coord(&space, &[-3.0]), vec![core::AxisValue::Label("cosine".into())]);
+        assert_eq!(
+            project_to_coord(&space, &[-3.0]),
+            vec![core::AxisValue::Label("cosine".into())]
+        );
     }
 
     /// Value-native path: the built-in `sweep` enumerates the categorical

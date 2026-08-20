@@ -114,32 +114,40 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         } else if let Some(rest) = a.strip_prefix("--phase=") {
             phase_filter = Some(rest.to_string());
         } else if a == "--phase" {
-            let v = args.get(i + 1)
+            let v = args
+                .get(i + 1)
                 .ok_or_else(|| "--phase requires a value".to_string())?;
             phase_filter = Some(v.to_string());
             i += 1;
         } else if let Some(rest) = a.strip_prefix("--session=") {
             db_path = Some(session_db(rest)?);
         } else if a == "--session" {
-            let v = args.get(i + 1)
+            let v = args
+                .get(i + 1)
                 .ok_or_else(|| "--session requires a value".to_string())?;
             db_path = Some(session_db(v)?);
             i += 1;
         } else if let Some(rest) = a.strip_prefix("--db=") {
             db_path = Some(PathBuf::from(rest));
         } else if a == "--db" {
-            let v = args.get(i + 1)
+            let v = args
+                .get(i + 1)
                 .ok_or_else(|| "--db requires a value".to_string())?;
             db_path = Some(PathBuf::from(v));
             i += 1;
         } else if let Some(rest) = a.strip_prefix("--execution=") {
-            execution = Some(rest.parse().map_err(|e|
-                format!("--execution requires an integer: {e}"))?);
+            execution = Some(
+                rest.parse()
+                    .map_err(|e| format!("--execution requires an integer: {e}"))?,
+            );
         } else if a == "--execution" {
-            let v = args.get(i + 1)
+            let v = args
+                .get(i + 1)
                 .ok_or_else(|| "--execution requires a value".to_string())?;
-            execution = Some(v.parse().map_err(|e|
-                format!("--execution requires an integer: {e}"))?);
+            execution = Some(
+                v.parse()
+                    .map_err(|e| format!("--execution requires an integer: {e}"))?,
+            );
             i += 1;
         } else if a == "--all-executions" {
             // Sentinel: `Some(0)` means "no exec_id filter". Real
@@ -149,7 +157,8 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         } else if let Some(rest) = a.strip_prefix("--format=") {
             format = parse_format(rest)?;
         } else if a == "--format" {
-            let v = args.get(i + 1)
+            let v = args
+                .get(i + 1)
                 .ok_or_else(|| "--format requires a value".to_string())?;
             format = parse_format(v)?;
             i += 1;
@@ -157,7 +166,9 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
             print_usage();
             std::process::exit(0);
         } else {
-            return Err(format!("unexpected arg '{a}' (use --session=<dir> or --db=<path>)"));
+            return Err(format!(
+                "unexpected arg '{a}' (use --session=<dir> or --db=<path>)"
+            ));
         }
         i += 1;
     }
@@ -168,13 +179,22 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
             db_path.display(),
         ));
     }
-    Ok(Opts { db_path, plain, errors_only, phase_filter, json, execution, format })
+    Ok(Opts {
+        db_path,
+        plain,
+        errors_only,
+        phase_filter,
+        json,
+        execution,
+        format,
+    })
 }
 
 /// Completion for `--format`: the two accepted view names,
 /// prefix-filtered against what the user has typed.
 fn format_value_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    ["outcomes", "tree"].into_iter()
+    ["outcomes", "tree"]
+        .into_iter()
         .filter(|v| v.starts_with(partial))
         .map(str::to_string)
         .collect()
@@ -259,7 +279,9 @@ fn run(opts: Opts) -> Result<(), String> {
     // intent. The storage layer applies the WHERE filter so
     // we don't pull every execution's rows just to filter them
     // out in memory.
-    let session_dir = opts.db_path.parent()
+    let session_dir = opts
+        .db_path
+        .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
     let exec_id_filter: Option<u64> = match opts.execution {
@@ -272,8 +294,7 @@ fn run(opts: Opts) -> Result<(), String> {
             // already aware of the choice and doesn't need
             // the disambiguation hint.
             nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
-            nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
-                .specific_id()
+            nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir).specific_id()
         }
     };
     let mut outcomes = reporter.read_phase_outcomes(exec_id_filter);
@@ -348,17 +369,21 @@ fn run(opts: Opts) -> Result<(), String> {
 /// depth structure lives only in the in-memory scene tree and is
 /// not reconstructable from the db's flat `phase_outcomes` rows.
 fn run_tree(opts: &Opts) -> Result<(), String> {
-    let session_dir = opts.db_path.parent()
+    let session_dir = opts
+        .db_path
+        .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
     let tree_path = session_dir.join("scenario_tree.txt");
-    let tree = std::fs::read_to_string(&tree_path).map_err(|e| format!(
-        "no scenario tree at '{}': {e}\n\
+    let tree = std::fs::read_to_string(&tree_path).map_err(|e| {
+        format!(
+            "no scenario tree at '{}': {e}\n\
          (the session may predate scenario-tree persistence, or was \
          run under a console-owning adapter that suppressed the \
          post-run summary)",
-        tree_path.display(),
-    ))?;
+            tree_path.display(),
+        )
+    })?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     // The file already carries its own trailing newlines
@@ -375,19 +400,11 @@ fn run_tree(opts: &Opts) -> Result<(), String> {
 /// errors). Other counter / chip / coord-fold fields stay at
 /// their defaults — replay doesn't have the per-cycle metrics
 /// the live surface fed in.
-fn render_outcome(
-    row: &nbrs_metrics::reporters::sqlite::PhaseOutcomeRow,
-    plain: bool,
-) -> String {
-    use nbrs_runtime::readouts::{
-        Lod, ContentMode, ReadoutContext,
-        ReadoutOptions,
-    };
+fn render_outcome(row: &nbrs_metrics::reporters::sqlite::PhaseOutcomeRow, plain: bool) -> String {
     use nbrs_runtime::lifecycle::EventType;
+    use nbrs_runtime::phase_outcome::{Outcome, PhaseErrorDetail, ResumeCursor};
     use nbrs_runtime::readouts::buf::StringBuf;
-    use nbrs_runtime::phase_outcome::{
-        Outcome, PhaseErrorDetail, ResumeCursor,
-    };
+    use nbrs_runtime::readouts::{ContentMode, Lod, ReadoutContext, ReadoutOptions};
 
     struct ReplayCtx<'a> {
         name: &'a str,
@@ -399,27 +416,47 @@ fn render_outcome(
     }
 
     impl<'a> ReadoutContext for ReplayCtx<'a> {
-        fn subject_name(&self) -> &str { self.name }
-        fn subject_labels(&self) -> &str { self.labels }
-        fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-        fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> EventType { EventType::PhaseEnd }
-        fn outcome(&self) -> Outcome { self.outcome.clone() }
-        fn outcome_errors(&self) -> &[PhaseErrorDetail] { &self.errors }
-        fn outcome_resume_cursor(&self) -> Option<&ResumeCursor> { None }
+        fn subject_name(&self) -> &str {
+            self.name
+        }
+        fn subject_labels(&self) -> &str {
+            self.labels
+        }
+        fn elapsed_secs(&self) -> f64 {
+            self.elapsed_secs
+        }
+        fn use_color(&self) -> bool {
+            self.use_color
+        }
+        fn event(&self) -> EventType {
+            EventType::PhaseEnd
+        }
+        fn outcome(&self) -> Outcome {
+            self.outcome.clone()
+        }
+        fn outcome_errors(&self) -> &[PhaseErrorDetail] {
+            &self.errors
+        }
+        fn outcome_resume_cursor(&self) -> Option<&ResumeCursor> {
+            None
+        }
     }
 
     let outcome = parse_status(&row.status);
-    let errors: Vec<PhaseErrorDetail> = row.errors.iter().map(|e| PhaseErrorDetail {
-        class: e.class.clone(),
-        message: e.message.clone(),
-        op_name: e.op_name.clone(),
-        cycle: e.cycle,
-        op_template: e.op_template.clone(),
-        op_resolved: e.op_resolved.clone(),
-        at_nanos: e.at_nanos as u64,
-        retryable: e.retryable,
-    }).collect();
+    let errors: Vec<PhaseErrorDetail> = row
+        .errors
+        .iter()
+        .map(|e| PhaseErrorDetail {
+            class: e.class.clone(),
+            message: e.message.clone(),
+            op_name: e.op_name.clone(),
+            cycle: e.cycle,
+            op_template: e.op_template.clone(),
+            op_resolved: e.op_resolved.clone(),
+            at_nanos: e.at_nanos as u64,
+            retryable: e.retryable,
+        })
+        .collect();
 
     let ctx = ReplayCtx {
         name: &row.phase_name,
@@ -434,8 +471,11 @@ fn render_outcome(
     let mut s = String::with_capacity(192);
     let mut buf = StringBuf::new(&mut s);
     readout.render(
-        &ctx, Lod::Labeled, ContentMode::Value,
-        &ReadoutOptions::new(), &mut buf,
+        &ctx,
+        Lod::Labeled,
+        ContentMode::Value,
+        &ReadoutOptions::new(),
+        &mut buf,
     );
     s
 }
@@ -447,46 +487,52 @@ fn render_outcome(
 fn parse_status(label: &str) -> nbrs_runtime::phase_outcome::Outcome {
     use nbrs_runtime::phase_outcome::Outcome;
     match label {
-        "completed"        => Outcome::completed(),
-        "failed"           => Outcome::failed(),
+        "completed" => Outcome::completed(),
+        "failed" => Outcome::failed(),
         "completed_failed" => Outcome::completed_failed(),
-        "skipped"          => Outcome::skipped(),
-        "interrupted"
-        | "cursor_suspended" => Outcome::interrupted(),
+        "skipped" => Outcome::skipped(),
+        "interrupted" | "cursor_suspended" => Outcome::interrupted(),
         // Defensive: unrecognised statuses render as Failed
         // so the operator notices instead of seeing a silent
         // ✓ for an unknown state.
-        _                  => Outcome::failed(),
+        _ => Outcome::failed(),
     }
 }
 
 /// One-line JSON object per outcome. Hand-rolled rather than
 /// pulling in a serializer dep on the storage-row shape — the
 /// fields are stable and few.
-fn outcome_to_json(
-    row: &nbrs_metrics::reporters::sqlite::PhaseOutcomeRow,
-) -> String {
+fn outcome_to_json(row: &nbrs_metrics::reporters::sqlite::PhaseOutcomeRow) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(256);
     let _ = write!(
         &mut s,
         r#"{{"session":{:?},"exec_id":{},"phase_name":{:?},"phase_labels":{:?},"status":{:?},"reason_class":{},"duration_secs":{},"started_at_nanos":{},"ended_at_nanos":{},"errors":["#,
-        row.session, row.exec_id, row.phase_name, row.phase_labels,
+        row.session,
+        row.exec_id,
+        row.phase_name,
+        row.phase_labels,
         row.status,
         opt_str_json(row.reason_class.as_deref()),
-        row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
+        row.duration_secs,
+        row.started_at_nanos,
+        row.ended_at_nanos,
     );
     for (i, e) in row.errors.iter().enumerate() {
-        if i > 0 { s.push(','); }
+        if i > 0 {
+            s.push(',');
+        }
         let _ = write!(
             &mut s,
             r#"{{"class":{:?},"message":{:?},"op_name":{},"cycle":{},"op_template":{},"op_resolved":{},"at_nanos":{},"retryable":{}}}"#,
-            e.class, e.message,
+            e.class,
+            e.message,
             opt_str_json(e.op_name.as_deref()),
             opt_u64_json(e.cycle),
             opt_str_json(e.op_template.as_deref()),
             opt_str_json(e.op_resolved.as_deref()),
-            e.at_nanos, e.retryable,
+            e.at_nanos,
+            e.retryable,
         );
     }
     s.push_str("]}");
@@ -494,11 +540,17 @@ fn outcome_to_json(
 }
 
 fn opt_str_json(v: Option<&str>) -> String {
-    match v { Some(s) => format!("{:?}", s), None => "null".into() }
+    match v {
+        Some(s) => format!("{:?}", s),
+        None => "null".into(),
+    }
 }
 
 fn opt_u64_json(v: Option<u64>) -> String {
-    match v { Some(n) => n.to_string(), None => "null".into() }
+    match v {
+        Some(n) => n.to_string(),
+        None => "null".into(),
+    }
 }
 
 // ── cli_spec entry ─────────────────────────────────────────
@@ -507,28 +559,42 @@ fn opt_u64_json(v: Option<u64>) -> String {
 /// Walker-parsed: small, flat flag set fits the generic
 /// walker cleanly, no need for raw_args.
 pub fn spec() -> crate::cli_spec::Command {
-    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
-        Level, ParsedCommand, ValueProvider};
+    use crate::cli_spec::{
+        Arity, Category, Command, Flag, Handler, Level, ParsedCommand, ValueProvider,
+    };
     fn handle(p: ParsedCommand) -> Result<(), String> {
         let mut argv: Vec<String> = Vec::new();
-        if p.bool("--plain") { argv.push("--plain".into()); }
-        if p.bool("--errors") { argv.push("--errors".into()); }
-        if p.bool("--json") { argv.push("--json".into()); }
+        if p.bool("--plain") {
+            argv.push("--plain".into());
+        }
+        if p.bool("--errors") {
+            argv.push("--errors".into());
+        }
+        if p.bool("--json") {
+            argv.push("--json".into());
+        }
         if let Some(v) = p.flag("--db") {
-            argv.push("--db".into()); argv.push(v.into());
+            argv.push("--db".into());
+            argv.push(v.into());
         }
         if let Some(v) = p.flag("--session") {
-            argv.push("--session".into()); argv.push(v.into());
+            argv.push("--session".into());
+            argv.push(v.into());
         }
         if let Some(v) = p.flag("--phase") {
-            argv.push("--phase".into()); argv.push(v.into());
+            argv.push("--phase".into());
+            argv.push(v.into());
         }
         if let Some(v) = p.flag("--execution") {
-            argv.push("--execution".into()); argv.push(v.into());
+            argv.push("--execution".into());
+            argv.push(v.into());
         }
-        if p.bool("--all-executions") { argv.push("--all-executions".into()); }
+        if p.bool("--all-executions") {
+            argv.push("--all-executions".into());
+        }
         if let Some(v) = p.flag("--format") {
-            argv.push("--format".into()); argv.push(v.into());
+            argv.push("--format".into());
+            argv.push(v.into());
         }
         replay_command(&argv);
         Ok(())
@@ -540,40 +606,56 @@ pub fn spec() -> crate::cli_spec::Command {
         level: Level::Secondary,
         flags: vec![
             Flag {
-                long: "--db", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::Path,
+                long: "--db",
+                short: None,
+                aliases: &[],
+                arity: Arity::Value,
+                value: ValueProvider::Path,
                 help: "Path to metrics.db.",
                 repeatable: false,
             },
             Flag {
-                long: "--session", short: None, aliases: &[],
+                long: "--session",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::session_name_provider),
                 help: "SRD-04 session umbrella (path or name).",
                 repeatable: false,
             },
             Flag {
-                long: "--plain", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--plain",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Plain-text output (no ANSI).",
                 repeatable: false,
             },
             Flag {
-                long: "--errors", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--errors",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Only render phases that failed (SRD-76).",
                 repeatable: false,
             },
             Flag {
-                long: "--phase", short: None, aliases: &[],
+                long: "--phase",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::phase_name_db_provider),
                 help: "Filter to a single phase identity (SRD-76).",
                 repeatable: false,
             },
             Flag {
-                long: "--json", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--json",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Machine-readable JSON per outcome (SRD-76).",
                 repeatable: false,
             },
@@ -583,20 +665,27 @@ pub fn spec() -> crate::cli_spec::Command {
             // bool `--all-executions` disables the filter
             // (sentinel `0` inside `replay_command`).
             Flag {
-                long: "--execution", short: None, aliases: &[],
+                long: "--execution",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::execution_id_provider),
                 help: "Filter to one execution_id (default: most recent).",
                 repeatable: false,
             },
             Flag {
-                long: "--all-executions", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--all-executions",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Render every execution's outcomes.",
                 repeatable: false,
             },
             Flag {
-                long: "--format", short: None, aliases: &[],
+                long: "--format",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(format_value_provider),
                 help: "View to render: 'outcomes' (default) or 'tree'.",

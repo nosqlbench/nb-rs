@@ -25,10 +25,10 @@ mod settings;
 
 use std::sync::Arc;
 
-use nbrs_runtime::adapter::{
-    AdapterError, DriverImpl, DriverAdapter, ExecutionError, OpDispenser, StatusMetric,
-};
 use crate::common::{CqlConfig, CqlConsistency, OpMode, STMT_FIELD_NAMES};
+use nbrs_runtime::adapter::{
+    AdapterError, DriverAdapter, DriverImpl, ExecutionError, OpDispenser, StatusMetric,
+};
 use nbrs_workload::model::ParsedOp;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
@@ -42,15 +42,15 @@ use result::ScyllaResultBody;
 /// driver-agnostic.
 fn to_scylla_consistency(c: CqlConsistency) -> Consistency {
     match c {
-        CqlConsistency::Any         => Consistency::Any,
-        CqlConsistency::One         => Consistency::One,
-        CqlConsistency::Two         => Consistency::Two,
-        CqlConsistency::Three       => Consistency::Three,
-        CqlConsistency::Quorum      => Consistency::Quorum,
-        CqlConsistency::All         => Consistency::All,
+        CqlConsistency::Any => Consistency::Any,
+        CqlConsistency::One => Consistency::One,
+        CqlConsistency::Two => Consistency::Two,
+        CqlConsistency::Three => Consistency::Three,
+        CqlConsistency::Quorum => Consistency::Quorum,
+        CqlConsistency::All => Consistency::All,
         CqlConsistency::LocalQuorum => Consistency::LocalQuorum,
-        CqlConsistency::EachQuorum  => Consistency::EachQuorum,
-        CqlConsistency::LocalOne    => Consistency::LocalOne,
+        CqlConsistency::EachQuorum => Consistency::EachQuorum,
+        CqlConsistency::LocalOne => Consistency::LocalOne,
     }
 }
 
@@ -71,7 +71,12 @@ impl ScyllaCqlAdapter {
         let consistency = to_scylla_consistency(config.consistency);
 
         let mut builder = SessionBuilder::new();
-        for host in config.hosts.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        for host in config
+            .hosts
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             // Hosts may be `host:port`; if not, append the configured port.
             if host.contains(':') {
                 builder = builder.known_node(host);
@@ -84,9 +89,8 @@ impl ScyllaCqlAdapter {
         }
         // Connection ESTABLISHMENT timeout (was conflated with the per-request
         // timeout before `connect_timeout` existed).
-        builder = builder.connection_timeout(std::time::Duration::from_millis(
-            config.connect_timeout_ms,
-        ));
+        builder =
+            builder.connection_timeout(std::time::Duration::from_millis(config.connect_timeout_ms));
         // Connect-survival knobs (catchup D2): map to the driver's
         // CQL-layer keepalives — `heartbeat_interval` paces the
         // keepalive requests, `connection_idle_timeout` bounds how
@@ -103,16 +107,20 @@ impl ScyllaCqlAdapter {
         // knobs have no equivalent. Accepting them silently would be
         // a lie; say so once at connect.
         if config.reconnect_params_explicit {
-            nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "cql(scylla): reconnect_base_delay / reconnect_max_delay have \
                  no scylla-driver equivalent and are ignored — the driver \
-                 manages reconnection internally");
+                 manages reconnection internally"
+            );
         }
         if !config.keyspace.is_empty() {
             builder = builder.use_keyspace(config.keyspace.clone(), false);
         }
 
-        let session = builder.build().await
+        let session = builder
+            .build()
+            .await
             .map_err(|e| format!("scylla connect: {e}"))?;
         Ok(Self {
             session: Arc::new(session),
@@ -127,7 +135,9 @@ impl DriverAdapter for ScyllaCqlAdapter {
     // engine backs it. `scylla` is an internal driver choice
     // selected via `cqldriver=`; it never appears in the
     // adapter-lookup table or in op-level `adapter: …` fields.
-    fn name(&self) -> &str { "cql" }
+    fn name(&self) -> &str {
+        "cql"
+    }
 
     fn default_status_metrics(&self) -> Vec<StatusMetric> {
         crate::common::default_status_metrics()
@@ -149,120 +159,125 @@ impl DriverAdapter for ScyllaCqlAdapter {
         &'a self,
         template: &'a ParsedOp,
         parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
-        let (stmt_text, stmt_field) = STMT_FIELD_NAMES.iter()
-            .find_map(|key| -> Option<(String, &'static str)> {
-                let v = template.op.get(*key)?;
-                Some((v.as_str()?.to_string(), *key))
-            })
-            .ok_or_else(|| {
-                "CQL op requires a 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string()
-            })?;
-
-        // Replace bind points with `?` markers for prepared mode
-        // and capture the bind-point names in `?` order so we can
-        // look up typed values by name from `ResolvedFields`. The
-        // runtime puts every op field (including the stmt text
-        // itself) into `fields.values`; only the named bind points
-        // belong on the wire, in the order they appeared in the
-        // statement text.
-        let bind_names = nbrs_workload::bindpoints::referenced_bindings(&stmt_text);
-        let prepared_text = nbrs_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
-        // Workload-author lvalue assertions per bind-point: a
-        // `{name:*}` or `{name:<polydat-type>}` suffix in the
-        // statement text overrides the cluster-side parameter
-        // type for binder verification (and only for verification;
-        // the bind path still uses cluster metadata). Indices
-        // line up with `bind_names` because both come from
-        // walking the same statement text in the same order.
-        let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
-            use nbrs_workload::bindpoints::{extract_bind_points, BindPoint};
-            extract_bind_points(&stmt_text).into_iter()
-                .filter_map(|bp| match bp {
-                    BindPoint::Reference { lvalue_spec, .. } => Some(lvalue_spec),
-                    BindPoint::InlineDefinition(_) => None,
+            let (stmt_text, stmt_field) = STMT_FIELD_NAMES
+                .iter()
+                .find_map(|key| -> Option<(String, &'static str)> {
+                    let v = template.op.get(*key)?;
+                    Some((v.as_str()?.to_string(), *key))
                 })
-                .collect()
-        };
+                .ok_or_else(|| {
+                    "CQL op requires a 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string()
+                })?;
 
-        // A `batch:` row cap OR a `max_batch_size:` byte budget both
-        // select the batch executor (SRD-103 §6): `max_batch_size`
-        // alone byte-bounds a dynamically-sized batch.
-        let has_batch = template.params.contains_key("batch")
-            || template.params.contains_key("max_batch_size");
-        let mode = OpMode::from_stmt_field(stmt_field, has_batch);
+            // Replace bind points with `?` markers for prepared mode
+            // and capture the bind-point names in `?` order so we can
+            // look up typed values by name from `ResolvedFields`. The
+            // runtime puts every op field (including the stmt text
+            // itself) into `fields.values`; only the named bind points
+            // belong on the wire, in the order they appeared in the
+            // statement text.
+            let bind_names = nbrs_workload::bindpoints::referenced_bindings(&stmt_text);
+            let prepared_text =
+                nbrs_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
+            // Workload-author lvalue assertions per bind-point: a
+            // `{name:*}` or `{name:<polydat-type>}` suffix in the
+            // statement text overrides the cluster-side parameter
+            // type for binder verification (and only for verification;
+            // the bind path still uses cluster metadata). Indices
+            // line up with `bind_names` because both come from
+            // walking the same statement text in the same order.
+            let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
+                use nbrs_workload::bindpoints::{BindPoint, extract_bind_points};
+                extract_bind_points(&stmt_text)
+                    .into_iter()
+                    .filter_map(|bp| match bp {
+                        BindPoint::Reference { lvalue_spec, .. } => Some(lvalue_spec),
+                        BindPoint::InlineDefinition(_) => None,
+                    })
+                    .collect()
+            };
 
-        // SRD 73 — build the per-op modifier chain at dispenser
-        // initializer time. The chain captures any universal CQL
-        // field the user bound in the Polydat scope (workload params,
-        // scenario-tree `set:` shadows, op-template fields); names
-        // the scope doesn't bind contribute nothing. Critical-path
-        // execute() just calls `chain.apply(&mut stmt)` — no
-        // re-evaluation.
-        let op_label = template.name.clone();
-        let modifiers_for_raw =
-            crate::common::op_modifier::build_cql_modifier_chain::<
-                op_modifier::ScyllaModifierFactory<scylla::statement::Statement>
+            // A `batch:` row cap OR a `max_batch_size:` byte budget both
+            // select the batch executor (SRD-103 §6): `max_batch_size`
+            // alone byte-bounds a dynamically-sized batch.
+            let has_batch = template.params.contains_key("batch")
+                || template.params.contains_key("max_batch_size");
+            let mode = OpMode::from_stmt_field(stmt_field, has_batch);
+
+            // SRD 73 — build the per-op modifier chain at dispenser
+            // initializer time. The chain captures any universal CQL
+            // field the user bound in the Polydat scope (workload params,
+            // scenario-tree `set:` shadows, op-template fields); names
+            // the scope doesn't bind contribute nothing. Critical-path
+            // execute() just calls `chain.apply(&mut stmt)` — no
+            // re-evaluation.
+            let op_label = template.name.clone();
+            let modifiers_for_raw = crate::common::op_modifier::build_cql_modifier_chain::<
+                op_modifier::ScyllaModifierFactory<scylla::statement::Statement>,
             >(&parent, op_label.clone())?;
-        let modifiers_for_prepared =
-            crate::common::op_modifier::build_cql_modifier_chain::<
-                op_modifier::ScyllaModifierFactory<scylla::statement::prepared::PreparedStatement>
+            let modifiers_for_prepared = crate::common::op_modifier::build_cql_modifier_chain::<
+                op_modifier::ScyllaModifierFactory<scylla::statement::prepared::PreparedStatement>,
             >(&parent, op_label)?;
 
-        match mode {
-            OpMode::Raw => Ok(Box::new(raw::ScyllaRawDispenser::new(
-                                           parent.clone(),
-                self.session.clone(),
-                self.consistency,
-                stmt_text,
-                modifiers_for_raw,
-            )) as Box<dyn OpDispenser>),
-            OpMode::Prepared | OpMode::Batch => {
-                // Prepare against the cluster and verify the binder
-                // against the dispenser's parent kernel — the per-op
-                // dispenser-init compulsion. Both prepared-mode and
-                // batch-mode use the same inner prepared statement,
-                // so they share this preparation step.
-                let mut prep = self.session.prepare(prepared_text.clone()).await
-                    .map_err(|e| format!(
-                        "scylla prepare '{}': {e}",
-                        truncate_stmt(&prepared_text),
-                    ))?;
-                prep.set_consistency(self.consistency);
-                // SRD 73: layer the per-op universal-field overrides
-                // before Arc-wrapping (PreparedStatement mutation is
-                // single-owner before sharing).
-                modifiers_for_prepared.apply(&mut prep);
+            match mode {
+                OpMode::Raw => Ok(Box::new(raw::ScyllaRawDispenser::new(
+                    parent.clone(),
+                    self.session.clone(),
+                    self.consistency,
+                    stmt_text,
+                    modifiers_for_raw,
+                )) as Box<dyn OpDispenser>),
+                OpMode::Prepared | OpMode::Batch => {
+                    // Prepare against the cluster and verify the binder
+                    // against the dispenser's parent kernel — the per-op
+                    // dispenser-init compulsion. Both prepared-mode and
+                    // batch-mode use the same inner prepared statement,
+                    // so they share this preparation step.
+                    let mut prep =
+                        self.session
+                            .prepare(prepared_text.clone())
+                            .await
+                            .map_err(|e| {
+                                format!("scylla prepare '{}': {e}", truncate_stmt(&prepared_text),)
+                            })?;
+                    prep.set_consistency(self.consistency);
+                    // SRD 73: layer the per-op universal-field overrides
+                    // before Arc-wrapping (PreparedStatement mutation is
+                    // single-owner before sharing).
+                    modifiers_for_prepared.apply(&mut prep);
 
-                // Build the typed binder from the prepared statement's
-                // variable col-specs. Wire references come from the
-                // `bind_names` list (one per `?` placeholder, in order).
-                //
-                // Any slot whose CQL type doesn't have a precise
-                // polydat mapping yet falls back to `Str` and gets
-                // a WARN so the operator can see exactly which
-                // positions lost typed verification — surfacing
-                // the long-tail CQL types that need a precise
-                // mapping added in `binder_meta::cql_to_polydat`.
-                // Build the binder slots. For each `?`-position:
-                //
-                //   1. Resolve the workload-author lvalue
-                //      assertion (`{name:*}` / `{name:<type>}`)
-                //      from the parsed bind-points. If present,
-                //      it overrides the cluster-side type for
-                //      verification — this is the per-bindpoint
-                //      opt-in for type fusion (`:*` → Str-lvalue,
-                //      anything goes; `:<type>` → asserted type
-                //      from `PortType::from_workload_name`).
-                //   2. Otherwise fall back to the cluster-side
-                //      type via `binder_meta::cql_to_polydat`. Any
-                //      cluster type lacking a precise polydat
-                //      mapping warns (per-slot) so the operator
-                //      can see which slots are un-typed.
-                let col_specs = prep.get_variable_col_specs();
-                let mut slot_build_err: Option<String> = None;
-                let slots: Vec<polydat::binder::BinderSlot> = col_specs.iter()
+                    // Build the typed binder from the prepared statement's
+                    // variable col-specs. Wire references come from the
+                    // `bind_names` list (one per `?` placeholder, in order).
+                    //
+                    // Any slot whose CQL type doesn't have a precise
+                    // polydat mapping yet falls back to `Str` and gets
+                    // a WARN so the operator can see exactly which
+                    // positions lost typed verification — surfacing
+                    // the long-tail CQL types that need a precise
+                    // mapping added in `binder_meta::cql_to_polydat`.
+                    // Build the binder slots. For each `?`-position:
+                    //
+                    //   1. Resolve the workload-author lvalue
+                    //      assertion (`{name:*}` / `{name:<type>}`)
+                    //      from the parsed bind-points. If present,
+                    //      it overrides the cluster-side type for
+                    //      verification — this is the per-bindpoint
+                    //      opt-in for type fusion (`:*` → Str-lvalue,
+                    //      anything goes; `:<type>` → asserted type
+                    //      from `PortType::from_workload_name`).
+                    //   2. Otherwise fall back to the cluster-side
+                    //      type via `binder_meta::cql_to_polydat`. Any
+                    //      cluster type lacking a precise polydat
+                    //      mapping warns (per-slot) so the operator
+                    //      can see which slots are un-typed.
+                    let col_specs = prep.get_variable_col_specs();
+                    let mut slot_build_err: Option<String> = None;
+                    let slots: Vec<polydat::binder::BinderSlot> = col_specs.iter()
                     .zip(bind_names.iter())
                     .enumerate()
                     .map(|(idx, (cluster_spec, name))| {
@@ -361,108 +376,133 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         }
                     })
                     .collect();
-                if let Some(msg) = slot_build_err {
-                    return Err(msg);
-                }
-                if !slots.is_empty() {
-                    let binder = polydat::binder::Binder::Positional {
-                        field: stmt_field.to_string(),
-                        slots,
-                    };
-                    polydat::binder::verify_against_kernel(&[binder], &parent)
-                        .map_err(|violations| violations.into_iter()
-                            .map(|v| v.message)
-                            .collect::<Vec<_>>()
-                            .join("; "))?;
-                }
-                let prepared_arc = std::sync::Arc::new(prep);
+                    if let Some(msg) = slot_build_err {
+                        return Err(msg);
+                    }
+                    if !slots.is_empty() {
+                        let binder = polydat::binder::Binder::Positional {
+                            field: stmt_field.to_string(),
+                            slots,
+                        };
+                        polydat::binder::verify_against_kernel(&[binder], &parent).map_err(
+                            |violations| {
+                                violations
+                                    .into_iter()
+                                    .map(|v| v.message)
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            },
+                        )?;
+                    }
+                    let prepared_arc = std::sync::Arc::new(prep);
 
-                match mode {
-                    OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
-                                                        parent.clone(),
-                        self.session.clone(),
-                        prepared_arc,
-                        prepared_text,
-                        bind_names,
-                    )) as Box<dyn OpDispenser>),
-                    OpMode::Batch => {
-                        let batch_type_name = template.params.get("batchtype")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_lowercase())
-                            .unwrap_or_default();
-                        let batch_type = match batch_type_name.as_str() {
-                            "logged"  => scylla::statement::batch::BatchType::Logged,
-                            "counter" => scylla::statement::batch::BatchType::Counter,
-                            _         => scylla::statement::batch::BatchType::Unlogged,
-                        };
-                        // A batch DERIVES its retry-safety from its inner
-                        // statements — uniform template with stride, computed
-                        // ONCE here, never per stanza: counter batches and LWT
-                        // statements are not retry-safe; plain PK-keyed
-                        // upserts are.
-                        let batch_retry_safe = batch_type_name != "counter"
-                            && crate::common::cql_statement_retry_safe(&prepared_text);
-                        // SRD-103 §3 — both `batch:` (cursor stride / row cap)
-                        // and `max_batch_size:` (byte budget) are GK-resolved op
-                        // fields. A literal (`batch: 8`, `64KB`) resolves
-                        // directly; an expression referencing the CQL session
-                        // nodes is evaluated against a subscope with this
-                        // phase's own `cql_session_key` bound, after the
-                        // referenced settings are pre-read into the session memo.
-                        let session_key = self.config.to_resource_key("scylla").render_key();
-                        // Workload-authored `batch:` cursor stride (0 = unset →
-                        // the byte budget, if any, drives the row count). Used
-                        // directly, unfloored downstream. `batch-size` is the
-                        // accepted alias key.
-                        let batch_n: usize = crate::common::session_handle::resolve_batch_count(
-                            &parent, &session_key,
-                            template.params.get("batch")
-                                .or_else(|| template.params.get("batch-size")),
-                        ).await.map_err(|e| format!("op '{}': {e}", template.name))?
-                            .unwrap_or(0);
-                        let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
-                            &parent, &session_key, template.params.get("max_batch_size"),
-                        ).await.map_err(|e| format!("op '{}': {e}", template.name))?;
-                        // SRD-22 cover-once — settle the FIXED uniform stride N
-                        // now (not per-execute). Only characterize a row when a
-                        // byte budget must be converted to a row count; `batch:N`
-                        // / single-row need no probe.
-                        let row_size = if max_batch_bytes.is_some() {
-                            crate::common::size_estimator::characterize_row_size(&parent, &bind_names)
-                        } else {
-                            0
-                        };
-                        let stride_n = crate::common::size_estimator::fixed_batch_stride(
-                            row_size, batch_n, max_batch_bytes);
-                        // A batch is a statement too — resolve the SAME universal
-                        // fields into a batch-targeted chain so consistency /
-                        // serial / request timeout / tracing all reach the batch
-                        // itself, uniform with the single-statement path.
-                        let modifiers_for_batch =
-                            crate::common::op_modifier::build_cql_modifier_chain::<
-                                op_modifier::ScyllaModifierFactory<scylla::statement::batch::Batch>
-                            >(&parent, template.name.clone())?;
-                        Ok(Box::new(batch::ScyllaBatchDispenser::new(
-                                        parent.clone(),
+                    match mode {
+                        OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
+                            parent.clone(),
                             self.session.clone(),
                             prepared_arc,
                             prepared_text,
                             bind_names,
-                            stride_n,
-                            max_batch_bytes,
-                            batch_type,
-                            self.consistency,
-                            modifiers_for_batch,
-                            batch_retry_safe,
-                        )) as Box<dyn OpDispenser>)
-                    }
-                    OpMode::Raw => unreachable!(
-                        "Raw arm handled above; the prepare/batch combined arm \
+                        )) as Box<dyn OpDispenser>),
+                        OpMode::Batch => {
+                            let batch_type_name = template
+                                .params
+                                .get("batchtype")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_lowercase())
+                                .unwrap_or_default();
+                            let batch_type = match batch_type_name.as_str() {
+                                "logged" => scylla::statement::batch::BatchType::Logged,
+                                "counter" => scylla::statement::batch::BatchType::Counter,
+                                _ => scylla::statement::batch::BatchType::Unlogged,
+                            };
+                            // A batch DERIVES its retry-safety from its inner
+                            // statements — uniform template with stride, computed
+                            // ONCE here, never per stanza: counter batches and LWT
+                            // statements are not retry-safe; plain PK-keyed
+                            // upserts are.
+                            let batch_retry_safe = batch_type_name != "counter"
+                                && crate::common::cql_statement_retry_safe(&prepared_text);
+                            // SRD-103 §3 — both `batch:` (cursor stride / row cap)
+                            // and `max_batch_size:` (byte budget) are GK-resolved op
+                            // fields. A literal (`batch: 8`, `64KB`) resolves
+                            // directly; an expression referencing the CQL session
+                            // nodes is evaluated against a subscope with this
+                            // phase's own `cql_session_key` bound, after the
+                            // referenced settings are pre-read into the session memo.
+                            let session_key = self.config.to_resource_key("scylla").render_key();
+                            // Workload-authored `batch:` cursor stride (0 = unset →
+                            // the byte budget, if any, drives the row count). Used
+                            // directly, unfloored downstream. `batch-size` is the
+                            // accepted alias key.
+                            let batch_n: usize =
+                                crate::common::session_handle::resolve_batch_count(
+                                    &parent,
+                                    &session_key,
+                                    template
+                                        .params
+                                        .get("batch")
+                                        .or_else(|| template.params.get("batch-size")),
+                                )
+                                .await
+                                .map_err(|e| format!("op '{}': {e}", template.name))?
+                                .unwrap_or(0);
+                            let max_batch_bytes =
+                                crate::common::session_handle::resolve_max_batch_bytes(
+                                    &parent,
+                                    &session_key,
+                                    template.params.get("max_batch_size"),
+                                )
+                                .await
+                                .map_err(|e| format!("op '{}': {e}", template.name))?;
+                            // SRD-22 cover-once — settle the FIXED uniform stride N
+                            // now (not per-execute). Only characterize a row when a
+                            // byte budget must be converted to a row count; `batch:N`
+                            // / single-row need no probe.
+                            let row_size = if max_batch_bytes.is_some() {
+                                crate::common::size_estimator::characterize_row_size(
+                                    &parent,
+                                    &bind_names,
+                                )
+                            } else {
+                                0
+                            };
+                            let stride_n = crate::common::size_estimator::fixed_batch_stride(
+                                row_size,
+                                batch_n,
+                                max_batch_bytes,
+                            );
+                            // A batch is a statement too — resolve the SAME universal
+                            // fields into a batch-targeted chain so consistency /
+                            // serial / request timeout / tracing all reach the batch
+                            // itself, uniform with the single-statement path.
+                            let modifiers_for_batch =
+                                crate::common::op_modifier::build_cql_modifier_chain::<
+                                    op_modifier::ScyllaModifierFactory<
+                                        scylla::statement::batch::Batch,
+                                    >,
+                                >(&parent, template.name.clone())?;
+                            Ok(Box::new(batch::ScyllaBatchDispenser::new(
+                                parent.clone(),
+                                self.session.clone(),
+                                prepared_arc,
+                                prepared_text,
+                                bind_names,
+                                stride_n,
+                                max_batch_bytes,
+                                batch_type,
+                                self.consistency,
+                                modifiers_for_batch,
+                                batch_retry_safe,
+                            )) as Box<dyn OpDispenser>)
+                        }
+                        OpMode::Raw => unreachable!(
+                            "Raw arm handled above; the prepare/batch combined arm \
                          is reached only when mode is Prepared or Batch."
-                    ),
+                        ),
+                    }
                 }
             }
-        }
         })
     }
 
@@ -532,7 +572,11 @@ inventory::submit! {
 // Helpers shared across dispenser modules
 // =========================================================================
 
-pub(super) fn op_error(error_name: &str, msg: impl Into<String>, retryable: bool) -> ExecutionError {
+pub(super) fn op_error(
+    error_name: &str,
+    msg: impl Into<String>,
+    retryable: bool,
+) -> ExecutionError {
     ExecutionError::Op(AdapterError {
         error_name: error_name.into(),
         message: msg.into(),
@@ -602,7 +646,9 @@ pub(super) fn format_cql_error(err: &str, stmt: &str) -> String {
 
     let mut out = String::new();
     out.push_str(&format!("cql syntax: {message}\n"));
-    out.push_str(&format!("{gutter_pad}--> line {line_no}, column {col_no}\n"));
+    out.push_str(&format!(
+        "{gutter_pad}--> line {line_no}, column {col_no}\n"
+    ));
     out.push_str(&format!("{gutter_pad}|\n"));
     out.push_str(&format!(" {line_num_str} | {target_line}\n"));
     out.push_str(&format!("{gutter_pad}| {caret_pad}^"));
@@ -628,7 +674,9 @@ fn parse_line_col(err: &str) -> Option<(usize, usize, String)> {
     let line: usize = line_str.trim().parse().ok()?;
 
     // Column: digits up to the next non-digit.
-    let col_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let col_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     let col: usize = rest[..col_end].parse().ok()?;
 
     let mut message = rest[col_end..].trim_start().to_string();
@@ -674,9 +722,15 @@ mod tests {
         let err = "Database returned an error: line 1:31 no viable alternative at character '_'";
         let out = format_cql_error(err, stmt);
         // Header
-        assert!(out.starts_with("cql syntax: no viable alternative"), "got:\n{out}");
+        assert!(
+            out.starts_with("cql syntax: no viable alternative"),
+            "got:\n{out}"
+        );
         // Statement appears
-        assert!(out.contains("DROP INDEX IF EXISTS baselines._meta_idx"), "got:\n{out}");
+        assert!(
+            out.contains("DROP INDEX IF EXISTS baselines._meta_idx"),
+            "got:\n{out}"
+        );
         // Caret line ends with `^`
         assert!(out.trim_end().ends_with('^'), "got:\n{out}");
     }

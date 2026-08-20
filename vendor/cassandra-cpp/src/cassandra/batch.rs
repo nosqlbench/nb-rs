@@ -15,13 +15,13 @@ use crate::cassandra_sys::cass_batch_set_consistency;
 use crate::cassandra_sys::cass_batch_set_custom_payload;
 use crate::cassandra_sys::cass_batch_set_request_timeout;
 use crate::cassandra_sys::cass_batch_set_retry_policy;
-use crate::cassandra_sys::cass_batch_set_tracing;
-use crate::cassandra_sys::{cass_false, cass_true};
 use crate::cassandra_sys::cass_batch_set_serial_consistency;
 use crate::cassandra_sys::cass_batch_set_timestamp;
+use crate::cassandra_sys::cass_batch_set_tracing;
 use crate::cassandra_sys::CassBatch as _Batch;
 use crate::cassandra_sys::CassBatchType_;
 use crate::cassandra_sys::CASS_UINT64_MAX;
+use crate::cassandra_sys::{cass_false, cass_true};
 use std::time::Duration;
 
 #[derive(Debug)]

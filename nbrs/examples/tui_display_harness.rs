@@ -50,8 +50,8 @@ use std::sync::mpsc;
 use nbrs_runtime::observer::LogLevel;
 use nbrs_tui::display_sink::{DisplayInputs, DisplaySink, SinkHandle};
 use nbrs_tui::key_watcher::WatcherSignal;
-use nbrs_tui::log_only_sink::{fresh_resume_cursor, LogOnlySink};
-use nbrs_tui::run_state_actor::{spawn_run_state_actor, RunStateCmd, RunStateHandle};
+use nbrs_tui::log_only_sink::{LogOnlySink, fresh_resume_cursor};
+use nbrs_tui::run_state_actor::{RunStateCmd, RunStateHandle, spawn_run_state_actor};
 use nbrs_tui::state::{EntryKind, LogSeverity, RunState, SceneTree};
 
 /// Put fd 0 (stdin) into a non-canonical, no-echo mode so the
@@ -182,11 +182,19 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
         }
         Some("sysmon") => {
             // `sysmon <disk> <cpu> <maxcore> <mem> <cache>` — fractions.
-            let mut f = || parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let mut f = || {
+                parts
+                    .next()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
             let (disk, cpu, maxcore, mem, cache) = (f(), f(), f(), f(), f());
             handle.send(RunStateCmd::Sysmon(nbrs_runtime::sysmon::SysmonSample {
                 cpu: Some(nbrs_runtime::sysmon::CpuReading {
-                    mean: cpu, max_core: maxcore, top_core: 7 }),
+                    mean: cpu,
+                    max_core: maxcore,
+                    top_core: 7,
+                }),
                 io: Some(("nvme1n1".into(), disk)),
                 ram: Some((mem, cache)),
                 rambw: None,
@@ -279,8 +287,12 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
             let text: String = parts.collect::<Vec<_>>().join(" ");
             nbrs_tui::repl_state::push_transcript_line(&text);
         }
-        Some("bar") => { nbrs_tui::repl_state::toggle_bar(); }
-        Some("window") => { nbrs_tui::repl_state::toggle_window(); }
+        Some("bar") => {
+            nbrs_tui::repl_state::toggle_bar();
+        }
+        Some("window") => {
+            nbrs_tui::repl_state::toggle_window();
+        }
         Some("quit") => return true,
         _ => {}
     }
@@ -342,8 +354,7 @@ fn main() {
                         // marker), leave — the terminal saves the
                         // primary on enter and restores it on leave.
                         let mut err = std::io::stderr();
-                        let _ = err.write_all(
-                            b"\x1b[?1049h\x1b[2J\x1b[H[harness-tui]\x1b[?1049l");
+                        let _ = err.write_all(b"\x1b[?1049h\x1b[2J\x1b[H[harness-tui]\x1b[?1049l");
                         let _ = err.flush();
                     }
                     let (h, tx) = start_sink(&handle, &resume_from);

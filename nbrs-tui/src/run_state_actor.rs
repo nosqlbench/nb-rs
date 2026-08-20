@@ -31,11 +31,11 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
-use nbrs_runtime::observer::PhaseProgressUpdate;
-use nbrs_runtime::scene_tree::{SceneNodeId, SceneTree};
 use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
 use nbrs_metrics::summaries::ewma::Ewma;
 use nbrs_metrics::summaries::peak_tracker::PeakTracker;
+use nbrs_runtime::observer::PhaseProgressUpdate;
+use nbrs_runtime::scene_tree::{SceneNodeId, SceneTree};
 
 use crate::state::{ActivePhase, LogEntry, LogSeverity, PhaseSummary, RunState};
 
@@ -394,7 +394,10 @@ impl RunStateHandle {
     pub(crate) fn take_log_stream(&self) -> ScrollbackReceiver {
         self.log_stream_active.store(true, Ordering::Release);
         let rx = self.log_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
-        ScrollbackReceiver { cell: self.log_rx.clone(), rx }
+        ScrollbackReceiver {
+            cell: self.log_rx.clone(),
+            rx,
+        }
     }
 }
 
@@ -453,7 +456,9 @@ impl Transcript {
     }
 
     fn open(&mut self, path: &std::path::Path) {
-        let Ok(f) = std::fs::File::create(path) else { return };
+        let Ok(f) = std::fs::File::create(path) else {
+            return;
+        };
         let mut w = std::io::BufWriter::new(f);
         use std::io::Write;
         for line in self.pending.drain(..) {
@@ -464,9 +469,7 @@ impl Transcript {
     }
 }
 
-pub fn spawn_run_state_actor(
-    initial: RunState,
-) -> (RunStateHandle, JoinHandle<()>) {
+pub fn spawn_run_state_actor(initial: RunState) -> (RunStateHandle, JoinHandle<()>) {
     let snapshot = Arc::new(ArcSwap::new(Arc::new(initial.clone())));
     let (tx, rx) = mpsc::channel::<RunStateCmd>();
     // Durable, ordered, no-drop scrollback stream: the second
@@ -498,15 +501,27 @@ pub fn spawn_run_state_actor(
             // Async Contexts" only forbids blocking *inside*
             // tokio.
             while let Ok(first) = rx.recv() {
-                handle_cmd(&mut state, &frame_sync_for_thread, &log_tx,
-                    &log_stream_active_for_thread, &mut transcript, first);
+                handle_cmd(
+                    &mut state,
+                    &frame_sync_for_thread,
+                    &log_tx,
+                    &log_stream_active_for_thread,
+                    &mut transcript,
+                    first,
+                );
                 // Coalesce: drain any further-pending commands
                 // before publishing. Cuts publish cost when the
                 // executor bursts updates; readers always see
                 // the latest published state anyway.
                 while let Ok(more) = rx.try_recv() {
-                    handle_cmd(&mut state, &frame_sync_for_thread, &log_tx,
-                        &log_stream_active_for_thread, &mut transcript, more);
+                    handle_cmd(
+                        &mut state,
+                        &frame_sync_for_thread,
+                        &log_tx,
+                        &log_stream_active_for_thread,
+                        &mut transcript,
+                        more,
+                    );
                 }
                 snapshot_for_thread.store(Arc::new(state.clone()));
             }
@@ -523,7 +538,16 @@ pub fn spawn_run_state_actor(
         })
         .expect("spawn run-state-actor thread");
 
-    (RunStateHandle { snapshot, inbox: tx, frame_sync, log_rx, log_stream_active }, handle)
+    (
+        RunStateHandle {
+            snapshot,
+            inbox: tx,
+            frame_sync,
+            log_rx,
+            log_stream_active,
+        },
+        handle,
+    )
 }
 
 /// Top-level command dispatch. Most commands route to `apply`,
@@ -552,12 +576,18 @@ fn handle_cmd(
             // the next draw. Setting `force_redraw` bypasses the
             // app's tick_rate so that draw fires within ~1 ms
             // rather than waiting up to a full tick.
-            frame_sync.pending_acks.lock()
+            frame_sync
+                .pending_acks
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(tx);
             frame_sync.force_redraw.store(true, Ordering::Release);
         }
-        RunStateCmd::Log { severity, category, message } => {
+        RunStateCmd::Log {
+            severity,
+            category,
+            message,
+        } => {
             // Two sinks for the same line, kept in lock-step:
             //  1. the bounded ring (inspector `log` view, TUI log
             //     panel, post-run failure dump) — last 200 only;
@@ -567,7 +597,9 @@ fn handle_cmd(
             //     skip lines already emitted on stderr before the
             //     display handoff (or by a prior sink pre-swap).
             let entry = LogEntry {
-                severity, message, category,
+                severity,
+                message,
+                category,
                 at: std::time::SystemTime::now(),
             };
             // The line is ALWAYS stamped and recorded to the transcript —
@@ -591,50 +623,67 @@ fn handle_cmd(
                 // the head-line `[name]` match is unambiguous among
                 // actives.
                 let mut margin_body: Option<String> = None;
-                let detail_gutter = if stream_entry.category
-                    == crate::state::LogCategory::PhaseOutcome
-                {
-                    let plain = crate::status_fold::strip_ansi(&stream_entry.message);
-                    let subject = plain.split('[').nth(1)
-                        .map(|rest| rest.split(']').next().unwrap_or("").to_string())
-                        .and_then(|name| state.active_phases.values()
-                            .find(|a| a.name == name.as_str()));
-                    // SRD-92 R1: the ✓ header wears the completing
-                    // NODE'S OWN triad ([n/N] from its plan seq, its
-                    // session-clock delta) — the workload-level stamp
-                    // can point at a still-running sibling under
-                    // concurrent dispatch.
-                    if let Some((s, n)) = subject
-                        .and_then(|a| a.render.as_ref())
-                        .and_then(|h| h.seq)
-                    {
-                        let sess = state.elapsed_secs();
-                        let leaf = subject
-                            .map(|a| (sess - a.session_started).max(0.0));
-                        margin_body = Some(crate::widgets::margin_body(
-                            n, &format!("[{s}/{n}]"), leaf, Some(sess)));
-                    }
-                    subject
-                        .and_then(|a| a.render.as_ref())
-                        .and_then(|h| h.gutter.load_full())
-                        .map(|arc| (*arc).clone())
-                } else {
-                    None
-                };
+                let detail_gutter =
+                    if stream_entry.category == crate::state::LogCategory::PhaseOutcome {
+                        let plain = crate::status_fold::strip_ansi(&stream_entry.message);
+                        let subject = plain
+                            .split('[')
+                            .nth(1)
+                            .map(|rest| rest.split(']').next().unwrap_or("").to_string())
+                            .and_then(|name| {
+                                state
+                                    .active_phases
+                                    .values()
+                                    .find(|a| a.name == name.as_str())
+                            });
+                        // SRD-92 R1: the ✓ header wears the completing
+                        // NODE'S OWN triad ([n/N] from its plan seq, its
+                        // session-clock delta) — the workload-level stamp
+                        // can point at a still-running sibling under
+                        // concurrent dispatch.
+                        if let Some((s, n)) =
+                            subject.and_then(|a| a.render.as_ref()).and_then(|h| h.seq)
+                        {
+                            let sess = state.elapsed_secs();
+                            let leaf = subject.map(|a| (sess - a.session_started).max(0.0));
+                            margin_body = Some(crate::widgets::margin_body(
+                                n,
+                                &format!("[{s}/{n}]"),
+                                leaf,
+                                Some(sess),
+                            ));
+                        }
+                        subject
+                            .and_then(|a| a.render.as_ref())
+                            .and_then(|h| h.gutter.load_full())
+                            .map(|arc| (*arc).clone())
+                    } else {
+                        None
+                    };
                 let seq = state.push_log_entry(entry);
                 // Fire-and-forget: a momentarily-parked receiver
                 // (Ctrl-T swap window) still buffers; the next sink
                 // replays it into the restored scrollback.
-                let margin_body = margin_body
-                    .unwrap_or_else(|| state.margin_body_stamp());
-                let line = LogLine { seq, entry: stream_entry, margin_body, detail_gutter };
+                let margin_body = margin_body.unwrap_or_else(|| state.margin_body_stamp());
+                let line = LogLine {
+                    seq,
+                    entry: stream_entry,
+                    margin_body,
+                    detail_gutter,
+                };
                 transcript.record(&line);
                 if log_stream_active.load(Ordering::Acquire) {
                     let _ = log_tx.send(line);
                 }
             }
         }
-        RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs } => {
+        RunStateCmd::PhaseCompleted {
+            exec_id,
+            scene_node_id,
+            name,
+            labels,
+            duration_secs,
+        } => {
             // Preserve the per-op timing leaves into the durable
             // scrollback: the footer's op rows (SRD-63 `readout:
             // visible`) vanish with the active-phase block at
@@ -666,15 +715,27 @@ fn handle_cmd(
                     let seq = state.push_log_entry(entry);
                     let margin_body = state.margin_body_stamp();
                     let line = LogLine {
-                        seq, entry: stream_entry, margin_body,
-                        detail_gutter: Some(
-                            nbrs_runtime::wrappers::gutter::GutterSpec::Text(duration_cell)),
+                        seq,
+                        entry: stream_entry,
+                        margin_body,
+                        detail_gutter: Some(nbrs_runtime::wrappers::gutter::GutterSpec::Text(
+                            duration_cell,
+                        )),
                     };
                     transcript.record(&line);
                     let _ = log_tx.send(line);
                 }
             }
-            apply(state, RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs });
+            apply(
+                state,
+                RunStateCmd::PhaseCompleted {
+                    exec_id,
+                    scene_node_id,
+                    name,
+                    labels,
+                    duration_secs,
+                },
+            );
         }
         other => apply(state, other),
     }
@@ -693,7 +754,15 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::InstallTree(tree) => {
             state.install_tree(tree);
         }
-        RunStateCmd::PhaseStarting { exec_id, scene_node_id, name, labels, op_templates, total_cycles: _, concurrency } => {
+        RunStateCmd::PhaseStarting {
+            exec_id,
+            scene_node_id,
+            name,
+            labels,
+            op_templates,
+            total_cycles: _,
+            concurrency,
+        } => {
             state.set_phase_running(scene_node_id, &name, &labels, op_templates);
             let key = crate::state::ActivePhaseId::new(exec_id, name.clone(), labels.clone());
             // Sparkline capacity = bar width used by
@@ -707,34 +776,37 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             let latency_peak_5s = Arc::new(PeakTracker::max(Duration::from_secs(5)));
             let latency_peak_10s = Arc::new(PeakTracker::max(Duration::from_secs(10)));
             let session_started = state.elapsed_secs();
-            state.active_phases.insert(key, ActivePhase {
-                name,
-                labels,
-                cursor_name: "?".into(),
-                cursor_extent: 0,
-                // Unknown until the first PhaseProgressUpdate carries it.
-                daemon: false,
-                rows_consumed: 0,
-                rows_total: 0,
-                fibers: concurrency,
-                started_at: Instant::now(),
-                session_started,
-                ops_started: 0,
-                ops_finished: 0,
-                ops_ok: 0,
-                skips: 0,
-                errors: 0,
-                retries: 0,
-                ops_per_sec: 0.0,
-                adapter_counters: Vec::new(),
-                rows_per_batch: 0.0,
-                relevancy: Vec::new(),
-                throughput_summary,
-                rate_ewma,
-                latency_peak_5s,
-                latency_peak_10s,
-                render: None,
-            });
+            state.active_phases.insert(
+                key,
+                ActivePhase {
+                    name,
+                    labels,
+                    cursor_name: "?".into(),
+                    cursor_extent: 0,
+                    // Unknown until the first PhaseProgressUpdate carries it.
+                    daemon: false,
+                    rows_consumed: 0,
+                    rows_total: 0,
+                    fibers: concurrency,
+                    started_at: Instant::now(),
+                    session_started,
+                    ops_started: 0,
+                    ops_finished: 0,
+                    ops_ok: 0,
+                    skips: 0,
+                    errors: 0,
+                    retries: 0,
+                    ops_per_sec: 0.0,
+                    adapter_counters: Vec::new(),
+                    rows_per_batch: 0.0,
+                    relevancy: Vec::new(),
+                    throughput_summary,
+                    rate_ewma,
+                    latency_peak_5s,
+                    latency_peak_10s,
+                    render: None,
+                },
+            );
             // Sparklines reset on every phase boundary so a
             // short ann_query phase doesn't show several seconds
             // of rampup throughput instead of its own.
@@ -742,59 +814,91 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             state.rows_history.clear();
             state.rows_sparkline_label = None;
         }
-        RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs } => {
+        RunStateCmd::PhaseCompleted {
+            exec_id,
+            scene_node_id,
+            name,
+            labels,
+            duration_secs,
+        } => {
             let key = crate::state::ActivePhaseId::new(exec_id, name.clone(), labels.clone());
             let min_ns = state.min_nanos;
             let p50_ns = state.p50_nanos;
             let p99_ns = state.p99_nanos;
             let max_ns = state.max_nanos;
-            let summary = state.active_phases.get(&key).map(|a| PhaseSummary {
-                ops_finished: a.ops_finished,
-                ops_ok: a.ops_ok,
-                skips: a.skips,
-                ops_started: a.ops_started,
-                errors: a.errors,
-                retries: a.retries,
-                fibers: a.fibers,
-                ops_per_sec: a.ops_per_sec,
-                min_nanos: min_ns,
-                p50_nanos: p50_ns,
-                p99_nanos: p99_ns,
-                max_nanos: max_ns,
-                cursor_name: a.cursor_name.clone(),
-                cursor_extent: a.cursor_extent,
-                adapter_counters: a.adapter_counters.clone(),
-                rows_per_batch: a.rows_per_batch,
-                cursors: std::iter::once((a.cursor_name.clone(), a.ops_finished))
-                    .chain(a.adapter_counters.iter().map(|(n, t, _)| (n.clone(), *t)))
-                    .collect(),
-                relevancy: a.relevancy.clone(),
-                // Freeze the sparkline as a durable artifact —
-                // the live Arc<BinomialSummary> is dropped with
-                // the ActivePhase below.
-                throughput_samples: a.throughput_summary.snapshot(),
-            }).unwrap_or_default();
+            let summary = state
+                .active_phases
+                .get(&key)
+                .map(|a| PhaseSummary {
+                    ops_finished: a.ops_finished,
+                    ops_ok: a.ops_ok,
+                    skips: a.skips,
+                    ops_started: a.ops_started,
+                    errors: a.errors,
+                    retries: a.retries,
+                    fibers: a.fibers,
+                    ops_per_sec: a.ops_per_sec,
+                    min_nanos: min_ns,
+                    p50_nanos: p50_ns,
+                    p99_nanos: p99_ns,
+                    max_nanos: max_ns,
+                    cursor_name: a.cursor_name.clone(),
+                    cursor_extent: a.cursor_extent,
+                    adapter_counters: a.adapter_counters.clone(),
+                    rows_per_batch: a.rows_per_batch,
+                    cursors: std::iter::once((a.cursor_name.clone(), a.ops_finished))
+                        .chain(a.adapter_counters.iter().map(|(n, t, _)| (n.clone(), *t)))
+                        .collect(),
+                    relevancy: a.relevancy.clone(),
+                    // Freeze the sparkline as a durable artifact —
+                    // the live Arc<BinomialSummary> is dropped with
+                    // the ActivePhase below.
+                    throughput_samples: a.throughput_summary.snapshot(),
+                })
+                .unwrap_or_default();
             state.set_phase_completed(scene_node_id, &name, &labels, duration_secs, summary);
             state.active_phases.remove(&key);
         }
-        RunStateCmd::PhaseFailed { exec_id, scene_node_id, name, labels, error } => {
+        RunStateCmd::PhaseFailed {
+            exec_id,
+            scene_node_id,
+            name,
+            labels,
+            error,
+        } => {
             state.set_phase_failed(scene_node_id, &name, &labels, &error);
-            state.active_phases.remove(&crate::state::ActivePhaseId::new(exec_id, name, labels));
+            state
+                .active_phases
+                .remove(&crate::state::ActivePhaseId::new(exec_id, name, labels));
         }
         RunStateCmd::OpStarting { parent, op_name } => {
             state.op_starting(parent, &op_name);
         }
-        RunStateCmd::OpMeasure { parent, op_name, text } => {
+        RunStateCmd::OpMeasure {
+            parent,
+            op_name,
+            text,
+        } => {
             state.op_measure(parent, &op_name, &text);
         }
-        RunStateCmd::OpCompleted { parent, op_name, duration_secs } => {
+        RunStateCmd::OpCompleted {
+            parent,
+            op_name,
+            duration_secs,
+        } => {
             state.op_completed(parent, &op_name, duration_secs);
         }
-        RunStateCmd::OpFailed { parent, op_name, error } => {
+        RunStateCmd::OpFailed {
+            parent,
+            op_name,
+            error,
+        } => {
             state.op_failed(parent, &op_name, &error);
         }
         RunStateCmd::PhaseProgress(update) => {
-            if let Some(active) = state.active_phase_mut(update.exec_id, &update.name, &update.labels) {
+            if let Some(active) =
+                state.active_phase_mut(update.exec_id, &update.name, &update.labels)
+            {
                 active.cursor_name = update.cursor_name.clone();
                 active.cursor_extent = update.cursor_extent;
                 active.daemon = update.daemon;
@@ -808,13 +912,24 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 active.errors = update.errors;
                 active.retries = update.retries;
                 active.ops_per_sec = update.ops_per_sec;
-                active.adapter_counters = update.adapter_counters.iter()
+                active.adapter_counters = update
+                    .adapter_counters
+                    .iter()
                     .map(|(n, t, r)| (n.clone(), *t, *r))
                     .collect();
                 active.rows_per_batch = update.rows_per_batch;
-                active.relevancy = update.relevancy.iter()
-                    .map(|r| (r.name.clone(), r.window_mean, r.total_mean,
-                              r.total_count, r.window_len))
+                active.relevancy = update
+                    .relevancy
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.name.clone(),
+                            r.window_mean,
+                            r.total_mean,
+                            r.total_count,
+                            r.window_len,
+                        )
+                    })
                     .collect();
                 active.throughput_summary.record(update.ops_per_sec);
                 active.rate_ewma.record_now(update.ops_per_sec);
@@ -827,7 +942,10 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             // handle is dropped — the consumer simply renders no status
             // for that (now-gone) phase, which is correct.
             let key = crate::state::ActivePhaseId::new(
-                handle.exec_id, handle.name.as_str(), handle.labels.as_str());
+                handle.exec_id,
+                handle.name.as_str(),
+                handle.labels.as_str(),
+            );
             if let Some(active) = state.active_phases.get_mut(&key) {
                 active.render = Some(handle);
             }
@@ -842,13 +960,20 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             // exhaustive.
             unreachable!("Log is handled in handle_cmd before apply")
         }
-        RunStateCmd::LatencyFrame { min, p50, p90, p99, p999, max } => {
-            state.min_nanos  = min;
-            state.p50_nanos  = p50;
-            state.p90_nanos  = p90;
-            state.p99_nanos  = p99;
+        RunStateCmd::LatencyFrame {
+            min,
+            p50,
+            p90,
+            p99,
+            p999,
+            max,
+        } => {
+            state.min_nanos = min;
+            state.p50_nanos = p50;
+            state.p90_nanos = p90;
+            state.p99_nanos = p99;
             state.p999_nanos = p999;
-            state.max_nanos  = max;
+            state.max_nanos = max;
 
             const HISTORY_CAP: usize = 300; // 5 min at 1 Hz
             state.min_history.push(min);
@@ -858,7 +983,9 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             state.p999_history.push(p999);
             state.max_history.push(max);
             let trim = |h: &mut Vec<u64>| {
-                if h.len() > HISTORY_CAP { h.remove(0); }
+                if h.len() > HISTORY_CAP {
+                    h.remove(0);
+                }
             };
             trim(&mut state.min_history);
             trim(&mut state.p50_history);
@@ -878,14 +1005,26 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 active.latency_peak_10s.record(max, now);
             }
         }
-        RunStateCmd::SparklineSamples { ops, rows, rows_label } => {
-            if let Some(o) = ops { state.push_ops_sample(o); }
-            if let Some(r) = rows { state.push_rows_sample(r); }
+        RunStateCmd::SparklineSamples {
+            ops,
+            rows,
+            rows_label,
+        } => {
+            if let Some(o) = ops {
+                state.push_ops_sample(o);
+            }
+            if let Some(r) = rows {
+                state.push_rows_sample(r);
+            }
             state.rows_sparkline_label = rows_label;
         }
         RunStateCmd::SetMeta { profiler, limit } => {
-            if let Some(p) = profiler { state.profiler = p; }
-            if let Some(l) = limit    { state.limit    = l; }
+            if let Some(p) = profiler {
+                state.profiler = p;
+            }
+            if let Some(l) = limit {
+                state.limit = l;
+            }
         }
         RunStateCmd::FrameAck(_) => {
             // Routed to `handle_cmd` before reaching this match;
@@ -911,8 +1050,7 @@ mod scrollback_stream_tests {
     /// cannot evict.
     #[test]
     fn stream_delivers_all_lines_past_ring_capacity() {
-        let (handle, join) =
-            spawn_run_state_actor(RunState::new("t", "default", "stdout"));
+        let (handle, join) = spawn_run_state_actor(RunState::new("t", "default", "stdout"));
 
         // Claim the stream first (as a real terminal-mode sink does),
         // which flips the actor's feed latch on so every subsequent
@@ -933,8 +1071,7 @@ mod scrollback_stream_tests {
         // Drain the durable stream, waiting for the actor thread to
         // finish enqueuing all N.
         let mut got: Vec<(u64, String)> = Vec::new();
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while (got.len() as u64) < N && std::time::Instant::now() < deadline {
             match rx.try_next() {
                 Some(line) => got.push((line.seq, line.entry.message)),
@@ -942,9 +1079,12 @@ mod scrollback_stream_tests {
             }
         }
 
-        assert_eq!(got.len() as u64, N,
+        assert_eq!(
+            got.len() as u64,
+            N,
             "every log line must be delivered — none dropped despite \
-             {N} lines arriving before any drain (ring cap is 200)");
+             {N} lines arriving before any drain (ring cap is 200)"
+        );
         // In order, contiguous seq 1..=N, messages line-0..line-(N-1).
         for (i, (seq, msg)) in got.iter().enumerate() {
             assert_eq!(*seq, i as u64 + 1, "seq monotonic + contiguous");
@@ -964,8 +1104,7 @@ mod scrollback_stream_tests {
     /// buffered on the stream.
     #[test]
     fn stream_not_fed_until_a_sink_claims_it() {
-        let (handle, join) =
-            spawn_run_state_actor(RunState::new("t", "default", "stdout"));
+        let (handle, join) = spawn_run_state_actor(RunState::new("t", "default", "stdout"));
 
         // No sink has claimed the stream yet.
         for i in 0..300u64 {
@@ -980,9 +1119,11 @@ mod scrollback_stream_tests {
         // Claim now: nothing that predates the claim is buffered.
         let rx = handle.take_log_stream();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        assert!(rx.try_next().is_none(),
+        assert!(
+            rx.try_next().is_none(),
             "an unclaimed stream must not buffer a backlog — no leak when \
-             no LogOnlySink is draining");
+             no LogOnlySink is draining"
+        );
 
         // Lines sent AFTER the claim ARE delivered.
         handle.send(RunStateCmd::Log {
@@ -990,8 +1131,7 @@ mod scrollback_stream_tests {
             category: LogCategory::Diagnostic,
             message: "after-claim".into(),
         });
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut got = None;
         while got.is_none() && std::time::Instant::now() < deadline {
             match rx.try_next() {
@@ -999,8 +1139,11 @@ mod scrollback_stream_tests {
                 None => std::thread::sleep(std::time::Duration::from_millis(2)),
             }
         }
-        assert_eq!(got.as_deref(), Some("after-claim"),
-            "lines sent after the claim must flow through the stream");
+        assert_eq!(
+            got.as_deref(),
+            Some("after-claim"),
+            "lines sent after the claim must flow through the stream"
+        );
 
         drop(rx);
         drop(handle);
@@ -1014,8 +1157,7 @@ mod scrollback_stream_tests {
     /// while no sink was draining.
     #[test]
     fn stream_receiver_survives_sink_handoff() {
-        let (handle, join) =
-            spawn_run_state_actor(RunState::new("t", "default", "stdout"));
+        let (handle, join) = spawn_run_state_actor(RunState::new("t", "default", "stdout"));
 
         // First "sink" takes the stream, then tears down (guard drops).
         {
@@ -1032,17 +1174,19 @@ mod scrollback_stream_tests {
         // Second "sink" resumes the same stream and drains the backlog.
         let rx = handle.take_log_stream();
         let mut got = Vec::new();
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while got.len() < 3 && std::time::Instant::now() < deadline {
             match rx.try_next() {
                 Some(line) => got.push(line.entry.message),
                 None => std::thread::sleep(std::time::Duration::from_millis(2)),
             }
         }
-        assert_eq!(got, vec!["swap-0", "swap-1", "swap-2"],
+        assert_eq!(
+            got,
+            vec!["swap-0", "swap-1", "swap-2"],
             "the stream receiver must survive the sink handoff and \
-             flush the backlog buffered while no sink was draining");
+             flush the backlog buffered while no sink was draining"
+        );
 
         drop(rx);
         drop(handle);
@@ -1061,7 +1205,10 @@ mod transcript_tests {
     #[test]
     fn buffers_until_opened_then_flushes_in_order() {
         let dir = std::env::temp_dir().join(format!(
-            "nbrs-transcript-{}-{}", std::process::id(), line!()));
+            "nbrs-transcript-{}-{}",
+            std::process::id(),
+            line!()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("transcript.log");
 
@@ -1094,11 +1241,15 @@ mod transcript_tests {
         });
 
         let body = std::fs::read_to_string(&path).unwrap();
-        let msgs: Vec<&str> = body.lines()
+        let msgs: Vec<&str> = body
+            .lines()
             .map(|l| l.rsplit('│').next().unwrap().trim())
             .collect();
-        assert_eq!(msgs, vec!["first", "second", "third"],
-            "buffered lines flush ahead of live ones, in order:\n{body}");
+        assert_eq!(
+            msgs,
+            vec!["first", "second", "third"],
+            "buffered lines flush ahead of live ones, in order:\n{body}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1119,7 +1270,10 @@ mod transcript_tests {
             detail_gutter: None,
         });
         assert!(rendered.contains("◷ 12.1s [1/4]"), "{rendered}");
-        assert!(rendered.contains('│'), "divider separates gutter from message: {rendered}");
+        assert!(
+            rendered.contains('│'),
+            "divider separates gutter from message: {rendered}"
+        );
         assert!(rendered.trim_end().ends_with("phase done"), "{rendered}");
     }
 }

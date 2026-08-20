@@ -29,8 +29,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-pollreq-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-pollreq-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -56,8 +56,7 @@ fn run_scenario(scenario: &str) -> (String, String, bool, PathBuf, Sandbox) {
         .arg("--session-path")
         .arg(&session);
     let out = cmd.output().expect("run nbrs");
-    let session_log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
     evidence.push_str(&session_log);
@@ -76,11 +75,18 @@ fn run_scenario(scenario: &str) -> (String, String, bool, PathBuf, Sandbox) {
 #[test]
 fn resolving_require_lets_the_gate_complete() {
     let (stdout, evidence, ok, _session, _sb) = run_scenario("gate_resolves");
-    assert!(ok, "a resolving require must let the gate complete; evidence:\n{evidence}");
-    assert!(stdout.lines().any(|l| l.trim() == "GATE_OK_TICK"),
-        "the gate's op must have run at least once");
-    assert!(!evidence.contains("[poll_require]"),
-        "no poll_require failure on the resolving path; evidence:\n{evidence}");
+    assert!(
+        ok,
+        "a resolving require must let the gate complete; evidence:\n{evidence}"
+    );
+    assert!(
+        stdout.lines().any(|l| l.trim() == "GATE_OK_TICK"),
+        "the gate's op must have run at least once"
+    );
+    assert!(
+        !evidence.contains("[poll_require]"),
+        "no poll_require failure on the resolving path; evidence:\n{evidence}"
+    );
 }
 
 /// A selector that can never resolve fails the phase with class
@@ -91,19 +97,28 @@ fn unresolved_require_fails_fast_and_loud() {
     let started = std::time::Instant::now();
     let (_stdout, evidence, ok, session, _sb) = run_scenario("gate_typo");
     let elapsed = started.elapsed();
-    assert!(!ok, "an unresolved require must fail the run; evidence:\n{evidence}");
-    assert!(evidence.contains("[poll_require]"),
-        "the failure must carry the poll_require class; evidence:\n{evidence}");
-    assert!(evidence.contains("no_such_family_xyz"),
-        "the failing selector must be named; evidence:\n{evidence}");
+    assert!(
+        !ok,
+        "an unresolved require must fail the run; evidence:\n{evidence}"
+    );
+    assert!(
+        evidence.contains("[poll_require]"),
+        "the failure must carry the poll_require class; evidence:\n{evidence}"
+    );
+    assert!(
+        evidence.contains("no_such_family_xyz"),
+        "the failing selector must be named; evidence:\n{evidence}"
+    );
     // Fast: grace is one 200ms interval; 10s timeout must NOT be what
     // ended the phase. Generous bound for slow CI.
-    assert!(elapsed < std::time::Duration::from_secs(8),
+    assert!(
+        elapsed < std::time::Duration::from_secs(8),
         "poll_require must fire at grace expiry, not hang toward \
-         timeout_ms; took {elapsed:?}");
+         timeout_ms; took {elapsed:?}"
+    );
 
-    let conn = rusqlite::Connection::open(session.join("metrics.db"))
-        .expect("open session metrics.db");
+    let conn =
+        rusqlite::Connection::open(session.join("metrics.db")).expect("open session metrics.db");
     let status: String = conn
         .query_row(
             "SELECT status FROM phase_outcomes WHERE phase_name = 'gate_bad'",

@@ -27,9 +27,9 @@ fn emit(msg: &str) {
     f(msg);
 }
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::detail::ErrorDetail;
 use crate::handler::ErrorHandler;
@@ -39,7 +39,14 @@ use crate::handler::ErrorHandler;
 pub struct StopHandler;
 
 impl ErrorHandler for StopHandler {
-    fn handle(&self, _name: &str, _error_msg: &str, _cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
+    fn handle(
+        &self,
+        _name: &str,
+        _error_msg: &str,
+        _cycle: u64,
+        _duration_nanos: u64,
+        detail: ErrorDetail,
+    ) -> ErrorDetail {
         detail.with_stop()
     }
 }
@@ -48,8 +55,17 @@ impl ErrorHandler for StopHandler {
 pub struct WarnHandler;
 
 impl ErrorHandler for WarnHandler {
-    fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
-        emit(&format!("WARN error at cycle {cycle}: [{name}] {error_msg}"));
+    fn handle(
+        &self,
+        name: &str,
+        error_msg: &str,
+        cycle: u64,
+        _duration_nanos: u64,
+        detail: ErrorDetail,
+    ) -> ErrorDetail {
+        emit(&format!(
+            "WARN error at cycle {cycle}: [{name}] {error_msg}"
+        ));
         detail
     }
 }
@@ -58,7 +74,14 @@ impl ErrorHandler for WarnHandler {
 pub struct ErrorLogHandler;
 
 impl ErrorHandler for ErrorLogHandler {
-    fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
+    fn handle(
+        &self,
+        name: &str,
+        error_msg: &str,
+        cycle: u64,
+        _duration_nanos: u64,
+        detail: ErrorDetail,
+    ) -> ErrorDetail {
         emit(&format!("ERROR at cycle {cycle}: [{name}] {error_msg}"));
         detail
     }
@@ -68,7 +91,14 @@ impl ErrorHandler for ErrorLogHandler {
 pub struct IgnoreHandler;
 
 impl ErrorHandler for IgnoreHandler {
-    fn handle(&self, _name: &str, _error_msg: &str, _cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
+    fn handle(
+        &self,
+        _name: &str,
+        _error_msg: &str,
+        _cycle: u64,
+        _duration_nanos: u64,
+        detail: ErrorDetail,
+    ) -> ErrorDetail {
         detail
     }
 }
@@ -77,7 +107,14 @@ impl ErrorHandler for IgnoreHandler {
 pub struct RetryHandler;
 
 impl ErrorHandler for RetryHandler {
-    fn handle(&self, _name: &str, _error_msg: &str, _cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
+    fn handle(
+        &self,
+        _name: &str,
+        _error_msg: &str,
+        _cycle: u64,
+        _duration_nanos: u64,
+        detail: ErrorDetail,
+    ) -> ErrorDetail {
         detail.with_retryable()
     }
 }
@@ -95,26 +132,41 @@ impl Default for CounterHandler {
 
 impl CounterHandler {
     pub fn new() -> Self {
-        Self { counts: Mutex::new(HashMap::new()) }
+        Self {
+            counts: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Get the current count for a specific error name.
     #[allow(dead_code)]
     pub fn get_count(&self, name: &str) -> u64 {
         let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        counts.get(name).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0)
+        counts
+            .get(name)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     /// Get all error counts.
     #[allow(dead_code)]
     pub fn all_counts(&self) -> HashMap<String, u64> {
         let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-        counts.iter().map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed))).collect()
+        counts
+            .iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect()
     }
 }
 
 impl ErrorHandler for CounterHandler {
-    fn handle(&self, name: &str, _error_msg: &str, _cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
+    fn handle(
+        &self,
+        name: &str,
+        _error_msg: &str,
+        _cycle: u64,
+        _duration_nanos: u64,
+        detail: ErrorDetail,
+    ) -> ErrorDetail {
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         counts
             .entry(name.to_string())
@@ -175,7 +227,10 @@ mod tests {
         let h = StopHandler;
         let detail = ErrorDetail::non_retryable("test");
         let result = h.handle("test", "boom", 42, 0, detail);
-        assert!(result.should_stop, "stop handler should set should_stop flag");
+        assert!(
+            result.should_stop,
+            "stop handler should set should_stop flag"
+        );
     }
 
     #[test]

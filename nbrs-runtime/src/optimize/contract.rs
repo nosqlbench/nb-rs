@@ -112,7 +112,9 @@ impl Axis {
             AxisKind::Discrete { detents } => {
                 let mut d = detents.clone();
                 d.sort_by(|a, b| {
-                    a.as_num().partial_cmp(&b.as_num()).unwrap_or(std::cmp::Ordering::Equal)
+                    a.as_num()
+                        .partial_cmp(&b.as_num())
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 d.get(d.len() / 2).cloned().unwrap_or(AxisValue::Num(0.0))
             }
@@ -152,10 +154,20 @@ pub struct Observation {
 
 impl Observation {
     pub fn value(v: f64) -> Self {
-        Self { value: v, feasible: true, cost: 0.0, metrics: Vec::new() }
+        Self {
+            value: v,
+            feasible: true,
+            cost: 0.0,
+            metrics: Vec::new(),
+        }
     }
     pub fn infeasible() -> Self {
-        Self { value: f64::NEG_INFINITY, feasible: false, cost: 0.0, metrics: Vec::new() }
+        Self {
+            value: f64::NEG_INFINITY,
+            feasible: false,
+            cost: 0.0,
+            metrics: Vec::new(),
+        }
     }
 }
 
@@ -181,7 +193,11 @@ pub struct Budget {
 
 impl Budget {
     pub fn seeded(max_evals: usize, seed: u64) -> Self {
-        Self { max_evals, max_seconds: None, seed }
+        Self {
+            max_evals,
+            max_seconds: None,
+            seed,
+        }
     }
 }
 
@@ -228,7 +244,12 @@ impl OptimizerParams {
         self
     }
     pub fn get(&self, key: &str, default: f64) -> f64 {
-        self.overrides.iter().rev().find(|(k, _)| k == key).map(|(_, v)| *v).unwrap_or(default)
+        self.overrides
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| *v)
+            .unwrap_or(default)
     }
 }
 
@@ -289,7 +310,11 @@ impl LexSource {
             })
             .collect();
         let n = lists.len();
-        Self { lists, idx: vec![0; n], done: false }
+        Self {
+            lists,
+            idx: vec![0; n],
+            done: false,
+        }
     }
 }
 
@@ -422,7 +447,14 @@ fn drive_source(
     } else {
         StopReason::Converged
     };
-    Report { best, best_value, evals, stop, ranked_axes: Vec::new(), history }
+    Report {
+        best,
+        best_value,
+        evals,
+        stop,
+        ranked_axes: Vec::new(),
+        history,
+    }
 }
 
 /// The built-in default optimizer: the **identity functor**. It returns the
@@ -497,9 +529,15 @@ pub fn by_name(name: &str, params: &OptimizerParams) -> Option<Box<dyn Optimizer
 /// Every available optimizer (the built-in `sweep` + all registrations),
 /// sorted by name, for `nbrs describe optimizers`.
 pub fn describe() -> Vec<OptimizerInfo> {
-    let mut out = vec![OptimizerInfo { name: "sweep", doc_md: SWEEP_DOC }];
+    let mut out = vec![OptimizerInfo {
+        name: "sweep",
+        doc_md: SWEEP_DOC,
+    }];
     for r in inventory::iter::<OptimizerRegistration> {
-        out.push(OptimizerInfo { name: (r.name)(), doc_md: (r.doc_md)() });
+        out.push(OptimizerInfo {
+            name: (r.name)(),
+            doc_md: (r.doc_md)(),
+        });
     }
     out.sort_by(|a, b| a.name.cmp(b.name));
     out.dedup_by(|a, b| a.name == b.name);
@@ -534,11 +572,33 @@ mod tests {
     #[test]
     fn sweep_is_always_available_and_sweeps_the_grid() {
         let space = SearchSpace::new(vec![
-            Axis { name: "x".into(), kind: AxisKind::Discrete { detents: vec![AxisValue::Num(0.0), AxisValue::Num(1.0), AxisValue::Num(2.0)] }, changeover: Changeover::Coordinate },
-            Axis { name: "y".into(), kind: AxisKind::Discrete { detents: vec![AxisValue::Num(0.0), AxisValue::Num(1.0), AxisValue::Num(2.0)] }, changeover: Changeover::Coordinate },
+            Axis {
+                name: "x".into(),
+                kind: AxisKind::Discrete {
+                    detents: vec![
+                        AxisValue::Num(0.0),
+                        AxisValue::Num(1.0),
+                        AxisValue::Num(2.0),
+                    ],
+                },
+                changeover: Changeover::Coordinate,
+            },
+            Axis {
+                name: "y".into(),
+                kind: AxisKind::Discrete {
+                    detents: vec![
+                        AxisValue::Num(0.0),
+                        AxisValue::Num(1.0),
+                        AxisValue::Num(2.0),
+                    ],
+                },
+                changeover: Changeover::Coordinate,
+            },
         ]);
         let opt = by_name("sweep", &OptimizerParams::new()).expect("sweep is built in");
-        let mut obj = Paraboloid { target: vec![1.0, 2.0] };
+        let mut obj = Paraboloid {
+            target: vec![1.0, 2.0],
+        };
         let r = opt.optimize(&space, &mut obj, &Budget::seeded(100, 0));
         assert_eq!(r.evals, 9);
         assert_eq!(r.best, vec![AxisValue::Num(1.0), AxisValue::Num(2.0)]);

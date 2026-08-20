@@ -39,8 +39,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-stick-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-stick-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         std::fs::write(dir.join("stick.yaml"), WORKLOAD).expect("write workload");
         Self { dir }
@@ -63,10 +63,8 @@ impl Sandbox {
     }
 
     fn latest_log(&self) -> String {
-        std::fs::read_to_string(
-            self.dir.join("sessions").join("latest").join("session.log"),
-        )
-        .unwrap_or_default()
+        std::fs::read_to_string(self.dir.join("sessions").join("latest").join("session.log"))
+            .unwrap_or_default()
     }
 
     fn session_dirs(&self) -> usize {
@@ -93,27 +91,38 @@ fn second_run_reattaches_and_announces_first() {
     let sandbox = Sandbox::new("announce");
     let (err, ok) = sandbox.invoke(&[]);
     assert!(ok, "first run must complete: {err}");
-    assert!(!sandbox.latest_log().contains("sticky session"),
-        "a first run has nothing to re-attach to — no announcement");
+    assert!(
+        !sandbox.latest_log().contains("sticky session"),
+        "a first run has nothing to re-attach to — no announcement"
+    );
 
     let (err, ok) = sandbox.invoke(&[]);
     assert!(ok, "second run must complete: {err}");
-    assert_eq!(sandbox.session_dirs(), 1,
-        "stick must re-attach, not create a second session");
+    assert_eq!(
+        sandbox.session_dirs(),
+        1,
+        "stick must re-attach, not create a second session"
+    );
 
     let log = sandbox.latest_log();
-    assert!(log.contains("pass --session new to start fresh"),
-        "the notice must name the copy-pasteable override; log:\n{log}");
+    assert!(
+        log.contains("pass --session new to start fresh"),
+        "the notice must name the copy-pasteable override; log:\n{log}"
+    );
     // session.log is cumulative across invocations, so the first
     // invocation's phase events legitimately precede the notice.
     // The ordering claim is about the RE-ATTACHED invocation: its
     // phase handling (here, the refine skip of the completed
     // phase) must come after the announcement.
-    let notice_at = log.find("sticky session: re-attached to")
+    let notice_at = log
+        .find("sticky session: re-attached to")
         .expect("the session_notice line must land in session.log");
-    assert!(log[notice_at..].contains("phase 'ping'"),
+    assert!(
+        log[notice_at..].contains("phase 'ping'"),
         "the notice must render ahead of the re-attached invocation's \
-         phase events; log after notice:\n{}", &log[notice_at..]);
+         phase events; log after notice:\n{}",
+        &log[notice_at..]
+    );
 }
 
 /// Explicit session selection wins outright — fresh named
@@ -126,13 +135,23 @@ fn explicit_session_selection_defeats_stick() {
 
     let (err, ok) = sandbox.invoke(&["--session-name", "named_b"]);
     assert!(ok, "named run must complete: {err}");
-    assert_eq!(sandbox.session_dirs(), 2,
-        "an explicit --session-name must produce its own session");
+    assert_eq!(
+        sandbox.session_dirs(),
+        2,
+        "an explicit --session-name must produce its own session"
+    );
     let named_log = std::fs::read_to_string(
-        sandbox.dir.join("sessions").join("named_b").join("session.log"),
-    ).unwrap_or_default();
-    assert!(!named_log.contains("sticky session"),
-        "explicit selection must not announce a stick re-attach");
+        sandbox
+            .dir
+            .join("sessions")
+            .join("named_b")
+            .join("session.log"),
+    )
+    .unwrap_or_default();
+    assert!(
+        !named_log.contains("sticky session"),
+        "explicit selection must not announce a stick re-attach"
+    );
 }
 
 /// `--session new` forces a fresh auto-named session.
@@ -148,8 +167,13 @@ fn session_new_token_defeats_stick() {
 
     let (err, ok) = sandbox.invoke(&["--session", "new"]);
     assert!(ok, "--session new run must complete: {err}");
-    assert_eq!(sandbox.session_dirs(), 2,
-        "--session new must start a fresh session, ignoring stick");
-    assert!(!sandbox.latest_log().contains("sticky session"),
-        "--session new must not announce a re-attach");
+    assert_eq!(
+        sandbox.session_dirs(),
+        2,
+        "--session new must start a fresh session, ignoring stick"
+    );
+    assert!(
+        !sandbox.latest_log().contains("sticky session"),
+        "--session new must not announce a re-attach"
+    );
 }

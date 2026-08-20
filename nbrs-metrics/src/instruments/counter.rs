@@ -3,8 +3,8 @@
 
 //! Monotonic u64 counter.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::labels::Labels;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct Counter {
     labels: Labels,
@@ -13,7 +13,10 @@ pub struct Counter {
 
 impl Counter {
     pub fn new(labels: Labels) -> Self {
-        Self { labels, value: AtomicU64::new(0) }
+        Self {
+            labels,
+            value: AtomicU64::new(0),
+        }
     }
 
     pub fn inc(&self) {

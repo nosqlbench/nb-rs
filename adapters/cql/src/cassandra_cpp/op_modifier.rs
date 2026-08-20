@@ -37,8 +37,8 @@ use cassandra_cpp as cass;
 use nbrs_runtime::op_modifier::OpFieldModifier;
 use polydat::ast::Value;
 
-use crate::common::op_modifier::{CqlModifierFactory, parse_consistency};
 use crate::common::CqlConsistency;
+use crate::common::op_modifier::{CqlModifierFactory, parse_consistency};
 
 // =========================================================================
 // Aspect target — the executable CQL op a universal field applies to
@@ -108,8 +108,12 @@ struct ConsistencyMod {
 }
 
 impl<S: CassStmt> OpFieldModifier<S> for ConsistencyMod {
-    fn field_name(&self) -> &'static str { "consistency" }
-    fn apply(&self, s: &mut S) { s.set_consistency(self.consistency); }
+    fn field_name(&self) -> &'static str {
+        "consistency"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_consistency(self.consistency);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::String(self.display.to_string())
     }
@@ -121,8 +125,12 @@ struct SerialConsistencyMod {
 }
 
 impl<S: CassStmt> OpFieldModifier<S> for SerialConsistencyMod {
-    fn field_name(&self) -> &'static str { "serial_consistency" }
-    fn apply(&self, s: &mut S) { s.set_serial_consistency(self.serial); }
+    fn field_name(&self) -> &'static str {
+        "serial_consistency"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_serial_consistency(self.serial);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::String(self.display.to_string())
     }
@@ -133,8 +141,12 @@ struct RequestTimeoutMod {
 }
 
 impl<S: CassStmt> OpFieldModifier<S> for RequestTimeoutMod {
-    fn field_name(&self) -> &'static str { "request_timeout_ms" }
-    fn apply(&self, s: &mut S) { s.set_request_timeout(self.timeout); }
+    fn field_name(&self) -> &'static str {
+        "request_timeout_ms"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_request_timeout(self.timeout);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::from(self.timeout.as_millis() as u64)
     }
@@ -145,8 +157,12 @@ struct PageSizeMod {
 }
 
 impl<S: CassStmt> OpFieldModifier<S> for PageSizeMod {
-    fn field_name(&self) -> &'static str { "page_size" }
-    fn apply(&self, s: &mut S) { s.set_page_size(self.page_size); }
+    fn field_name(&self) -> &'static str {
+        "page_size"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_page_size(self.page_size);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::from(self.page_size as i64)
     }
@@ -157,8 +173,12 @@ struct CqlTraceMod {
 }
 
 impl<S: CassStmt> OpFieldModifier<S> for CqlTraceMod {
-    fn field_name(&self) -> &'static str { "cql_trace" }
-    fn apply(&self, s: &mut S) { s.set_tracing(self.tracing); }
+    fn field_name(&self) -> &'static str {
+        "cql_trace"
+    }
+    fn apply(&self, s: &mut S) {
+        s.set_tracing(self.tracing);
+    }
     fn diagnostic_value(&self) -> serde_json::Value {
         serde_json::Value::Bool(self.tracing)
     }
@@ -242,29 +262,29 @@ fn cql_to_cass(c: CqlConsistency) -> cass::Consistency {
     // local to this module so the universal-field code path is
     // self-contained.
     match c {
-        CqlConsistency::Any         => cass::Consistency::ANY,
-        CqlConsistency::One         => cass::Consistency::ONE,
-        CqlConsistency::Two         => cass::Consistency::TWO,
-        CqlConsistency::Three       => cass::Consistency::THREE,
-        CqlConsistency::Quorum      => cass::Consistency::QUORUM,
-        CqlConsistency::All         => cass::Consistency::ALL,
+        CqlConsistency::Any => cass::Consistency::ANY,
+        CqlConsistency::One => cass::Consistency::ONE,
+        CqlConsistency::Two => cass::Consistency::TWO,
+        CqlConsistency::Three => cass::Consistency::THREE,
+        CqlConsistency::Quorum => cass::Consistency::QUORUM,
+        CqlConsistency::All => cass::Consistency::ALL,
         CqlConsistency::LocalQuorum => cass::Consistency::LOCAL_QUORUM,
-        CqlConsistency::EachQuorum  => cass::Consistency::EACH_QUORUM,
-        CqlConsistency::LocalOne    => cass::Consistency::LOCAL_ONE,
+        CqlConsistency::EachQuorum => cass::Consistency::EACH_QUORUM,
+        CqlConsistency::LocalOne => cass::Consistency::LOCAL_ONE,
     }
 }
 
 fn cql_consistency_display(c: CqlConsistency) -> &'static str {
     match c {
-        CqlConsistency::Any         => "ANY",
-        CqlConsistency::One         => "ONE",
-        CqlConsistency::Two         => "TWO",
-        CqlConsistency::Three       => "THREE",
-        CqlConsistency::Quorum      => "QUORUM",
-        CqlConsistency::All         => "ALL",
+        CqlConsistency::Any => "ANY",
+        CqlConsistency::One => "ONE",
+        CqlConsistency::Two => "TWO",
+        CqlConsistency::Three => "THREE",
+        CqlConsistency::Quorum => "QUORUM",
+        CqlConsistency::All => "ALL",
         CqlConsistency::LocalQuorum => "LOCAL_QUORUM",
-        CqlConsistency::EachQuorum  => "EACH_QUORUM",
-        CqlConsistency::LocalOne    => "LOCAL_ONE",
+        CqlConsistency::EachQuorum => "EACH_QUORUM",
+        CqlConsistency::LocalOne => "LOCAL_ONE",
     }
 }
 
@@ -274,7 +294,7 @@ fn cql_consistency_display(c: CqlConsistency) -> &'static str {
 /// `SerialConsistency`).
 fn parse_serial_consistency_cass(s: &str) -> Result<(cass::Consistency, &'static str), String> {
     match s.to_uppercase().as_str() {
-        "SERIAL"       => Ok((cass::Consistency::SERIAL, "SERIAL")),
+        "SERIAL" => Ok((cass::Consistency::SERIAL, "SERIAL")),
         "LOCAL_SERIAL" => Ok((cass::Consistency::LOCAL_SERIAL, "LOCAL_SERIAL")),
         _ => Err(format!(
             "unrecognized serial_consistency '{s}'. Valid: SERIAL, LOCAL_SERIAL"
@@ -298,7 +318,9 @@ mod tests {
         let m = CassModifierFactory::<cass::Statement>::modifier_for(
             "request_timeout_ms",
             Value::U64(300_000),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(m.field_name(), "request_timeout_ms");
         assert_eq!(m.diagnostic_value(), serde_json::json!(300_000u64));
     }
@@ -308,23 +330,27 @@ mod tests {
         let m = CassModifierFactory::<cass::Statement>::modifier_for(
             "consistency",
             Value::Str(std::sync::Arc::from("LOCAL_QUORUM")),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(m.diagnostic_value(), serde_json::json!("LOCAL_QUORUM"));
     }
 
     #[test]
     fn page_size_rejects_zero() {
         let err = expect_err(CassModifierFactory::<cass::Statement>::modifier_for(
-            "page_size", Value::U64(0),
+            "page_size",
+            Value::U64(0),
         ));
         assert!(err.contains("positive"), "{err}");
     }
 
     #[test]
     fn cql_trace_accepts_bool() {
-        let m = CassModifierFactory::<cass::Statement>::modifier_for(
-            "cql_trace", Value::Bool(false),
-        ).unwrap().unwrap();
+        let m =
+            CassModifierFactory::<cass::Statement>::modifier_for("cql_trace", Value::Bool(false))
+                .unwrap()
+                .unwrap();
         assert_eq!(m.diagnostic_value(), serde_json::json!(false));
     }
 
@@ -333,7 +359,9 @@ mod tests {
         let m = CassModifierFactory::<cass::Statement>::modifier_for(
             "serial_consistency",
             Value::Str(std::sync::Arc::from("SERIAL")),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(m.diagnostic_value(), serde_json::json!("SERIAL"));
     }
 
@@ -347,7 +375,9 @@ mod tests {
             CassModifierFactory::<cass::Batch>::modifier_for(
                 "request_timeout_ms",
                 Value::U64(60_000),
-            ).unwrap().unwrap();
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(m.field_name(), "request_timeout_ms");
         assert_eq!(m.diagnostic_value(), serde_json::json!(60_000u64));
     }

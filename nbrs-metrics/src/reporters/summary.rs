@@ -13,7 +13,7 @@ use crate::metrics_query::{MetricsQuery, Selection};
 use crate::snapshot::MetricValue;
 
 #[cfg(feature = "sqlite")]
-pub use crate::reporters::sqlite::{ReportConfig, ReportAggregate};
+pub use crate::reporters::sqlite::{ReportAggregate, ReportConfig};
 
 /// One row in the summary table — one per distinct component.
 pub struct ActivityRow {
@@ -40,7 +40,9 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
 
     for labels in reporter.component_labels() {
         // Skip nosummary components
-        if labels.get("nosummary") == Some("true") { continue; }
+        if labels.get("nosummary") == Some("true") {
+            continue;
+        }
 
         // Build a per-component selection by matching every label
         // on the component's `Labels` — session-lifetime merges all
@@ -55,7 +57,8 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
         let activity = format_activity_labels(&labels);
 
         // Find cycles_total counter (family name == "cycles_total")
-        let cycles = snapshot.family("cycles_total")
+        let cycles = snapshot
+            .family("cycles_total")
             .and_then(|f| f.metrics().next())
             .and_then(|m| m.point())
             .and_then(|p| match p.value() {
@@ -64,12 +67,15 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
             })
             .unwrap_or(0);
 
-        if cycles == 0 { continue; }
+        if cycles == 0 {
+            continue;
+        }
 
         let rate = cycles as f64 / session_age;
 
         // Find cycles_servicetime histogram for latency
-        let latency = snapshot.family("cycles_servicetime")
+        let latency = snapshot
+            .family("cycles_servicetime")
             .and_then(|f| f.metrics().next())
             .and_then(|m| m.point())
             .and_then(|p| match p.value() {
@@ -86,16 +92,21 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
         let mut seen = std::collections::HashSet::new();
         for family in snapshot.families() {
             let fname = family.name();
-            if !fname.ends_with("_mean") { continue; }
+            if !fname.ends_with("_mean") {
+                continue;
+            }
             let short = fname.strip_suffix("_mean").unwrap_or(fname);
-            if seen.contains(short) { continue; }
+            if seen.contains(short) {
+                continue;
+            }
             for metric in family.metrics() {
                 if let Some(point) = metric.point()
-                    && let MetricValue::Gauge(g) = point.value() {
-                        seen.insert(short.to_string());
-                        gauges.push((short.to_string(), g.value));
-                        break;
-                    }
+                    && let MetricValue::Gauge(g) = point.value()
+                {
+                    seen.insert(short.to_string());
+                    gauges.push((short.to_string(), g.value));
+                    break;
+                }
             }
         }
 
@@ -130,12 +141,16 @@ pub fn format_duration(nanos: f64) -> String {
 /// Print a summary report from the unified [`MetricsQuery`].
 #[cfg(feature = "sqlite")]
 pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
-    let row_patterns: Vec<regex::Regex> = config.row_filters.iter()
+    let row_patterns: Vec<regex::Regex> = config
+        .row_filters
+        .iter()
         .filter_map(|p| regex::Regex::new(p.trim()).ok())
         .collect();
 
     let rows = rows_from_query(query);
-    if rows.is_empty() { return; }
+    if rows.is_empty() {
+        return;
+    }
 
     let has_latency = rows.iter().any(|r| r.latency_p50_ns.is_some());
     let mut gauge_names: Vec<String> = Vec::new();
@@ -154,9 +169,7 @@ pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
         }
     }
 
-    let mut headers: Vec<String> = vec![
-        "Activity".into(), "Cycles".into(), "Rate".into(),
-    ];
+    let mut headers: Vec<String> = vec!["Activity".into(), "Cycles".into(), "Rate".into()];
     if has_latency {
         headers.extend(["p50".into(), "p99".into(), "mean".into()]);
     }
@@ -166,9 +179,7 @@ pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
 
     let mut grid: Vec<Vec<String>> = Vec::new();
     for row in &rows {
-        if !row_patterns.is_empty()
-            && !row_patterns.iter().any(|p| p.is_match(&row.activity))
-        {
+        if !row_patterns.is_empty() && !row_patterns.iter().any(|p| p.is_match(&row.activity)) {
             continue;
         }
         grid.push(format_row(row, has_latency, &gauge_names));
@@ -177,8 +188,12 @@ pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
     // Compute aggregate rows
     let agg_rows = compute_aggregates(&config.aggregates, &rows, has_latency, &gauge_names);
 
-    if !config.show_details { grid.clear(); }
-    if grid.is_empty() && agg_rows.is_empty() { return; }
+    if !config.show_details {
+        grid.clear();
+    }
+    if grid.is_empty() && agg_rows.is_empty() {
+        return;
+    }
 
     align_activity_column(&mut grid);
 
@@ -193,7 +208,9 @@ pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
     for row in &grid {
         for (i, cell) in row.iter().enumerate() {
             let w = cell.chars().count();
-            if i < ncols && w > widths[i] { widths[i] = w; }
+            if i < ncols && w > widths[i] {
+                widths[i] = w;
+            }
         }
     }
 
@@ -208,7 +225,9 @@ pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
     println!("{line}");
 
     let mut sep = String::from("|");
-    for w in &widths { sep.push_str(&format!("-{}-|", "-".repeat(*w))); }
+    for w in &widths {
+        sep.push_str(&format!("-{}-|", "-".repeat(*w)));
+    }
     println!("{sep}");
 
     for row in &grid {
@@ -248,7 +267,9 @@ fn format_row(row: &ActivityRow, has_latency: bool, gauge_names: &[String]) -> V
         }
     }
     for name in gauge_names {
-        let val = row.gauges.iter()
+        let val = row
+            .gauges
+            .iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| format!("{v:.4}"))
             .unwrap_or_else(|| "-".to_string());
@@ -270,18 +291,25 @@ fn compute_aggregates(
             // Multi-key grouping form: one aggregate row per
             // distinct value-tuple across `group_by` keys.
             agg_rows.extend(compute_grouped_aggregate(
-                agg, rows, has_latency, gauge_names));
+                agg,
+                rows,
+                has_latency,
+                gauge_names,
+            ));
             continue;
         }
 
         // Existing single-key filter form: one aggregate row.
-        let matching: Vec<&ActivityRow> = rows.iter()
+        let matching: Vec<&ActivityRow> = rows
+            .iter()
             .filter(|r| {
                 for segment in r.activity.split(", ") {
                     if let Some((k, v)) = segment.split_once('=')
-                        && k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
-                            return true;
-                        }
+                        && k.trim() == agg.label_key
+                        && v.trim().contains(&agg.label_pattern)
+                    {
+                        return true;
+                    }
                 }
                 false
             })
@@ -292,15 +320,23 @@ fn compute_aggregates(
             agg.function, agg.column_pattern, agg.label_key, agg.label_pattern,
         );
         let mut cells = vec![label, "-".into(), "-".into()];
-        if has_latency { cells.extend(["-".into(), "-".into(), "-".into()]); }
+        if has_latency {
+            cells.extend(["-".into(), "-".into(), "-".into()]);
+        }
 
         for gauge_name in gauge_names {
             if !gauge_name.contains(&agg.column_pattern) {
                 cells.push("-".into());
                 continue;
             }
-            let values: Vec<f64> = matching.iter()
-                .filter_map(|r| r.gauges.iter().find(|(n, _)| n == gauge_name).map(|(_, v)| *v))
+            let values: Vec<f64> = matching
+                .iter()
+                .filter_map(|r| {
+                    r.gauges
+                        .iter()
+                        .find(|(n, _)| n == gauge_name)
+                        .map(|(_, v)| *v)
+                })
                 .collect();
             cells.push(reduce_or_dash(&values, &agg.function));
         }
@@ -324,7 +360,9 @@ fn compute_grouped_aggregate(
     // Group rows by tuple of values across `agg.group_by`.
     let mut groups: BTreeMap<String, Vec<&ActivityRow>> = BTreeMap::new();
     for row in rows {
-        let label_map: std::collections::HashMap<&str, &str> = row.activity.split(", ")
+        let label_map: std::collections::HashMap<&str, &str> = row
+            .activity
+            .split(", ")
             .filter_map(|seg| seg.split_once('='))
             .map(|(k, v)| (k.trim(), v.trim()))
             .collect();
@@ -333,10 +371,15 @@ fn compute_grouped_aggregate(
         for key in &agg.group_by {
             match label_map.get(key.as_str()) {
                 Some(v) => tuple_parts.push(format!("{key}={v}")),
-                None => { all_present = false; break; }
+                None => {
+                    all_present = false;
+                    break;
+                }
             }
         }
-        if !all_present { continue; }
+        if !all_present {
+            continue;
+        }
         let tuple_key = tuple_parts.join(", ");
         groups.entry(tuple_key).or_default().push(row);
     }
@@ -349,15 +392,23 @@ fn compute_grouped_aggregate(
             agg.function, agg.column_pattern, group_by_header,
         );
         let mut cells = vec![label, "-".into(), "-".into()];
-        if has_latency { cells.extend(["-".into(), "-".into(), "-".into()]); }
+        if has_latency {
+            cells.extend(["-".into(), "-".into(), "-".into()]);
+        }
 
         for gauge_name in gauge_names {
             if !gauge_name.contains(&agg.column_pattern) {
                 cells.push("-".into());
                 continue;
             }
-            let values: Vec<f64> = group_rows.iter()
-                .filter_map(|r| r.gauges.iter().find(|(n, _)| n == gauge_name).map(|(_, v)| *v))
+            let values: Vec<f64> = group_rows
+                .iter()
+                .filter_map(|r| {
+                    r.gauges
+                        .iter()
+                        .find(|(n, _)| n == gauge_name)
+                        .map(|(_, v)| *v)
+                })
                 .collect();
             cells.push(reduce_or_dash(&values, &agg.function));
         }
@@ -382,10 +433,9 @@ fn reduce_or_dash(values: &[f64], function: &str) -> String {
 
 /// Format activity labels for display (skip internal labels).
 fn format_activity_labels(labels: &Labels) -> String {
-    let parts: Vec<String> = labels.iter()
-        .filter(|(k, _)| {
-            !matches!(*k, "session" | "n" | "name" | "nosummary")
-        })
+    let parts: Vec<String> = labels
+        .iter()
+        .filter(|(k, _)| !matches!(*k, "session" | "n" | "name" | "nosummary"))
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     parts.join(", ")
@@ -395,15 +445,22 @@ fn format_activity_labels(labels: &Labels) -> String {
 // Only consumed by the sqlite-gated `print_summary_from_query`.
 #[cfg(feature = "sqlite")]
 fn align_activity_column(grid: &mut [Vec<String>]) {
-    if grid.is_empty() { return; }
+    if grid.is_empty() {
+        return;
+    }
 
-    let parsed: Vec<Vec<(String, String)>> = grid.iter()
+    let parsed: Vec<Vec<(String, String)>> = grid
+        .iter()
         .map(|row| {
-            row[0].split(", ")
+            row[0]
+                .split(", ")
                 .filter_map(|seg| {
                     let key = seg.split('=').next().unwrap_or("").to_string();
-                    if key.is_empty() { None }
-                    else { Some((key, seg.to_string())) }
+                    if key.is_empty() {
+                        None
+                    } else {
+                        Some((key, seg.to_string()))
+                    }
                 })
                 .collect()
         })
@@ -413,12 +470,16 @@ fn align_activity_column(grid: &mut [Vec<String>]) {
     let longest = parsed.iter().max_by_key(|r| r.len());
     if let Some(row) = longest {
         for (key, _) in row {
-            if !all_keys.contains(key) { all_keys.push(key.clone()); }
+            if !all_keys.contains(key) {
+                all_keys.push(key.clone());
+            }
         }
     }
     for row in &parsed {
         for (key, _) in row {
-            if !all_keys.contains(key) { all_keys.push(key.clone()); }
+            if !all_keys.contains(key) {
+                all_keys.push(key.clone());
+            }
         }
     }
 
@@ -427,7 +488,9 @@ fn align_activity_column(grid: &mut [Vec<String>]) {
         for (i, key) in all_keys.iter().enumerate() {
             if let Some((_, seg)) = row.iter().find(|(k, _)| k == key) {
                 let w = seg.chars().count();
-                if w > slot_widths[i] { slot_widths[i] = w; }
+                if w > slot_widths[i] {
+                    slot_widths[i] = w;
+                }
             }
         }
     }

@@ -94,7 +94,9 @@ pub struct SchedulerConfig {
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        Self { base_interval: Duration::from_secs(1) }
+        Self {
+            base_interval: Duration::from_secs(1),
+        }
     }
 }
 
@@ -189,13 +191,15 @@ impl SchedulerBuilder {
                 assert!(
                     layer.interval.as_millis() % base.as_millis() == 0,
                     "cadence layer {:?} must be an exact multiple of base {:?}",
-                    layer.interval, base,
+                    layer.interval,
+                    base,
                 );
                 let mut node = ScheduleNode::new(layer.interval);
                 if !layer.hidden
-                    && let Some(reps) = by_interval.remove(&layer.interval) {
-                        node.reporters = reps;
-                    }
+                    && let Some(reps) = by_interval.remove(&layer.interval)
+                {
+                    node.reporters = reps;
+                }
                 if let Some(child) = chain.take() {
                     node.children.push(child);
                 }
@@ -213,7 +217,8 @@ impl SchedulerBuilder {
             assert!(
                 interval.as_millis() % base.as_millis() == 0,
                 "reporter interval {:?} must be an exact multiple of base {:?}",
-                interval, base
+                interval,
+                base
             );
             let mut node = ScheduleNode::new(interval);
             node.reporters = reporters;
@@ -496,7 +501,11 @@ fn divergence_warning(
     min_interval: Duration,
     last_warn: Option<Instant>,
 ) -> Option<Duration> {
-    let divergence = if actual >= scheduled { actual - scheduled } else { scheduled - actual };
+    let divergence = if actual >= scheduled {
+        actual - scheduled
+    } else {
+        scheduled - actual
+    };
     let due = last_warn
         .map(|t| actual.duration_since(t) >= min_interval)
         .unwrap_or(true);
@@ -562,7 +571,11 @@ impl StopHandle {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         self.stop_cv.notify_all(); // wake the inter-tick wait
         // Wait for the task's final flush to land (the trailing window).
-        let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let done = self
+            .done_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(done) = done {
             loop {
                 match done.try_recv() {
@@ -598,7 +611,11 @@ impl Drop for StopHandle {
     fn drop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         self.stop_cv.notify_all(); // wake the inter-tick wait
-        let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let done = self
+            .done_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(done) = done {
             // Drop is sync, so it can only WAIT where blocking is safe:
             // OUTSIDE any tokio runtime, a plain blocking recv (the timing
@@ -625,8 +642,8 @@ impl Drop for StopHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use crate::snapshot::MetricValue;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     struct CountingReporter {
         count: Arc<AtomicU64>,
@@ -652,10 +669,16 @@ mod tests {
     fn divergence_under_threshold_does_not_warn() {
         let scheduled = Instant::now();
         let actual = scheduled + Duration::from_millis(100); // < 250ms
-        assert!(divergence_warning(
-            scheduled, actual,
-            Duration::from_millis(250), Duration::from_secs(60), None,
-        ).is_none());
+        assert!(
+            divergence_warning(
+                scheduled,
+                actual,
+                Duration::from_millis(250),
+                Duration::from_secs(60),
+                None,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -663,8 +686,11 @@ mod tests {
         let scheduled = Instant::now();
         let actual = scheduled + Duration::from_millis(300); // > 250ms
         let d = divergence_warning(
-            scheduled, actual,
-            Duration::from_millis(250), Duration::from_secs(60), None,
+            scheduled,
+            actual,
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            None,
         );
         assert_eq!(d, Some(Duration::from_millis(300)));
     }
@@ -675,16 +701,28 @@ mod tests {
         let actual = scheduled + Duration::from_millis(400);
         // A warning fired 10s ago; the 60s window has not elapsed → suppressed.
         let last_warn = Some(actual - Duration::from_secs(10));
-        assert!(divergence_warning(
-            scheduled, actual,
-            Duration::from_millis(250), Duration::from_secs(60), last_warn,
-        ).is_none());
+        assert!(
+            divergence_warning(
+                scheduled,
+                actual,
+                Duration::from_millis(250),
+                Duration::from_secs(60),
+                last_warn,
+            )
+            .is_none()
+        );
         // Once the window elapses, it warns again.
         let last_warn = Some(actual - Duration::from_secs(61));
-        assert!(divergence_warning(
-            scheduled, actual,
-            Duration::from_millis(250), Duration::from_secs(60), last_warn,
-        ).is_some());
+        assert!(
+            divergence_warning(
+                scheduled,
+                actual,
+                Duration::from_millis(250),
+                Duration::from_secs(60),
+                last_warn,
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -720,11 +758,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scheduler_feeds_cadence_reporter() {
-        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence::{CadenceTree, Cadences};
 
-        let tree = CadenceTree::plan_default(Cadences::new(&[
-            Duration::from_millis(100),
-        ]).unwrap());
+        let tree = CadenceTree::plan_default(Cadences::new(&[Duration::from_millis(100)]).unwrap());
         let reporter = Arc::new(CadenceReporter::new(tree));
         let handle = SchedulerBuilder::new()
             .base_interval(Duration::from_millis(100))
@@ -740,10 +776,19 @@ mod tests {
         assert_eq!(components.len(), 1);
         // The 100ms cadence should have at least one closed snapshot.
         let component = &components[0];
-        let latest = reporter.latest(component, Duration::from_millis(100))
+        let latest = reporter
+            .latest(component, Duration::from_millis(100))
             .expect("cadence reporter should have a closed 100ms snapshot");
-        let ops_total = match latest.family("ops").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let ops_total = match latest
+            .family("ops")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Counter(c) => c.cumulative,
             _ => panic!("expected counter"),
         };
@@ -761,10 +806,12 @@ mod tests {
             .base_interval(Duration::from_millis(50))
             .add_reporter(Duration::from_millis(50), CountingReporter { count: fc })
             .add_reporter(Duration::from_millis(200), CountingReporter { count: sc })
-            .build(Box::new(|| vec![(
-                Labels::of("phase", "test"),
-                empty_snapshot(Duration::from_millis(50)),
-            )]));
+            .build(Box::new(|| {
+                vec![(
+                    Labels::of("phase", "test"),
+                    empty_snapshot(Duration::from_millis(50)),
+                )]
+            }));
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(450)).await;
@@ -785,7 +832,7 @@ mod tests {
     /// every base frame.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scheduler_chained_tree_delivers_to_largest_cadence() {
-        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence::{CadenceTree, Cadences};
 
         let small_count = Arc::new(AtomicU64::new(0));
         let large_count = Arc::new(AtomicU64::new(0));
@@ -795,10 +842,7 @@ mod tests {
         // Cadences: 100ms (smallest declared) and 400ms (largest).
         // Ratio 4 — well under default fan-in, no hidden inserts.
         let tree = CadenceTree::plan_default(
-            Cadences::new(&[
-                Duration::from_millis(100),
-                Duration::from_millis(400),
-            ]).unwrap(),
+            Cadences::new(&[Duration::from_millis(100), Duration::from_millis(400)]).unwrap(),
         );
 
         let handle = SchedulerBuilder::new()
@@ -806,10 +850,12 @@ mod tests {
             .with_cadence_tree(tree)
             .add_reporter(Duration::from_millis(100), CountingReporter { count: sc })
             .add_reporter(Duration::from_millis(400), CountingReporter { count: lc })
-            .build(Box::new(|| vec![(
-                Labels::of("phase", "test"),
-                empty_snapshot(Duration::from_millis(100)),
-            )]));
+            .build(Box::new(|| {
+                vec![(
+                    Labels::of("phase", "test"),
+                    empty_snapshot(Duration::from_millis(100)),
+                )]
+            }));
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(900)).await;
@@ -820,7 +866,10 @@ mod tests {
         // ~9 base ticks → smallest fires every tick (≥6) and
         // largest fires every 4 (≥1, ≤3).
         assert!(small >= 6, "smallest cadence reports = {small}");
-        assert!((1..=3).contains(&large), "largest cadence reports = {large}");
+        assert!(
+            (1..=3).contains(&large),
+            "largest cadence reports = {large}"
+        );
     }
 
     /// Hidden intermediate layers (auto-inserted by the planner)
@@ -830,7 +879,7 @@ mod tests {
     /// layer sits between it and the smallest cadence.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scheduler_hidden_layers_pass_through_to_visible_reporters() {
-        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence::{CadenceTree, Cadences};
 
         let large_count = Arc::new(AtomicU64::new(0));
         let lc = large_count.clone();
@@ -839,10 +888,7 @@ mod tests {
         // planner inserts a hidden intermediate. Ensures the chain
         // flows through it correctly.
         let tree = CadenceTree::plan_default(
-            Cadences::new(&[
-                Duration::from_millis(50),
-                Duration::from_millis(1500),
-            ]).unwrap(),
+            Cadences::new(&[Duration::from_millis(50), Duration::from_millis(1500)]).unwrap(),
         );
         // Sanity check the planner actually inserted one.
         let inserted: Vec<_> = tree.hidden().collect();
@@ -852,10 +898,12 @@ mod tests {
             .base_interval(Duration::from_millis(50))
             .with_cadence_tree(tree)
             .add_reporter(Duration::from_millis(1500), CountingReporter { count: lc })
-            .build(Box::new(|| vec![(
-                Labels::of("phase", "test"),
-                empty_snapshot(Duration::from_millis(50)),
-            )]));
+            .build(Box::new(|| {
+                vec![(
+                    Labels::of("phase", "test"),
+                    empty_snapshot(Duration::from_millis(50)),
+                )]
+            }));
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(3300)).await;
@@ -867,11 +915,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn flush_component_routes_to_cadence_reporter() {
-        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence::{CadenceTree, Cadences};
 
-        let tree = CadenceTree::plan_default(Cadences::new(&[
-            Duration::from_secs(1),
-        ]).unwrap());
+        let tree = CadenceTree::plan_default(Cadences::new(&[Duration::from_secs(1)]).unwrap());
         let reporter = Arc::new(CadenceReporter::new(tree));
         let handle = SchedulerBuilder::new()
             .with_cadence_reporter(reporter.clone())
@@ -886,7 +932,8 @@ mod tests {
 
         // The flush went straight into the reporter's smallest
         // cadence accumulator and promoted (interval matched).
-        let latest = reporter.latest(&labels, Duration::from_secs(1))
+        let latest = reporter
+            .latest(&labels, Duration::from_secs(1))
             .expect("flush should produce a closed snapshot");
         assert!(latest.family("final_ops").is_some());
     }

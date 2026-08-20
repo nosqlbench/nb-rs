@@ -81,11 +81,11 @@ pub struct FormattedLineSink {
 }
 
 impl FormattedLineSink {
-    pub fn new(
-        min_level: nbrs_runtime::observer::LogLevel,
-        sink_active: Arc<AtomicBool>,
-    ) -> Self {
-        Self { min_level, sink_active }
+    pub fn new(min_level: nbrs_runtime::observer::LogLevel, sink_active: Arc<AtomicBool>) -> Self {
+        Self {
+            min_level,
+            sink_active,
+        }
     }
 }
 
@@ -110,11 +110,12 @@ impl DisplaySink for FormattedLineSink {
         let last_seen = state.load().log_seq_total;
         let join = std::thread::Builder::new()
             .name("formatted-line-sink".into())
-            .spawn(move || run_emit_loop(
-                state, stop_for_thread, scrollback, last_seen, min_level))
+            .spawn(move || run_emit_loop(state, stop_for_thread, scrollback, last_seen, min_level))
             .expect("spawn formatted-line-sink thread");
         Box::new(FormattedLineSinkHandle {
-            stop, join: Some(join), sink_active: self.sink_active,
+            stop,
+            join: Some(join),
+            sink_active: self.sink_active,
         })
     }
 }
@@ -168,8 +169,7 @@ fn run_emit_loop(
                 if level < min_level {
                     continue;
                 }
-                let _ = writeln!(err, "{} │ {}",
-                    line.margin_body, line.entry.message);
+                let _ = writeln!(err, "{} │ {}", line.margin_body, line.entry.message);
             }
             let _ = err.flush();
         }
@@ -217,17 +217,21 @@ fn format_status_snapshot(snap: &Arc<crate::state::RunState>) -> String {
 
     // Phase counter — same logic as the LogOnlySink margin's
     // numerator, derived from the live tree.
-    let phase_only: Vec<_> = snap.phases.iter()
+    let phase_only: Vec<_> = snap
+        .phases
+        .iter()
         .filter(|p| matches!(p.kind, crate::state::EntryKind::Phase))
         .collect();
-    let active_pos = phase_only.iter().position(|p| {
-        matches!(p.status, crate::state::PhaseStatus::Running)
-    });
+    let active_pos = phase_only
+        .iter()
+        .position(|p| matches!(p.status, crate::state::PhaseStatus::Running));
     let phase_str = match (active_pos, total) {
         (Some(i), n) if n > 0 => format!("{}/{}", i + 1, n),
-        (None,    n) if n > 0 => {
-            let done = phase_only.iter().filter(|p|
-                !matches!(p.status, crate::state::PhaseStatus::Pending)).count();
+        (None, n) if n > 0 => {
+            let done = phase_only
+                .iter()
+                .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
+                .count();
             format!("{done}/{n}")
         }
         _ => "?/?".to_string(),
@@ -237,7 +241,9 @@ fn format_status_snapshot(snap: &Arc<crate::state::RunState>) -> String {
         Some(a) => {
             let pct = if a.cursor_extent > 0 {
                 (a.ops_finished as f64) * 100.0 / (a.cursor_extent as f64)
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             // ok% excludes SKIPS — an `if:`-gated skip is neither a
             // success nor a failure, so the basis is result-producing
             // ops only (`ops_finished - skips`).
@@ -246,8 +252,11 @@ fn format_status_snapshot(snap: &Arc<crate::state::RunState>) -> String {
             let ok_denom = a.ops_finished.saturating_sub(a.skips).max(a.ops_ok);
             let ok_pct = if ok_denom > 0 {
                 (a.ops_ok as f64) * 100.0 / (ok_denom as f64)
-            } else { 100.0 };
-            format!(" {name} {pct:.0}% (ok:{ok_pct:.0}% e:{e} r:{r})",
+            } else {
+                100.0
+            };
+            format!(
+                " {name} {pct:.0}% (ok:{ok_pct:.0}% e:{e} r:{r})",
                 name = a.name,
                 e = a.errors,
                 r = a.retries,
@@ -275,10 +284,14 @@ mod tests {
     fn empty_state_emits_minimal_line() {
         let snap = Arc::new(make_state());
         let line = format_status_snapshot(&snap);
-        assert!(line.starts_with("[status @ "),
-            "line should be prefixed with the status sentinel: {line}");
-        assert!(line.contains("phase ?/?"),
-            "missing-plan marker should show `?/?`: {line}");
+        assert!(
+            line.starts_with("[status @ "),
+            "line should be prefixed with the status sentinel: {line}"
+        );
+        assert!(
+            line.contains("phase ?/?"),
+            "missing-plan marker should show `?/?`: {line}"
+        );
     }
 
     /// With a pre-mapped plan but no live phase entries (start
@@ -291,10 +304,14 @@ mod tests {
         state.expected_total_phases = 7;
         let snap = Arc::new(state);
         let line = format_status_snapshot(&snap);
-        assert!(line.contains("phase 0/7"),
-            "should show `0/7` when no phases have transitioned: {line}");
+        assert!(
+            line.contains("phase 0/7"),
+            "should show `0/7` when no phases have transitioned: {line}"
+        );
         // No active phase → no name/pct/counters tail.
-        assert!(!line.contains("ok:"),
-            "no active-phase tail should appear: {line}");
+        assert!(
+            !line.contains("ok:"),
+            "no active-phase tail should appear: {line}"
+        );
     }
 }

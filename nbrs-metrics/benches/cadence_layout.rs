@@ -27,12 +27,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use criterion::{
-    BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
-};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use hdrhistogram::Histogram as HdrHistogram;
 
-use nbrs_metrics::cadence::{Cadences, CadenceTree, DEFAULT_MAX_FAN_IN};
+use nbrs_metrics::cadence::{CadenceTree, Cadences, DEFAULT_MAX_FAN_IN};
 use nbrs_metrics::cadence_reporter::{CadenceReporter, SubscriptionOpts};
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::scheduler::Reporter;
@@ -44,9 +42,8 @@ const HIST_SAMPLES_PER_TICK: usize = 1000; // per-tick histogram fill (ops/s)
 /// The canonical layout under test.
 fn build_reporter() -> Arc<CadenceReporter> {
     let cadences = Cadences::parse("1s,10s,1m,5m,15m").unwrap();
-    let tree = CadenceTree::plan_validated(
-        cadences, DEFAULT_MAX_FAN_IN, Duration::from_secs(1),
-    ).expect("valid plan");
+    let tree = CadenceTree::plan_validated(cadences, DEFAULT_MAX_FAN_IN, Duration::from_secs(1))
+        .expect("valid plan");
     Arc::new(CadenceReporter::new(tree))
 }
 
@@ -122,23 +119,20 @@ fn bench_cascade_components(c: &mut Criterion) {
     for &n in &[1usize, 10, 100] {
         let total_ingests = TICKS_PER_ITER * n;
         group.throughput(Throughput::Elements(total_ingests as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(n), &n,
-            |b, &n| {
-                let labels_vec = component_labels(n);
-                b.iter_batched(
-                    build_reporter,
-                    |reporter| {
-                        for i in 0..TICKS_PER_ITER as u64 {
-                            for labels in &labels_vec {
-                                reporter.ingest(labels, counter_tick(i));
-                            }
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+            let labels_vec = component_labels(n);
+            b.iter_batched(
+                build_reporter,
+                |reporter| {
+                    for i in 0..TICKS_PER_ITER as u64 {
+                        for labels in &labels_vec {
+                            reporter.ingest(labels, counter_tick(i));
                         }
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+                    }
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
     group.finish();
 }
@@ -199,7 +193,8 @@ fn bench_cascade_subscribers(c: &mut Criterion) {
 
     for &subscribers in &[0usize, 1, 4] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(subscribers), &subscribers,
+            BenchmarkId::from_parameter(subscribers),
+            &subscribers,
             |b, &subscribers| {
                 let labels_vec = component_labels(n_components);
                 b.iter_batched(
@@ -243,9 +238,14 @@ fn bench_coalesce_direct(c: &mut Criterion) {
         let a = counter_tick(1);
         let c = counter_tick(2);
         b.iter(|| {
-            let merged = MetricSet::coalesce(std::slice::from_ref(&a)
-                .iter().chain(std::slice::from_ref(&c).iter())
-                .cloned().collect::<Vec<_>>().as_slice());
+            let merged = MetricSet::coalesce(
+                std::slice::from_ref(&a)
+                    .iter()
+                    .chain(std::slice::from_ref(&c).iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            );
             black_box(merged);
         });
     });
@@ -263,9 +263,14 @@ fn bench_coalesce_direct(c: &mut Criterion) {
         let a = build();
         let c = build();
         b.iter(|| {
-            let merged = MetricSet::coalesce(std::slice::from_ref(&a)
-                .iter().chain(std::slice::from_ref(&c).iter())
-                .cloned().collect::<Vec<_>>().as_slice());
+            let merged = MetricSet::coalesce(
+                std::slice::from_ref(&a)
+                    .iter()
+                    .chain(std::slice::from_ref(&c).iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            );
             black_box(merged);
         });
     });
@@ -285,9 +290,14 @@ fn bench_coalesce_direct(c: &mut Criterion) {
         let a = build();
         let c = build();
         b.iter(|| {
-            let merged = MetricSet::coalesce(std::slice::from_ref(&a)
-                .iter().chain(std::slice::from_ref(&c).iter())
-                .cloned().collect::<Vec<_>>().as_slice());
+            let merged = MetricSet::coalesce(
+                std::slice::from_ref(&a)
+                    .iter()
+                    .chain(std::slice::from_ref(&c).iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            );
             black_box(merged);
         });
     });

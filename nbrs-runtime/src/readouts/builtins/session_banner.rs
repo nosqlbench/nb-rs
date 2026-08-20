@@ -22,8 +22,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct SessionBanner;
 
 impl Readout for SessionBanner {
-    fn name(&self) -> &'static str { "session_banner" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Session] }
+    fn name(&self) -> &'static str {
+        "session_banner"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Session]
+    }
 
     fn render(
         &self,
@@ -34,10 +38,10 @@ impl Readout for SessionBanner {
         out: &mut dyn ReadoutBuf,
     ) -> usize {
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact(ctx, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled(ctx, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded(ctx, out),
-            (_,             ContentMode::Explanation) => render_explanation(out),
+            (Lod::Compact, ContentMode::Value) => render_compact(ctx, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled(ctx, out),
+            (Lod::Expanded, ContentMode::Value) => render_expanded(ctx, out),
+            (_, ContentMode::Explanation) => render_explanation(out),
         }
     }
 }
@@ -48,7 +52,7 @@ fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
         return 0;
     }
     let color = ctx.use_color();
-    let bold  = if color { "\x1b[1m" } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let mut tmp = String::with_capacity(name.len() + 8);
     let _ = write!(&mut tmp, "{bold}{name}{reset}");
@@ -67,8 +71,8 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     // (bold white), name is bold (identity), file path is
     // MUTED (dim).
     let color = ctx.use_color();
-    let bold  = if color { "\x1b[1m" } else { "" };
-    let dim   = if color { "\x1b[2m" } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let mut tmp = String::with_capacity(128);
     if workload.is_empty() {
@@ -91,15 +95,19 @@ fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize 
         return 0;
     }
     let color = ctx.use_color();
-    let bold  = if color { "\x1b[1m" } else { "" };
-    let dim   = if color { "\x1b[2m" } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let mut tmp = String::with_capacity(192);
     let _ = write!(
         &mut tmp,
         "{bold}session{reset}\n  {dim}scenario:{reset} {n}\n  {dim}workload:{reset} {w}",
         n = if name.is_empty() { "<unnamed>" } else { name },
-        w = if workload.is_empty() { "<inline>" } else { workload },
+        w = if workload.is_empty() {
+            "<inline>"
+        } else {
+            workload
+        },
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -123,30 +131,68 @@ mod tests {
         workload: String,
     }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { "session" }
-        fn subject_seq(&self) -> Option<(usize, usize)> { None }
-        fn subject_labels(&self) -> &str { "" }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { "" }
-        fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::SessionStart }
-        fn session_scenario_name(&self) -> &str { &self.scenario }
-        fn session_workload_file(&self) -> &str { &self.workload }
+        fn subject_name(&self) -> &str {
+            "session"
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            None
+        }
+        fn subject_labels(&self) -> &str {
+            ""
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            ""
+        }
+        fn use_color(&self) -> bool {
+            false
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::SessionStart
+        }
+        fn session_scenario_name(&self) -> &str {
+            &self.scenario
+        }
+        fn session_workload_file(&self) -> &str {
+            &self.workload
+        }
     }
 
     fn render(ctx: &TestCtx, lod: Lod) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         SessionBanner.render(
-            ctx, lod, ContentMode::Value, &ReadoutOptions::new(), &mut buf,
+            ctx,
+            lod,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -165,7 +211,10 @@ mod tests {
 
     #[test]
     fn labeled_drops_workload_tail_when_inline() {
-        let ctx = TestCtx { scenario: "ad_hoc".into(), workload: String::new() };
+        let ctx = TestCtx {
+            scenario: "ad_hoc".into(),
+            workload: String::new(),
+        };
         assert_eq!(render(&ctx, Lod::Labeled), "session: ad_hoc");
     }
 

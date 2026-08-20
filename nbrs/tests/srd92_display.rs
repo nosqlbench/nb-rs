@@ -196,13 +196,14 @@ async fn settled_measure_block(
 fn has_recall_metric_cell(screen: &str) -> bool {
     const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     screen.lines().any(|line| {
-        let Some(bar) = line.find('│') else { return false };
+        let Some(bar) = line.find('│') else {
+            return false;
+        };
         let head = &line[..bar];
         if !head.contains("recall") || head.contains('%') {
             return false;
         }
-        let glyphs: Vec<char> =
-            head.chars().filter(|c| SPARK.contains(c)).collect();
+        let glyphs: Vec<char> = head.chars().filter(|c| SPARK.contains(c)).collect();
         glyphs.len() >= 6 && glyphs.iter().all(|&c| c == glyphs[0])
     })
 }
@@ -225,12 +226,17 @@ async fn recall_metric_cell_renders_live_trend() {
         .expect("start steppable terminal");
 
     // The numeric chip lands in the row BODY (right of the divider).
-    assert_screen(&mut stepper, "recall chip in row body", Duration::from_secs(45), |s| {
-        s.lines().any(|line| {
-            line.find('│')
-                .is_some_and(|bar| line[bar..].contains("recall:66.67%"))
-        })
-    })
+    assert_screen(
+        &mut stepper,
+        "recall chip in row body",
+        Duration::from_secs(45),
+        |s| {
+            s.lines().any(|line| {
+                line.find('│')
+                    .is_some_and(|bar| line[bar..].contains("recall:66.67%"))
+            })
+        },
+    )
     .await;
 
     // The metric macro cell: name + spark trend, numeric-free, in the
@@ -270,12 +276,18 @@ async fn completed_full_keeps_detail_rows_and_leaves() {
     .await;
     let _ = stepper.kill();
 
-    assert!(block.contains("/s ok:"),
-        "counters detail row must be retained under `full`:\n{block}");
-    assert!(block.contains("recall:66.67%"),
-        "key-metric chip must be retained on the counters row under `full`:\n{block}");
-    assert!(block.contains("mean="),
-        "relevancy summary detail line must be retained under `full`:\n{block}");
+    assert!(
+        block.contains("/s ok:"),
+        "counters detail row must be retained under `full`:\n{block}"
+    );
+    assert!(
+        block.contains("recall:66.67%"),
+        "key-metric chip must be retained on the counters row under `full`:\n{block}"
+    );
+    assert!(
+        block.contains("mean="),
+        "relevancy summary detail line must be retained under `full`:\n{block}"
+    );
 }
 
 /// SRD-92 R5 `completed_phases=headers` — scrollback keeps ONLY the
@@ -295,26 +307,28 @@ async fn completed_headers_drops_detail_rows_and_leaves() {
     // The header row itself is the wait target; the settle window in
     // the helper gives any (wrongly) emitted detail rows time to land
     // before the absence assertions read the slice.
-    let block = settled_measure_block(
-        &mut stepper,
-        "measure's ✓ header row",
-        |_| true,
-    )
-    .await;
+    let block = settled_measure_block(&mut stepper, "measure's ✓ header row", |_| true).await;
     let _ = stepper.kill();
 
-    assert!(!block.contains("/s ok:"),
-        "counters detail row must be dropped under `headers`:\n{block}");
-    assert!(!block.contains("mean="),
-        "relevancy summary detail line must be dropped under `headers`:\n{block}");
-    assert!(!block.contains("✓ probe"),
-        "op leaf must be dropped under `headers`:\n{block}");
+    assert!(
+        !block.contains("/s ok:"),
+        "counters detail row must be dropped under `headers`:\n{block}"
+    );
+    assert!(
+        !block.contains("mean="),
+        "relevancy summary detail line must be dropped under `headers`:\n{block}"
+    );
+    assert!(
+        !block.contains("✓ probe"),
+        "op leaf must be dropped under `headers`:\n{block}"
+    );
 
     // The dropped rows still land in session.log (display-surface
     // retention only — the durable record is not thinned).
-    let log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
-    assert!(log.contains("mean="),
+    let log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
+    assert!(
+        log.contains("mean="),
         "session.log must keep the relevancy summary regardless of \
-         completed_phases:\n{log}");
+         completed_phases:\n{log}"
+    );
 }

@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::activity::Activity;
-use crate::adapter::{find_adapter_registration, registered_adapter_params, registered_driver_names};
+use crate::adapter::{
+    find_adapter_registration, registered_adapter_params, registered_driver_names,
+};
 use crate::bindings::build_workload_root_kernel;
 use crate::opseq::SequencerType;
 use crate::synthesis::OpBuilder;
@@ -89,15 +91,17 @@ pub fn report_config_from_summary(
     nbrs_metrics::reporters::sqlite::ReportConfig {
         columns: config.columns.clone(),
         row_filters: config.row_filters.clone(),
-        aggregates: config.aggregates.iter().map(|a| {
-            nbrs_metrics::reporters::sqlite::ReportAggregate {
+        aggregates: config
+            .aggregates
+            .iter()
+            .map(|a| nbrs_metrics::reporters::sqlite::ReportAggregate {
                 function: a.function.to_string(),
                 column_pattern: a.column_pattern.clone(),
                 label_key: a.label_key.clone(),
                 label_pattern: a.label_pattern.clone(),
                 group_by: a.group_by.clone(),
-            }
-        }).collect(),
+            })
+            .collect(),
         show_details: config.show_details,
         exec_id_filter,
     }
@@ -118,10 +122,18 @@ pub fn resolve_workload_file_public(name: &str) -> Option<String> {
 /// `scenario=<tab>` suggestions. Returns an empty vector on any
 /// parse error — completion is best-effort, not a hard check.
 pub fn scenarios_in_workload_file(path: &str) -> Vec<String> {
-    let Ok(src) = std::fs::read_to_string(path) else { return Vec::new() };
-    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&src) else { return Vec::new() };
-    let Some(scenarios) = doc.get("scenarios") else { return Vec::new() };
-    let Some(map) = scenarios.as_mapping() else { return Vec::new() };
+    let Ok(src) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&src) else {
+        return Vec::new();
+    };
+    let Some(scenarios) = doc.get("scenarios") else {
+        return Vec::new();
+    };
+    let Some(map) = scenarios.as_mapping() else {
+        return Vec::new();
+    };
     map.keys()
         .filter_map(|k| k.as_str().map(String::from))
         .collect()
@@ -205,11 +217,26 @@ impl DiagnosticConfig {
         let mut depth_set = false;
         for flag in spec.split(',') {
             match flag.trim() {
-                "phase" => { config.depth = ExecDepth::Phase; depth_set = true; }
-                "dispenser" => { config.depth = ExecDepth::Dispenser; depth_set = true; }
-                "op" => { config.depth = ExecDepth::Op; depth_set = true; }
-                "cycle" => { config.depth = ExecDepth::Cycle; depth_set = true; }
-                "full" => { config.depth = ExecDepth::Full; depth_set = true; }
+                "phase" => {
+                    config.depth = ExecDepth::Phase;
+                    depth_set = true;
+                }
+                "dispenser" => {
+                    config.depth = ExecDepth::Dispenser;
+                    depth_set = true;
+                }
+                "op" => {
+                    config.depth = ExecDepth::Op;
+                    depth_set = true;
+                }
+                "cycle" => {
+                    config.depth = ExecDepth::Cycle;
+                    depth_set = true;
+                }
+                "full" => {
+                    config.depth = ExecDepth::Full;
+                    depth_set = true;
+                }
                 "wiring" => {
                     // Value-provenance view. Needs depth >= Op for
                     // kernels to exist; bump depth so a bare
@@ -248,7 +275,10 @@ impl DiagnosticConfig {
                 // dispatches to a kernel-dump short-circuit
                 // before any phase activation.
                 "kernels" => {}
-                _ => crate::diag!(crate::observer::LogLevel::Warn, "warning: unknown dryrun flag '{flag}'"),
+                _ => crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "warning: unknown dryrun flag '{flag}'"
+                ),
             }
         }
         // Default to phase depth if no explicit depth was given
@@ -278,7 +308,8 @@ pub fn render_controls_tree(
             Ok(g) => g,
             Err(_) => continue,
         };
-        let path = guard.effective_labels()
+        let path = guard
+            .effective_labels()
             .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
@@ -293,12 +324,23 @@ pub fn render_controls_tree(
                 None => "-".to_string(),
             };
             entries.push((
-                if path.is_empty() { "<root>".into() } else { path.clone() },
+                if path.is_empty() {
+                    "<root>".into()
+                } else {
+                    path.clone()
+                },
                 ctl.name().to_string(),
                 ctl.value_type_name().to_string(),
                 ctl.value_string(),
-                format!("scope={scope}, {final_marker}, appliers={}", ctl.applier_count()),
-                if ctl.accepts_f64_writes() { "f64-writable".into() } else { "no-f64".into() },
+                format!(
+                    "scope={scope}, {final_marker}, appliers={}",
+                    ctl.applier_count()
+                ),
+                if ctl.accepts_f64_writes() {
+                    "f64-writable".into()
+                } else {
+                    "no-f64".into()
+                },
             ));
         }
     }
@@ -315,7 +357,6 @@ pub fn render_controls_tree(
     }
     Ok(())
 }
-
 
 /// Render the SRD-13d scope-elision summary for `dryrun=op`.
 /// One line per scope-tree node (DFS pre-order), showing the
@@ -344,7 +385,8 @@ pub fn render_scope_elision_summary(
     // Width of the logical-name column — 4-space gutter past
     // the longest name (or 48ch min) so the materialised marks
     // line up cleanly even with deeply-nested phase trees.
-    let name_width = summary.iter()
+    let name_width = summary
+        .iter()
         .map(|(_, _, _, name, _)| name.len())
         .max()
         .unwrap_or(0)
@@ -355,25 +397,38 @@ pub fn render_scope_elision_summary(
     for (idx, _depth, materialised, logical_name, _kind) in &summary {
         match materialised {
             Some(true) => {
-                writeln!(out, "{:<width$}    materialised=true",
-                    logical_name, width = name_width)?;
+                writeln!(
+                    out,
+                    "{:<width$}    materialised=true",
+                    logical_name,
+                    width = name_width
+                )?;
             }
             Some(false) => {
-                let elides_to = tree.nearest_materialised(*idx)
+                let elides_to = tree
+                    .nearest_materialised(*idx)
                     .map(|p| tree.nodes[p].logical_name.clone())
                     .unwrap_or_else(|| "<unknown>".to_string());
-                writeln!(out, "{:<width$}    materialised=false  elides-to={}",
-                    logical_name, elides_to, width = name_width)?;
+                writeln!(
+                    out,
+                    "{:<width$}    materialised=false  elides-to={}",
+                    logical_name,
+                    elides_to,
+                    width = name_width
+                )?;
             }
             None => {
-                writeln!(out, "{:<width$}    materialised=unknown",
-                    logical_name, width = name_width)?;
+                writeln!(
+                    out,
+                    "{:<width$}    materialised=unknown",
+                    logical_name,
+                    width = name_width
+                )?;
             }
         }
     }
     Ok(())
 }
-
 
 pub async fn run(args: &[String]) -> Result<(), String> {
     // Default tui=off observer — stderr with the same Info-level
@@ -390,19 +445,24 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         _ => args,
     };
     let cli_params = parse_params(stripped);
-    let min_level = cli_params.get("loglevel")
+    let min_level = cli_params
+        .get("loglevel")
         .or_else(|| cli_params.get("loglevel-display"))
         .or_else(|| cli_params.get("loglevel_display"))
         .and_then(|s| parse_log_level(s))
         .unwrap_or(crate::observer::LogLevel::Info);
-    let retain_level = cli_params.get("loglevel-retain")
+    let retain_level = cli_params
+        .get("loglevel-retain")
         .or_else(|| cli_params.get("loglevel_retain"))
         .and_then(|s| parse_log_level(s))
         .unwrap_or(crate::observer::LogLevel::Debug);
     crate::observer::set_retain_level(retain_level);
     crate::observer::set_display_level(min_level);
-    run_with_observer(args,
-        Arc::new(crate::observer::StderrObserver::with_min_level(min_level))).await
+    run_with_observer(
+        args,
+        Arc::new(crate::observer::StderrObserver::with_min_level(min_level)),
+    )
+    .await
 }
 
 /// Parse a CLI/workload `loglevel=` value. Case-insensitive,
@@ -411,11 +471,11 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 pub fn parse_log_level(s: &str) -> Option<crate::observer::LogLevel> {
     use crate::observer::LogLevel;
     match s.trim().to_ascii_lowercase().as_str() {
-        "trace" | "trc"                  => Some(LogLevel::Trace),
-        "debug" | "dbg"                  => Some(LogLevel::Debug),
-        "info"  | "inf"                  => Some(LogLevel::Info),
-        "warn"  | "wrn" | "warning"      => Some(LogLevel::Warn),
-        "error" | "err"                  => Some(LogLevel::Error),
+        "trace" | "trc" => Some(LogLevel::Trace),
+        "debug" | "dbg" => Some(LogLevel::Debug),
+        "info" | "inf" => Some(LogLevel::Info),
+        "warn" | "wrn" | "warning" => Some(LogLevel::Warn),
+        "error" | "err" => Some(LogLevel::Error),
         _ => None,
     }
 }
@@ -431,7 +491,9 @@ pub async fn run_with_observer(
         Some("run") => &args[1..],
         // Reject unknown subcommands — don't silently fall through to execution
         Some(cmd) if !cmd.contains('=') && !cmd.ends_with(".yaml") && !cmd.ends_with(".yml") => {
-            return Err(format!("unknown command '{cmd}'. Use 'run' or pass a workload file."));
+            return Err(format!(
+                "unknown command '{cmd}'. Use 'run' or pass a workload file."
+            ));
         }
         _ => args,
     };
@@ -451,18 +513,23 @@ pub async fn run_with_observer(
 /// subscription), and the observer (cadence prefs + live reporters).
 fn build_session_metrics(
     session: &crate::session::Session,
-    sqlite_reporter: &std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    sqlite_reporter: &std::sync::Arc<
+        std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>,
+    >,
     observer: &Arc<dyn crate::observer::RunObserver>,
     merged_params: &HashMap<String, String>,
     openmetrics_url: &Option<String>,
     args: &[String],
     params: &HashMap<String, String>,
-) -> Result<(
-    std::sync::Arc<nbrs_metrics::cadence_reporter::CadenceReporter>,
-    nbrs_metrics::cadence::CadenceTree,
-    std::sync::Arc<nbrs_metrics::metrics_query::MetricsQuery>,
-    std::sync::Arc<nbrs_metrics::scheduler::StopHandle>,
-), String> {
+) -> Result<
+    (
+        std::sync::Arc<nbrs_metrics::cadence_reporter::CadenceReporter>,
+        nbrs_metrics::cadence::CadenceTree,
+        std::sync::Arc<nbrs_metrics::metrics_query::MetricsQuery>,
+        std::sync::Arc<nbrs_metrics::scheduler::StopHandle>,
+    ),
+    String,
+> {
     // `metrics_cadence` (effective param) may set a sub-second finest
     // cadence + base interval; otherwise the default 1 s base + declared
     // cadences. The base interval drives both the cadence tree and the
@@ -473,10 +540,11 @@ fn build_session_metrics(
         cadences,
         nbrs_metrics::cadence::DEFAULT_MAX_FAN_IN,
         base_interval,
-    ).map_err(|e| format!("cadence tree: {e}"))?;
-    let cadence_reporter = Arc::new(
-        nbrs_metrics::cadence_reporter::CadenceReporter::new(cadence_tree.clone()),
-    );
+    )
+    .map_err(|e| format!("cadence tree: {e}"))?;
+    let cadence_reporter = Arc::new(nbrs_metrics::cadence_reporter::CadenceReporter::new(
+        cadence_tree.clone(),
+    ));
     let metrics_query = Arc::new(nbrs_metrics::metrics_query::MetricsQuery::new(
         cadence_reporter.clone(),
         session.component.clone(),
@@ -495,9 +563,9 @@ fn build_session_metrics(
     // leaks a neighbour's series. Best-effort: if the sqlite tail can't be
     // opened (sqlite disabled, db absent), the live service is the mem tier
     // alone — byte-identical to before this seam.
-    let mem_access = std::sync::Arc::new(
-        nbrs_metrics::queryapi::MetricsQueryAccess::new(metrics_query.clone()),
-    );
+    let mem_access = std::sync::Arc::new(nbrs_metrics::queryapi::MetricsQueryAccess::new(
+        metrics_query.clone(),
+    ));
     // The composed read store: the in-memory cadence tier over the durable
     // sqlite tail (union-minus-overlap). The cold tier reads `All` executions
     // at the SQL level — per-execution scoping is the injected `exec_id`
@@ -519,8 +587,10 @@ fn build_session_metrics(
                 ]))
             }
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Debug,
-                    "metrics: hybrid sqlite tail unavailable ({e}); live reads are in-memory only");
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "metrics: hybrid sqlite tail unavailable ({e}); live reads are in-memory only"
+                );
                 mem_access.clone()
             }
         }
@@ -561,28 +631,32 @@ fn build_session_metrics(
     // reporter was constructed successfully. Operators don't need
     // to opt in with any extra param — every run produces a
     // `metrics.db` in its session directory by default.
-    let sqlite_cadence = cadence_tree.align_to_declared(
-        std::time::Duration::from_secs(30),
-    );
+    let sqlite_cadence = cadence_tree.align_to_declared(std::time::Duration::from_secs(30));
     if let (Some(cadence), Ok(guard)) = (sqlite_cadence, sqlite_reporter.lock())
-        && guard.is_some() {
-            drop(guard);
-            let sqlite_for_sub = sqlite_reporter.clone();
-            match cadence_reporter.subscribe(
-                cadence,
-                Box::new(MutexReporter(sqlite_for_sub)),
-                nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
-            ) {
-                Ok(_) => {
-                    crate::diag!(crate::observer::LogLevel::Info,
-                        "metrics: SQLite writes every {:?} (WAL mode)", cadence);
-                }
-                Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "metrics: SQLite subscription failed: {e}");
-                }
+        && guard.is_some()
+    {
+        drop(guard);
+        let sqlite_for_sub = sqlite_reporter.clone();
+        match cadence_reporter.subscribe(
+            cadence,
+            Box::new(MutexReporter(sqlite_for_sub)),
+            nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+        ) {
+            Ok(_) => {
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
+                    "metrics: SQLite writes every {:?} (WAL mode)",
+                    cadence
+                );
+            }
+            Err(e) => {
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "metrics: SQLite subscription failed: {e}"
+                );
             }
         }
+    }
 
     // Single-file metrics log — opt-in, for OUTSIDE OBSERVERS. The session
     // SQLite db is always written and stays the system of record; this only
@@ -614,17 +688,23 @@ fn build_session_metrics(
             None => std::time::Duration::from_secs(5),
             Some(v) => match v.trim_end_matches('s').parse::<f64>() {
                 Ok(secs) if secs > 0.0 => std::time::Duration::from_secs_f64(secs),
-                _ => return Err(format!(
-                    "sysmon-interval: expected seconds (e.g. `sysmon-interval=5`), got '{v}'")),
+                _ => {
+                    return Err(format!(
+                        "sysmon-interval: expected seconds (e.g. `sysmon-interval=5`), got '{v}'"
+                    ));
+                }
             },
         };
         let membw_peak_bytes_per_s = match params.get("sysmon-membw-gbps") {
             None => None,
             Some(v) => match v.parse::<f64>() {
                 Ok(gbps) if gbps > 0.0 => Some(gbps * 1e9),
-                _ => return Err(format!(
-                    "sysmon-membw-gbps: expected the host's peak memory bandwidth \
-                     in GB/s, got '{v}'")),
+                _ => {
+                    return Err(format!(
+                        "sysmon-membw-gbps: expected the host's peak memory bandwidth \
+                     in GB/s, got '{v}'"
+                    ));
+                }
             },
         };
         let mut config = crate::sysmon::SysmonConfig {
@@ -639,8 +719,10 @@ fn build_session_metrics(
                 let (cats, skipped) = crate::sysmon::resolve_any(&config);
                 config.cats = cats;
                 for reason in skipped {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "sysmon: skipping a subsystem: {reason}");
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
+                        "sysmon: skipping a subsystem: {reason}"
+                    );
                 }
             }
             // Named categories are REQUIRED: the rambw gate runs before
@@ -655,21 +737,26 @@ fn build_session_metrics(
             }
         }
         crate::sysmon::spawn(config, session.component.clone(), observer.clone())?;
-        crate::diag!(crate::observer::LogLevel::Info,
-            "sysmon: sampling {setting} every {interval:?}");
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "sysmon: sampling {setting} every {interval:?}"
+        );
     }
 
-    let metrics_log_setting: Option<String> = args.iter()
-        .find_map(|a| a.strip_prefix("--metrics-log").map(|rest| {
-            rest.strip_prefix('=').unwrap_or("true").to_string()
-        }))
+    let metrics_log_setting: Option<String> = args
+        .iter()
+        .find_map(|a| {
+            a.strip_prefix("--metrics-log")
+                .map(|rest| rest.strip_prefix('=').unwrap_or("true").to_string())
+        })
         .or_else(|| params.get("metrics-log").cloned())
         .or_else(|| std::env::var("NBRS_METRICS_LOG").ok());
     let metrics_log_path = match metrics_log_setting.as_deref() {
         None => None,
         Some("0") | Some("false") | Some("no") | Some("off") | Some("") => None,
-        Some("1") | Some("true") | Some("yes") | Some("on") =>
-            Some(session.output_dir.join("metrics.jsonl")),
+        Some("1") | Some("true") | Some("yes") | Some("on") => {
+            Some(session.output_dir.join("metrics.jsonl"))
+        }
         Some(explicit) => Some(std::path::PathBuf::from(explicit)),
     };
     if let Some(log_path) = metrics_log_path {
@@ -678,29 +765,36 @@ fn build_session_metrics(
                 // Same cadence as the database, deliberately: the log is an
                 // alternative READ of what the db holds, so matching granularity
                 // is what makes the two comparable.
-                if let Some(cadence) = cadence_tree.align_to_declared(
-                    std::time::Duration::from_secs(30),
-                ) {
+                if let Some(cadence) =
+                    cadence_tree.align_to_declared(std::time::Duration::from_secs(30))
+                {
                     match cadence_reporter.subscribe(
                         cadence,
                         Box::new(reporter),
                         nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
                     ) {
                         Ok(_) => {
-                            crate::diag!(crate::observer::LogLevel::Info,
+                            crate::diag!(
+                                crate::observer::LogLevel::Info,
                                 "metrics: JSONL log every {:?} -> {} (session db unaffected)",
-                                cadence, log_path.display());
+                                cadence,
+                                log_path.display()
+                            );
                         }
                         Err(e) => {
-                            crate::diag!(crate::observer::LogLevel::Warn,
-                                "metrics: metrics log subscribe failed: {e}");
+                            crate::diag!(
+                                crate::observer::LogLevel::Warn,
+                                "metrics: metrics log subscribe failed: {e}"
+                            );
                         }
                     }
                 }
             }
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "metrics: metrics log disabled: {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "metrics: metrics log disabled: {e}"
+                );
             }
         }
     }
@@ -715,42 +809,50 @@ fn build_session_metrics(
     //   * `--per-instance-metrics` flag on the CLI
     //   * `per-instance-metrics=true` in workload params
     //   * `NBRS_PER_INSTANCE_METRICS=1` env var
-    let per_instance_enabled =
-        args.iter().any(|a| a == "--per-instance-metrics")
-            || params.get("per-instance-metrics")
-                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false)
-            || std::env::var("NBRS_PER_INSTANCE_METRICS").ok()
-                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false);
+    let per_instance_enabled = args.iter().any(|a| a == "--per-instance-metrics")
+        || params
+            .get("per-instance-metrics")
+            .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+        || std::env::var("NBRS_PER_INSTANCE_METRICS")
+            .ok()
+            .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
     if per_instance_enabled {
         let per_instance_dir = session.output_dir.join("metrics");
         match nbrs_metrics::reporters::per_instance::PerInstanceReporter::new(&per_instance_dir) {
             Ok(reporter) => {
-                if let Some(cadence) = cadence_tree.align_to_declared(
-                    std::time::Duration::from_secs(30),
-                ) {
+                if let Some(cadence) =
+                    cadence_tree.align_to_declared(std::time::Duration::from_secs(30))
+                {
                     match cadence_reporter.subscribe(
                         cadence,
                         Box::new(reporter),
                         nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
                     ) {
                         Ok(_) => {
-                            crate::diag!(crate::observer::LogLevel::Info,
+                            crate::diag!(
+                                crate::observer::LogLevel::Info,
                                 "metrics: per-instance JSONL writes every {:?} into {}",
-                                cadence, per_instance_dir.display());
+                                cadence,
+                                per_instance_dir.display()
+                            );
                         }
                         Err(e) => {
-                            crate::diag!(crate::observer::LogLevel::Warn,
-                                "metrics: per-instance subscription failed: {e}");
+                            crate::diag!(
+                                crate::observer::LogLevel::Warn,
+                                "metrics: per-instance subscription failed: {e}"
+                            );
                         }
                     }
                 }
             }
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
                     "metrics: per-instance reporter disabled ({}): {e}",
-                    per_instance_dir.display());
+                    per_instance_dir.display()
+                );
             }
         }
     }
@@ -761,28 +863,34 @@ fn build_session_metrics(
     // `PromPushReporterComponent` convention; they're substituted
     // into any `JOBNAME` / `INSTANCE` placeholders in the URL.
     if let Some(url) = openmetrics_url.as_ref()
-        && let Some(cadence) = cadence_tree.align_to_declared(
-            std::time::Duration::from_secs(10),
-        ) {
-            let jobname = merged_params.get("jobname").cloned()
-                .unwrap_or_else(|| "default".to_string());
-            let instance = merged_params.get("instance").cloned()
-                .unwrap_or_else(|| "default".to_string());
-            let mut vm = match nbrs_metrics::reporters::victoriametrics
-                ::VictoriaMetricsReporter::from_spec(url)
+        && let Some(cadence) = cadence_tree.align_to_declared(std::time::Duration::from_secs(10))
+    {
+        let jobname = merged_params
+            .get("jobname")
+            .cloned()
+            .unwrap_or_else(|| "default".to_string());
+        let instance = merged_params
+            .get("instance")
+            .cloned()
+            .unwrap_or_else(|| "default".to_string());
+        let mut vm =
+            match nbrs_metrics::reporters::victoriametrics::VictoriaMetricsReporter::from_spec(url)
             {
                 Ok(r) => r,
-                Err(_) => nbrs_metrics::reporters::victoriametrics
-                    ::VictoriaMetricsReporter::new(url),
+                Err(_) => {
+                    nbrs_metrics::reporters::victoriametrics::VictoriaMetricsReporter::new(url)
+                }
             };
-            vm = vm.with_jobname(jobname).with_instance(instance);
-            if let Some(token_path) = merged_params.get("prompush_apikeyfile") {
-                match vm.with_bearer_token_file(token_path) {
-                    Ok(r) => vm = r,
-                    Err(e) => {
-                        crate::diag!(crate::observer::LogLevel::Warn,
-                            "prompush_apikeyfile '{token_path}': {e}");
-                        vm = nbrs_metrics::reporters::victoriametrics
+        vm = vm.with_jobname(jobname).with_instance(instance);
+        if let Some(token_path) = merged_params.get("prompush_apikeyfile") {
+            match vm.with_bearer_token_file(token_path) {
+                Ok(r) => vm = r,
+                Err(e) => {
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
+                        "prompush_apikeyfile '{token_path}': {e}"
+                    );
+                    vm = nbrs_metrics::reporters::victoriametrics
                             ::VictoriaMetricsReporter::from_spec(url)
                             .unwrap_or_else(|_| nbrs_metrics::reporters::victoriametrics
                                 ::VictoriaMetricsReporter::new(url))
@@ -794,31 +902,25 @@ fn build_session_metrics(
                                 merged_params.get("instance").cloned()
                                     .unwrap_or_else(|| "default".to_string()),
                             );
-                    }
                 }
             }
-            let _ = cadence_reporter.subscribe(
-                cadence,
-                Box::new(vm),
-                nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
-            );
         }
+        let _ = cadence_reporter.subscribe(
+            cadence,
+            Box::new(vm),
+            nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+        );
+    }
 
     // Register the observer's reporters at their requested cadences
     // on the scheduler tree (base-interval live-frame forwarding for
     // sparklines / live histogram).
     for (interval, reporter) in observer.reporters() {
-        sched_builder = sched_builder.add_reporter(
-            interval,
-            BoxedReporter(reporter),
-        );
+        sched_builder = sched_builder.add_reporter(interval, BoxedReporter(reporter));
     }
 
     let scheduler = sched_builder.build(Box::new(move || {
-        nbrs_metrics::component::capture_tree(
-            &session_for_capture,
-            base_interval,
-        )
+        nbrs_metrics::component::capture_tree(&session_for_capture, base_interval)
     }));
     let stop_handle = Arc::new(scheduler.start());
 
@@ -853,8 +955,11 @@ fn build_session_metrics(
         }
         let mut lines = Vec::new();
         walk(&dump_root, &mut lines);
-        crate::diag!(crate::observer::LogLevel::Info,
-            "session: SIGQUIT inventory — {} running component(s)", lines.len());
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "session: SIGQUIT inventory — {} running component(s)",
+            lines.len()
+        );
         for line in lines {
             crate::diag!(crate::observer::LogLevel::Info, "  {line}");
         }
@@ -862,7 +967,6 @@ fn build_session_metrics(
 
     Ok((cadence_reporter, cadence_tree, metrics_query, stop_handle))
 }
-
 
 /// SRD-88 — the shared, session-tier context, created ONCE per session
 /// (`SessionHost::setup`); every execution sharing the session runs
@@ -872,7 +976,8 @@ fn build_session_metrics(
 /// workload load happens in `run_execution`.
 struct SessionHost {
     session: crate::session::Session,
-    sqlite_reporter: std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    sqlite_reporter:
+        std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
     cadence_reporter: std::sync::Arc<nbrs_metrics::cadence_reporter::CadenceReporter>,
     #[allow(dead_code)]
     cadence_tree: nbrs_metrics::cadence::CadenceTree,
@@ -904,479 +1009,545 @@ impl SessionHost {
     /// Build the shared session-tier context. Workload-INDEPENDENT:
     /// session identity = `scenario=` param; metrics services +
     /// profiler read CLI `params`, not workload-merged params.
-    fn setup(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<SessionHost, String> {
-    // Set global observer so all code can log through it
-    crate::observer::set_global_observer(observer.clone());
+    fn setup(
+        args: &[String],
+        observer: Arc<dyn crate::observer::RunObserver>,
+    ) -> Result<SessionHost, String> {
+        // Set global observer so all code can log through it
+        crate::observer::set_global_observer(observer.clone());
 
-    // Wire error handler logging through the observer.
-    // Per-cycle error lines fire from inside an executing
-    // phase, so prefix with the running phase's scope-depth
-    // indent — the same alignment the polling-op messages,
-    // phase startup/complete lines, and DONE summary use.
-    // The errorhandler crate stays scope-agnostic; the
-    // bridging closure here is what makes the output
-    // hierarchic in tui=terminal mode.
-    //
-    // Level = Debug so the per-cycle warns land in the
-    // session log (retain_level defaults to Debug) but
-    // don't spam the realtime status surface (display_level
-    // defaults to Info). The structured form of each
-    // per-cycle error is collected into the phase's
-    // PhaseErrorDetail buffer and rendered in one block by
-    // the `error_readout` builtin at PhaseEnd — the
-    // operator sees the normative ✓/✗ phase line first,
-    // then the error block, instead of N noisy lines
-    // interleaved with progress as the phase runs.
-    nbrs_errorhandler::handlers::set_log_fn(|msg| {
-        let indent = crate::scene_tree::running_phase_indent();
-        crate::observer::log(crate::observer::LogLevel::Debug, &format!("{indent}{msg}"));
-    });
+        // Wire error handler logging through the observer.
+        // Per-cycle error lines fire from inside an executing
+        // phase, so prefix with the running phase's scope-depth
+        // indent — the same alignment the polling-op messages,
+        // phase startup/complete lines, and DONE summary use.
+        // The errorhandler crate stays scope-agnostic; the
+        // bridging closure here is what makes the output
+        // hierarchic in tui=terminal mode.
+        //
+        // Level = Debug so the per-cycle warns land in the
+        // session log (retain_level defaults to Debug) but
+        // don't spam the realtime status surface (display_level
+        // defaults to Info). The structured form of each
+        // per-cycle error is collected into the phase's
+        // PhaseErrorDetail buffer and rendered in one block by
+        // the `error_readout` builtin at PhaseEnd — the
+        // operator sees the normative ✓/✗ phase line first,
+        // then the error block, instead of N noisy lines
+        // interleaved with progress as the phase runs.
+        nbrs_errorhandler::handlers::set_log_fn(|msg| {
+            let indent = crate::scene_tree::running_phase_indent();
+            crate::observer::log(crate::observer::LogLevel::Debug, &format!("{indent}{msg}"));
+        });
 
-    // Route nbrs-metrics diagnostic warnings through the observer so
-    // reporter write failures, histogram-record errors, etc. don't
-    // slip past the TUI as raw stderr prints. Indent matches the
-    // running phase the same way the errorhandler bridge above does
-    // — these emits fire mid-phase from the metrics pipeline.
-    nbrs_metrics::diag::set_warn_fn(|msg| {
-        let indent = crate::scene_tree::running_phase_indent();
-        crate::observer::log(crate::observer::LogLevel::Warn, &format!("{indent}{msg}"));
-    });
-    nbrs_metrics::diag::set_info_fn(|msg| {
-        let indent = crate::scene_tree::running_phase_indent();
-        crate::observer::log(crate::observer::LogLevel::Info, &format!("{indent}{msg}"));
-    });
+        // Route nbrs-metrics diagnostic warnings through the observer so
+        // reporter write failures, histogram-record errors, etc. don't
+        // slip past the TUI as raw stderr prints. Indent matches the
+        // running phase the same way the errorhandler bridge above does
+        // — these emits fire mid-phase from the metrics pipeline.
+        nbrs_metrics::diag::set_warn_fn(|msg| {
+            let indent = crate::scene_tree::running_phase_indent();
+            crate::observer::log(crate::observer::LogLevel::Warn, &format!("{indent}{msg}"));
+        });
+        nbrs_metrics::diag::set_info_fn(|msg| {
+            let indent = crate::scene_tree::running_phase_indent();
+            crate::observer::log(crate::observer::LogLevel::Info, &format!("{indent}{msg}"));
+        });
 
-    // Audit sink is installed after session creation
-    // below (so it can target `<session>/audit.log`).
-    // Until then, the crate-default eprintln fallback
-    // is in effect for any audit::log calls fired
-    // during init. Workload-emitted lines fire mid-phase
-    // (well after the install), so they don't reach
-    // stderr.
+        // Audit sink is installed after session creation
+        // below (so it can target `<session>/audit.log`).
+        // Until then, the crate-default eprintln fallback
+        // is in effect for any audit::log calls fired
+        // during init. Workload-emitted lines fire mid-phase
+        // (well after the install), so they don't reach
+        // stderr.
 
-
-    let args = normalize_args(args);
-    let params = parse_params(&args);
-    // The run's effective params (workload `params:` overlaid by CLI, CLI
-    // wins) — the consolidated set the session-tier services read, so a
-    // setting like `metrics_cadence` / `jobname` / `per-instance-metrics`
-    // works whether declared in the workload or passed on the command line.
-    // Operational reads below (resume, session identity) stay on the raw CLI
-    // `params` — they are not workload-declarable.
-    let eff_params = effective_params(&args);
-    // `scenario_for_session` is recomputed below from the refine block's
-    // params (the session-dir name); `openmetrics_url` feeds the
-    // session metrics services.
-    let openmetrics_url: Option<String> = cli_flag_value(&args[..], "--report-openmetrics-to")
-        .or_else(|| args.iter()
-            .find_map(|a| a.strip_prefix("report-openmetrics-to="))
-            .map(|s| s.to_string()));
-    // SRD-106 Part 3 — the `stick_session` resolution rung: the
-    // LOWEST-precedence session rung. A workload may declare that
-    // iterative re-attachment is its intended usage; when the
-    // operator expressed no session intent of their own, a run
-    // re-attaches to `sessions/latest` and layers a new execution
-    // per SRD-77 — mechanically the refine path, so the D2
-    // provenance gates govern what re-runs. Defeated by ANY
-    // explicit session selection (`--session*` name/path/reuse),
-    // any re-attachment flag (`resume=` / `--resume-latest` /
-    // `--refine`), the `--session new` bare token, and dryruns
-    // (resume-inert per SRD-44). CLI `stick_session=true|false`
-    // overrides the workload's declaration.
-    let stick_reattach: Option<std::path::PathBuf> = {
-        let cli_stick: Option<bool> = params.get("stick_session")
-            .map(|v| v == "true" || v == "1");
-        let stick_on = cli_stick
-            .unwrap_or_else(|| peek_stick_session(&params, &args).unwrap_or(false));
-        let reattach_expressed = args.iter()
-            .any(|a| a == "--refine" || a == "--resume-latest")
-            || params.contains_key("resume")
-            || params.contains_key("resume_latest");
-        if !stick_on
-            || reattach_expressed
-            || crate::session::args_request_dryrun(&args)
-        {
-            None
-        } else {
-            let spec = crate::session::resolve_session_dir(&args);
-            let operator_selected = !spec.is_empty()
-                || spec.force_new
-                || spec.reuse != crate::session::SessionReuse::Error;
-            if operator_selected {
+        let args = normalize_args(args);
+        let params = parse_params(&args);
+        // The run's effective params (workload `params:` overlaid by CLI, CLI
+        // wins) — the consolidated set the session-tier services read, so a
+        // setting like `metrics_cadence` / `jobname` / `per-instance-metrics`
+        // works whether declared in the workload or passed on the command line.
+        // Operational reads below (resume, session identity) stay on the raw CLI
+        // `params` — they are not workload-declarable.
+        let eff_params = effective_params(&args);
+        // `scenario_for_session` is recomputed below from the refine block's
+        // params (the session-dir name); `openmetrics_url` feeds the
+        // session metrics services.
+        let openmetrics_url: Option<String> = cli_flag_value(&args[..], "--report-openmetrics-to")
+            .or_else(|| {
+                args.iter()
+                    .find_map(|a| a.strip_prefix("report-openmetrics-to="))
+                    .map(|s| s.to_string())
+            });
+        // SRD-106 Part 3 — the `stick_session` resolution rung: the
+        // LOWEST-precedence session rung. A workload may declare that
+        // iterative re-attachment is its intended usage; when the
+        // operator expressed no session intent of their own, a run
+        // re-attaches to `sessions/latest` and layers a new execution
+        // per SRD-77 — mechanically the refine path, so the D2
+        // provenance gates govern what re-runs. Defeated by ANY
+        // explicit session selection (`--session*` name/path/reuse),
+        // any re-attachment flag (`resume=` / `--resume-latest` /
+        // `--refine`), the `--session new` bare token, and dryruns
+        // (resume-inert per SRD-44). CLI `stick_session=true|false`
+        // overrides the workload's declaration.
+        let stick_reattach: Option<std::path::PathBuf> = {
+            let cli_stick: Option<bool> =
+                params.get("stick_session").map(|v| v == "true" || v == "1");
+            let stick_on =
+                cli_stick.unwrap_or_else(|| peek_stick_session(&params, &args).unwrap_or(false));
+            let reattach_expressed = args
+                .iter()
+                .any(|a| a == "--refine" || a == "--resume-latest")
+                || params.contains_key("resume")
+                || params.contains_key("resume_latest");
+            if !stick_on || reattach_expressed || crate::session::args_request_dryrun(&args) {
                 None
             } else {
-                // `sessions/latest` must resolve to a prior session
-                // with a checkpoint — anything less means there is
-                // nothing valid to re-attach to, and the run falls
-                // through to today's fresh-session default silently
-                // (no announcement for a no-op).
-                let latest = crate::session::default_sessions_root().join("latest");
-                std::fs::read_link(&latest).ok()
-                    .map(|t| if t.is_absolute() { t }
-                         else { crate::session::default_sessions_root().join(t) })
-                    .filter(|d| d.join("checkpoint.jsonl").is_file())
+                let spec = crate::session::resolve_session_dir(&args);
+                let operator_selected = !spec.is_empty()
+                    || spec.force_new
+                    || spec.reuse != crate::session::SessionReuse::Error;
+                if operator_selected {
+                    None
+                } else {
+                    // `sessions/latest` must resolve to a prior session
+                    // with a checkpoint — anything less means there is
+                    // nothing valid to re-attach to, and the run falls
+                    // through to today's fresh-session default silently
+                    // (no announcement for a no-op).
+                    let latest = crate::session::default_sessions_root().join("latest");
+                    std::fs::read_link(&latest)
+                        .ok()
+                        .map(|t| {
+                            if t.is_absolute() {
+                                t
+                            } else {
+                                crate::session::default_sessions_root().join(t)
+                            }
+                        })
+                        .filter(|d| d.join("checkpoint.jsonl").is_file())
+                }
             }
+        };
+        let stick_reattached: Option<String> = stick_reattach
+            .as_ref()
+            .and_then(|d| d.file_name())
+            .and_then(|s| s.to_str())
+            .map(String::from);
+        if let Some(id) = stick_reattached.as_deref() {
+            crate::diag!(
+                crate::observer::LogLevel::Info,
+                "stick_session: re-attaching to {id} — pass `--session new` to start fresh"
+            );
         }
-    };
-    let stick_reattached: Option<String> = stick_reattach.as_ref()
-        .and_then(|d| d.file_name())
-        .and_then(|s| s.to_str())
-        .map(String::from);
-    if let Some(id) = stick_reattached.as_deref() {
-        crate::diag!(crate::observer::LogLevel::Info,
-            "stick_session: re-attaching to {id} — pass `--session new` to start fresh");
-    }
 
-    let resume_target: Option<std::path::PathBuf> = {
-        let explicit = params.get("resume")
-            .filter(|s| !s.is_empty())
-            .map(|s| {
+        let resume_target: Option<std::path::PathBuf> = {
+            let explicit = params.get("resume").filter(|s| !s.is_empty()).map(|s| {
                 let p = std::path::PathBuf::from(s);
-                if p.is_file() { p }
-                else if p.is_dir() { p.join("checkpoint.jsonl") }
-                else { crate::session::default_sessions_root().join(s).join("checkpoint.jsonl") }
+                if p.is_file() {
+                    p
+                } else if p.is_dir() {
+                    p.join("checkpoint.jsonl")
+                } else {
+                    crate::session::default_sessions_root()
+                        .join(s)
+                        .join("checkpoint.jsonl")
+                }
             });
-        let resume_latest = params.get("resume_latest")
-            .map(|s| s != "false" && s != "0")
-            .unwrap_or(false)
-            || args.iter().any(|a| a == "--resume-latest")
-            || stick_reattach.is_some();
-        if resume_latest {
-            // Resolve the symlink to a concrete session dir
-            // *now* — once `Session::new` runs the symlink will
-            // be repointed at the new session.
-            let latest = crate::session::default_sessions_root().join("latest");
-            let resolved = std::fs::read_link(&latest).ok()
-                .map(|target| {
-                    if target.is_absolute() { target }
-                    else { crate::session::default_sessions_root().join(target) }
-                })
-                .map(|d| d.join("checkpoint.jsonl"));
-            explicit.or(resolved)
-        } else {
-            explicit
-        }
-    };
-
-    // SRD-77 refine: the `nbrs refine` verb injects `--refine`
-    // into argv before delegating to the runner. Detected here
-    // so we can load the session's prior `phase_outcomes` and
-    // build a skip plan + bump `exec_id` before the session is
-    // re-attached. Implies `--resume-latest` semantics for
-    // session dir resolution (the resolver at line 950+ already
-    // produces the right `resume_target` when `--resume-latest`
-    // was passed alongside `--refine` by `refine_command`).
-    // SRD-106: an engaged `stick_session` re-attach IS a refine
-    // layering — new execution, prior outcomes as provenance.
-    let refine_requested = args.iter().any(|a| a == "--refine")
-        || stick_reattach.is_some();
-
-    // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
-    // for fresh runs; reuses the prior session dir when resuming
-    // so the metrics.db is appended-to in-place per SRD-44
-    // §"Wholesale metrics-purge".
-    let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
-    // SRD-77 — refine_plan is populated only when:
-    //   1. `--refine` was passed (refine verb is in flight)
-    //   2. The resume_target resolves to an existing session dir
-    // Computed BEFORE Session construction so the plan's
-    // `next_exec_id` can flow into `Session::refine`.
-    // SRD-77 refine scope. Default `missing` (skip phases with
-    // a prior completed outcome) when `--refine` is set without
-    // an explicit `scope=`. `scope=all` builds the plan for
-    // exec_id bumping + session re-attach but leaves the skip
-    // set empty, so every phase runs and new outcomes overwrite
-    // the prior ones (the cardinal history stays — prior rows
-    // keep their old exec_id, new rows land under the bumped
-    // exec_id). `scope=changed` requires `phase_hash` storage
-    // on PhaseOutcome (follow-up push) and is rejected here
-    // with a "not yet implemented" diag so the operator isn't
-    // silently dropped to `missing` semantics.
-    let refine_scope: Option<&str> = params.get("scope")
-        .map(|s| s.as_str())
-        .filter(|_| refine_requested);
-    let refine_plan: Option<Arc<crate::refine_plan::RefinePlan>> = if refine_requested {
-        resume_target.as_ref()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .and_then(|prior_dir| {
-                if !prior_dir.exists() {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "refine: prior session dir not found ({}); \
-                         running every phase as if this were a fresh `nbrs run`",
-                        prior_dir.display());
-                    return None;
-                }
-                let mut plan = crate::refine_plan::RefinePlan::load_from_session_dir(&prior_dir);
-                if plan.is_none() {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "refine: no readable phase_outcomes in {}; \
-                         running every phase as if this were a fresh `nbrs run`",
-                        prior_dir.display());
-                }
-                if let Some(p) = plan.as_mut() {
-                    p.scope = match refine_scope {
-                        Some("all") => {
-                            crate::diag!(crate::observer::LogLevel::Info,
-                                "refine: scope=all — every phase will run \
-                                 under exec_id={}", p.next_exec_id);
-                            crate::refine_plan::RefineScope::All
+            let resume_latest = params
+                .get("resume_latest")
+                .map(|s| s != "false" && s != "0")
+                .unwrap_or(false)
+                || args.iter().any(|a| a == "--resume-latest")
+                || stick_reattach.is_some();
+            if resume_latest {
+                // Resolve the symlink to a concrete session dir
+                // *now* — once `Session::new` runs the symlink will
+                // be repointed at the new session.
+                let latest = crate::session::default_sessions_root().join("latest");
+                let resolved = std::fs::read_link(&latest)
+                    .ok()
+                    .map(|target| {
+                        if target.is_absolute() {
+                            target
+                        } else {
+                            crate::session::default_sessions_root().join(target)
                         }
-                        Some("changed") => {
-                            crate::diag!(crate::observer::LogLevel::Info,
-                                "refine: scope=changed — comparing each \
+                    })
+                    .map(|d| d.join("checkpoint.jsonl"));
+                explicit.or(resolved)
+            } else {
+                explicit
+            }
+        };
+
+        // SRD-77 refine: the `nbrs refine` verb injects `--refine`
+        // into argv before delegating to the runner. Detected here
+        // so we can load the session's prior `phase_outcomes` and
+        // build a skip plan + bump `exec_id` before the session is
+        // re-attached. Implies `--resume-latest` semantics for
+        // session dir resolution (the resolver at line 950+ already
+        // produces the right `resume_target` when `--resume-latest`
+        // was passed alongside `--refine` by `refine_command`).
+        // SRD-106: an engaged `stick_session` re-attach IS a refine
+        // layering — new execution, prior outcomes as provenance.
+        let refine_requested = args.iter().any(|a| a == "--refine") || stick_reattach.is_some();
+
+        // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
+        // for fresh runs; reuses the prior session dir when resuming
+        // so the metrics.db is appended-to in-place per SRD-44
+        // §"Wholesale metrics-purge".
+        let scenario_for_session = params
+            .get("scenario")
+            .map(|s| s.as_str())
+            .unwrap_or("default");
+        // SRD-77 — refine_plan is populated only when:
+        //   1. `--refine` was passed (refine verb is in flight)
+        //   2. The resume_target resolves to an existing session dir
+        // Computed BEFORE Session construction so the plan's
+        // `next_exec_id` can flow into `Session::refine`.
+        // SRD-77 refine scope. Default `missing` (skip phases with
+        // a prior completed outcome) when `--refine` is set without
+        // an explicit `scope=`. `scope=all` builds the plan for
+        // exec_id bumping + session re-attach but leaves the skip
+        // set empty, so every phase runs and new outcomes overwrite
+        // the prior ones (the cardinal history stays — prior rows
+        // keep their old exec_id, new rows land under the bumped
+        // exec_id). `scope=changed` requires `phase_hash` storage
+        // on PhaseOutcome (follow-up push) and is rejected here
+        // with a "not yet implemented" diag so the operator isn't
+        // silently dropped to `missing` semantics.
+        let refine_scope: Option<&str> = params
+            .get("scope")
+            .map(|s| s.as_str())
+            .filter(|_| refine_requested);
+        let refine_plan: Option<Arc<crate::refine_plan::RefinePlan>> = if refine_requested {
+            resume_target
+                .as_ref()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .and_then(|prior_dir| {
+                    if !prior_dir.exists() {
+                        crate::diag!(
+                            crate::observer::LogLevel::Warn,
+                            "refine: prior session dir not found ({}); \
+                         running every phase as if this were a fresh `nbrs run`",
+                            prior_dir.display()
+                        );
+                        return None;
+                    }
+                    let mut plan =
+                        crate::refine_plan::RefinePlan::load_from_session_dir(&prior_dir);
+                    if plan.is_none() {
+                        crate::diag!(
+                            crate::observer::LogLevel::Warn,
+                            "refine: no readable phase_outcomes in {}; \
+                         running every phase as if this were a fresh `nbrs run`",
+                            prior_dir.display()
+                        );
+                    }
+                    if let Some(p) = plan.as_mut() {
+                        p.scope = match refine_scope {
+                            Some("all") => {
+                                crate::diag!(
+                                    crate::observer::LogLevel::Info,
+                                    "refine: scope=all — every phase will run \
+                                 under exec_id={}",
+                                    p.next_exec_id
+                                );
+                                crate::refine_plan::RefineScope::All
+                            }
+                            Some("changed") => {
+                                crate::diag!(
+                                    crate::observer::LogLevel::Info,
+                                    "refine: scope=changed — comparing each \
                                  phase's program hash against the prior \
                                  outcome; unchanged phases skip, changed \
                                  phases re-run under exec_id={}",
-                                p.next_exec_id);
-                            crate::refine_plan::RefineScope::Changed
-                        }
-                        _ => crate::refine_plan::RefineScope::Missing,
-                    };
-                }
-                plan.map(Arc::new)
-            })
-    } else {
-        None
-    };
-    // SRD-77 — `--on-removed=` policy. When refine attaches to
-    // a session whose prior outcomes name phases the current
-    // workload no longer declares, the default behavior is
-    // ERROR (refuse to proceed) — silently keeping orphan
-    // outcomes hides intent, silently dropping them loses
-    // data. `--on-removed=keep` retains them (no work);
-    // `--on-removed=drop` is reserved for a future push that
-    // wires the deletion + interactive confirm.
-    //
-    // The check compares the prior `phase_name` set against
-    // the current workload's `phases:` map keys. Sweep-cell
-    // variants (same name, different labels) are aggregated by
-    // name here — a missing name covers every prior cell of
-    // it. Tighter (name+labels) granularity is a follow-up
-    // when label-set comparison becomes load-bearing.
-    // (`on_removed_policy` is consulted per-execution, in `run_execution`.)
-    // Build the session (the shared, session-tier container). SRD-88:
-    // the session carries only `session=<id>`; the execution's
-    // identity (`exec_id`, `workload`) is declared one tier down, on
-    // its own component (below). [[HOST:session]]
-    let session = match (refine_plan.as_ref(), resume_target.as_ref()) {
-        (Some(plan), Some(p)) if p.exists() => {
-            let prior_dir = p.parent()
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(crate::session::latest_session_dir);
-            crate::diag!(crate::observer::LogLevel::Info,
-                "refine: attached to session {}; \
+                                    p.next_exec_id
+                                );
+                                crate::refine_plan::RefineScope::Changed
+                            }
+                            _ => crate::refine_plan::RefineScope::Missing,
+                        };
+                    }
+                    plan.map(Arc::new)
+                })
+        } else {
+            None
+        };
+        // SRD-77 — `--on-removed=` policy. When refine attaches to
+        // a session whose prior outcomes name phases the current
+        // workload no longer declares, the default behavior is
+        // ERROR (refuse to proceed) — silently keeping orphan
+        // outcomes hides intent, silently dropping them loses
+        // data. `--on-removed=keep` retains them (no work);
+        // `--on-removed=drop` is reserved for a future push that
+        // wires the deletion + interactive confirm.
+        //
+        // The check compares the prior `phase_name` set against
+        // the current workload's `phases:` map keys. Sweep-cell
+        // variants (same name, different labels) are aggregated by
+        // name here — a missing name covers every prior cell of
+        // it. Tighter (name+labels) granularity is a follow-up
+        // when label-set comparison becomes load-bearing.
+        // (`on_removed_policy` is consulted per-execution, in `run_execution`.)
+        // Build the session (the shared, session-tier container). SRD-88:
+        // the session carries only `session=<id>`; the execution's
+        // identity (`exec_id`, `workload`) is declared one tier down, on
+        // its own component (below). [[HOST:session]]
+        let session = match (refine_plan.as_ref(), resume_target.as_ref()) {
+            (Some(plan), Some(p)) if p.exists() => {
+                let prior_dir = p
+                    .parent()
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(crate::session::latest_session_dir);
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
+                    "refine: attached to session {}; \
                  prior outcomes={}, completed phases to skip={}, \
                  next exec_id={}",
-                prior_dir.display(),
-                plan.prior_outcomes_seen,
-                plan.completed.len(),
-                plan.next_exec_id);
-            crate::session::Session::reattach(prior_dir, scenario_for_session)
-        }
-        (_, Some(p)) if p.exists() => {
-            let prior_dir = p.parent()
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(crate::session::latest_session_dir);
-            crate::session::Session::reattach(prior_dir, scenario_for_session)
-        }
-        _ => crate::session::Session::new_with_args(scenario_for_session, &args),
-    };
-    let session_log_path = session.output_dir.join("session.log");
-    if let Err(e) = crate::observer::set_log_file(&session_log_path) {
-        crate::diag!(crate::observer::LogLevel::Warn,
-            "warning: failed to open session log {}: {e}",
-            session_log_path.display());
-    }
-
-    // `--trace=<spec>` (repeatable). Collected from raw `args`
-    // because parse_params is HashMap-keyed and would collapse
-    // repeated flags. See trace_router for spec grammar.
-    let trace_specs = collect_repeated_flag(&args, "trace");
-    match crate::trace_router::init(&trace_specs, &session.output_dir) {
-        Ok(0) => {} // no --trace specified, router stays empty
-        Ok(n) => crate::diag!(crate::observer::LogLevel::Info,
-            "trace router: {n} route(s) configured"),
-        Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
-            "trace router init failed: {e}"),
-    }
-
-    crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
-        session.id, session.output_dir.display());
-
-    // Polydat library audit channel: route polydat's
-    // `audit::log/info/warn/...` calls through this
-    // process's observer so they land in `session.log`
-    // alongside every other diagnostic line, with a
-    // `[lib]` subsystem tag so the operator can filter them
-    // out if they're noisy. Replaces the standalone
-    // `<session>/audit.log` file — same content, one fewer
-    // place to look.
-    // SRD-82 §"Panic reporting: one full render" — the runtime's
-    // fiber/op catchers render eval-panic diagnostics in full via
-    // the phase error list, so the polydat hook degrades to a
-    // one-line notice instead of the full body + backtrace hint.
-    polydat::set_panic_reporting_downstream(true);
-
-    polydat::audit::set_log_fn(|level, msg| {
-        use polydat::audit::LogLevel as AuditLevel;
-        let mapped = match level {
-            AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
-            AuditLevel::Info  => crate::observer::LogLevel::Info,
-            AuditLevel::Warn  => crate::observer::LogLevel::Warn,
-            AuditLevel::Error => crate::observer::LogLevel::Error,
+                    prior_dir.display(),
+                    plan.prior_outcomes_seen,
+                    plan.completed.len(),
+                    plan.next_exec_id
+                );
+                crate::session::Session::reattach(prior_dir, scenario_for_session)
+            }
+            (_, Some(p)) if p.exists() => {
+                let prior_dir = p
+                    .parent()
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(crate::session::latest_session_dir);
+                crate::session::Session::reattach(prior_dir, scenario_for_session)
+            }
+            _ => crate::session::Session::new_with_args(scenario_for_session, &args),
         };
-        crate::observer::log(mapped, &format!("[lib] {msg}"));
-    });
+        let session_log_path = session.output_dir.join("session.log");
+        if let Err(e) = crate::observer::set_log_file(&session_log_path) {
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "warning: failed to open session log {}: {e}",
+                session_log_path.display()
+            );
+        }
 
-    // SQLite metrics in session directory. SRD-88: creating the
-    // reporter (connection + schema + the session-INVARIANT
-    // `session` metadata key) is session-tier — one per session,
-    // shared by every execution. The per-execution metadata
-    // (workload / scenario / params / the SRD-77 `executions` row)
-    // is written separately below, per execution, so N concurrent
-    // executions each record their own without clobbering.
-    let sqlite_path = session.metrics_path();
-    let sqlite_reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
-        .map(|mut r| {
-            r.set_metadata("session", &session.id);
-            crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
-                sqlite_path.display());
-            r
-        })
-        .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn,
-            "warning: SQLite metrics disabled: {e}"))
-        .ok();
-    let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
+        // `--trace=<spec>` (repeatable). Collected from raw `args`
+        // because parse_params is HashMap-keyed and would collapse
+        // repeated flags. See trace_router for spec grammar.
+        let trace_specs = collect_repeated_flag(&args, "trace");
+        match crate::trace_router::init(&trace_specs, &session.output_dir) {
+            Ok(0) => {} // no --trace specified, router stays empty
+            Ok(n) => crate::diag!(
+                crate::observer::LogLevel::Info,
+                "trace router: {n} route(s) configured"
+            ),
+            Err(e) => crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "trace router init failed: {e}"
+            ),
+        }
 
-    // RAII shutdown guard — runs `consolidate_wal` at session
-    // end via Drop. Reliable across every Rust unwind path:
-    // normal completion, error `?` propagation, first-Ctrl-C
-    // → stop flag → runner unwind. The only path that skips
-    // it is `std::process::exit` (second Ctrl-C force-exit),
-    // which is the operator's declared "I don't want to
-    // wait" escape hatch. The guard MUST live until after
-    // every reporter has finished writing — bind it here at
-    // the top of the run-impl block so it drops in
-    // last-created / first-dropped order relative to local
-    // variables; the explicit `_` binding pins its lifetime
-    // to the function scope (otherwise the temporary would
-    // drop immediately).
-    let _sqlite_shutdown_guard =
-        nbrs_metrics::reporters::sqlite::SqliteShutdownGuard::new(
-            sqlite_reporter.clone(),
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "session: {} ({})",
+            session.id,
+            session.output_dir.display()
         );
 
-    // Periodic WAL checkpoint so concurrent read-only
-    // tooling (`nbrs report` against a live session,
-    // ad-hoc `sqlite3 metrics.db` inspection, the realtime
-    // metricsql preview) sees committed writes without
-    // waiting for session end. SQLite's WAL holds frames
-    // until either:
-    //   1. `wal_autocheckpoint` (page-count threshold,
-    //      default 1000 pages) fires on a writer, OR
-    //   2. an explicit `PRAGMA wal_checkpoint(...)` runs.
-    //
-    // Under bursty workloads (a tight rampup followed by a
-    // long synchronous wait — exactly the SRD-75
-    // ensure_compacted shape) writers can stall under the
-    // autocheckpoint threshold for many minutes, during
-    // which readers see stale data. A 60-second background
-    // task running `PRAGMA wal_checkpoint(PASSIVE)` bounds
-    // the staleness without blocking writers.
-    //
-    // PASSIVE mode is the cheap variant: it merges all
-    // currently-committed WAL frames into the main `.db`
-    // without truncating the WAL file or pausing writers.
-    // The tokio task runs for the runtime's lifetime and is
-    // cancelled on shutdown; the final `consolidate_wal`
-    // (TRUNCATE flavour) at session end produces the
-    // archival "no -wal sidecar" form.
-    {
-        let reporter = sqlite_reporter.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(60),
-            );
-            // First tick is immediate; skip it so the
-            // post-session-start state has a chance to
-            // settle before the first checkpoint fires.
-            interval.tick().await;
-            loop {
+        // Polydat library audit channel: route polydat's
+        // `audit::log/info/warn/...` calls through this
+        // process's observer so they land in `session.log`
+        // alongside every other diagnostic line, with a
+        // `[lib]` subsystem tag so the operator can filter them
+        // out if they're noisy. Replaces the standalone
+        // `<session>/audit.log` file — same content, one fewer
+        // place to look.
+        // SRD-82 §"Panic reporting: one full render" — the runtime's
+        // fiber/op catchers render eval-panic diagnostics in full via
+        // the phase error list, so the polydat hook degrades to a
+        // one-line notice instead of the full body + backtrace hint.
+        polydat::set_panic_reporting_downstream(true);
+
+        polydat::audit::set_log_fn(|level, msg| {
+            use polydat::audit::LogLevel as AuditLevel;
+            let mapped = match level {
+                AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
+                AuditLevel::Info => crate::observer::LogLevel::Info,
+                AuditLevel::Warn => crate::observer::LogLevel::Warn,
+                AuditLevel::Error => crate::observer::LogLevel::Error,
+            };
+            crate::observer::log(mapped, &format!("[lib] {msg}"));
+        });
+
+        // SQLite metrics in session directory. SRD-88: creating the
+        // reporter (connection + schema + the session-INVARIANT
+        // `session` metadata key) is session-tier — one per session,
+        // shared by every execution. The per-execution metadata
+        // (workload / scenario / params / the SRD-77 `executions` row)
+        // is written separately below, per execution, so N concurrent
+        // executions each record their own without clobbering.
+        let sqlite_path = session.metrics_path();
+        let sqlite_reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
+            .map(|mut r| {
+                r.set_metadata("session", &session.id);
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
+                    "metrics: {}",
+                    sqlite_path.display()
+                );
+                r
+            })
+            .map_err(|e| {
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "warning: SQLite metrics disabled: {e}"
+                )
+            })
+            .ok();
+        let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
+
+        // RAII shutdown guard — runs `consolidate_wal` at session
+        // end via Drop. Reliable across every Rust unwind path:
+        // normal completion, error `?` propagation, first-Ctrl-C
+        // → stop flag → runner unwind. The only path that skips
+        // it is `std::process::exit` (second Ctrl-C force-exit),
+        // which is the operator's declared "I don't want to
+        // wait" escape hatch. The guard MUST live until after
+        // every reporter has finished writing — bind it here at
+        // the top of the run-impl block so it drops in
+        // last-created / first-dropped order relative to local
+        // variables; the explicit `_` binding pins its lifetime
+        // to the function scope (otherwise the temporary would
+        // drop immediately).
+        let _sqlite_shutdown_guard =
+            nbrs_metrics::reporters::sqlite::SqliteShutdownGuard::new(sqlite_reporter.clone());
+
+        // Periodic WAL checkpoint so concurrent read-only
+        // tooling (`nbrs report` against a live session,
+        // ad-hoc `sqlite3 metrics.db` inspection, the realtime
+        // metricsql preview) sees committed writes without
+        // waiting for session end. SQLite's WAL holds frames
+        // until either:
+        //   1. `wal_autocheckpoint` (page-count threshold,
+        //      default 1000 pages) fires on a writer, OR
+        //   2. an explicit `PRAGMA wal_checkpoint(...)` runs.
+        //
+        // Under bursty workloads (a tight rampup followed by a
+        // long synchronous wait — exactly the SRD-75
+        // ensure_compacted shape) writers can stall under the
+        // autocheckpoint threshold for many minutes, during
+        // which readers see stale data. A 60-second background
+        // task running `PRAGMA wal_checkpoint(PASSIVE)` bounds
+        // the staleness without blocking writers.
+        //
+        // PASSIVE mode is the cheap variant: it merges all
+        // currently-committed WAL frames into the main `.db`
+        // without truncating the WAL file or pausing writers.
+        // The tokio task runs for the runtime's lifetime and is
+        // cancelled on shutdown; the final `consolidate_wal`
+        // (TRUNCATE flavour) at session end produces the
+        // archival "no -wal sidecar" form.
+        {
+            let reporter = sqlite_reporter.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                // First tick is immediate; skip it so the
+                // post-session-start state has a chance to
+                // settle before the first checkpoint fires.
                 interval.tick().await;
-                if let Ok(g) = reporter.lock()
-                    && let Some(r) = g.as_ref() {
+                loop {
+                    interval.tick().await;
+                    if let Ok(g) = reporter.lock()
+                        && let Some(r) = g.as_ref()
+                    {
                         r.passive_checkpoint();
                     }
-            }
-        });
-    }
+                }
+            });
+        }
 
+        // SRD-88 — session-tier metrics services, configured from CLI params.
+        let (cadence_reporter, cadence_tree, metrics_query, stop_handle) = build_session_metrics(
+            &session,
+            &sqlite_reporter,
+            &observer,
+            &eff_params,
+            &openmetrics_url,
+            &args,
+            &eff_params,
+        )?;
+        crate::session_signals::install_signal_handler();
+        let _profiler =
+            crate::profiler::ProfileGuard::maybe_start(&params, Some(&session.output_dir));
 
-    // SRD-88 — session-tier metrics services, configured from CLI params.
-    let (cadence_reporter, cadence_tree, metrics_query, stop_handle) =
-        build_session_metrics(&session, &sqlite_reporter, &observer,
-            &eff_params, &openmetrics_url, &args, &eff_params)?;
-    crate::session_signals::install_signal_handler();
-    let _profiler = crate::profiler::ProfileGuard::maybe_start(
-        &params, Some(&session.output_dir));
+        // SRD-88 — the SESSION-tier checkpoint writer (one per session;
+        // holds the single resume lock) + the resume doc. Executions share
+        // the writer and each derives its own resume plan from `saved_doc`.
+        let checkpoint_path = session.output_dir.join("checkpoint.jsonl");
+        let saved_doc = match resume_target.as_ref() {
+            Some(p) => match crate::checkpoint::storage::read(p) {
+                Ok(Some(doc)) => Some(doc),
+                Ok(None) => {
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
+                        "resume: no checkpoint found at {} — fresh session",
+                        p.display()
+                    );
+                    None
+                }
+                Err(e) => return Err(format!("resume: {e}")),
+            },
+            None => None,
+        };
+        let invocation = saved_doc.as_ref().map(|d| d.invocation + 1).unwrap_or(1);
+        let started_at = saved_doc
+            .as_ref()
+            .map(|d| d.started_at.clone())
+            .unwrap_or_else(crate::checkpoint::storage::now_rfc3339);
+        // A dry-run is resume-inert (SRD-44): it short-circuits ops and may
+        // run against placeholder params, so it must persist NO checkpoint —
+        // otherwise its (synthetic) phase completions poison a later
+        // `--resume-latest`. `Session::new_with_args` already withholds the
+        // `latest` symlink from a dry-run; this withholds the checkpoint too.
+        let checkpoint_writer =
+            std::sync::Arc::new(if crate::session::args_request_dryrun(&args) {
+                crate::checkpoint::CheckpointWriter::disabled(checkpoint_path.clone())
+            } else {
+                match saved_doc.as_ref() {
+                    Some(_doc) => crate::checkpoint::CheckpointWriter::from_existing(
+                        checkpoint_path.clone(),
+                        saved_doc.clone().unwrap(),
+                        crate::checkpoint::storage::now_rfc3339(),
+                        invocation,
+                    ),
+                    None => crate::checkpoint::CheckpointWriter::new(
+                        checkpoint_path.clone(),
+                        session.id.clone(),
+                        started_at,
+                        invocation,
+                    ),
+                }
+            });
 
-    // SRD-88 — the SESSION-tier checkpoint writer (one per session;
-    // holds the single resume lock) + the resume doc. Executions share
-    // the writer and each derives its own resume plan from `saved_doc`.
-    let checkpoint_path = session.output_dir.join("checkpoint.jsonl");
-    let saved_doc = match resume_target.as_ref() {
-        Some(p) => match crate::checkpoint::storage::read(p) {
-            Ok(Some(doc)) => Some(doc),
-            Ok(None) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "resume: no checkpoint found at {} — fresh session", p.display());
-                None
-            }
-            Err(e) => return Err(format!("resume: {e}")),
-        },
-        None => None,
-    };
-    let invocation = saved_doc.as_ref().map(|d| d.invocation + 1).unwrap_or(1);
-    let started_at = saved_doc.as_ref()
-        .map(|d| d.started_at.clone())
-        .unwrap_or_else(crate::checkpoint::storage::now_rfc3339);
-    // A dry-run is resume-inert (SRD-44): it short-circuits ops and may
-    // run against placeholder params, so it must persist NO checkpoint —
-    // otherwise its (synthetic) phase completions poison a later
-    // `--resume-latest`. `Session::new_with_args` already withholds the
-    // `latest` symlink from a dry-run; this withholds the checkpoint too.
-    let checkpoint_writer = std::sync::Arc::new(
-        if crate::session::args_request_dryrun(&args) {
-            crate::checkpoint::CheckpointWriter::disabled(checkpoint_path.clone())
-        } else {
-            match saved_doc.as_ref() {
-                Some(_doc) => crate::checkpoint::CheckpointWriter::from_existing(
-                    checkpoint_path.clone(), saved_doc.clone().unwrap(),
-                    crate::checkpoint::storage::now_rfc3339(), invocation,
-                ),
-                None => crate::checkpoint::CheckpointWriter::new(
-                    checkpoint_path.clone(), session.id.clone(), started_at, invocation,
-                ),
-            }
-        });
-
-    Ok(SessionHost {
-        session,
-        sqlite_reporter,
-        cadence_reporter,
-        cadence_tree,
-        metrics_query,
-        stop_handle,
-        refine_plan,
-        resume_target,
-        refine_requested,
-        refine_scope: refine_scope.map(|s| s.to_string()),
-        stick_reattached,
-        profiler: _profiler,
-        sqlite_guard: _sqlite_shutdown_guard,
-        checkpoint_writer,
-        saved_doc,
-    })
+        Ok(SessionHost {
+            session,
+            sqlite_reporter,
+            cadence_reporter,
+            cadence_tree,
+            metrics_query,
+            stop_handle,
+            refine_plan,
+            resume_target,
+            refine_requested,
+            refine_scope: refine_scope.map(|s| s.to_string()),
+            stick_reattached,
+            profiler: _profiler,
+            sqlite_guard: _sqlite_shutdown_guard,
+            checkpoint_writer,
+            saved_doc,
+        })
     }
 
     /// Session teardown — once, after every execution (SRD-88).
@@ -1387,8 +1558,11 @@ impl SessionHost {
         self.stop_handle.stop().await;
         let _teardown_t = std::time::Instant::now();
         self.cadence_reporter.shutdown().await;
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "shutdown: cadence reporter flush+join {:?}", _teardown_t.elapsed());
+        crate::diag!(
+            crate::observer::LogLevel::Debug,
+            "shutdown: cadence reporter flush+join {:?}",
+            _teardown_t.elapsed()
+        );
         // Release the live-access reader (the HybridStore's sqlite cold-tier
         // connection on metrics.db) BEFORE consolidating the WAL: the
         // `journal_mode=DELETE` flip in `consolidate_wal` needs an EXCLUSIVE
@@ -1396,11 +1570,12 @@ impl SessionHost {
         // blocks ("database is locked"). The session is fully stopped here, so
         // no live reads remain.
         nbrs_metrics::queryapi::uninstall_live_access();
-        crate::diag!(crate::observer::LogLevel::Info,
-            "shutting down — consolidating metrics.db WAL");
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "shutting down — consolidating metrics.db WAL"
+        );
         self.sqlite_guard.consume();
-        crate::diag!(crate::observer::LogLevel::Info,
-            "shutdown complete");
+        crate::diag!(crate::observer::LogLevel::Info, "shutdown complete");
         // Shutdown-ladder bookkeeping: the run drained through the full
         // process-level cleanup, so a still-ticking level-1 countdown
         // (Ctrl-C during the final drain) goes quiet instead of
@@ -1411,7 +1586,11 @@ impl SessionHost {
 
 /// SRD-88 — run ONE execution against a shared [`SessionHost`]. Does
 /// NOT tear the session down (that is `SessionHost::shutdown`).
-async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
+async fn run_execution(
+    host: &SessionHost,
+    args: &[String],
+    observer: Arc<dyn crate::observer::RunObserver>,
+) -> Result<(), String> {
     let session = &host.session;
     let session_id = host.session.id.clone();
     let sqlite_reporter = host.sqlite_reporter.clone();
@@ -1445,9 +1624,16 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // A positional `<file>.yaml` argument counts as a given
         // workload — the manifest's library must not displace it.
         let workload_given = params.contains_key("workload")
-            || args.iter().any(|a| a.ends_with(".yaml") || a.ends_with(".yml"));
+            || args
+                .iter()
+                .any(|a| a.ends_with(".yaml") || a.ends_with(".yml"));
         apply_driver_manifest(
-            &mut params, &driver_name, manifest, library_ref, workload_given)?;
+            &mut params,
+            &driver_name,
+            manifest,
+            library_ref,
+            workload_given,
+        )?;
     }
     let params = params;
 
@@ -1460,17 +1646,22 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     let mut workload_source_text: Option<String> = None;
     let mut workload = if let Some(op_str) = params.get("op") {
         if params.contains_key("workload") {
-            crate::diag!(crate::observer::LogLevel::Warn, "warning: op= overrides workload=");
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "warning: op= overrides workload="
+            );
         }
         nbrs_workload::inline::synthesize_inline_workload(op_str)
             .map_err(|e| format!("inline workload: {e}"))?
     } else {
-        let workload_raw = params.get("workload")
+        let workload_raw = params
+            .get("workload")
             .cloned()
-            .or_else(|| args.iter()
-                .find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
-                .cloned()
-            )
+            .or_else(|| {
+                args.iter()
+                    .find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
+                    .cloned()
+            })
             .ok_or("no workload specified. Use workload=file.yaml or op=\"...\"")?;
 
         // SRD-85 resolution: local files first (as-is, with
@@ -1493,7 +1684,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     std::path::Path::new(&workload_path),
                     &params,
                 )
-                    .map_err(|e| format!("parse workload: {e}"))?;
+                .map_err(|e| format!("parse workload: {e}"))?;
                 workload_source_text = Some(yaml_source);
                 workload
             }
@@ -1507,11 +1698,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 // `extends:` chain resolves through the catalog
                 // (no directory context).
                 let merged = nbrs_workload::extends::load_and_merge_bundled(bundled)
-                    .map_err(|e| format!(
-                        "bundled workload `{}`: {e}", bundled.name))?;
+                    .map_err(|e| format!("bundled workload `{}`: {e}", bundled.name))?;
                 let workload = nbrs_workload::parse::parse_workload(&merged, &params)
-                    .map_err(|e| format!(
-                        "parse bundled workload `{}`: {e}", bundled.name))?;
+                    .map_err(|e| format!("parse bundled workload `{}`: {e}", bundled.name))?;
                 workload_source_text = Some(bundled.source.to_string());
                 workload
             }
@@ -1537,57 +1726,75 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                  `implements:`), so `impl=` does not apply — invoke \
                  either the implementation directly or the blueprint \
                  with impl=",
-                workload_file.as_deref().unwrap_or("<inline>")));
+                workload_file.as_deref().unwrap_or("<inline>")
+            ));
         }
         let base_dir = (!workload_is_bundled)
-            .then(|| workload_file.as_deref()
-                .map(std::path::Path::new)
-                .and_then(|p| p.parent().map(|d| d.to_path_buf())))
+            .then(|| {
+                workload_file
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            })
             .flatten();
         let bundled_origin = workload_is_bundled
             .then(|| workload_file.as_deref())
             .flatten();
         let (mut blueprint, blueprint_id) =
             load_secondary_workload(&target, &params, base_dir.as_deref(), bundled_origin)?;
-        crate::diag!(crate::observer::LogLevel::Info,
+        crate::diag!(
+            crate::observer::LogLevel::Info,
             "implements: binding '{}' into blueprint '{blueprint_id}'",
-            workload_file.as_deref().unwrap_or("<inline>"));
+            workload_file.as_deref().unwrap_or("<inline>")
+        );
         nbrs_workload::implements::bind_implementation(&mut blueprint, workload)
             .map_err(|e| format!("implements binding: {e}"))?;
         workload = blueprint;
     } else if let Some(impl_ref) = impl_param {
         let base_dir = (!workload_is_bundled)
-            .then(|| workload_file.as_deref()
-                .map(std::path::Path::new)
-                .and_then(|p| p.parent().map(|d| d.to_path_buf())))
+            .then(|| {
+                workload_file
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            })
             .flatten();
         let bundled_origin = workload_is_bundled
             .then(|| workload_file.as_deref())
             .flatten();
         let (implementation, impl_id) =
             load_secondary_workload(&impl_ref, &params, base_dir.as_deref(), bundled_origin)?;
-        let declared = implementation.implements.clone().ok_or_else(|| format!(
-            "impl='{impl_ref}' resolves to '{impl_id}', which declares no \
+        let declared = implementation.implements.clone().ok_or_else(|| {
+            format!(
+                "impl='{impl_ref}' resolves to '{impl_id}', which declares no \
              `implements:` — an implementation module must name its \
-             blueprint"))?;
+             blueprint"
+            )
+        })?;
         // The impl's declared target must be the SAME document the
         // operator invoked as workload=.
         // The impl doc's `implements:` resolves relative to the
         // IMPL doc's own directory (extends precedent).
-        let impl_dir = std::path::Path::new(&impl_id).parent()
+        let impl_dir = std::path::Path::new(&impl_id)
+            .parent()
             .map(|d| d.to_path_buf());
-        let declared_id = workload_ref_identity(
-            &declared, impl_dir.as_deref(), Some(impl_id.as_str()))?;
-        let invoked_id = workload_file.clone().map(|f| canonical_identity(&f))
+        let declared_id =
+            workload_ref_identity(&declared, impl_dir.as_deref(), Some(impl_id.as_str()))?;
+        let invoked_id = workload_file
+            .clone()
+            .map(|f| canonical_identity(&f))
             .unwrap_or_default();
         if declared_id != invoked_id {
             return Err(format!(
                 "impl='{impl_id}' declares implements='{declared}' \
                  (resolves to '{declared_id}'), which is not the invoked \
-                 workload '{invoked_id}'"));
+                 workload '{invoked_id}'"
+            ));
         }
-        crate::diag!(crate::observer::LogLevel::Info,
-            "implements: binding '{impl_id}' into blueprint '{invoked_id}'");
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "implements: binding '{impl_id}' into blueprint '{invoked_id}'"
+        );
         nbrs_workload::implements::bind_implementation(&mut workload, implementation)
             .map_err(|e| format!("implements binding: {e}"))?;
     }
@@ -1597,7 +1804,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             return Err(format!(
                 "abstract op slot(s) [{}] unbound — pass impl=<workload> \
                  or invoke an implementing workload (SRD-108)",
-                unbound.join(", ")));
+                unbound.join(", ")
+            ));
         }
     }
 
@@ -1621,17 +1829,23 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     let merged_params = workload.params.clone();
 
     // Extract core config
-    let driver = merged_params.get("adapter")
+    let driver = merged_params
+        .get("adapter")
         .or_else(|| merged_params.get("driver"))
         .cloned()
         .unwrap_or_else(|| "stdout".into());
     let explicit_cycles: Option<u64> = merged_params.get("cycles").and_then(|s| parse_count(s));
     let concurrency: usize = match merged_params.get("concurrency") {
-        Some(s) => s.parse().map_err(|_| format!("concurrency value '{s}' is not a valid integer"))?,
+        Some(s) => s
+            .parse()
+            .map_err(|_| format!("concurrency value '{s}' is not a valid integer"))?,
         None => 1,
     };
     let rate: Option<f64> = match merged_params.get("rate") {
-        Some(s) => Some(s.parse().map_err(|_| format!("rate value '{s}' is not a valid number"))?),
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| format!("rate value '{s}' is not a valid number"))?,
+        ),
         None => None,
     };
     // Workload-root total-attempts budget — the `tries` sigil for the
@@ -1641,14 +1855,19 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // total attempts before the failure propagates to the result level;
     // `1` = explicit single-attempt; `0` = ops fail without executing.
     let tries: Option<u32> = match merged_params.get("tries") {
-        Some(s) => Some(s.parse().map_err(|_| format!("tries value '{s}' is not a valid integer"))?),
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| format!("tries value '{s}' is not a valid integer"))?,
+        ),
         None => None,
     };
     let tag_filter = merged_params.get("tags").cloned();
-    let seq_type = merged_params.get("seq")
+    let seq_type = merged_params
+        .get("seq")
         .map(|s| SequencerType::parse(s).unwrap_or(SequencerType::Bucket))
         .unwrap_or(SequencerType::Bucket);
-    let mut error_spec = merged_params.get("errors")
+    let mut error_spec = merged_params
+        .get("errors")
         .cloned()
         .unwrap_or_else(|| ".*:warn,stop".to_string());
     // `error_rate_max` — the OPT-IN session-wide error-rate circuit
@@ -1664,8 +1883,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         Some(s) => match s.trim().parse::<f64>() {
             Ok(v) if v >= 0.0 => Some(v),
             _ => {
-                eprintln!("error: error_rate_max must be a non-negative number \
-                           (e.g. 0.1 = 10%); got '{s}'");
+                eprintln!(
+                    "error: error_rate_max must be a non-negative number \
+                           (e.g. 0.1 = 10%); got '{s}'"
+                );
                 std::process::exit(2);
             }
         },
@@ -1680,14 +1901,17 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // run get it; operators who pass it accidentally without
     // resume= get the same generous-retry policy they'd see on
     // resume.
-    let force_retry_failed = params.get("force_retry_failed")
+    let force_retry_failed = params
+        .get("force_retry_failed")
         .map(|s| s != "false" && s != "0")
         .unwrap_or(false)
         || args.iter().any(|a| a == "--force-retry-failed");
     if force_retry_failed {
         error_spec = format!(".*:retry,warn;{error_spec}");
-        crate::diag!(crate::observer::LogLevel::Info,
-            "--force-retry-failed: errors cascade prefixed with '.*:retry,warn'");
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "--force-retry-failed: errors cascade prefixed with '.*:retry,warn'"
+        );
     }
 
     // Validate CLI parameters (runner-known + adapter-registered + workload-declared).
@@ -1705,7 +1929,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // when no CLI vocabulary is installed (library/test driver).
     if let Some(cli_params) = known_params() {
         let adapter_params = registered_adapter_params();
-        let all_known: Vec<&str> = cli_params.iter().copied()
+        let all_known: Vec<&str> = cli_params
+            .iter()
+            .copied()
             .chain(adapter_params.iter().copied())
             .chain(workload.declared_params.iter().map(|s| s.as_str()))
             .collect();
@@ -1713,7 +1939,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             if !all_known.contains(&key.as_str()) {
                 let suggestion = closest_match(key, &all_known);
                 if let Some(closest) = suggestion {
-                    return Err(format!("unrecognized parameter '{key}='. Did you mean '{closest}='?"));
+                    return Err(format!(
+                        "unrecognized parameter '{key}='. Did you mean '{closest}='?"
+                    ));
                 } else {
                     return Err(format!("unrecognized parameter '{key}='"));
                 }
@@ -1745,21 +1973,28 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // cryptic "expected expression, got LBrace". Catch it
         // here with a targeted message naming the YAML file and
         // line so the operator can jump straight to it.
-        let mut invalid_polydat_braces: Vec<PolydatBraceFinding> = collect_polydat_brace_refs(&workload);
+        let mut invalid_polydat_braces: Vec<PolydatBraceFinding> =
+            collect_polydat_brace_refs(&workload);
         if !invalid_polydat_braces.is_empty() {
             invalid_polydat_braces.sort();
             invalid_polydat_braces.dedup();
             let file_path = workload_file.as_deref().unwrap_or("<inline>");
-            let lines: Vec<String> = invalid_polydat_braces.iter().map(|f| {
-                let yaml_line = workload_source_text.as_deref()
-                    .and_then(|src| find_yaml_line_for_brace(src, &f.placeholder));
-                let prefix = match yaml_line {
-                    Some(n) => format!("{file_path}:{n}"),
-                    None => file_path.to_string(),
-                };
-                format!("  {prefix}: in {} — `{{{}}}`. Use bare `{}`.",
-                    f.location, f.placeholder, f.placeholder)
-            }).collect();
+            let lines: Vec<String> = invalid_polydat_braces
+                .iter()
+                .map(|f| {
+                    let yaml_line = workload_source_text
+                        .as_deref()
+                        .and_then(|src| find_yaml_line_for_brace(src, &f.placeholder));
+                    let prefix = match yaml_line {
+                        Some(n) => format!("{file_path}:{n}"),
+                        None => file_path.to_string(),
+                    };
+                    format!(
+                        "  {prefix}: in {} — `{{{}}}`. Use bare `{}`.",
+                        f.location, f.placeholder, f.placeholder
+                    )
+                })
+                .collect();
             return Err(format!(
                 "`{{...}}` braces in Polydat expression context (invalid syntax).\n\
                  Polydat accepts bare identifiers; braces are only for YAML string\n\
@@ -1782,9 +2017,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // with a default in `describe workloads` without a
         // textual `{name}` reference.
         for name in &workload.declared_params {
-            if is_cli_param(name)
-                || adapter_params.contains(name.as_str())
-            {
+            if is_cli_param(name) || adapter_params.contains(name.as_str()) {
                 continue;
             }
             if !referenced.contains(name) {
@@ -1804,9 +2037,14 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         //   - adapter-registered params (driver-specific config)
         //   - iter-vars from Comprehensions in the scenario tree
         //     (`k`, `limit`, `profile` from `for_each: "k in …"`)
-        let declared_set: std::collections::HashSet<&str> =
-            workload.declared_params.iter().map(|s| s.as_str()).collect();
-        let mut undeclared: Vec<&str> = referenced.placeholders.iter()
+        let declared_set: std::collections::HashSet<&str> = workload
+            .declared_params
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let mut undeclared: Vec<&str> = referenced
+            .placeholders
+            .iter()
             .map(|s| s.as_str())
             .filter(|name| !declared_set.contains(*name))
             .filter(|name| !is_cli_param(name))
@@ -1824,9 +2062,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                  `for_each:`/`for_combinations:`, and wire names from Polydat \
                  `bindings:`.",
                 plural = if undeclared.len() == 1 { "" } else { "s" },
-                names = undeclared.iter()
+                names = undeclared
+                    .iter()
                     .map(|n| format!("`{{{n}}}`"))
-                    .collect::<Vec<_>>().join(", "),
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ));
         }
     }
@@ -1841,7 +2081,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // not become identifiers in the Polydat source. Filter by
     // `declared_params` to keep only the YAML-declared subset.
     let declared: std::collections::HashSet<&String> = workload.declared_params.iter().collect();
-    let workload_params: HashMap<String, String> = workload.params.iter()
+    let workload_params: HashMap<String, String> = workload
+        .params
+        .iter()
         .filter(|(k, _)| declared.contains(*k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
@@ -1872,7 +2114,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // `wrappers:` overrides on individual templates shadow
     // this entry; CLI flags (not yet implemented) would set
     // it independently on the Activity.
-    let workload_wrappers_override: Option<Vec<String>> = workload.wrappers
+    let workload_wrappers_override: Option<Vec<String>> = workload
+        .wrappers
         .as_ref()
         .filter(|c| !c.order.is_empty())
         .map(|c| c.order.clone());
@@ -1903,12 +2146,24 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     //
     // Both flags accept a comma-separated list. Empty / unset
     // ⇒ runtime default applies.
-    let cli_wrap_order: Option<Vec<String>> = crate::session::resolve_flag(&args[..], "--wrap-order")
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
-        .filter(|v: &Vec<String>| !v.is_empty());
-    let cli_wrap_default_order: Option<Vec<String>> = crate::session::resolve_flag(&args[..], "--wrap-default-order")
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
-        .filter(|v: &Vec<String>| !v.is_empty());
+    let cli_wrap_order: Option<Vec<String>> =
+        crate::session::resolve_flag(&args[..], "--wrap-order")
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .filter(|v: &Vec<String>| !v.is_empty());
+    let cli_wrap_default_order: Option<Vec<String>> =
+        crate::session::resolve_flag(&args[..], "--wrap-default-order")
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .filter(|v: &Vec<String>| !v.is_empty());
 
     // Effective workload-level wrapper override: workload's
     // own `wrappers: { order: [...] }` block wins over the
@@ -1921,20 +2176,24 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // post-hoc `nbrs report ...` can replay them. Empty
     // `report:` block ⇒ no auto-render and no persisted specs.
     let workload_report = workload.report.clone();
-    let workload_summaries: HashMap<String, nbrs_workload::model::SummaryConfig> =
-        workload_report.items()
-            .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Table))
-            .map(|i| (i.name.clone(),
-                nbrs_workload::model::SummaryConfig::parse(&i.body)))
-            .collect();
+    let workload_summaries: HashMap<String, nbrs_workload::model::SummaryConfig> = workload_report
+        .items()
+        .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Table))
+        .map(|i| {
+            (
+                i.name.clone(),
+                nbrs_workload::model::SummaryConfig::parse(&i.body),
+            )
+        })
+        .collect();
 
     // Collect ALL ops: top-level ops + all phase inline ops.
     let mut ops = workload.ops;
 
     // Filter top-level ops by tags (CLI-level tag filter)
     if let Some(ref filter) = tag_filter {
-        ops = TagFilter::filter_ops(&ops, filter)
-            .map_err(|e| format!("invalid tag filter: {e}"))?;
+        ops =
+            TagFilter::filter_ops(&ops, filter).map_err(|e| format!("invalid tag filter: {e}"))?;
     }
 
     // Classify phase ops for compilation:
@@ -1942,7 +2201,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // - Phases without own bindings: included in outer (workload) kernel
     let mut phase_ops_for_compile: Vec<nbrs_workload::model::ParsedOp> = Vec::new();
     let mut phase_raw_ops: HashMap<String, Vec<nbrs_workload::model::ParsedOp>> = HashMap::new();
-    let mut phases_needing_own_kernel: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut phases_needing_own_kernel: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for (name, phase) in &phases {
         let has_own_bindings = phase.ops.iter().any(|op| !op.bindings.is_empty());
         if phase.for_each.is_some() || has_own_bindings {
@@ -1953,32 +2213,45 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         }
     }
 
-
     // For non-phased workloads, require at least some ops
     if ops.is_empty() && phases.is_empty() {
         return Err("no ops selected (tag filter may have excluded all ops)".into());
     }
 
     if phases.is_empty() {
-        crate::diag!(crate::observer::LogLevel::Info, "{} ops, {} cycles, concurrency={}, adapter={}",
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "{} ops, {} cycles, concurrency={}, adapter={}",
             ops.len(),
-            explicit_cycles.map(|c| c.to_string()).unwrap_or("auto".into()),
+            explicit_cycles
+                .map(|c| c.to_string())
+                .unwrap_or("auto".into()),
             concurrency,
-            driver);
+            driver
+        );
     } else {
         // Always log to session.log; stderr suppression is the
         // observer's job (TuiObserver gates eprintln internally).
-        crate::diag!(crate::observer::LogLevel::Info, "{} phases, {} top-level ops, adapter={}",
-            phases.len(), ops.len(), driver);
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "{} phases, {} top-level ops, adapter={}",
+            phases.len(),
+            ops.len(),
+            driver
+        );
     }
 
     // Collect --polydat-lib=path flags
-    let polydat_lib_paths: Vec<std::path::PathBuf> = args.iter()
+    let polydat_lib_paths: Vec<std::path::PathBuf> = args
+        .iter()
         .filter_map(|a| a.strip_prefix("--polydat-lib="))
         .map(std::path::PathBuf::from)
         .collect();
     let strict = args.iter().any(|a| a == "--strict")
-        || matches!(params.get("strict").map(String::as_str), Some("true") | Some("1"));
+        || matches!(
+            params.get("strict").map(String::as_str),
+            Some("true") | Some("1")
+        );
 
     // SRD-68 follow-up — session-wide op-template synthesis opt level.
     // `--kernel-opt=release|diagnostic` or `kernel_opt=…`. Release
@@ -1987,14 +2260,13 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // every result-binding LHS slot so step-debug / cycle-replay can
     // inspect writes the workload doesn't otherwise consume.
     let kernel_opt: polydat::kernel::KernelOptLevel = {
-        let raw = cli_flag_value(&args[..], "--kernel-opt")
-            .or_else(|| params.get("kernel_opt").cloned());
+        let raw =
+            cli_flag_value(&args[..], "--kernel-opt").or_else(|| params.get("kernel_opt").cloned());
         match raw {
             None => polydat::kernel::KernelOptLevel::default(),
-            Some(s) => polydat::kernel::KernelOptLevel::parse(s.trim())
-                .map_err(|bad| format!(
-                    "unknown --kernel-opt value '{bad}' — use 'release' or 'diagnostic'"
-                ))?,
+            Some(s) => polydat::kernel::KernelOptLevel::parse(s.trim()).map_err(|bad| {
+                format!("unknown --kernel-opt value '{bad}' — use 'release' or 'diagnostic'")
+            })?,
         }
     };
 
@@ -2003,8 +2275,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // `force` drives the differential battery, `off` is the
     // interpreter baseline / escape hatch.
     {
-        let raw = cli_flag_value(&args[..], "--jit")
-            .or_else(|| params.get("jit").cloned());
+        let raw = cli_flag_value(&args[..], "--jit").or_else(|| params.get("jit").cloned());
         if let Some(s) = raw {
             let mode = match s.trim() {
                 "off" => Ok(polydat::JitMode::Off),
@@ -2028,8 +2299,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     if let Some(spec) = params.get("skipped_phases") {
         match crate::observer::SkippedPhaseDisplay::parse(spec) {
             Some(mode) => crate::observer::set_skipped_phase_display(mode),
-            None => return Err(format!(
-                "unknown skipped_phases value '{spec}' — use 'elide', 'mark', or 'prune'")),
+            None => {
+                return Err(format!(
+                    "unknown skipped_phases value '{spec}' — use 'elide', 'mark', or 'prune'"
+                ));
+            }
         }
     }
 
@@ -2039,8 +2313,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     if let Some(spec) = params.get("completed_phases") {
         match crate::observer::CompletedPhaseDisplay::parse(spec) {
             Some(mode) => crate::observer::set_completed_phase_display(mode),
-            None => return Err(format!(
-                "unknown completed_phases value '{spec}' — use 'full' or 'headers'")),
+            None => {
+                return Err(format!(
+                    "unknown completed_phases value '{spec}' — use 'full' or 'headers'"
+                ));
+            }
         }
     }
 
@@ -2054,7 +2331,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     if !workload.scenario_parse_errors.is_empty() {
         return Err(format!(
             "scenario parse error{plural} — workload is malformed:\n  - {msgs}",
-            plural = if workload.scenario_parse_errors.len() == 1 { "" } else { "s" },
+            plural = if workload.scenario_parse_errors.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
             msgs = workload.scenario_parse_errors.join("\n  - "),
         ));
     }
@@ -2101,8 +2382,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         params.get("dryrun").and_then(|s| match s.as_str() {
             "fields" => Some("fields"),
             "silent" => Some("silent"),
-            "op"     => Some("op"),
-            _        => None,
+            "op" => Some("op"),
+            _ => None,
         })
     };
 
@@ -2130,15 +2411,20 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // SRD-88 — per-execution: the session name (host already used the
     // same value to name the session dir) + the refine on-removed
     // policy, recomputed here from this execution's params.
-    let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
-    let on_removed_policy: &str = params.get("on_removed")
+    let scenario_for_session = params
+        .get("scenario")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    let on_removed_policy: &str = params
+        .get("on_removed")
         .map(|s| s.as_str())
         .unwrap_or("error");
     if let Some(plan) = refine_plan.as_ref() {
-        let current_names: std::collections::HashSet<&str> = phases.keys()
-            .map(|s| s.as_str())
-            .collect();
-        let mut removed: Vec<&str> = plan.seen_identities.iter()
+        let current_names: std::collections::HashSet<&str> =
+            phases.keys().map(|s| s.as_str()).collect();
+        let mut removed: Vec<&str> = plan
+            .seen_identities
+            .iter()
             .map(|(name, _)| name.as_str())
             .filter(|n| !current_names.contains(n))
             .collect();
@@ -2161,18 +2447,22 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     ));
                 }
                 "keep" => {
-                    crate::diag!(crate::observer::LogLevel::Info,
+                    crate::diag!(
+                        crate::observer::LogLevel::Info,
                         "refine: on_removed=keep — retaining prior outcomes \
                          for {n} removed phase(s): {names}",
                         n = removed.len(),
-                        names = removed.join(", "));
+                        names = removed.join(", ")
+                    );
                 }
                 "drop" => {
-                    crate::diag!(crate::observer::LogLevel::Warn,
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
                         "refine: on_removed=drop is reserved — not yet \
                          implemented. Treating as `keep` (retaining prior \
                          outcomes) for now: {names}",
-                        names = removed.join(", "));
+                        names = removed.join(", ")
+                    );
                 }
                 other => {
                     return Err(format!(
@@ -2234,23 +2524,35 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     {
         let mut cli_keys: Vec<&String> = params.keys().collect();
         cli_keys.sort();
-        let cli_text: String = cli_keys.iter()
+        let cli_text: String = cli_keys
+            .iter()
             .filter_map(|k| params.get(*k).map(|v| format!("{k}={v}")))
-            .collect::<Vec<_>>().join("\n");
+            .collect::<Vec<_>>()
+            .join("\n");
         let scope_for_row: Option<&str> = if refine_requested {
             Some(refine_scope.unwrap_or("missing"))
         } else {
             None
         };
         if let Ok(mut guard) = sqlite_reporter.lock()
-            && let Some(r) = guard.as_mut() {
+            && let Some(r) = guard.as_mut()
+        {
             let exec_id = execution.exec_id;
             let sid = session.id.clone();
             r.set_execution_metadata(&sid, exec_id, "workload", &execution.workload);
             r.set_execution_metadata(&sid, exec_id, "scenario", &execution.scenario);
-            r.set_execution_metadata(&sid, exec_id, "start_time", &format!("{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
+            r.set_execution_metadata(
+                &sid,
+                exec_id,
+                "start_time",
+                &format!(
+                    "{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                ),
+            );
             for (k, v) in &merged_params {
                 r.set_execution_metadata(&sid, exec_id, &format!("param.{k}"), v);
             }
@@ -2358,12 +2660,13 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     //   - Map: legacy semicolon-chain syntax translated to GK
     //     source lines via `legacy_chain_map_to_polydat_lines`.
     let workload_level_polydat: Option<String> = match &workload.bindings {
-        nbrs_workload::model::BindingsDef::PolydatSource(s) if !s.trim().is_empty()
-            => Some(s.clone()),
-        nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => {
-            Some(crate::bindings::legacy_chain_map_to_polydat_lines(m)
-                .map_err(|e| format!("workload-level bindings: {e}"))?)
+        nbrs_workload::model::BindingsDef::PolydatSource(s) if !s.trim().is_empty() => {
+            Some(s.clone())
         }
+        nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => Some(
+            crate::bindings::legacy_chain_map_to_polydat_lines(m)
+                .map_err(|e| format!("workload-level bindings: {e}"))?,
+        ),
         _ => None,
     };
 
@@ -2376,15 +2679,17 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // context (same as inline workloads).
         Some(std::path::Path::new("."))
     } else {
-        workload_file.as_ref()
+        workload_file
+            .as_ref()
             .and_then(|p| std::path::Path::new(p).parent())
             .or_else(|| Some(std::path::Path::new(".")))
     };
 
-    let mut config_refs: Vec<String> = params.values()
+    let mut config_refs: Vec<String> = params
+        .values()
         .filter(|v| v.starts_with('{') && v.ends_with('}'))
         .map(|v| {
-            let mut inner = v[1..v.len()-1].to_string();
+            let mut inner = v[1..v.len() - 1].to_string();
             // Expand workload params in config expressions
             for (key, value) in &workload_params {
                 let placeholder = format!("{{{key}}}");
@@ -2400,22 +2705,23 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             continue; // for_each phase cycles resolved per-iteration
         }
         if let Some(ref c) = phase.cycles
-            && c.starts_with('{') && c.ends_with('}') {
-                let mut inner = c[1..c.len()-1].to_string();
-                for (key, value) in &workload_params {
-                    let placeholder = format!("{{{key}}}");
-                    if inner.contains(&placeholder) {
-                        inner = inner.replace(&placeholder, value);
-                    }
+            && c.starts_with('{')
+            && c.ends_with('}')
+        {
+            let mut inner = c[1..c.len() - 1].to_string();
+            for (key, value) in &workload_params {
+                let placeholder = format!("{{{key}}}");
+                if inner.contains(&placeholder) {
+                    inner = inner.replace(&placeholder, value);
                 }
-                config_refs.push(inner);
             }
+            config_refs.push(inner);
+        }
         let _ = name; // suppress unused warning
     }
 
     // Parse limit param for cursor clamping
-    let cursor_limit: Option<u64> = merged_params.get("limit")
-        .and_then(|s| s.parse().ok());
+    let cursor_limit: Option<u64> = merged_params.get("limit").and_then(|s| s.parse().ok());
 
     // Build the workload-params root kernel first. This is the
     // canonical home for every declared workload parameter —
@@ -2471,10 +2777,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 cursor_limit,
                 &workload_params,
                 workload_level_polydat.as_deref(),
-            ).map_err(|e| format!("outer workload bindings: {e}"))?
+            )
+            .map_err(|e| format!("outer workload bindings: {e}"))?,
         );
     let kernel = workload_canonical_kernel.clone();
-
 
     // Extract output manifest and folded constant values from outer kernel
     // === Polydat Config Resolution (all done before kernel is consumed) ===
@@ -2485,11 +2791,17 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
 
     // Collect phases that are inside scenario for_each groups — these have
     // iteration variables resolved at runtime, not pre-resolution time.
-    fn collect_grouped_phases(nodes: &[nbrs_workload::model::ScenarioNode], in_group: bool, out: &mut std::collections::HashSet<String>) {
+    fn collect_grouped_phases(
+        nodes: &[nbrs_workload::model::ScenarioNode],
+        in_group: bool,
+        out: &mut std::collections::HashSet<String>,
+    ) {
         for node in nodes {
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(name) => {
-                    if in_group { out.insert(name.clone()); }
+                    if in_group {
+                        out.insert(name.clone());
+                    }
                 }
                 nbrs_workload::model::ScenarioNode::Comprehension { children, .. }
                 | nbrs_workload::model::ScenarioNode::DoWhile { children, .. }
@@ -2557,7 +2869,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // case. The legacy single-activity branch is gone.
     {
         // --- Phased execution ---
-        let scenario_name = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
+        let scenario_name = params
+            .get("scenario")
+            .map(|s| s.as_str())
+            .unwrap_or("default");
         let scenario_nodes = resolve_scenario(&scenarios, &phase_order, scenario_name)?;
 
         // Build the canonical scope tree (SRD 18b §"Canonical
@@ -2573,7 +2888,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             // tree"; SRD 15 §"Pragma Scope".
             let conflicts = t.populate_pragmas(&phases);
             for c in &conflicts {
-                let path = t.ancestors(c.scope_idx)
+                let path = t
+                    .ancestors(c.scope_idx)
                     .map(|(_, n)| n.kind.label())
                     .collect::<Vec<_>>()
                     .join(" ← ");
@@ -2640,11 +2956,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // a few hundred lines below).
         if params.get("dryrun").map(|s| s.as_str()) == Some("kernels") {
             print_kernel_dump_header();
-            crate::scope_tree::set_kernel_install_visitor(Some(Box::new(
-                |node, _idx, kernel| {
-                    print_kernel_for_scope(node, kernel);
-                },
-            )));
+            crate::scope_tree::set_kernel_install_visitor(Some(Box::new(|node, _idx, kernel| {
+                print_kernel_for_scope(node, kernel);
+            })));
         }
 
         // Install the workload-params module on the session node
@@ -2674,8 +2988,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // chains inheritance through arbitrary nesting depth
         // — no caller-side scope-tree walking for name
         // resolution at runtime.
-        let workload_dir_owned: Option<std::path::PathBuf> =
-            workload_dir.map(|p| p.to_path_buf());
+        let workload_dir_owned: Option<std::path::PathBuf> = workload_dir.map(|p| p.to_path_buf());
         // M3.4b: scope kinds get categorized for synthesis.
         // For-comprehensions (ForEach, ForCombinations,
         // ForEachUnion) carry tuple iteration vars; do-loops
@@ -2740,7 +3053,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 bindings: nbrs_workload::model::BindingsDef,
             },
         }
-        let install_specs: Vec<InstallSpec> = scope_tree.iter_dfs()
+        let install_specs: Vec<InstallSpec> = scope_tree
+            .iter_dfs()
             .filter_map(|(idx, node)| match &node.kind {
                 crate::scope_tree::ScopeKind::Comprehension { comprehension } => {
                     // Representative iter_vars + spec_exprs for
@@ -2849,17 +3163,21 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                         // per-clause (var, spec) pairs — identical to the
                         // scenario-level path above. A single-clause spec
                         // yields exactly one pair, preserving prior behaviour.
-                        let comp = match polydat::iteration::comprehension::spec::parse_inline(spec) {
+                        let comp = match polydat::iteration::comprehension::spec::parse_inline(spec)
+                        {
                             Ok(c) => c,
                             Err(e) => {
-                                crate::diag!(crate::observer::LogLevel::Error,
-                                    "phase '{name}' for_each '{spec}': {e}");
+                                crate::diag!(
+                                    crate::observer::LogLevel::Error,
+                                    "phase '{name}' for_each '{spec}': {e}"
+                                );
                                 return None;
                             }
                         };
                         let pairs = comp.coordinate_specs();
                         let iter_vars: Vec<String> = pairs.iter().map(|(v, _)| v.clone()).collect();
-                        let spec_exprs: Vec<String> = pairs.iter().map(|(_, e)| e.clone()).collect();
+                        let spec_exprs: Vec<String> =
+                            pairs.iter().map(|(_, e)| e.clone()).collect();
                         // SRD-13f Push E: phases declaring both `for_each:`
                         // and `bindings:` fold the bindings into the for_each
                         // scope kernel (one kernel, one install). Pure-for_each
@@ -2876,8 +3194,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                             match crate::scope::synthesize_phase_scope_bindings(phase) {
                                 Ok(b) => b,
                                 Err(e) => {
-                                    crate::diag!(crate::observer::LogLevel::Error,
-                                        "phase '{name}': phase-scope synthesis: {e}");
+                                    crate::diag!(
+                                        crate::observer::LogLevel::Error,
+                                        "phase '{name}': phase-scope synthesis: {e}"
+                                    );
                                     return None;
                                 }
                             };
@@ -3004,15 +3324,20 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 found.expect("workload root always has an installed kernel")
             };
             let parent_manifest = extract_manifest(parent_kernel.program());
-            let context = format!(
-                "scope idx {idx} ({})",
-                scope_tree.nodes[idx].kind.label(),
-            );
+            let context = format!("scope idx {idx} ({})", scope_tree.nodes[idx].kind.label(),);
 
             let result = match install_spec {
-                InstallSpec::ForComprehension { iter_vars, spec_exprs, phase_bindings, .. } => {
-                    let bindings: Vec<(String, String)> = iter_vars.iter().cloned()
-                        .zip(spec_exprs.iter().cloned()).collect();
+                InstallSpec::ForComprehension {
+                    iter_vars,
+                    spec_exprs,
+                    phase_bindings,
+                    ..
+                } => {
+                    let bindings: Vec<(String, String)> = iter_vars
+                        .iter()
+                        .cloned()
+                        .zip(spec_exprs.iter().cloned())
+                        .collect();
                     // SRD-13f Push E: translate phase-level
                     // `bindings:` into the Polydat source the
                     // for_each synthesiser folds in. PolydatSource
@@ -3020,7 +3345,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     // to `name := expr\n` lines.
                     let phase_bindings_source = match phase_bindings {
                         nbrs_workload::model::BindingsDef::PolydatSource(s)
-                            if !s.trim().is_empty() => Some(s),
+                            if !s.trim().is_empty() =>
+                        {
+                            Some(s)
+                        }
                         nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => {
                             let mut out = String::new();
                             for (name, expr) in &m {
@@ -3042,19 +3370,19 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                         phase_bindings_source.as_deref(),
                     )
                 }
-                InstallSpec::DoLoop { counter, condition, .. } => {
-                    crate::scope::build_do_loop_scope_kernel(
-                        counter.as_deref(),
-                        &condition,
-                        &parent_manifest,
-                        &parent_kernel,
-                        &workload_params,
-                        polydat_lib_paths.clone(),
-                        workload_dir_owned.as_deref(),
-                        strict,
-                        &context,
-                    )
-                }
+                InstallSpec::DoLoop {
+                    counter, condition, ..
+                } => crate::scope::build_do_loop_scope_kernel(
+                    counter.as_deref(),
+                    &condition,
+                    &parent_manifest,
+                    &parent_kernel,
+                    &workload_params,
+                    polydat_lib_paths.clone(),
+                    workload_dir_owned.as_deref(),
+                    strict,
+                    &context,
+                ),
                 InstallSpec::OpTemplate { op, .. } => {
                     // SRD-13d Phase 9 — synthesize the op-
                     // template kernel layered over the parent.
@@ -3102,10 +3430,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
 
             match result {
                 Ok(kernel) => {
-                    let _ = scope_tree.install_kernel(
-                        idx,
-                        std::sync::Arc::new(kernel),
-                    );
+                    let _ = scope_tree.install_kernel(idx, std::sync::Arc::new(kernel));
                 }
                 Err(e) => {
                     // Kernel synthesis failure is a hard error
@@ -3127,9 +3452,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             }
         }
 
-        crate::diag!(crate::observer::LogLevel::Info,
+        crate::diag!(
+            crate::observer::LogLevel::Info,
             "scenario '{scenario_name}':\n{}",
-            format_scenario_tree(&scenario_nodes, &phases));
+            format_scenario_tree(&scenario_nodes, &phases)
+        );
 
         // Observer is passed from the caller (default: StderrObserver).
 
@@ -3162,8 +3489,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         let dry_run_static: Option<&'static str> = match dry_run {
             Some("silent") => Some("silent"),
             Some("fields") => Some("fields"),
-            Some("cycle")  => Some("cycle"),
-            Some("op")     => Some("op"),
+            Some("cycle") => Some("cycle"),
+            Some("op") => Some("op"),
             _ => None,
         };
 
@@ -3172,19 +3499,24 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // scenario-tree walker skips phase activations whose name
         // doesn't match AND elides scope subtrees with no
         // matching descendant.
-        let phase_filter: Option<Arc<crate::phase_filter::PhasePattern>> =
-            match params.get("phases").map(|s| s.as_str()).filter(|s| !s.is_empty()) {
-                None => None,
-                Some(src) => {
-                    let pat = crate::phase_filter::PhasePattern::parse(src)
-                        .map_err(|e| format!("phases= param: {e}"))?;
-                    crate::diag!(crate::observer::LogLevel::Info,
-                        "phases=<filter>: pattern '{src}' ({}{})",
-                        if pat.negated() { "negated " } else { "" },
-                        pat.dialect().as_str());
-                    Some(Arc::new(pat))
-                }
-            };
+        let phase_filter: Option<Arc<crate::phase_filter::PhasePattern>> = match params
+            .get("phases")
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            None => None,
+            Some(src) => {
+                let pat = crate::phase_filter::PhasePattern::parse(src)
+                    .map_err(|e| format!("phases= param: {e}"))?;
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
+                    "phases=<filter>: pattern '{src}' ({}{})",
+                    if pat.negated() { "negated " } else { "" },
+                    pat.dialect().as_str()
+                );
+                Some(Arc::new(pat))
+            }
+        };
         let resource_pool = Arc::new(crate::resource_pool::ResourcePool::new());
         // SRD-104 — install the process-global resource-accessor bridge and
         // point it at this session's pool, so kernel nodes can reach a live
@@ -3223,51 +3555,63 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             // as declared conditions and reaches concurrent / cross-subtree
             // siblings the local `Err` cascade can't. First in the list →
             // a failed child trips it before any declared graceful rule.
-            let mut conditions: Vec<crate::stop_conditions::StopConditionDecl> = vec![
-                crate::stop_conditions::StopConditionDecl {
+            let mut conditions: Vec<crate::stop_conditions::StopConditionDecl> =
+                vec![crate::stop_conditions::StopConditionDecl {
                     when: "children_failed > 0".to_string(),
                     effect: crate::phase_outcome::Outcome::failed(),
                     reason: None,
                     target: crate::stop_conditions::StopScope::Workload,
                     // The default stop-on-error drains cooperatively.
                     cancel_ops: false,
-                },
-            ];
+                }];
             // Declared workload-level conditions (`each ∋ self|workload`).
             // A declared trip defaults to a graceful `stop`
             // (Interrupted+Succeeded): nothing failed, later phases are
             // deliberately skipped.
-            conditions.extend(workload.stop_when.iter()
-                .filter(|c| c.each.iter().any(|l| matches!(l,
-                    ScopeLevel::SelfScope | ScopeLevel::Workload)))
-                .map(|c| crate::stop_conditions::StopConditionDecl {
-                    // Same `{param}` interpolation as phase-level stop_when
-                    // (executor build_activity_config_for_phase) so a workload
-                    // breaker threshold can be a modular workload param.
-                    when: expand_workload_params(&c.when, &workload_params),
-                    effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
-                        c.effect.as_deref(),
-                        crate::phase_outcome::Outcome::interrupted(),
-                    ),
-                    reason: None,
-                    // Detected at the workload shell; `at:` (default =
-                    // innermost of `per:`/`each:`, here `workload`) selects
-                    // the action scope.
-                    target: crate::executor::resolve_stop_scope(c.at, &c.each),
-                    // `action: abort` → cancel in-flight ops at the trip site.
-                    cancel_ops: crate::stop_conditions::StopConditionDecl
-                        ::action_cancels_ops(c.effect.as_deref()),
-                }));
-            let set = match scope_tree.nodes[scope_tree.workload_root_idx()].cached_kernel.get() {
-                Some(root_kernel) => {
-                    crate::stop_conditions::StopConditionSet::build_for_phase(
-                        root_kernel, &conditions,
-                    ).unwrap_or_else(|e| {
-                        crate::diag!(crate::observer::LogLevel::Error,
-                            "workload stop-condition compile failed: {e}");
-                        crate::stop_conditions::StopConditionSet::empty()
+            conditions.extend(
+                workload
+                    .stop_when
+                    .iter()
+                    .filter(|c| {
+                        c.each
+                            .iter()
+                            .any(|l| matches!(l, ScopeLevel::SelfScope | ScopeLevel::Workload))
                     })
-                }
+                    .map(|c| crate::stop_conditions::StopConditionDecl {
+                        // Same `{param}` interpolation as phase-level stop_when
+                        // (executor build_activity_config_for_phase) so a workload
+                        // breaker threshold can be a modular workload param.
+                        when: expand_workload_params(&c.when, &workload_params),
+                        effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
+                            c.effect.as_deref(),
+                            crate::phase_outcome::Outcome::interrupted(),
+                        ),
+                        reason: None,
+                        // Detected at the workload shell; `at:` (default =
+                        // innermost of `per:`/`each:`, here `workload`) selects
+                        // the action scope.
+                        target: crate::executor::resolve_stop_scope(c.at, &c.each),
+                        // `action: abort` → cancel in-flight ops at the trip site.
+                        cancel_ops: crate::stop_conditions::StopConditionDecl::action_cancels_ops(
+                            c.effect.as_deref(),
+                        ),
+                    }),
+            );
+            let set = match scope_tree.nodes[scope_tree.workload_root_idx()]
+                .cached_kernel
+                .get()
+            {
+                Some(root_kernel) => crate::stop_conditions::StopConditionSet::build_for_phase(
+                    root_kernel,
+                    &conditions,
+                )
+                .unwrap_or_else(|e| {
+                    crate::diag!(
+                        crate::observer::LogLevel::Error,
+                        "workload stop-condition compile failed: {e}"
+                    );
+                    crate::stop_conditions::StopConditionSet::empty()
+                }),
                 _ => crate::stop_conditions::StopConditionSet::empty(),
             };
             std::sync::Arc::new(crate::workload_shell::WorkloadShell::new(set))
@@ -3278,9 +3622,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // args (parse_params skips dotted keys), validated against
         // the declared phase names so a never-matching pattern is
         // a startup error instead of a silent no-op.
-        let phase_param_overrides = std::sync::Arc::new(
-            crate::phase_params::parse_overrides(&args)?,
-        );
+        let phase_param_overrides =
+            std::sync::Arc::new(crate::phase_params::parse_overrides(&args)?);
         crate::phase_params::validate_against_phases(
             &phase_param_overrides,
             phases.keys().map(|s| s.as_str()),
@@ -3345,7 +3688,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             scope_tree: scope_tree.clone(),
             schedule_spec: schedule_spec.clone(),
             current_parent_kernel: scope_tree.nodes[scope_tree.workload_root_idx()]
-                .cached_kernel.get().cloned(),
+                .cached_kernel
+                .get()
+                .cloned(),
             workload_source: workload_file.as_ref().and_then(|path| {
                 workload_source_text.as_ref().map(|text| {
                     std::sync::Arc::new(crate::executor::WorkloadSource {
@@ -3379,9 +3724,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // (SRD-15 §"Empty Iteration Sources"); otherwise the walker
         // logs and continues — downstream code handles the partial
         // / empty tree.
-        let pre_map_result = crate::executor::execute_tree(
-            &mut exec_ctx, &scenario_nodes,
-        ).await;
+        let pre_map_result = crate::executor::execute_tree(&mut exec_ctx, &scenario_nodes).await;
         let pre_mapped_tree = match pre_map_result {
             Ok(()) => {
                 let tree = crate::scene_tree::current();
@@ -3392,8 +3735,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             }
             Err(e) if strict => return Err(e),
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "pre-map walker failed (scope hierarchy will be flat in summaries / TUI): {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "pre-map walker failed (scope hierarchy will be flat in summaries / TUI): {e}"
+                );
                 None
             }
         };
@@ -3459,8 +3804,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     // the surface channel (SRD-87) in both TUI and
                     // plain modes, so it renders correctly in each.
                     for line in hint.lines() {
-                        crate::diag!(
-                            crate::observer::LogLevel::Info, "{line}");
+                        crate::diag!(crate::observer::LogLevel::Info, "{line}");
                     }
                 }
                 let n = crate::session::forecast_keep_purge(&self.parent, self.keep_cap);
@@ -3483,35 +3827,36 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             parent: parent_for_keep_check,
             keep_cap: session_keep,
         };
-        let resume_plan = if let (Some(saved), Some(tree)) =
-            (saved_doc.as_ref(), pre_mapped_tree.as_ref())
-        {
-            let candidates = crate::checkpoint::scene_tree_resume_candidates(
-                tree, &scope_tree, &phases);
-            std::sync::Arc::new(crate::checkpoint::ResumePlan::from_checkpoint(
-                saved, &candidates, &workload_params,
-            ))
-        } else {
-            std::sync::Arc::new(crate::checkpoint::ResumePlan::fresh())
-        };
+        let resume_plan =
+            if let (Some(saved), Some(tree)) = (saved_doc.as_ref(), pre_mapped_tree.as_ref()) {
+                let candidates =
+                    crate::checkpoint::scene_tree_resume_candidates(tree, &scope_tree, &phases);
+                std::sync::Arc::new(crate::checkpoint::ResumePlan::from_checkpoint(
+                    saved,
+                    &candidates,
+                    &workload_params,
+                ))
+            } else {
+                std::sync::Arc::new(crate::checkpoint::ResumePlan::fresh())
+            };
 
         // Declare every pre-mapped phase into the writer so a
         // future resume can tell "didn't run yet" from "wasn't
         // planned". Idempotent — re-declaring an entry the
         // writer already restored from disk is a no-op.
         if let Some(tree) = pre_mapped_tree.as_ref() {
-            crate::checkpoint::declare_scene_tree_phases(
-                &checkpoint_writer, tree, &phases,
-            );
+            crate::checkpoint::declare_scene_tree_phases(&checkpoint_writer, tree, &phases);
         }
 
         if resume_plan.is_resume {
             let skip = resume_plan.skip_count();
             let mismatch = resume_plan.mismatch_count();
             let cursor = resume_plan.cursor_resume_count();
-            crate::diag!(crate::observer::LogLevel::Info,
+            crate::diag!(
+                crate::observer::LogLevel::Info,
                 "resume: invocation #{invocation} — \
-                 {skip} skip, {mismatch} mismatched, {cursor} cursor-resume");
+                 {skip} skip, {mismatch} mismatched, {cursor} cursor-resume"
+            );
         }
 
         // SRD-35 Push D: seed the resource pool's per-key
@@ -3555,10 +3900,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         exec_ctx.pre_map_only = false;
 
         let scheduler = crate::scheduler::build(&schedule_spec);
-        let scheduler_result = scheduler.run(
-            &mut exec_ctx,
-            &scenario_nodes,
-        ).await;
+        let scheduler_result = scheduler.run(&mut exec_ctx, &scenario_nodes).await;
 
         // SRD-35: drain the resource pool at session end.
         // `Shared`/`PerScenario` entries intentionally stay alive
@@ -3607,8 +3949,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         if diag.depth == ExecDepth::Dispenser {
             let mut out = std::io::stdout();
             if let Err(e) = render_scope_elision_summary(&scope_tree, &mut out) {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "warning: rendering scope-elision summary: {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "warning: rendering scope-elision summary: {e}"
+                );
             }
         }
 
@@ -3632,11 +3976,12 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // teardown logic had already started).
     cadence_reporter.close_path(&Labels::of("session", &session.id));
 
-
     // SRD-88 — flush THIS execution's windows into the store so the
     // summaries below see complete data, without tearing down the
     // session-shared cadence reporter.
-    cadence_reporter.quiesce(std::time::Duration::from_secs(30)).await;
+    cadence_reporter
+        .quiesce(std::time::Duration::from_secs(30))
+        .await;
 
     // SRD-63 Push 9a: fire `EventType::SessionEnd` once after
     // the cadence shutdown but before `run_finished()`.
@@ -3659,7 +4004,6 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             Some(&sqlite_reporter),
         );
     }
-
 
     observer.run_finished();
 
@@ -3685,8 +4029,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     let active_summaries: HashMap<String, nbrs_workload::model::SummaryConfig> =
         if let Some(cli_summary) = merged_params.get("summary") {
             let mut m = HashMap::new();
-            m.insert("default".into(),
-                nbrs_workload::model::SummaryConfig::parse(cli_summary));
+            m.insert(
+                "default".into(),
+                nbrs_workload::model::SummaryConfig::parse(cli_summary),
+            );
             m
         } else {
             workload_summaries.clone()
@@ -3699,15 +4045,22 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // build the auto-injected Details section that lands at
     // the top of every output markdown file.
     if let Ok(mut guard) = sqlite_reporter.lock()
-        && let Some(ref mut reporter) = *guard {
+        && let Some(ref mut reporter) = *guard
+    {
         let end_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs())
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
             .unwrap_or(0);
         let sid = session.id.clone();
         let exec_id = execution.exec_id;
         reporter.set_execution_metadata(&sid, exec_id, "end_time", &end_time.to_string());
         reporter.set_execution_metadata(&sid, exec_id, "phase_count", &phases.len().to_string());
-        reporter.set_execution_metadata(&sid, exec_id, "scenario_count", &scenarios.len().to_string());
+        reporter.set_execution_metadata(
+            &sid,
+            exec_id,
+            "scenario_count",
+            &scenarios.len().to_string(),
+        );
         if let Some(wf) = workload_file.as_deref() {
             reporter.set_execution_metadata(&sid, exec_id, "workload_file", wf);
         }
@@ -3719,68 +4072,79 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // durable record. The in-memory store exists for GK
         // access and reactive control, not for reporting.
         if let Ok(mut guard) = sqlite_reporter.lock()
-            && let Some(ref mut reporter) = *guard {
-                // Persist every report item (SRD-46) under
-                // `report.<name>` keys. Value carries the kind
-                // keyword (`plot ...` / `table ...`) followed
-                // by an optional `label "..."` line and then
-                // the spec body — same shape the report parser
-                // ingests, so the db-fallback path in
-                // `nbrs report` round-trips through the same
-                // parser the workload uses.
-                let sid = session.id.clone();
-                let exec_id = execution.exec_id;
-                for item in workload_report.items() {
-                    // Single emission point: the workload-side
-                    // serializer. The db-fallback path in
-                    // `nbrs report` parses this value back
-                    // through `parse_persisted_item`, which
-                    // uses the same grammar — round-trip safe.
-                    let value = item.to_yaml_directive_string();
-                    reporter.set_execution_metadata(
-                        &sid, exec_id, &format!("report.{}", item.name), &value);
-                }
+            && let Some(ref mut reporter) = *guard
+        {
+            // Persist every report item (SRD-46) under
+            // `report.<name>` keys. Value carries the kind
+            // keyword (`plot ...` / `table ...`) followed
+            // by an optional `label "..."` line and then
+            // the spec body — same shape the report parser
+            // ingests, so the db-fallback path in
+            // `nbrs report` round-trips through the same
+            // parser the workload uses.
+            let sid = session.id.clone();
+            let exec_id = execution.exec_id;
+            for item in workload_report.items() {
+                // Single emission point: the workload-side
+                // serializer. The db-fallback path in
+                // `nbrs report` parses this value back
+                // through `parse_persisted_item`, which
+                // uses the same grammar — round-trip safe.
+                let value = item.to_yaml_directive_string();
+                reporter.set_execution_metadata(
+                    &sid,
+                    exec_id,
+                    &format!("report.{}", item.name),
+                    &value,
+                );
+            }
 
-                // Stable ordering for consistent output across
-                // runs (HashMap iteration is non-deterministic).
-                let mut names: Vec<&String> = active_summaries.keys().collect();
-                names.sort();
-                for name in names {
-                    let cfg = &active_summaries[name];
-                    let (basename, format) =
-                        nbrs_metrics::reporters::sqlite::derive_name_and_format(name);
-                    // SRD-77 — the in-run summary is naturally
-                    // scoped to the current execution; qualifier
-                    // narrows to this run's exec_id so a refine
-                    // doesn't render rows from prior runs.
-                    let report_config = report_config_from_summary(cfg, Some(exec_id));
-                    let rendered = reporter.format_summary_with_format(
-                        &report_config, &format);
-                    if rendered.is_empty() { continue; }
-                    let filename = format!("{basename}_summary.{format}");
-                    let summary_path = session.output_dir.join(&filename);
-                    if let Err(e) = std::fs::write(&summary_path, &rendered) {
-                        crate::diag!(crate::observer::LogLevel::Warn,
-                            "warning: failed to write summary to {}: {e}",
-                            summary_path.display());
-                    } else {
-                        crate::diag!(crate::observer::LogLevel::Info,
-                            "summary: {}", summary_path.display());
-                    }
-                    // Inline print only when the observer is
-                    // not suppressing stderr — i.e. we're in
-                    // tui=off mode and the user can see stdout
-                    // right now. In TUI mode the alternate
-                    // screen is up, so `print!()` here would
-                    // get buffered behind the TUI rendering and
-                    // discarded on teardown. The persona reads
-                    // the *_summary.* files and prints them
-                    // post-shutdown (see `nbrs/src/run.rs`).
-                    if !observer.suppresses_stderr() {
-                        print!("{rendered}");
-                    }
+            // Stable ordering for consistent output across
+            // runs (HashMap iteration is non-deterministic).
+            let mut names: Vec<&String> = active_summaries.keys().collect();
+            names.sort();
+            for name in names {
+                let cfg = &active_summaries[name];
+                let (basename, format) =
+                    nbrs_metrics::reporters::sqlite::derive_name_and_format(name);
+                // SRD-77 — the in-run summary is naturally
+                // scoped to the current execution; qualifier
+                // narrows to this run's exec_id so a refine
+                // doesn't render rows from prior runs.
+                let report_config = report_config_from_summary(cfg, Some(exec_id));
+                let rendered = reporter.format_summary_with_format(&report_config, &format);
+                if rendered.is_empty() {
+                    continue;
+                }
+                let filename = format!("{basename}_summary.{format}");
+                let summary_path = session.output_dir.join(&filename);
+                if let Err(e) = std::fs::write(&summary_path, &rendered) {
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
+                        "warning: failed to write summary to {}: {e}",
+                        summary_path.display()
+                    );
+                } else {
+                    crate::diag!(
+                        crate::observer::LogLevel::Info,
+                        "summary: {}",
+                        summary_path.display()
+                    );
+                }
+                // Inline print only when the observer is
+                // not suppressing stderr — i.e. we're in
+                // tui=off mode and the user can see stdout
+                // right now. In TUI mode the alternate
+                // screen is up, so `print!()` here would
+                // get buffered behind the TUI rendering and
+                // discarded on teardown. The persona reads
+                // the *_summary.* files and prints them
+                // post-shutdown (see `nbrs/src/run.rs`).
+                if !observer.suppresses_stderr() {
+                    print!("{rendered}");
                 }
             }
+        }
     }
 
     // Refresh convenience symlinks at the logs/ root so
@@ -3798,8 +4162,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     if diag.list_controls {
         let mut out = std::io::stdout();
         if let Err(e) = render_controls_tree(&session.component, &mut out) {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "warning: rendering controls: {e}");
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "warning: rendering controls: {e}"
+            );
         }
     }
 
@@ -3831,13 +4197,14 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
 /// interrupt-path caller and the normal-completion caller compose:
 /// whichever runs first wins, the other is a no-op.
 fn close_execution_row(
-    sqlite_reporter: &std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    sqlite_reporter: &std::sync::Arc<
+        std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>,
+    >,
     session_id: &str,
     exec_id: u64,
 ) {
-    let disposition = crate::scene_tree::with_global(|t| {
-        t.session_disposition().label()
-    }).unwrap_or("UNKNOWN");
+    let disposition =
+        crate::scene_tree::with_global(|t| t.session_disposition().label()).unwrap_or("UNKNOWN");
     let ended_at_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as i64)
@@ -3850,7 +4217,10 @@ fn close_execution_row(
 }
 
 /// Core runner: set up the shared session host, run one execution, tear down.
-async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
+async fn run_impl(
+    args: &[String],
+    observer: Arc<dyn crate::observer::RunObserver>,
+) -> Result<(), String> {
     let host = SessionHost::setup(args, observer.clone())?;
     let result = run_execution(&host, args, observer).await;
     host.shutdown().await;
@@ -3902,15 +4272,15 @@ pub async fn run_executions(
             // exec-identity all resolve to THIS execution.
             let ctx = match spec.channel.clone() {
                 Some(ch) => crate::execution_context::ExecutionContext::with_observer_and_channel(
-                    spec.observer.clone(), ch),
-                None => crate::execution_context::ExecutionContext::with_observer(
-                    spec.observer.clone()),
+                    spec.observer.clone(),
+                    ch,
+                ),
+                None => {
+                    crate::execution_context::ExecutionContext::with_observer(spec.observer.clone())
+                }
             };
-            crate::execution_context::scope(
-                ctx,
-                run_execution(&host, &spec.args, spec.observer),
-            )
-            .await
+            crate::execution_context::scope(ctx, run_execution(&host, &spec.args, spec.observer))
+                .await
         }
     });
     let results = futures::future::join_all(futs).await;
@@ -3918,9 +4288,11 @@ pub async fn run_executions(
     // host is now the sole owner).
     match std::sync::Arc::try_unwrap(host) {
         Ok(h) => h.shutdown().await,
-        Err(_) => crate::diag!(crate::observer::LogLevel::Warn,
+        Err(_) => crate::diag!(
+            crate::observer::LogLevel::Warn,
             "run_executions: session host still referenced at teardown; \
-             scheduler/WAL will close on drop"),
+             scheduler/WAL will close on drop"
+        ),
     }
     Ok(results)
 }
@@ -3944,7 +4316,9 @@ fn refresh_latest_file_links(session: &crate::session::Session) {
     }
     for file in ["metrics.db", "summary.md", "session.log"] {
         let target = session.output_dir.join(file);
-        if !target.exists() { continue; }
+        if !target.exists() {
+            continue;
+        }
         let link = logs_dir.join(file);
         // Remove any existing entry (symlink or regular file) so we can
         // recreate the link. If this fails because nothing's there,
@@ -3952,9 +4326,12 @@ fn refresh_latest_file_links(session: &crate::session::Session) {
         let _ = std::fs::remove_file(&link);
         let rel_target = std::path::Path::new("latest").join(file);
         if let Err(e) = crate::session::symlink_any(&rel_target, &link) {
-            crate::diag!(crate::observer::LogLevel::Warn,
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
                 "warning: failed to link {} → {}: {e}",
-                link.display(), rel_target.display());
+                link.display(),
+                rel_target.display()
+            );
         }
     }
 }
@@ -3971,11 +4348,13 @@ pub async fn create_adapter(
     driver: &str,
     params: &HashMap<String, String>,
 ) -> Result<Arc<dyn crate::adapter::DriverAdapter>, String> {
-    let reg = find_adapter_registration(driver)
-        .ok_or_else(|| {
-            let available = registered_driver_names();
-            format!("unknown adapter '{driver}' (available: {})", available.join(", "))
-        })?;
+    let reg = find_adapter_registration(driver).ok_or_else(|| {
+        let available = registered_driver_names();
+        format!(
+            "unknown adapter '{driver}' (available: {})",
+            available.join(", ")
+        )
+    })?;
     (reg.create)(params.clone()).await
 }
 
@@ -3991,7 +4370,9 @@ fn print_kernel_dump_header() {
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let (bold, reset) = if is_tty {
         ("\x1b[1m", "\x1b[0m")
-    } else { ("", "") };
+    } else {
+        ("", "")
+    };
     println!();
     println!("{bold}Polydat Scope Kernels{reset}");
     println!("{bold}═════════════════════{reset}");
@@ -4007,8 +4388,12 @@ fn print_kernel_for_scope(
 ) {
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let (bold, dim, reset, cyan, magenta, green) = if is_tty {
-        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[36m", "\x1b[35m", "\x1b[32m")
-    } else { ("", "", "", "", "", "") };
+        (
+            "\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[36m", "\x1b[35m", "\x1b[32m",
+        )
+    } else {
+        ("", "", "", "", "", "")
+    };
 
     let logical = if node.logical_name.is_empty() {
         "<unnamed scope>".to_string()
@@ -4016,9 +4401,11 @@ fn print_kernel_for_scope(
         node.logical_name.clone()
     };
     let depth_indent = " ".repeat(node.depth);
-    println!("{depth_indent}{green}●{reset} {bold}{cyan}{logical}{reset} \
+    println!(
+        "{depth_indent}{green}●{reset} {bold}{cyan}{logical}{reset} \
               {dim}(depth={}, kind={:?}){reset}",
-        node.depth, node.kind);
+        node.depth, node.kind
+    );
     let source = kernel.program().source().trim_end();
     if source.is_empty() {
         println!("{depth_indent}  {dim}(empty kernel — no own bindings){reset}");
@@ -4035,9 +4422,13 @@ fn print_kernel_dump_legend() {
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let (dim, reset, green) = if is_tty {
         ("\x1b[2m", "\x1b[0m", "\x1b[32m")
-    } else { ("", "", "") };
-    println!("  {dim}Legend: {green}●{reset}{dim} kernel installed at this scope. \
-              Flattened scopes (those that inherit a parent's kernel) emit no entry.{reset}");
+    } else {
+        ("", "", "")
+    };
+    println!(
+        "  {dim}Legend: {green}●{reset}{dim} kernel installed at this scope. \
+              Flattened scopes (those that inherit a parent's kernel) emit no entry.{reset}"
+    );
     println!();
 }
 
@@ -4047,28 +4438,34 @@ pub async fn run_activity_simple(
     default_adapter: &str,
     op_builder: Arc<crate::synthesis::OpBuilder>,
 ) -> bool {
-    activity.run_with_adapters(adapters, default_adapter, op_builder).await
+    activity
+        .run_with_adapters(adapters, default_adapter, op_builder)
+        .await
 }
 
 /// Adapter that delegates to an `Arc<Mutex<Option<SqliteReporter>>>`.
 ///
 /// Allows the SQLite reporter to be registered on the scheduler while
 /// also being accessible for summary queries after the scheduler stops.
-struct MutexReporter(std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>);
+struct MutexReporter(
+    std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+);
 
 impl Reporter for MutexReporter {
     fn report(&mut self, snapshot: &nbrs_metrics::snapshot::MetricSet) {
         if let Ok(mut guard) = self.0.lock()
-            && let Some(ref mut r) = *guard {
-                Reporter::report(r, snapshot);
-            }
+            && let Some(ref mut r) = *guard
+        {
+            Reporter::report(r, snapshot);
+        }
     }
 
     fn flush(&mut self) {
         if let Ok(mut guard) = self.0.lock()
-            && let Some(ref mut r) = *guard {
-                Reporter::flush(r);
-            }
+            && let Some(ref mut r) = *guard
+        {
+            Reporter::flush(r);
+        }
     }
 }
 
@@ -4082,7 +4479,6 @@ impl Reporter for BoxedReporter {
         self.0.flush();
     }
 }
-
 
 // =========================================================================
 // Helpers
@@ -4149,10 +4545,18 @@ impl ParamRefs {
     /// template? Used by the existing "declared but unreferenced"
     /// validator.
     fn contains(&self, param: &str) -> bool {
-        if self.placeholders.contains(param) { return true; }
-        if self.runtime_only_placeholders.contains(param) { return true; }
-        if self.expression_idents.contains(param) { return true; }
-        self.templates.iter().any(|tpl| template_matches(tpl, param))
+        if self.placeholders.contains(param) {
+            return true;
+        }
+        if self.runtime_only_placeholders.contains(param) {
+            return true;
+        }
+        if self.expression_idents.contains(param) {
+            return true;
+        }
+        self.templates
+            .iter()
+            .any(|tpl| template_matches(tpl, param))
     }
 }
 
@@ -4189,8 +4593,12 @@ fn template_matches(template: &str, param: &str) -> bool {
             if next_lit >= t.len() {
                 // Wildcard must consume the rest of `param`,
                 // and that suffix must be at least one word char.
-                if pi >= p.len() { return false; }
-                return p[pi..].iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+                if pi >= p.len() {
+                    return false;
+                }
+                return p[pi..]
+                    .iter()
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
             }
             let stop = t[next_lit];
             // Greedy-match word chars in param up to the next
@@ -4203,12 +4611,16 @@ fn template_matches(template: &str, param: &str) -> bool {
                 }
                 consumed += 1;
             }
-            if consumed == 0 { return false; } // wildcard requires ≥1 char
+            if consumed == 0 {
+                return false;
+            } // wildcard requires ≥1 char
             pi += consumed;
             ti = next_lit;
         } else {
             // Literal char: must match.
-            if pi >= p.len() || p[pi] != t[ti] { return false; }
+            if pi >= p.len() || p[pi] != t[ti] {
+                return false;
+            }
             ti += 1;
             pi += 1;
         }
@@ -4234,10 +4646,14 @@ fn scan_json_for_refs(v: &serde_json::Value, refs: &mut ParamRefs) {
     match v {
         serde_json::Value::String(s) => scan_param_refs(s, refs),
         serde_json::Value::Array(a) => {
-            for item in a { scan_json_for_refs(item, refs); }
+            for item in a {
+                scan_json_for_refs(item, refs);
+            }
         }
         serde_json::Value::Object(m) => {
-            for item in m.values() { scan_json_for_refs(item, refs); }
+            for item in m.values() {
+                scan_json_for_refs(item, refs);
+            }
         }
         _ => {} // numbers, booleans, null — no string content
     }
@@ -4261,7 +4677,9 @@ fn scan_param_refs(text: &str, refs: &mut ParamRefs) {
                 b'}' => depth -= 1,
                 _ => {}
             }
-            if depth == 0 { break; }
+            if depth == 0 {
+                break;
+            }
             j += 1;
         }
         if depth != 0 {
@@ -4358,9 +4776,7 @@ fn scan_expression_idents(body: &str, out: &mut std::collections::HashSet<String
         // Identifier start: ASCII letter or underscore.
         if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
-            while i < bytes.len()
-                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-            {
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
             let ident = &body[start..i];
@@ -4441,9 +4857,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         // any `{{…}}` inline expression elsewhere in the merged
         // doc registered a composite template that wildcard-
         // matched every declared param.)
-        if let Some(rel) = op.params.get("relevancy")
-            .and_then(|v| v.as_object())
-        {
+        if let Some(rel) = op.params.get("relevancy").and_then(|v| v.as_object()) {
             for key in ["actual", "expected", "k", "r"] {
                 if let Some(s) = rel.get(key).and_then(|v| v.as_str()) {
                     scan_expression_idents(s, &mut refs.expression_idents);
@@ -4466,7 +4880,9 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 scan_expression_idents(s, &mut refs.expression_idents);
             }
             nbrs_workload::model::BindingsDef::Map(m) => {
-                for v in m.values() { scan_param_refs(v, refs); }
+                for v in m.values() {
+                    scan_param_refs(v, refs);
+                }
             }
         }
     }
@@ -4489,7 +4905,9 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             scan_expression_idents(s, &mut refs.expression_idents);
         }
         nbrs_workload::model::BindingsDef::Map(m) => {
-            for v in m.values() { scan_param_refs(v, &mut refs); }
+            for v in m.values() {
+                scan_param_refs(v, &mut refs);
+            }
         }
     }
 
@@ -4502,22 +4920,34 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
 
     // Scan phases
     for phase in workload.phases.values() {
-        if let Some(s) = &phase.cycles { scan_param_refs(s, &mut refs); }
+        if let Some(s) = &phase.cycles {
+            scan_param_refs(s, &mut refs);
+        }
         // SRD-83 (C3) governance `timeout:` and SRD-75 `interval:`
         // resolve `{param}` at phase setup — documented reference
         // sites the collector must count (before this, workloads
         // using them only validated via the accidental composite-
         // template wildcard).
-        if let Some(s) = &phase.timeout { scan_param_refs(s, &mut refs); }
-        if let Some(s) = &phase.interval { scan_param_refs(s, &mut refs); }
-        if let Some(s) = &phase.concurrency { scan_param_refs(s, &mut refs); }
-        if let Some(s) = &phase.for_each { scan_param_refs(s, &mut refs); }
+        if let Some(s) = &phase.timeout {
+            scan_param_refs(s, &mut refs);
+        }
+        if let Some(s) = &phase.interval {
+            scan_param_refs(s, &mut refs);
+        }
+        if let Some(s) = &phase.concurrency {
+            scan_param_refs(s, &mut refs);
+        }
+        if let Some(s) = &phase.for_each {
+            scan_param_refs(s, &mut refs);
+        }
         // Phase `rate:` and the SRD-75 poll bounds carry `{param}`
         // references resolved at the phase gather (the `timeout:`
         // discipline) — documented reference sites the collector
         // must count. The poll predicate additionally consumes
         // bare identifiers (params/wires) like `continue_if`.
-        if let Some(s) = &phase.rate { scan_param_refs(s, &mut refs); }
+        if let Some(s) = &phase.rate {
+            scan_param_refs(s, &mut refs);
+        }
         if let Some(poll) = &phase.poll {
             scan_expression_idents(&poll.until, &mut refs.expression_idents);
             for s in [&poll.interval_ms, &poll.timeout_ms, &poll.max_error_retries]
@@ -4537,7 +4967,9 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 scan_expression_idents(s, &mut refs.expression_idents);
             }
             nbrs_workload::model::BindingsDef::Map(m) => {
-                for v in m.values() { scan_param_refs(v, &mut refs); }
+                for v in m.values() {
+                    scan_param_refs(v, &mut refs);
+                }
             }
         }
         // SRD-83 / SRD-101 — breaker predicates can consume a workload param,
@@ -4575,14 +5007,15 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
     // in for_each text are still counted as referenced) but NOT
     // to `refs.placeholders` (which drives the strict
     // "must-resolve-now" guard).
-    fn scan_scenario_nodes(
-        nodes: &[nbrs_workload::model::ScenarioNode],
-        refs: &mut ParamRefs,
-    ) {
+    fn scan_scenario_nodes(nodes: &[nbrs_workload::model::ScenarioNode], refs: &mut ParamRefs) {
         for node in nodes {
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
-                nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children, .. } => {
+                nbrs_workload::model::ScenarioNode::Comprehension {
+                    comprehension,
+                    children,
+                    ..
+                } => {
                     // Grammar-based source-reference extraction.
                     // A comprehension clause `eh in eh_values`
                     // carries `eh_values` as a *bare* source
@@ -4616,8 +5049,16 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                     }
                     scan_scenario_nodes(children, refs);
                 }
-                nbrs_workload::model::ScenarioNode::DoWhile { condition, children, .. }
-                | nbrs_workload::model::ScenarioNode::DoUntil { condition, children, .. } => {
+                nbrs_workload::model::ScenarioNode::DoWhile {
+                    condition,
+                    children,
+                    ..
+                }
+                | nbrs_workload::model::ScenarioNode::DoUntil {
+                    condition,
+                    children,
+                    ..
+                } => {
                     scan_param_refs(condition, refs);
                     scan_scenario_nodes(children, refs);
                 }
@@ -4701,7 +5142,11 @@ fn collect_iter_vars_recursive(
     use nbrs_workload::model::ScenarioNode::*;
     match node {
         Phase(_) => {}
-        Comprehension { comprehension, children, .. } => {
+        Comprehension {
+            comprehension,
+            children,
+            ..
+        } => {
             for name in comprehension.coordinate_names() {
                 out.insert(name.to_string());
             }
@@ -4709,21 +5154,34 @@ fn collect_iter_vars_recursive(
                 collect_iter_vars_recursive(child, out);
             }
         }
-        DoWhile { children, counter, .. } | DoUntil { children, counter, .. } => {
+        DoWhile {
+            children, counter, ..
+        }
+        | DoUntil {
+            children, counter, ..
+        } => {
             // `counter:` introduces a bare iteration index name
             // that's legitimately referenceable inside the loop
             // body, even though there's no `for_each` clause.
-            if let Some(c) = counter { out.insert(c.clone()); }
-            for child in children { collect_iter_vars_recursive(child, out); }
+            if let Some(c) = counter {
+                out.insert(c.clone());
+            }
+            for child in children {
+                collect_iter_vars_recursive(child, out);
+            }
         }
         IncludedScenario { children, .. } => {
-            for child in children { collect_iter_vars_recursive(child, out); }
+            for child in children {
+                collect_iter_vars_recursive(child, out);
+            }
         }
         // Scenario-tree `bindings:` (and `set:` sugar) doesn't
         // introduce an iter-var; it publishes a scope-local
         // binding layer. Just walk children.
         Bindings { children, .. } => {
-            for child in children { collect_iter_vars_recursive(child, out); }
+            for child in children {
+                collect_iter_vars_recursive(child, out);
+            }
         }
     }
 }
@@ -4765,30 +5223,30 @@ fn collect_polydat_binding_names(
     use nbrs_workload::model::BindingsDef;
 
     let mut any_input_decl = false;
-    let mut scan_bindings = |bindings: &BindingsDef,
-                             sink: &mut std::collections::HashSet<String>| {
-        match bindings {
-            BindingsDef::PolydatSource(s) => {
-                scan_polydat_binding_lhs(sink, s);
-                if s.lines().any(|l| l.trim_start().starts_with("input ")) {
-                    any_input_decl = true;
+    let mut scan_bindings =
+        |bindings: &BindingsDef, sink: &mut std::collections::HashSet<String>| {
+            match bindings {
+                BindingsDef::PolydatSource(s) => {
+                    scan_polydat_binding_lhs(sink, s);
+                    if s.lines().any(|l| l.trim_start().starts_with("input ")) {
+                        any_input_decl = true;
+                    }
+                }
+                BindingsDef::Map(m) => {
+                    // Legacy nosqlbench-style chains (`Hash(); Mod(...)`)
+                    // are translated into Polydat bindings at runtime by
+                    // `compile_bindings_with_opts`; the keys of the map
+                    // become the wire names those translations produce.
+                    // The validator's allow-set must reflect those names
+                    // so referencing `{user_id}` in op text — where
+                    // `user_id: Hash(); Mod(...)` is the binding key —
+                    // doesn't trip the undeclared-placeholder guard.
+                    for name in m.keys() {
+                        sink.insert(name.clone());
+                    }
                 }
             }
-            BindingsDef::Map(m) => {
-                // Legacy nosqlbench-style chains (`Hash(); Mod(...)`)
-                // are translated into Polydat bindings at runtime by
-                // `compile_bindings_with_opts`; the keys of the map
-                // become the wire names those translations produce.
-                // The validator's allow-set must reflect those names
-                // so referencing `{user_id}` in op text — where
-                // `user_id: Hash(); Mod(...)` is the binding key —
-                // doesn't trip the undeclared-placeholder guard.
-                for name in m.keys() {
-                    sink.insert(name.clone());
-                }
-            }
-        }
-    };
+        };
 
     scan_bindings(&workload.bindings, &mut out);
     // Top-level `workload.ops` carry their own `bindings:` blocks
@@ -4896,7 +5354,8 @@ fn collect_polydat_brace_refs(
 /// in practice.
 fn find_yaml_line_for_brace(yaml_source: &str, placeholder: &str) -> Option<usize> {
     let needle = format!("{{{placeholder}}}");
-    yaml_source.lines()
+    yaml_source
+        .lines()
         .enumerate()
         .find(|(_, line)| line.contains(&needle))
         .map(|(idx, _)| idx + 1)
@@ -4916,7 +5375,9 @@ fn scan_polydat_braced_refs(source: &str) -> Vec<String> {
         let b = bytes[i];
         // Line comment — skip to next newline.
         if b == b'#' {
-            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
             continue;
         }
         // String literal — skip past the closing quote.
@@ -4952,7 +5413,9 @@ fn scan_polydat_braced_refs(source: &str) -> Vec<String> {
                     b'}' => depth -= 1,
                     _ => {}
                 }
-                if depth == 0 { break; }
+                if depth == 0 {
+                    break;
+                }
                 j += 1;
             }
             if depth == 0 && j > start {
@@ -4981,13 +5444,12 @@ fn scan_polydat_braced_refs(source: &str) -> Vec<String> {
 /// Skips comments and blank lines. Lines that don't match any of
 /// these shapes (function-call statements, comments, expression
 /// continuations) are ignored.
-fn scan_polydat_binding_lhs(
-    out: &mut std::collections::HashSet<String>,
-    source: &str,
-) {
+fn scan_polydat_binding_lhs(out: &mut std::collections::HashSet<String>, source: &str) {
     for raw_line in source.lines() {
         let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         // `input` declarations: collect declared slot names without
         // requiring an `=` / `:=` suffix. Both bare (`input cycle: u64`)
         // and tuple (`input (cycle: u64, q: f64)`) forms are handled.
@@ -5012,7 +5474,8 @@ fn scan_polydat_binding_lhs(
         // remains.
         let mut body = line;
         loop {
-            let stripped = body.strip_prefix("const ")
+            let stripped = body
+                .strip_prefix("const ")
                 .or_else(|| body.strip_prefix("cursor "))
                 .or_else(|| body.strip_prefix("shared "))
                 .or_else(|| body.strip_prefix("volatile "));
@@ -5046,10 +5509,14 @@ fn scan_polydat_binding_lhs(
         while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
             i += 1;
         }
-        if i == 0 { continue; }
+        if i == 0 {
+            continue;
+        }
         // What follows the identifier? Skip whitespace.
         let mut j = i;
-        while j < bytes.len() && bytes[j].is_ascii_whitespace() { j += 1; }
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
         // Must be `=` (init/cursor) or `:=` (assignment); reject
         // anything else (function calls, expressions starting
         // with an ident, etc.).
@@ -5126,7 +5593,10 @@ pub fn resolve_polydat_config(value: &str, kernel: &polydat::kernel::PolydatKern
         match polydat::dsl::compile::eval_const_expr(inner) {
             Ok(v) => Some(value_to_u64(&v)),
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Error, "error: const expression failed: '{{{inner}}}'");
+                crate::diag!(
+                    crate::observer::LogLevel::Error,
+                    "error: const expression failed: '{{{inner}}}'"
+                );
                 crate::diag!(crate::observer::LogLevel::Error, "  {e}");
                 None
             }
@@ -5141,7 +5611,13 @@ fn value_to_u64(v: &polydat::ast::Value) -> u64 {
     match v {
         polydat::ast::Value::U64(n) => *n,
         polydat::ast::Value::F64(f) => *f as u64,
-        polydat::ast::Value::Bool(b) => if *b { 1 } else { 0 },
+        polydat::ast::Value::Bool(b) => {
+            if *b {
+                1
+            } else {
+                0
+            }
+        }
         _ => 0,
     }
 }
@@ -5156,7 +5632,8 @@ fn resolve_scenario(
         return Ok(nodes.clone());
     }
     if name == "default" && !phase_order.is_empty() {
-        return Ok(phase_order.iter()
+        return Ok(phase_order
+            .iter()
             .map(|n| nbrs_workload::model::ScenarioNode::Phase(n.clone()))
             .collect());
     }
@@ -5198,7 +5675,9 @@ fn format_scenario_tree(
     format_scenario_nodes(nodes, phases, 0, &mut out);
     // Trim trailing newline so the runner's log call doesn't
     // emit a double-blank line.
-    if out.ends_with('\n') { out.pop(); }
+    if out.ends_with('\n') {
+        out.pop();
+    }
     out
 }
 
@@ -5221,17 +5700,14 @@ fn format_scenario_tree(
 /// `indent_prefix` is the per-depth indent at the call site
 /// — applied to the second line so it sits at the same depth
 /// as the first.
-fn format_for_combinations(
-    pairs: &[(String, String)],
-    indent_prefix: &str,
-    color: bool,
-) -> String {
-    let kw_open  = if color { "\x1b[1;36m" } else { "" };
-    let kw_close = if color { "\x1b[0m"    } else { "" };
-    let bracket_open  = if color { "\x1b[2m" } else { "" };
+fn format_for_combinations(pairs: &[(String, String)], indent_prefix: &str, color: bool) -> String {
+    let kw_open = if color { "\x1b[1;36m" } else { "" };
+    let kw_close = if color { "\x1b[0m" } else { "" };
+    let bracket_open = if color { "\x1b[2m" } else { "" };
     let bracket_close = if color { "\x1b[0m" } else { "" };
 
-    let widths: Vec<usize> = pairs.iter()
+    let widths: Vec<usize> = pairs
+        .iter()
         .map(|(v, s)| v.chars().count().max(s.chars().count()))
         .collect();
 
@@ -5255,11 +5731,15 @@ fn format_for_combinations(
     };
 
     let last_idx = pairs.len().saturating_sub(1);
-    let vars_line: String = pairs.iter().enumerate()
+    let vars_line: String = pairs
+        .iter()
+        .enumerate()
         .map(|(i, (v, _))| pad(v, i, i == last_idx))
         .collect::<Vec<_>>()
         .join(" ");
-    let specs_line: String = pairs.iter().enumerate()
+    let specs_line: String = pairs
+        .iter()
+        .enumerate()
         .map(|(i, (_, s))| pad(s, i, i == last_idx))
         .collect::<Vec<_>>()
         .join(" ");
@@ -5281,7 +5761,8 @@ fn format_scenario_nodes(
     for node in nodes {
         match node {
             Phase(name) => {
-                let suffix = phases.get(name)
+                let suffix = phases
+                    .get(name)
                     .map(format_phase_config_suffix)
                     .unwrap_or_default();
                 if suffix.is_empty() {
@@ -5293,12 +5774,14 @@ fn format_scenario_nodes(
                     // covers the typical phase names; longer
                     // names just push past the column without
                     // breaking layout.
-                    out.push_str(&format!(
-                        "{indent}{name:<32} {suffix}\n",
-                    ));
+                    out.push_str(&format!("{indent}{name:<32} {suffix}\n",));
                 }
             }
-            Comprehension { comprehension, children, .. } => {
+            Comprehension {
+                comprehension,
+                children,
+                ..
+            } => {
                 // Algebra-native display: walk the AST once to
                 // detect Union vs flat, then format. Matches
                 // the scope_tree::label_for_comprehension shape
@@ -5338,15 +5821,27 @@ fn format_scenario_nodes(
                 out.push_str(&format!("{indent}{header}\n"));
                 format_scenario_nodes(children, phases, depth + 1, out);
             }
-            DoWhile { condition, counter, children } => {
-                let ctr = counter.as_deref()
-                    .map(|c| format!(" (counter={c})")).unwrap_or_default();
+            DoWhile {
+                condition,
+                counter,
+                children,
+            } => {
+                let ctr = counter
+                    .as_deref()
+                    .map(|c| format!(" (counter={c})"))
+                    .unwrap_or_default();
                 out.push_str(&format!("{indent}do_while '{condition}'{ctr}\n"));
                 format_scenario_nodes(children, phases, depth + 1, out);
             }
-            DoUntil { condition, counter, children } => {
-                let ctr = counter.as_deref()
-                    .map(|c| format!(" (counter={c})")).unwrap_or_default();
+            DoUntil {
+                condition,
+                counter,
+                children,
+            } => {
+                let ctr = counter
+                    .as_deref()
+                    .map(|c| format!(" (counter={c})"))
+                    .unwrap_or_default();
                 out.push_str(&format!("{indent}do_until '{condition}'{ctr}\n"));
                 format_scenario_nodes(children, phases, depth + 1, out);
             }
@@ -5359,7 +5854,8 @@ fn format_scenario_nodes(
                 // line summary in the scenario-tree dump. Long
                 // bodies stay readable in the YAML; the
                 // hierarchical view just teases the binding.
-                let summary = source.lines()
+                let summary = source
+                    .lines()
                     .map(str::trim)
                     .find(|l| !l.is_empty())
                     .unwrap_or("");
@@ -5384,20 +5880,21 @@ fn format_scenario_nodes(
 fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(c) = phase.cycles.as_deref()
-        && !c.is_empty() {
-            parts.push(format!("cycles: {c}"));
-        }
+        && !c.is_empty()
+    {
+        parts.push(format!("cycles: {c}"));
+    }
     if let Some(c) = phase.concurrency.as_deref()
-        && !c.is_empty() {
-            parts.push(format!("concurrency: {c}"));
-        }
+        && !c.is_empty()
+    {
+        parts.push(format!("concurrency: {c}"));
+    }
     if parts.is_empty() {
         String::new()
     } else {
         format!("({})", parts.join(", "))
     }
 }
-
 
 /// SRD-108 Part B — load a secondary workload document (an
 /// `implements:` target, or the `impl=` module) through the same
@@ -5413,18 +5910,16 @@ fn load_secondary_workload(
 ) -> Result<(nbrs_workload::model::Workload, String), String> {
     match resolve_secondary_ref(reference, base_dir, bundled_origin)? {
         ResolvedWorkload::Path(path) => {
-            let workload = nbrs_workload::parse::parse_workload_from_path(
-                std::path::Path::new(&path), params,
-            ).map_err(|e| format!("parse workload '{path}': {e}"))?;
+            let workload =
+                nbrs_workload::parse::parse_workload_from_path(std::path::Path::new(&path), params)
+                    .map_err(|e| format!("parse workload '{path}': {e}"))?;
             Ok((workload, canonical_identity(&path)))
         }
         ResolvedWorkload::Bundled(bundled) => {
             let merged = nbrs_workload::extends::load_and_merge_bundled(bundled)
-                .map_err(|e| format!(
-                    "bundled workload `{}`: {e}", bundled.name))?;
+                .map_err(|e| format!("bundled workload `{}`: {e}", bundled.name))?;
             let workload = nbrs_workload::parse::parse_workload(&merged, params)
-                .map_err(|e| format!(
-                    "parse bundled workload `{}`: {e}", bundled.name))?;
+                .map_err(|e| format!("parse bundled workload `{}`: {e}", bundled.name))?;
             Ok((workload, bundled.name.to_string()))
         }
     }
@@ -5455,29 +5950,36 @@ fn workload_ref_identity(
 fn resolve_driver_manifest(
     name: &str,
 ) -> Result<Option<(nbrs_workload::drivers::DriverManifest, String)>, String> {
-    let local_path = std::path::Path::new("drivers").join(name).join("driver.yaml");
+    let local_path = std::path::Path::new("drivers")
+        .join(name)
+        .join("driver.yaml");
     let catalog_name = format!("drivers/{name}/driver");
     let bundled = nbrs_workload::catalog::lookup(&catalog_name);
     match (local_path.is_file(), bundled) {
         (true, Some(_)) => Err(format!(
             "driver '{name}' is ambiguous — it names both the local manifest \
              {} and a bundled driver. Remove or rename one.",
-            local_path.display())),
+            local_path.display()
+        )),
         (true, None) => {
-            let source = std::fs::read_to_string(&local_path).map_err(|e| format!(
-                "read driver manifest {}: {e}", local_path.display()))?;
+            let source = std::fs::read_to_string(&local_path)
+                .map_err(|e| format!("read driver manifest {}: {e}", local_path.display()))?;
             let manifest = nbrs_workload::drivers::parse_driver_manifest(
-                &source, &local_path.display().to_string())?;
+                &source,
+                &local_path.display().to_string(),
+            )?;
             verify_driver_identity(&manifest, name)?;
             let dir = local_path.parent().expect("manifest path has a parent");
             let library_ref = resolve_driver_library_local(dir, &manifest.library)?;
             Ok(Some((manifest, library_ref)))
         }
         (false, Some(entry)) => {
-            let manifest = nbrs_workload::drivers::parse_driver_manifest(
-                entry.source, &catalog_name)?;
+            let manifest =
+                nbrs_workload::drivers::parse_driver_manifest(entry.source, &catalog_name)?;
             verify_driver_identity(&manifest, name)?;
-            let stem = manifest.library.strip_suffix(".yaml")
+            let stem = manifest
+                .library
+                .strip_suffix(".yaml")
                 .or_else(|| manifest.library.strip_suffix(".yml"))
                 .unwrap_or(&manifest.library);
             let library_ref = format!("drivers/{name}/{stem}");
@@ -5498,17 +6000,15 @@ fn verify_driver_identity(
         return Err(format!(
             "driver manifest for '{name}' declares `driver: {}` — the \
              manifest must be named for its directory",
-            manifest.driver));
+            manifest.driver
+        ));
     }
     Ok(())
 }
 
 /// Resolve a local manifest's `library:` reference beside the
 /// manifest: as written first, then with `.yaml` appended.
-fn resolve_driver_library_local(
-    dir: &std::path::Path,
-    library: &str,
-) -> Result<String, String> {
+fn resolve_driver_library_local(dir: &std::path::Path, library: &str) -> Result<String, String> {
     let as_written = dir.join(library);
     if as_written.is_file() {
         return Ok(as_written.display().to_string());
@@ -5519,7 +6019,8 @@ fn resolve_driver_library_local(
     }
     Err(format!(
         "driver manifest {}: library '{library}' not found beside the manifest",
-        dir.display()))
+        dir.display()
+    ))
 }
 
 /// Apply a resolved driver manifest to the invocation params:
@@ -5539,21 +6040,25 @@ fn apply_driver_manifest(
         return Err(format!(
             "driver={driver_name} supplies the implementation library \
              ('{}') — impl= conflicts; pass one or the other",
-            manifest.library));
+            manifest.library
+        ));
     }
     if workload_given {
         params.insert("impl".into(), library_ref.clone());
     } else {
         params.insert("workload".into(), library_ref.clone());
     }
-    params.entry("adapter".to_string())
+    params
+        .entry("adapter".to_string())
         .or_insert_with(|| manifest.adapter.clone());
     for (k, v) in &manifest.default_params {
         params.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    crate::diag!(crate::observer::LogLevel::Info,
+    crate::diag!(
+        crate::observer::LogLevel::Info,
         "driver: {driver_name} → adapter={}, library={library_ref}",
-        manifest.adapter);
+        manifest.adapter
+    );
     Ok(())
 }
 
@@ -5571,8 +6076,7 @@ fn resolve_secondary_ref(
     if let Some(dir) = base_dir {
         let candidate = dir.join(reference);
         if candidate.is_file() {
-            return Ok(ResolvedWorkload::Path(
-                candidate.display().to_string()));
+            return Ok(ResolvedWorkload::Path(candidate.display().to_string()));
         }
     }
     match resolve_workload(reference) {
@@ -5593,7 +6097,10 @@ fn resolve_secondary_ref(
             if let Some(b) = nbrs_workload::catalog::lookup(stem) {
                 return Ok(ResolvedWorkload::Bundled(b));
             }
-            if let Some(ns) = bundled_origin.and_then(|o| o.rsplit_once('/')).map(|(ns, _)| ns) {
+            if let Some(ns) = bundled_origin
+                .and_then(|o| o.rsplit_once('/'))
+                .map(|(ns, _)| ns)
+            {
                 if let Some(b) = nbrs_workload::catalog::lookup(&format!("{ns}/{stem}")) {
                     return Ok(ResolvedWorkload::Bundled(b));
                 }
@@ -5621,23 +6128,20 @@ fn canonical_identity(reference: &str) -> String {
 /// suite base declaring `stick_session: true` reaches derived
 /// workloads. Any failure answers `None`; the full parse surfaces
 /// the real error with proper context.
-fn peek_stick_session(
-    params: &HashMap<String, String>,
-    args: &[String],
-) -> Option<bool> {
+fn peek_stick_session(params: &HashMap<String, String>, args: &[String]) -> Option<bool> {
     if params.contains_key("op") {
         return None; // inline workloads carry no header
     }
-    let workload_raw = params.get("workload").cloned()
-        .or_else(|| args.iter()
+    let workload_raw = params.get("workload").cloned().or_else(|| {
+        args.iter()
             .find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
-            .cloned())?;
+            .cloned()
+    })?;
     let merged = match resolve_workload(&workload_raw).ok()? {
-        ResolvedWorkload::Path(p) =>
-            nbrs_workload::extends::load_and_merge(
-                std::path::Path::new(&p)).ok()?,
-        ResolvedWorkload::Bundled(b) =>
-            nbrs_workload::extends::load_and_merge_bundled(b).ok()?,
+        ResolvedWorkload::Path(p) => {
+            nbrs_workload::extends::load_and_merge(std::path::Path::new(&p)).ok()?
+        }
+        ResolvedWorkload::Bundled(b) => nbrs_workload::extends::load_and_merge_bundled(b).ok()?,
     };
     let doc: serde_yaml::Value = serde_yaml::from_str(&merged).ok()?;
     doc.get("stick_session")?.as_bool()
@@ -5670,35 +6174,41 @@ pub fn resolve_workload(name: &str) -> Result<ResolvedWorkload, String> {
             "workload not found: '{name}'. Not a local file, and no bundled \
              workload by that name — `nbrs describe workloads` lists what \
              this binary carries.{}",
-            nbrs_workload::suggest::did_you_mean(
-                &nbrs_workload::suggest::suggest_workloads(name),
-            )
+            nbrs_workload::suggest::did_you_mean(&nbrs_workload::suggest::suggest_workloads(name),)
         )),
     }
 }
 
 fn resolve_workload_file(name: &str) -> Option<String> {
     let p = std::path::Path::new(name);
-    if p.exists() { return Some(name.to_string()); }
+    if p.exists() {
+        return Some(name.to_string());
+    }
 
     // Already has yaml extension — no further search
     if name.ends_with(".yaml") || name.ends_with(".yml") {
         // Try under workloads/
         let under = format!("workloads/{name}");
-        if std::path::Path::new(&under).exists() { return Some(under); }
+        if std::path::Path::new(&under).exists() {
+            return Some(under);
+        }
         return None;
     }
 
     // Try adding extensions
     for ext in [".yaml", ".yml"] {
         let with_ext = format!("{name}{ext}");
-        if std::path::Path::new(&with_ext).exists() { return Some(with_ext); }
+        if std::path::Path::new(&with_ext).exists() {
+            return Some(with_ext);
+        }
     }
 
     // Try under workloads/
     for ext in ["", ".yaml", ".yml"] {
         let under = format!("workloads/{name}{ext}");
-        if std::path::Path::new(&under).exists() { return Some(under); }
+        if std::path::Path::new(&under).exists() {
+            return Some(under);
+        }
     }
 
     None
@@ -5722,8 +6232,12 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
     /// `parse_params`'s constant, which is private; the redundant
     /// copy here is small and the test below catches drift.
     const VALUE_FLAGS: &[&str] = &[
-        "--session", "--session-name", "--session-path",
-        "--session-reuse", "--session-keep", "--session-shelflife",
+        "--session",
+        "--session-name",
+        "--session-path",
+        "--session-reuse",
+        "--session-keep",
+        "--session-shelflife",
         "--readout",
     ];
 
@@ -5762,10 +6276,10 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
 /// here so [`parse_params`] doesn't reject them and any consumer
 /// can re-check the raw `args` for them.
 const RECOGNIZED_BARE_FLAGS: &[&str] = &[
-    "--strict",              // SRD-15 strict-mode toggle.
-    "--resume-latest",       // SRD-44: resume from logs/latest.
-    "--force-retry-failed",  // SRD-44: prepend retry,warn to errors.
-    "--refine",              // SRD-77: enable refine-mode skip-plan loading.
+    "--strict",             // SRD-15 strict-mode toggle.
+    "--resume-latest",      // SRD-44: resume from logs/latest.
+    "--force-retry-failed", // SRD-44: prepend retry,warn to errors.
+    "--refine",             // SRD-77: enable refine-mode skip-plan loading.
 ];
 
 /// Strip a single layer of matching outer quotes (single or
@@ -5802,8 +6316,11 @@ const SESSION_DIR_FLAGS: &[&str] = &[
     // Umbrella flag (kv-list).
     "--session",
     // Per-key long-form flags.
-    "--session-name", "--session-path", "--session-reuse",
-    "--session-keep", "--session-shelflife",
+    "--session-name",
+    "--session-path",
+    "--session-reuse",
+    "--session-keep",
+    "--session-shelflife",
     // SRD-63 §8: `--readout=<body>` overrides the workload's
     // `on_update` binding for the run. Resolved by
     // `crate::session::resolve_flag` at runner-init; consumed here so
@@ -5830,7 +6347,10 @@ pub fn detect_conflicting_duplicate_params(args: &[String]) -> Result<(), String
     while let Some(arg) = iter.next() {
         // Session-dir flags: consumed by the startup hook, absorb the
         // space-form value so it isn't mistaken for a param.
-        if SESSION_DIR_FLAGS.iter().any(|p| arg == p || arg.starts_with(&format!("{p}="))) {
+        if SESSION_DIR_FLAGS
+            .iter()
+            .any(|p| arg == p || arg.starts_with(&format!("{p}=")))
+        {
             if !arg.contains('=') {
                 let _consumed = iter.next();
             }
@@ -5838,7 +6358,9 @@ pub fn detect_conflicting_duplicate_params(args: &[String]) -> Result<(), String
         }
         let unquoted = elide_outer_quotes(arg.as_str());
         let stripped = unquoted.trim_start_matches('-');
-        let Some(eq_pos) = stripped.find('=') else { continue };
+        let Some(eq_pos) = stripped.find('=') else {
+            continue;
+        };
         let key = stripped[..eq_pos].to_string();
         // Dotted (non-path) keys are SRD-71 phase-scoped overrides — a
         // separate namespace — skipped here as in `parse_params`.
@@ -5877,9 +6399,10 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
     while let Some(arg) = iter.next() {
         // Session-dir flags (consumed by the startup hook,
         // not stored in params).
-        if SESSION_DIR_FLAGS.iter().any(|p| {
-            arg == p || arg.starts_with(&format!("{p}="))
-        }) {
+        if SESSION_DIR_FLAGS
+            .iter()
+            .any(|p| arg == p || arg.starts_with(&format!("{p}=")))
+        {
             if !arg.contains('=') {
                 let _consumed = iter.next();
             }
@@ -5907,13 +6430,15 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
             params.insert(key, value);
         } else if arg.ends_with(".yaml") || arg.ends_with(".yml") {
             // Workload file path — handled elsewhere
-        } else if RECOGNIZED_BARE_FLAGS.contains(&arg.as_str())
-            || arg.starts_with("--polydat-lib=")
+        } else if RECOGNIZED_BARE_FLAGS.contains(&arg.as_str()) || arg.starts_with("--polydat-lib=")
         {
             // Bare runner flag — consumed elsewhere via `args`
             // scan (e.g. `--strict`, `--polydat-lib=path`).
         } else {
-            crate::diag!(crate::observer::LogLevel::Error, "error: unrecognized argument '{arg}'. Expected key=value format.");
+            crate::diag!(
+                crate::observer::LogLevel::Error,
+                "error: unrecognized argument '{arg}'. Expected key=value format."
+            );
             std::process::exit(1);
         }
     }
@@ -6026,9 +6551,8 @@ fn resolve_cadence_config(
             layers.push(d);
         }
     }
-    let cadences = nbrs_metrics::cadence::Cadences::new(&layers).map_err(|e| {
-        format!("metrics_cadence `{raw}`: cannot build a cadence ladder: {e:?}")
-    })?;
+    let cadences = nbrs_metrics::cadence::Cadences::new(&layers)
+        .map_err(|e| format!("metrics_cadence `{raw}`: cannot build a cadence ladder: {e:?}"))?;
     Ok((floor, cadences))
 }
 
@@ -6052,9 +6576,10 @@ pub fn collect_repeated_flag(args: &[String], name: &str) -> Vec<String> {
         } else if let Some(v) = unquoted.strip_prefix(&bare_eq) {
             out.push(elide_outer_quotes(v).to_string());
         } else if unquoted == format!("--{name}")
-            && let Some(v) = iter.next() {
-                out.push(elide_outer_quotes(v.as_str()).to_string());
-            }
+            && let Some(v) = iter.next()
+        {
+            out.push(elide_outer_quotes(v.as_str()).to_string());
+        }
     }
     out
 }
@@ -6096,9 +6621,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -6113,9 +6636,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 // `polydat::kernel`. Re-exported here so existing
 // `crate::runner::extract_manifest` / `ManifestEntry` callers
 // keep working — pure compatibility shim.
-pub use polydat::kernel::{extract_manifest, ManifestEntry};
-
-
+pub use polydat::kernel::{ManifestEntry, extract_manifest};
 
 #[cfg(test)]
 mod tests {
@@ -6177,10 +6698,11 @@ mod tests {
 
     #[test]
     fn duplicate_conflicting_scenario_is_rejected() {
-        let err = dup(&["workload=x.yaml", "scenario=reset", "scenario=idx_sweep"])
-            .unwrap_err();
-        assert!(err.contains("scenario") && err.contains("reset") && err.contains("idx_sweep"),
-            "expected a conflicting-duplicate error naming both values, got: {err}");
+        let err = dup(&["workload=x.yaml", "scenario=reset", "scenario=idx_sweep"]).unwrap_err();
+        assert!(
+            err.contains("scenario") && err.contains("reset") && err.contains("idx_sweep"),
+            "expected a conflicting-duplicate error naming both values, got: {err}"
+        );
     }
 
     #[test]
@@ -6272,7 +6794,7 @@ mod tests {
         // The user's case: `{name}` outside any string literal,
         // sitting where Polydat expects an expression. Always invalid.
         let refs = scan_polydat_braced_refs(
-            "const passes := multiples_at_least({min_query_cycles}, base)\n"
+            "const passes := multiples_at_least({min_query_cycles}, base)\n",
         );
         assert_eq!(refs, vec!["min_query_cycles".to_string()]);
     }
@@ -6284,20 +6806,22 @@ mod tests {
         // Polydat string interpolation (parser turns it into printf).
         // Either way, scan_polydat_braced_refs must NOT flag them.
         let refs = scan_polydat_braced_refs(
-            "const prebuffered := dataset_prebuffer(\"{dataset}:{profile}\")\n"
+            "const prebuffered := dataset_prebuffer(\"{dataset}:{profile}\")\n",
         );
-        assert!(refs.is_empty(),
+        assert!(
+            refs.is_empty(),
             "must not flag `{{dataset}}` / `{{profile}}` inside string \
-             literal — string interpolation handles them, got {refs:?}");
+             literal — string interpolation handles them, got {refs:?}"
+        );
     }
 
     #[test]
     fn scan_polydat_braced_refs_ignores_braces_inside_single_quotes() {
-        let refs = scan_polydat_braced_refs(
-            "tag := assert_eq(actual, '{expected}')\n"
+        let refs = scan_polydat_braced_refs("tag := assert_eq(actual, '{expected}')\n");
+        assert!(
+            refs.is_empty(),
+            "single-quoted strings get the same treatment: {refs:?}"
         );
-        assert!(refs.is_empty(),
-            "single-quoted strings get the same treatment: {refs:?}");
     }
 
     #[test]
@@ -6305,9 +6829,7 @@ mod tests {
         // `"foo \"with brace {x}\" bar"` — the inner `{x}` is
         // inside a string the whole way through; backslash-escape
         // must not be treated as the end of the string.
-        let refs = scan_polydat_braced_refs(
-            "x := concat(\"prefix \\\"{embedded}\\\" suffix\")\n"
-        );
+        let refs = scan_polydat_braced_refs("x := concat(\"prefix \\\"{embedded}\\\" suffix\")\n");
         assert!(refs.is_empty(), "escaped quotes inside strings: {refs:?}");
     }
 
@@ -6315,32 +6837,33 @@ mod tests {
     fn scan_polydat_braced_refs_ignores_comments() {
         let refs = scan_polydat_braced_refs(
             "# this is a comment with {fake} placeholder\n\
-             const real := 1\n"
+             const real := 1\n",
         );
-        assert!(refs.is_empty(),
-            "`{{fake}}` inside a comment must not be flagged: {refs:?}");
+        assert!(
+            refs.is_empty(),
+            "`{{fake}}` inside a comment must not be flagged: {refs:?}"
+        );
     }
 
     #[test]
     fn scan_polydat_braced_refs_catches_multiple_invalid_braces() {
         let refs = scan_polydat_braced_refs(
             "a := foo({x}, {y})\n\
-             b := bar({z})\n"
+             b := bar({z})\n",
         );
         // Order is source order; uniqueness isn't enforced here
         // (the validator caller dedups before reporting).
-        assert_eq!(refs, vec![
-            "x".to_string(), "y".to_string(), "z".to_string(),
-        ]);
+        assert_eq!(
+            refs,
+            vec!["x".to_string(), "y".to_string(), "z".to_string(),]
+        );
     }
 
     #[test]
     fn scan_polydat_braced_refs_handles_mixed_string_and_expression_braces() {
         // `{inside}` is in a string (OK); `{outside}` is in
         // expression position (flagged).
-        let refs = scan_polydat_braced_refs(
-            "x := concat(\"foo {inside}\", {outside})\n"
-        );
+        let refs = scan_polydat_braced_refs("x := concat(\"foo {inside}\", {outside})\n");
         assert_eq!(refs, vec!["outside".to_string()]);
     }
 
@@ -6352,8 +6875,10 @@ mod tests {
         // between the name and the assignment; the scanner must still
         // collect the name (undeclared-placeholder false-positive fix).
         let mut out = std::collections::HashSet::new();
-        scan_polydat_binding_lhs(&mut out,
-            "shared sstables: u64 := 0\nshared measured: f64 := 1.0\nplain := 2\n");
+        scan_polydat_binding_lhs(
+            &mut out,
+            "shared sstables: u64 := 0\nshared measured: f64 := 1.0\nplain := 2\n",
+        );
         assert!(out.contains("sstables"), "{out:?}");
         assert!(out.contains("measured"), "{out:?}");
         assert!(out.contains("plain"), "{out:?}");
@@ -6366,12 +6891,12 @@ mod tests {
         // scanner must register every name on the LHS so the
         // placeholder validator doesn't false-flag downstream
         // `{a}` / `{b}` references.
-        let names = scan_to_set(
-            "(y, mo, d, h, mi, s, ms) := date_components(0)\n"
-        );
+        let names = scan_to_set("(y, mo, d, h, mi, s, ms) := date_components(0)\n");
         for expected in ["y", "mo", "d", "h", "mi", "s", "ms"] {
-            assert!(names.contains(expected),
-                "tuple-LHS scanner missed `{expected}` — got {names:?}");
+            assert!(
+                names.contains(expected),
+                "tuple-LHS scanner missed `{expected}` — got {names:?}"
+            );
         }
     }
 
@@ -6387,10 +6912,11 @@ mod tests {
              shared query_passes := set_or_get(query_passes, 7)\n\
              const tag := \"label_00\"\n",
         );
-        for expected in ["prebuffered", "q", "query_vector",
-                         "query_passes", "tag"] {
-            assert!(names.contains(expected),
-                "scanner missed `{expected}` — got {names:?}");
+        for expected in ["prebuffered", "q", "query_vector", "query_passes", "tag"] {
+            assert!(
+                names.contains(expected),
+                "scanner missed `{expected}` — got {names:?}"
+            );
         }
     }
 
@@ -6447,7 +6973,8 @@ mod tests {
         let names = scan_to_set(
             "extern active_compactions: u64 = 0\n\
              extern completion_ratio: f64 = 0.0\n\
-             extern (a: u64, b: f64)\n");
+             extern (a: u64, b: f64)\n",
+        );
         assert!(names.contains("active_compactions"));
         assert!(names.contains("completion_ratio"));
         assert!(names.contains("a"));
@@ -6543,7 +7070,7 @@ mod tests {
         // `depth < Cycle`. Both Phase and Op satisfy that;
         // Cycle and Full do not.
         assert!(ExecDepth::Phase < ExecDepth::Cycle);
-        assert!(ExecDepth::Op    < ExecDepth::Cycle);
+        assert!(ExecDepth::Op < ExecDepth::Cycle);
         assert!((ExecDepth::Cycle >= ExecDepth::Cycle));
         assert!((ExecDepth::Full >= ExecDepth::Cycle));
     }
@@ -6555,11 +7082,28 @@ mod tests {
 
         let phase = WorkloadPhase {
             dimensions: Default::default(),
-            cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, timeout: None, stop_when: Vec::new(), continue_if: None, tags: None,
-            ops: vec![], for_each: None,
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            cycles: None,
+            concurrency: None,
+            rate: None,
+            daemon: false,
+            adapter: None,
+            errors: None,
+            tries: None,
+            tries_backoff: None,
+            interval: None,
+            repeat: None,
+            error_rate_max: None,
+            timeout: None,
+            stop_when: Vec::new(),
+            continue_if: None,
+            tags: None,
+            ops: vec![],
+            for_each: None,
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
             optimize: None,
@@ -6583,18 +7127,25 @@ mod tests {
         render_scope_elision_summary(&tree, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
 
-        assert!(s.contains("scope elision summary"),
-            "missing header: {s}");
+        assert!(s.contains("scope elision summary"), "missing header: {s}");
         // Workload root materialises always (SRD-13d §5.1).
-        assert!(s.contains("workload") && s.contains("materialised=true"),
-            "expected materialised=true line for workload root: {s}");
+        assert!(
+            s.contains("workload") && s.contains("materialised=true"),
+            "expected materialised=true line for workload root: {s}"
+        );
         // Scenario + phase elide into the workload root.
-        assert!(s.contains("elides-to=workload"),
-            "expected elides-to=workload for empty phase: {s}");
-        assert!(s.contains("workload.scenario.default"),
-            "expected scenario logical name: {s}");
-        assert!(s.contains("workload.scenario.default.phase.predict"),
-            "expected phase logical name: {s}");
+        assert!(
+            s.contains("elides-to=workload"),
+            "expected elides-to=workload for empty phase: {s}"
+        );
+        assert!(
+            s.contains("workload.scenario.default"),
+            "expected scenario logical name: {s}"
+        );
+        assert!(
+            s.contains("workload.scenario.default.phase.predict"),
+            "expected phase logical name: {s}"
+        );
     }
 
     #[test]
@@ -6629,7 +7180,10 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("log_level"), "missing name: {s}");
         assert!(s.contains("scope=subtree"), "missing scope: {s}");
-        assert!(s.contains("final@session_root"), "missing final marker: {s}");
+        assert!(
+            s.contains("final@session_root"),
+            "missing final marker: {s}"
+        );
         assert!(s.contains("f64-writable"), "missing write surface: {s}");
     }
 
@@ -6650,24 +7204,37 @@ mod tests {
     #[test]
     fn normalize_args_session_path_space_form_value_passes_through() {
         let out = normalize_args(&s(&[
-            "wl.yaml", "cycles=2", "--session-path", "target/test-tmp/foo/session",
+            "wl.yaml",
+            "cycles=2",
+            "--session-path",
+            "target/test-tmp/foo/session",
         ]));
         // The path arg must NOT be turned into `scenario=...`.
-        assert!(!out.iter().any(|a| a.starts_with("scenario=")),
-            "scenario= auto-promotion fired on a flag value: {out:?}");
-        assert_eq!(out, s(&[
-            "wl.yaml", "cycles=2", "--session-path", "target/test-tmp/foo/session",
-        ]));
+        assert!(
+            !out.iter().any(|a| a.starts_with("scenario=")),
+            "scenario= auto-promotion fired on a flag value: {out:?}"
+        );
+        assert_eq!(
+            out,
+            s(&[
+                "wl.yaml",
+                "cycles=2",
+                "--session-path",
+                "target/test-tmp/foo/session",
+            ])
+        );
     }
 
     #[test]
     fn normalize_args_session_path_equals_form_unchanged() {
         let out = normalize_args(&s(&[
-            "wl.yaml", "--session-path=target/test-tmp/foo/session",
+            "wl.yaml",
+            "--session-path=target/test-tmp/foo/session",
         ]));
-        assert_eq!(out, s(&[
-            "wl.yaml", "--session-path=target/test-tmp/foo/session",
-        ]));
+        assert_eq!(
+            out,
+            s(&["wl.yaml", "--session-path=target/test-tmp/foo/session",])
+        );
     }
 
     #[test]
@@ -6675,9 +7242,7 @@ mod tests {
         // The original feature: bare-word scenario shorthand.
         // Must keep working when no value-flag interferes.
         let out = normalize_args(&s(&["wl.yaml", "myscenario", "cycles=2"]));
-        assert_eq!(out, s(&[
-            "wl.yaml", "scenario=myscenario", "cycles=2",
-        ]));
+        assert_eq!(out, s(&["wl.yaml", "scenario=myscenario", "cycles=2",]));
     }
 
     #[test]
@@ -6685,21 +7250,20 @@ mod tests {
         // After a value-flag pair, the next free positional is
         // still eligible for scenario= promotion. This confirms
         // the bookkeeping survives the look-ahead.
-        let out = normalize_args(&s(&[
-            "wl.yaml", "--session-path", "/tmp/x", "myscenario",
-        ]));
-        assert_eq!(out, s(&[
-            "wl.yaml", "--session-path", "/tmp/x", "scenario=myscenario",
-        ]));
+        let out = normalize_args(&s(&["wl.yaml", "--session-path", "/tmp/x", "myscenario"]));
+        assert_eq!(
+            out,
+            s(&["wl.yaml", "--session-path", "/tmp/x", "scenario=myscenario",])
+        );
     }
 
     #[test]
     fn normalize_args_readout_value_passes_through() {
-        let out = normalize_args(&s(&[
-            "wl.yaml", "--readout", "throughput ok_pct",
-        ]));
-        assert!(!out.iter().any(|a| a.starts_with("scenario=")),
-            "readout body misread as scenario: {out:?}");
+        let out = normalize_args(&s(&["wl.yaml", "--readout", "throughput ok_pct"]));
+        assert!(
+            !out.iter().any(|a| a.starts_with("scenario=")),
+            "readout body misread as scenario: {out:?}"
+        );
     }
 
     /// `format_for_combinations` lays out vars and specs in
@@ -6714,23 +7278,34 @@ mod tests {
     #[test]
     fn format_for_combinations_aligns_columns() {
         let pairs = vec![
-            ("sm".to_string(),  "{sm_values}".to_string()),
+            ("sm".to_string(), "{sm_values}".to_string()),
             ("mnc".to_string(), "{mnc_values}".to_string()),
-            ("alf_label".to_string(), "concat({alf_label_values})".to_string()),
+            (
+                "alf_label".to_string(),
+                "concat({alf_label_values})".to_string(),
+            ),
         ];
         let out = format_for_combinations(&pairs, "", false);
         let lines: Vec<&str> = out.split('\n').collect();
         assert_eq!(lines.len(), 2, "MUST produce exactly 2 lines: {out:?}");
-        assert!(lines[0].starts_with("for ["),
-            "first line MUST start with `for [`: {:?}", lines[0]);
-        assert!(lines[1].starts_with(" in ["),
-            "second line MUST start with ` in [`: {:?}", lines[1]);
+        assert!(
+            lines[0].starts_with("for ["),
+            "first line MUST start with `for [`: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with(" in ["),
+            "second line MUST start with ` in [`: {:?}",
+            lines[1]
+        );
         // Bracket columns align: the `[` after `for` and the
         // `[` after `in ` should be at the same column index.
         let l0_bracket = lines[0].find('[').unwrap();
         let l1_bracket = lines[1].find('[').unwrap();
-        assert_eq!(l0_bracket, l1_bracket,
-            "`[` brackets MUST align: line0={l0_bracket}, line1={l1_bracket}");
+        assert_eq!(
+            l0_bracket, l1_bracket,
+            "`[` brackets MUST align: line0={l0_bracket}, line1={l1_bracket}"
+        );
         // Column alignment: the comma after `sm,` on line 0
         // sits at the same column as the comma after the
         // `{sm_values},` on line 1 — except padded so that
@@ -6738,15 +7313,18 @@ mod tests {
         // `{mnc_values}` on line 1.
         let mnc_pos = lines[0].find("mnc").unwrap();
         let mnc_values_pos = lines[1].find("{mnc_values}").unwrap();
-        assert_eq!(mnc_pos, mnc_values_pos,
-            "column 2 MUST align: `mnc`@{mnc_pos} vs `{{mnc_values}}`@{mnc_values_pos}\n{out}");
+        assert_eq!(
+            mnc_pos, mnc_values_pos,
+            "column 2 MUST align: `mnc`@{mnc_pos} vs `{{mnc_values}}`@{mnc_values_pos}\n{out}"
+        );
         let alf_pos = lines[0].find("alf_label").unwrap();
         let alf_concat_pos = lines[1].find("concat(").unwrap();
-        assert_eq!(alf_pos, alf_concat_pos,
-            "column 3 MUST align: `alf_label`@{alf_pos} vs `concat(...)`@{alf_concat_pos}\n{out}");
+        assert_eq!(
+            alf_pos, alf_concat_pos,
+            "column 3 MUST align: `alf_label`@{alf_pos} vs `concat(...)`@{alf_concat_pos}\n{out}"
+        );
         // Closing brackets present on both lines.
         assert!(lines[0].ends_with(']'));
         assert!(lines[1].ends_with(']'));
     }
 }
-

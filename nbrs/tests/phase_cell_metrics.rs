@@ -26,8 +26,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-phasecell-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-phasecell-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -59,13 +59,16 @@ fn phase_metric_lands_at_its_declared_cell() {
         String::from_utf8_lossy(&out.stderr),
         std::fs::read_to_string(session.join("session.log")).unwrap_or_default(),
     );
-    assert!(out.status.success(), "run must complete; evidence:\n{evidence}");
+    assert!(
+        out.status.success(),
+        "run must complete; evidence:\n{evidence}"
+    );
 
     // The instance spec is the OpenMetrics-canonical `name{k="v",…}`
     // rendering — the cell's dimension label must be part of the
     // recorded identity.
-    let conn = rusqlite::Connection::open(session.join("metrics.db"))
-        .expect("open session metrics.db");
+    let conn =
+        rusqlite::Connection::open(session.join("metrics.db")).expect("open session metrics.db");
     let spec: String = conn
         .query_row(
             "SELECT mi.spec FROM metric_instance mi \
@@ -75,6 +78,8 @@ fn phase_metric_lands_at_its_declared_cell() {
             |r| r.get(0),
         )
         .expect("stamped_ms instance row (was the metric emitted at all?)");
-    assert!(spec.contains("tier=\"gold\""),
-        "cell-placed phase metric must carry its coordinate label; spec: {spec}");
+    assert!(
+        spec.contains("tier=\"gold\""),
+        "cell-placed phase metric must carry its coordinate label; spec: {spec}"
+    );
 }

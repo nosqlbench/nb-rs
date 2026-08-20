@@ -58,12 +58,13 @@ impl ScyllaPreparedDispenser {
             session,
             prepared,
             stmt_text,
-            bind_names, canonical_kernel }
+            bind_names,
+            canonical_kernel,
+        }
     }
 }
 
 impl OpDispenser for ScyllaPreparedDispenser {
-
     fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
@@ -71,7 +72,9 @@ impl OpDispenser for ScyllaPreparedDispenser {
         &'a self,
         _cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             // SRD-68 Push 5: pull values by bind-point name in `?`
@@ -79,19 +82,26 @@ impl OpDispenser for ScyllaPreparedDispenser {
             // the legacy fallback for an unresolved bind name; the
             // Polydat compiler should have provisioned every name, but
             // an absent name shouldn't fail-stop the cycle.
-            let bind_values: Vec<Value> = self.bind_names.iter()
+            let bind_values: Vec<Value> = self
+                .bind_names
+                .iter()
                 .map(|name| wires.get(name).unwrap_or(Value::Str(String::new().into())))
                 .collect();
             let col_specs = self.prepared.get_variable_col_specs();
             let row = binders::build_row(col_specs, &bind_values)
                 .map_err(|e| op_error("bind_error", e, false))?;
 
-            let result = self.session.execute_unpaged(&self.prepared, row).await
-                .map_err(|e| op_error(
-                    "cql_error",
-                    format_cql_error(&e.to_string(), &self.stmt_text),
-                    crate::common::cql_error_is_retryable(&e.to_string()),
-                ))?;
+            let result = self
+                .session
+                .execute_unpaged(&self.prepared, row)
+                .await
+                .map_err(|e| {
+                    op_error(
+                        "cql_error",
+                        format_cql_error(&e.to_string(), &self.stmt_text),
+                        crate::common::cql_error_is_retryable(&e.to_string()),
+                    )
+                })?;
 
             let body = ScyllaResultBody::from_query_result(result);
             let body_box: Option<Box<dyn ResultBody>> = if body.element_count() > 0 {

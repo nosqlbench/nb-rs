@@ -23,7 +23,10 @@ pub struct Hyperband {
 
 impl Hyperband {
     pub fn from_params(p: &OptimizerParams) -> Self {
-        Self { eta: p.get("eta", 3.0), max_resource: p.get("max_resource", 81.0) }
+        Self {
+            eta: p.get("eta", 3.0),
+            max_resource: p.get("max_resource", 81.0),
+        }
     }
 }
 
@@ -32,7 +35,12 @@ impl Optimizer for Hyperband {
         "hyperband"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         if d == 0 {
@@ -76,9 +84,7 @@ impl Optimizer for Hyperband {
                     let v = ev.at_fidelity(c, fidelity);
                     scored.push((c.clone(), v));
                 }
-                scored.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 let keep = (((n_i as f64) / eta).floor() as usize).clamp(1, scored.len());
                 configs = scored.into_iter().take(keep).map(|(c, _)| c).collect();
                 if configs.len() <= 1 {

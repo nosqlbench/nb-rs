@@ -38,8 +38,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 pub const NAME: WrapperName = WrapperName::new("gutter");
@@ -67,7 +67,9 @@ pub enum GutterSpec {
 /// Trigger: `gutter:` is a string (layout template) or a map with
 /// a `bar:` or `spark:` key.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template
         .params
         .get("gutter")
@@ -79,7 +81,9 @@ fn describe_assignment(s: WrapperSubject) -> Option<String> {
     let template = s.op()?;
     let v = template.params.get("gutter")?;
     if let Some(s) = v.as_str() {
-        if s.is_empty() { return None; }
+        if s.is_empty() {
+            return None;
+        }
         Some(format!("gutter: \"{s}\" (layout)"))
     } else if let Some(obj) = v.as_object() {
         let mut parts: Vec<String> = Vec::new();
@@ -89,12 +93,17 @@ fn describe_assignment(s: WrapperSubject) -> Option<String> {
             }
         }
         match obj.get("final") {
-            Some(f) if f.is_string() =>
-                parts.push(format!("final \"{}\"", f.as_str().unwrap_or(""))),
+            Some(f) if f.is_string() => {
+                parts.push(format!("final \"{}\"", f.as_str().unwrap_or("")))
+            }
             Some(f) if f.is_object() => parts.push("final {…}".to_string()),
             _ => {}
         }
-        if parts.is_empty() { None } else { Some(format!("gutter: {}", parts.join(" / "))) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(format!("gutter: {}", parts.join(" / ")))
+        }
     } else {
         None
     }
@@ -137,31 +146,41 @@ pub enum GutterKind {
 pub fn parse_specs(
     v: Option<&serde_json::Value>,
 ) -> (Option<(GutterKind, String)>, Option<(GutterKind, String)>) {
-    let parse_forms = |obj: &serde_json::Map<String, serde_json::Value>|
-        -> Option<(GutterKind, String)>
-    {
-        if let Some(m) = obj.get("labeled").and_then(|x| x.as_object()) {
-            let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let value = m.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            return Some((GutterKind::Labeled, format!("{name}{}{value}", '\u{1f}')));
-        }
-        if let Some(t) = obj.get("bar").and_then(|x| x.as_str()) {
-            Some((GutterKind::Bar, t.to_string()))
-        } else if let Some(t) = obj.get("spark").and_then(|x| x.as_str()) {
-            Some((GutterKind::Spark, t.to_string()))
-        } else {
-            obj.get("text").and_then(|x| x.as_str())
-                .map(|t| (GutterKind::Text, t.to_string()))
-        }
-    };
+    let parse_forms =
+        |obj: &serde_json::Map<String, serde_json::Value>| -> Option<(GutterKind, String)> {
+            if let Some(m) = obj.get("labeled").and_then(|x| x.as_object()) {
+                let name = m
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let value = m
+                    .get("value")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                return Some((GutterKind::Labeled, format!("{name}{}{value}", '\u{1f}')));
+            }
+            if let Some(t) = obj.get("bar").and_then(|x| x.as_str()) {
+                Some((GutterKind::Bar, t.to_string()))
+            } else if let Some(t) = obj.get("spark").and_then(|x| x.as_str()) {
+                Some((GutterKind::Spark, t.to_string()))
+            } else {
+                obj.get("text")
+                    .and_then(|x| x.as_str())
+                    .map(|t| (GutterKind::Text, t.to_string()))
+            }
+        };
     match v {
-        Some(serde_json::Value::String(s)) if !s.is_empty() =>
-            (Some((GutterKind::Text, s.clone())), None),
+        Some(serde_json::Value::String(s)) if !s.is_empty() => {
+            (Some((GutterKind::Text, s.clone())), None)
+        }
         Some(serde_json::Value::Object(obj)) => {
             let during = parse_forms(obj);
             let fin = match obj.get("final") {
-                Some(serde_json::Value::String(s)) if !s.is_empty() =>
-                    Some((GutterKind::Text, s.clone())),
+                Some(serde_json::Value::String(s)) if !s.is_empty() => {
+                    Some((GutterKind::Text, s.clone()))
+                }
                 Some(serde_json::Value::Object(fobj)) => parse_forms(fobj),
                 _ => None,
             };
@@ -182,29 +201,35 @@ pub(crate) fn render_spec(
     let rendered = match crate::wires::substitute_via_wires(template, wires) {
         Ok(s) => s,
         Err(e) => {
-            crate::diag!(crate::observer::LogLevel::Debug,
-                "gutter: substitution failed for '{template}': {e}");
+            crate::diag!(
+                crate::observer::LogLevel::Debug,
+                "gutter: substitution failed for '{template}': {e}"
+            );
             return None;
         }
     };
     match kind {
         GutterKind::Labeled => {
-            let (name, value) = rendered.split_once('\u{1f}').unwrap_or(("", rendered.as_str()));
-            Some(GutterSpec::Labeled { name: name.to_string(), value: value.to_string() })
+            let (name, value) = rendered
+                .split_once('\u{1f}')
+                .unwrap_or(("", rendered.as_str()));
+            Some(GutterSpec::Labeled {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
         }
         GutterKind::Text => Some(GutterSpec::Text(rendered)),
-        GutterKind::Bar | GutterKind::Spark => {
-            match rendered.trim().parse::<f64>() {
-                Ok(v) if kind == GutterKind::Bar =>
-                    Some(GutterSpec::Bar(v.clamp(0.0, 1.0))),
-                Ok(v) => Some(GutterSpec::Spark(v)),
-                Err(_) => {
-                    crate::diag!(crate::observer::LogLevel::Debug,
-                        "gutter: '{template}' rendered to non-numeric '{rendered}'");
-                    None
-                }
+        GutterKind::Bar | GutterKind::Spark => match rendered.trim().parse::<f64>() {
+            Ok(v) if kind == GutterKind::Bar => Some(GutterSpec::Bar(v.clamp(0.0, 1.0))),
+            Ok(v) => Some(GutterSpec::Spark(v)),
+            Err(_) => {
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "gutter: '{template}' rendered to non-numeric '{rendered}'"
+                );
+                None
             }
-        }
+        },
     }
 }
 
@@ -233,7 +258,12 @@ impl GutterDispenser {
         template: String,
         gutter_state: Arc<arc_swap::ArcSwapOption<GutterSpec>>,
     ) -> Arc<dyn OpDispenser> {
-        Arc::new(Self { inner, kind, template, gutter_state })
+        Arc::new(Self {
+            inner,
+            kind,
+            template,
+            gutter_state,
+        })
     }
 
     fn publish(&self, wires: &dyn crate::wires::WireSource) {
@@ -250,7 +280,9 @@ impl OpDispenser for GutterDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let result = self.inner.execute(cycle, ctx).await?;
             self.publish(ctx.wires);
@@ -278,7 +310,9 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 if let Some(msg) = self.error {
                     return Err(ExecutionError::Op(AdapterError {
@@ -287,7 +321,10 @@ mod tests {
                         retryable: false,
                     }));
                 }
-                Ok(OpResult { body: None, skipped: false })
+                Ok(OpResult {
+                    body: None,
+                    skipped: false,
+                })
             })
         }
     }
@@ -303,25 +340,33 @@ mod tests {
         let state = Arc::new(arc_swap::ArcSwapOption::empty());
         let inner = Arc::new(FakeInner { error: None });
         let d = GutterDispenser::wrap(
-            inner, GutterKind::Text, "queue depth ok".into(), state.clone());
+            inner,
+            GutterKind::Text,
+            "queue depth ok".into(),
+            state.clone(),
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let _ = d.execute(0, &ctx).await.expect("inner ok");
-        assert_eq!(state.load().as_deref(),
-            Some(&GutterSpec::Text("queue depth ok".into())));
+        assert_eq!(
+            state.load().as_deref(),
+            Some(&GutterSpec::Text("queue depth ok".into()))
+        );
     }
 
     #[tokio::test]
     async fn bar_form_parses_and_clamps_fraction() {
         let state = Arc::new(arc_swap::ArcSwapOption::empty());
         let inner = Arc::new(FakeInner { error: None });
-        let d = GutterDispenser::wrap(
-            inner, GutterKind::Bar, "1.7".into(), state.clone());
+        let d = GutterDispenser::wrap(inner, GutterKind::Bar, "1.7".into(), state.clone());
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let _ = d.execute(0, &ctx).await.expect("inner ok");
-        assert_eq!(state.load().as_deref(), Some(&GutterSpec::Bar(1.0)),
-            "fraction must clamp to 0..=1");
+        assert_eq!(
+            state.load().as_deref(),
+            Some(&GutterSpec::Bar(1.0)),
+            "fraction must clamp to 0..=1"
+        );
     }
 
     #[tokio::test]
@@ -331,25 +376,35 @@ mod tests {
         state.store(Some(Arc::new(GutterSpec::Spark(3.0))));
         let inner = Arc::new(FakeInner { error: None });
         let d = GutterDispenser::wrap(
-            inner, GutterKind::Spark, "not-a-number".into(), state.clone());
+            inner,
+            GutterKind::Spark,
+            "not-a-number".into(),
+            state.clone(),
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let _ = d.execute(0, &ctx).await.expect("inner ok");
-        assert_eq!(state.load().as_deref(), Some(&GutterSpec::Spark(3.0)),
-            "unparseable render must not clobber the last good value");
+        assert_eq!(
+            state.load().as_deref(),
+            Some(&GutterSpec::Spark(3.0)),
+            "unparseable render must not clobber the last good value"
+        );
     }
 
     #[tokio::test]
     async fn does_not_publish_on_inner_error() {
         let state: Arc<arc_swap::ArcSwapOption<GutterSpec>> =
             Arc::new(arc_swap::ArcSwapOption::empty());
-        let inner = Arc::new(FakeInner { error: Some("boom") });
-        let d = GutterDispenser::wrap(
-            inner, GutterKind::Text, "never".into(), state.clone());
+        let inner = Arc::new(FakeInner {
+            error: Some("boom"),
+        });
+        let d = GutterDispenser::wrap(inner, GutterKind::Text, "never".into(), state.clone());
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         assert!(d.execute(0, &ctx).await.is_err());
-        assert!(state.load().is_none(),
-            "gutter must not publish on inner error");
+        assert!(
+            state.load().is_none(),
+            "gutter must not publish on inner error"
+        );
     }
 }

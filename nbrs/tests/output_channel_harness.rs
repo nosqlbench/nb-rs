@@ -84,7 +84,13 @@ const DIAG_MARKERS: &[&str] = &["1 phases", "session:", "adapter=", "phase '", "
 fn piped_op_output_is_exactly_the_lines_and_diagnostics_go_to_stderr() {
     let tmp = TempDir::new();
     let out = Command::new(nbrs_binary())
-        .args(["run", "op=id-{cycle}", "cycles=5", "adapter=stdout", "--session-path"])
+        .args([
+            "run",
+            "op=id-{cycle}",
+            "cycles=5",
+            "adapter=stdout",
+            "--session-path",
+        ])
         .arg(&tmp.path)
         .output()
         .expect("run nbrs");
@@ -102,7 +108,10 @@ fn piped_op_output_is_exactly_the_lines_and_diagnostics_go_to_stderr() {
     );
     // The data plane must NOT carry diagnostics.
     for m in DIAG_MARKERS {
-        assert!(!stdout.contains(m), "diagnostic {m:?} leaked onto piped stdout: {stdout:?}");
+        assert!(
+            !stdout.contains(m),
+            "diagnostic {m:?} leaked onto piped stdout: {stdout:?}"
+        );
     }
 }
 

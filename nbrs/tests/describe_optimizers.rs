@@ -28,10 +28,17 @@ fn describe_optimizers_lists_every_registered_optimizer() {
         .args(["describe", "optimizers"])
         .output()
         .expect("run `nbrs describe optimizers`");
-    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     for name in EXPECTED {
-        assert!(stdout.contains(name), "`{name}` missing from listing:\n{stdout}");
+        assert!(
+            stdout.contains(name),
+            "`{name}` missing from listing:\n{stdout}"
+        );
     }
 }
 
@@ -41,7 +48,11 @@ fn describe_optimizer_detail_prints_full_markdown() {
         .args(["describe", "optimizers", "cmaes"])
         .output()
         .expect("run `nbrs describe optimizers cmaes`");
-    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     // The markdown title + body are embedded in the plugin crate.
     assert!(stdout.contains("# cmaes"), "no markdown title:\n{stdout}");

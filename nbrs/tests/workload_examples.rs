@@ -35,8 +35,7 @@ impl SessionDir {
         // nbrs's `purge_stale_sessions` (which scans the
         // session-path's parent dir) can't see sibling
         // tests' sessions.
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-workload-examples-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-workload-examples-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
         let path = parent.join("session");
         Self { path }
@@ -56,7 +55,9 @@ impl Drop for SessionDir {
 fn nbrs(session: &SessionDir) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     // Run from workspace root so workload paths resolve correctly
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd.arg("run");
     cmd.arg("--session-path");
@@ -78,10 +79,8 @@ fn run_inline(op: &str, extra_args: &[&str]) -> (String, String) {
     }
     let output = cmd.output().expect("failed to run nbrs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let session_log = std::fs::read_to_string(session.path.join("session.log"))
-        .unwrap_or_default();
-    let evidence = format!("{}\n{session_log}",
-        String::from_utf8_lossy(&output.stderr));
+    let session_log = std::fs::read_to_string(session.path.join("session.log")).unwrap_or_default();
+    let evidence = format!("{}\n{session_log}", String::from_utf8_lossy(&output.stderr));
     (stdout, evidence)
 }
 
@@ -139,7 +138,10 @@ phases:
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!out.contains("error:"), "nested control sweep errored: {out}");
+    assert!(
+        !out.contains("error:"),
+        "nested control sweep errored: {out}"
+    );
     // The Control daemon composed under the outer Coordinate rerun: one servoed
     // continuous phase per `batch`, each finding the overload-free setting.
     let control_runs = out.matches("(control): best [2]").count();
@@ -353,14 +355,20 @@ phases:
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!out.contains("error:"), "mixed-resolution servo errored: {out}");
+    assert!(
+        !out.contains("error:"),
+        "mixed-resolution servo errored: {out}"
+    );
     // A 2-tuple on the Control path proves both axes servoed; the indirect
     // `conc` drove the concurrency control down to 2 (the overload-free corner).
     assert!(
         out.contains("(control): best [2,"),
         "mixed `servo: [conc, rate]` must servo both (indirect conc + direct rate): {out}"
     );
-    assert!(out.contains("score=0"), "the overload-free corner scores 0: {out}");
+    assert!(
+        out.contains("score=0"),
+        "the overload-free corner scores 0: {out}"
+    );
     assert!(
         out.contains("after 4 evals"),
         "the 2-D control grid (2×2) must be fully searched: {out}"
@@ -509,8 +517,16 @@ phases:
         String::from_utf8_lossy(&output.stderr)
     );
     let pairs = out.matches("pair a=").count();
-    assert_eq!(pairs, 4, "phase multi-clause for_each must produce the cartesian {{1,2}}×{{10,20}}: {out}");
-    for expected in ["pair a=1 b=10", "pair a=1 b=20", "pair a=2 b=10", "pair a=2 b=20"] {
+    assert_eq!(
+        pairs, 4,
+        "phase multi-clause for_each must produce the cartesian {{1,2}}×{{10,20}}: {out}"
+    );
+    for expected in [
+        "pair a=1 b=10",
+        "pair a=1 b=20",
+        "pair a=2 b=10",
+        "pair a=2 b=20",
+    ] {
         assert!(out.contains(expected), "missing `{expected}`: {out}");
     }
 }
@@ -537,20 +553,24 @@ fn inline_multiple_ops_with_ratios() {
     assert!(stderr.contains("done"), "stderr: {stderr}");
     let reads = stdout.lines().filter(|l| l.starts_with("read")).count();
     let writes = stdout.lines().filter(|l| l.starts_with("write")).count();
-    assert!(reads > writes, "should have more reads than writes: {reads} reads, {writes} writes");
+    assert!(
+        reads > writes,
+        "should have more reads than writes: {reads} reads, {writes} writes"
+    );
 }
 
 #[test]
 fn inline_math_expression() {
-    let (stdout, stderr) = run_inline(
-        "val={{sin(to_f64(cycle) * 0.1)}}",
-        &["cycles=5"],
-    );
+    let (stdout, stderr) = run_inline("val={{sin(to_f64(cycle) * 0.1)}}", &["cycles=5"]);
     assert!(stderr.contains("done"), "stderr: {stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 5);
     // First cycle (cycle=0): sin(0) = 0
-    assert!(lines[0].contains("val=0"), "sin(0) should be 0: {}", lines[0]);
+    assert!(
+        lines[0].contains("val=0"),
+        "sin(0) should be 0: {}",
+        lines[0]
+    );
 }
 
 // ─── Bang path (shebang) ───────────────────────────────────────
@@ -558,7 +578,9 @@ fn inline_math_expression() {
 #[test]
 fn bare_file_invocation() {
     // nbrs <file.yaml> should work without 'run' subcommand
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
     let session = SessionDir::new();
     let output = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .current_dir(workspace_root)
@@ -582,7 +604,12 @@ fn const_expression_in_cycles() {
     let (stdout, stderr) = run_inline("tick", &["cycles={4*4}"]);
     assert!(stderr.contains("done"), "stderr: {stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 16, "4*4=16 cycles expected, got {}", lines.len());
+    assert_eq!(
+        lines.len(),
+        16,
+        "4*4=16 cycles expected, got {}",
+        lines.len()
+    );
 }
 
 #[test]
@@ -670,19 +697,27 @@ phases:
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
-    assert!(stderr.contains("`set:` block (overriding [\"mode\"])"),
+    assert!(
+        stderr.contains("`set:` block (overriding [\"mode\"])"),
         "empty set: must emit the no-op warning naming the \
-         overridden keys. stderr:\n{stderr}");
-    assert!(stderr.contains("scenario-tree `bindings:` block has no"),
-        "empty bindings: must emit the no-op warning. stderr:\n{stderr}");
+         overridden keys. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("scenario-tree `bindings:` block has no"),
+        "empty bindings: must emit the no-op warning. stderr:\n{stderr}"
+    );
 
     // The `good` scenario still completes and substitutes
     // mode correctly — the empty blocks are warnings, not
     // errors, and they don't poison the run.
-    assert!(stderr.contains("all phases complete"),
-        "good scenario must still complete. stderr:\n{stderr}");
-    assert!(stdout.contains("mode=verbose"),
-        "good scenario must still produce mode=verbose. stdout:\n{stdout}");
+    assert!(
+        stderr.contains("all phases complete"),
+        "good scenario must still complete. stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("mode=verbose"),
+        "good scenario must still produce mode=verbose. stdout:\n{stdout}"
+    );
 }
 
 // ─── Synthetic metrics (SRD-40b) end-to-end ─────────────────
@@ -712,8 +747,7 @@ fn synthetic_metrics_workload_populates_metric_family() {
 
     let db_path = session.path.join("metrics.db");
     assert!(db_path.exists(), "metrics.db missing at {db_path:?}");
-    let conn = rusqlite::Connection::open(&db_path)
-        .expect("open metrics.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open metrics.db");
 
     // (family_name, expected_type, expected_unit). SRD-40b §1
     // says `unit:` lands in BOTH the `_<unit>` suffix on
@@ -750,7 +784,8 @@ fn synthetic_metrics_workload_populates_metric_family() {
             "metric_family.type mismatch for {name}",
         );
         assert_eq!(
-            got_unit.as_deref(), *expected_unit,
+            got_unit.as_deref(),
+            *expected_unit,
             "metric_family.unit mismatch for {name}",
         );
     }
@@ -807,65 +842,92 @@ fn synthetic_metrics_workload_records_correct_values() {
         conn: &rusqlite::Connection,
         family: &str,
     ) -> Vec<(String, f64, i64, f64, f64)> {
-        let mut stmt = conn.prepare(
-            "SELECT i.id, COALESCE(i.spec, '') FROM metric_instance i \
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.id, COALESCE(i.spec, '') FROM metric_instance i \
              JOIN metric_family f ON i.family_id = f.id \
              WHERE f.name = ?1",
-        ).unwrap();
+            )
+            .unwrap();
         let instances: Vec<(i64, String)> = stmt
-            .query_map([family], |r| Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-            )))
+            .query_map([family], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
 
-        instances.into_iter().filter_map(|(id, label_set_json)| {
-            // (mean, count, sum, max) for the latest sample row.
-            #[allow(clippy::type_complexity)]
-            let row: rusqlite::Result<(Option<f64>, Option<i64>, Option<f64>, Option<f64>)> =
-                conn.query_row(
+        instances
+            .into_iter()
+            .filter_map(|(id, label_set_json)| {
+                // (mean, count, sum, max) for the latest sample row.
+                #[allow(clippy::type_complexity)]
+                let row: rusqlite::Result<(
+                    Option<f64>,
+                    Option<i64>,
+                    Option<f64>,
+                    Option<f64>,
+                )> = conn.query_row(
                     "SELECT s.mean, s.count, s.sum, s.max FROM sample_value s \
                      WHERE s.instance_id = ?1 \
                      ORDER BY s.timestamp_ms DESC LIMIT 1",
                     [id],
-                    |r| Ok((
-                        r.get::<_, Option<f64>>(0)?,
-                        r.get::<_, Option<i64>>(1)?,
-                        r.get::<_, Option<f64>>(2)?,
-                        r.get::<_, Option<f64>>(3)?,
-                    )),
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<f64>>(0)?,
+                            r.get::<_, Option<i64>>(1)?,
+                            r.get::<_, Option<f64>>(2)?,
+                            r.get::<_, Option<f64>>(3)?,
+                        ))
+                    },
                 );
-            row.ok().map(|(mean, count, sum, max)| (
-                label_set_json,
-                mean.unwrap_or(0.0),
-                count.unwrap_or(0),
-                sum.unwrap_or(0.0),
-                max.unwrap_or(0.0),
-            ))
-        }).collect()
+                row.ok().map(|(mean, count, sum, max)| {
+                    (
+                        label_set_json,
+                        mean.unwrap_or(0.0),
+                        count.unwrap_or(0),
+                        sum.unwrap_or(0.0),
+                        max.unwrap_or(0.0),
+                    )
+                })
+            })
+            .collect()
     }
 
     // Every metric must have at least one instance with at
     // least one sample (i.e. the dispenser path actually wrote
     // through to the cadence reporter).
-    for family in &["load", "latency_curve_ms", "latency_window",
-                    "forecast_low", "forecast_high",
-                    "step_counter_ops", "observation_dist"] {
+    for family in &[
+        "load",
+        "latency_curve_ms",
+        "latency_window",
+        "forecast_low",
+        "forecast_high",
+        "step_counter_ops",
+        "observation_dist",
+    ] {
         let samples = all_instance_samples(&conn, family);
-        assert!(!samples.is_empty(),
-            "metric {family}: no instance samples in metrics.db");
+        assert!(
+            !samples.is_empty(),
+            "metric {family}: no instance samples in metrics.db"
+        );
     }
 
     // Gauges. All recorded values must be positive (cycles
     // start at 0 → cycle+1 ≥ 1, mul by positive constant
     // stays positive).
-    for family in &["load", "latency_curve_ms", "latency_window",
-                    "forecast_low", "forecast_high"] {
+    for family in &[
+        "load",
+        "latency_curve_ms",
+        "latency_window",
+        "forecast_low",
+        "forecast_high",
+    ] {
         for (label, mean, _, _, _) in all_instance_samples(&conn, family) {
-            assert!(mean > 0.0,
-                "{family} ({label}): gauge value {mean} should be positive");
+            assert!(
+                mean > 0.0,
+                "{family} ({label}): gauge value {mean} should be positive"
+            );
         }
     }
 
@@ -874,10 +936,14 @@ fn synthetic_metrics_workload_records_correct_values() {
     // be ≥ 1 and ≤ cycle_count (synth_op_kinds runs once per
     // stanza of the 4-op cycle).
     for (label, _, count, _, _) in all_instance_samples(&conn, "step_counter_ops") {
-        assert!(count >= 1,
-            "step_counter_ops ({label}): expected ≥1, got {count}");
-        assert!(count <= 6,
-            "step_counter_ops ({label}): expected ≤6 (cycle_count=6), got {count}");
+        assert!(
+            count >= 1,
+            "step_counter_ops ({label}): expected ≥1, got {count}"
+        );
+        assert!(
+            count <= 6,
+            "step_counter_ops ({label}): expected ≤6 (cycle_count=6), got {count}"
+        );
     }
 
     // Histogram. observation = cycle % 100. With 24 total
@@ -886,12 +952,18 @@ fn synthetic_metrics_workload_records_correct_values() {
     // 11, 15, 19, 23 → observations 3, 7, 11, 15, 19, 23.
     // count = 6, max ≤ 23.
     for (label, _, count, _sum, max) in all_instance_samples(&conn, "observation_dist") {
-        assert!(count >= 1,
-            "observation_dist ({label}): expected ≥1 sample, got {count}");
-        assert!(count <= 6,
-            "observation_dist ({label}): expected ≤6 samples, got {count}");
-        assert!(max <= 23.0,
-            "observation_dist ({label}): max={max}, expected ≤23");
+        assert!(
+            count >= 1,
+            "observation_dist ({label}): expected ≥1 sample, got {count}"
+        );
+        assert!(
+            count <= 6,
+            "observation_dist ({label}): expected ≤6 samples, got {count}"
+        );
+        assert!(
+            max <= 23.0,
+            "observation_dist ({label}): max={max}, expected ≤23"
+        );
     }
 
     // Cross-formula invariant — for instances of forecast_low
@@ -901,13 +973,13 @@ fn synthetic_metrics_workload_records_correct_values() {
     // 0.9 → forecast_high / forecast_low = 1.1/0.9 ≈ 1.222).
     let lows = all_instance_samples(&conn, "forecast_low");
     let highs = all_instance_samples(&conn, "forecast_high");
-    if let (Some((_, low, _, _, _)), Some((_, high, _, _, _))) =
-        (lows.first(), highs.first())
-    {
+    if let (Some((_, low, _, _, _)), Some((_, high, _, _, _))) = (lows.first(), highs.first()) {
         let ratio = high / low;
         let expected = 1.1 / 0.9;
-        assert!((ratio - expected).abs() < 1e-3,
-            "forecast_high / forecast_low = {ratio}, expected ≈ {expected}");
+        assert!(
+            (ratio - expected).abs() < 1e-3,
+            "forecast_high / forecast_low = {ratio}, expected ≈ {expected}"
+        );
     }
 }
 
@@ -960,16 +1032,18 @@ phases:
     let output = cmd.output().expect("failed to run nbrs");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(output.status.success() && stderr.contains("done"),
-        "workload did not complete:\nstderr: {stderr}\nstdout: {stdout}");
+    assert!(
+        output.status.success() && stderr.contains("done"),
+        "workload did not complete:\nstderr: {stderr}\nstdout: {stdout}"
+    );
     // 10 cycles, only odd ones (1,3,5,7,9) have local_pred != 0,
     // so the conditional must fire skips_total == 5 and the op
     // must execute the other 5. If `cycle` weren't propagated
     // to the op-template kernel, local_pred would stay 0 for
     // every cycle and the op would skip every time (10 skips,
     // 0 executions).
-    let conn = rusqlite::Connection::open(session.path.join("metrics.db"))
-        .expect("open metrics.db");
+    let conn =
+        rusqlite::Connection::open(session.path.join("metrics.db")).expect("open metrics.db");
     let count_for = |family: &str| -> i64 {
         conn.query_row(
             "SELECT s.count FROM metric_family f
@@ -978,13 +1052,16 @@ phases:
               WHERE f.name = ?1 LIMIT 1",
             [family],
             |r| r.get::<_, i64>(0),
-        ).unwrap_or(0)
+        )
+        .unwrap_or(0)
     };
     let total = count_for("cycles_total");
     let skips = count_for("skips_total");
     assert_eq!(total, 10, "cycles_total = {total}, expected 10");
-    assert_eq!(skips, 5,
-        "skips_total = {skips}, expected 5 (odd cycles run, even skip)");
+    assert_eq!(
+        skips, 5,
+        "skips_total = {skips}, expected 5 (odd cycles run, even skip)"
+    );
 }
 
 /// Throttle dispenser under a materialised op-template: the
@@ -1023,10 +1100,12 @@ phases:
     cmd.arg(format!("workload={}", path.display()));
     let output = cmd.output().expect("failed to run nbrs");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success() && stderr.contains("done"),
-        "workload did not complete: {stderr}");
-    let conn = rusqlite::Connection::open(session.path.join("metrics.db"))
-        .expect("open metrics.db");
+    assert!(
+        output.status.success() && stderr.contains("done"),
+        "workload did not complete: {stderr}"
+    );
+    let conn =
+        rusqlite::Connection::open(session.path.join("metrics.db")).expect("open metrics.db");
     // delay_witness must exist as a registered family — proving
     // the dispenser wrapping path saw the op-local binding.
     let row: Result<(String,), _> = conn.query_row(
@@ -1068,8 +1147,10 @@ phases:
     cmd.arg(format!("workload={}", path.display()));
     let output = cmd.output().expect("failed to run nbrs");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success() && stderr.contains("done"),
-        "workload did not complete: {stderr}");
+    assert!(
+        output.status.success() && stderr.contains("done"),
+        "workload did not complete: {stderr}"
+    );
 }
 
 // ─── SRD-71: cursor partitioning ────────────────────────────────
@@ -1103,8 +1184,10 @@ phases:
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(output.status.success(), "workload failed: {stderr}");
     let count = stdout.lines().filter(|l| l.starts_with("row=")).count();
-    assert_eq!(count, 100,
-        "expected 100 narrowed rows from `cursor=0..10%`, got {count}.\nstdout:\n{stdout}");
+    assert_eq!(
+        count, 100,
+        "expected 100 narrowed rows from `cursor=0..10%`, got {count}.\nstdout:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1176,8 +1259,10 @@ phases:
     let output = cmd.output().expect("failed to run nbrs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let count = stdout.lines().filter(|l| l.starts_with("row=")).count();
-    assert_eq!(count, 50,
-        "cursor without `over` must ignore `cursor=...`; got {count} rows");
+    assert_eq!(
+        count, 50,
+        "cursor without `over` must ignore `cursor=...`; got {count} rows"
+    );
 }
 
 #[test]
@@ -1260,18 +1345,19 @@ phases:
     assert!(output.status.success(), "workload failed: {stderr}");
 
     // 3 partitions × 5 cycles = 15 emit lines.
-    let emit_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.starts_with("part="))
-        .collect();
-    assert_eq!(emit_lines.len(), 15,
+    let emit_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("part=")).collect();
+    assert_eq!(
+        emit_lines.len(),
+        15,
         "expected 3 partitions × 5 cycles = 15 emits, got {}.\nstdout:\n{stdout}",
-        emit_lines.len());
+        emit_lines.len()
+    );
 
     // Each partition emits 5 lines; the three partition indices
     // (0, 1, 2) all appear, and the lo/hi values are distinct
     // per partition.
-    let parts_seen: std::collections::HashSet<&str> = emit_lines.iter()
+    let parts_seen: std::collections::HashSet<&str> = emit_lines
+        .iter()
         .filter_map(|l| l.split(' ').next())
         .collect();
     assert_eq!(parts_seen.len(), 3, "expected 3 distinct partition indices");
@@ -1280,12 +1366,22 @@ phases:
     assert!(parts_seen.contains("part=2"));
 
     // Partition 0 covers [0..33), partition 1 [33..66), partition 2 [66..99).
-    let part0_line = emit_lines.iter().find(|l| l.starts_with("part=0 ")).unwrap();
-    assert!(part0_line.contains("lo=0") && part0_line.contains("hi=33"),
-        "partition 0 should be [0, 33), got: {part0_line}");
-    let part2_line = emit_lines.iter().find(|l| l.starts_with("part=2 ")).unwrap();
-    assert!(part2_line.contains("lo=66") && part2_line.contains("hi=99"),
-        "partition 2 should be [66, 99), got: {part2_line}");
+    let part0_line = emit_lines
+        .iter()
+        .find(|l| l.starts_with("part=0 "))
+        .unwrap();
+    assert!(
+        part0_line.contains("lo=0") && part0_line.contains("hi=33"),
+        "partition 0 should be [0, 33), got: {part0_line}"
+    );
+    let part2_line = emit_lines
+        .iter()
+        .find(|l| l.starts_with("part=2 "))
+        .unwrap();
+    assert!(
+        part2_line.contains("lo=66") && part2_line.contains("hi=99"),
+        "partition 2 should be [66, 99), got: {part2_line}"
+    );
 }
 
 #[test]
@@ -1321,10 +1417,11 @@ phases:
     let lines: Vec<&str> = stdout.lines().filter(|l| l.contains("card=")).collect();
     assert!(!lines.is_empty(), "no card= lines emitted:\n{stdout}");
     for line in &lines {
-        assert!(line.contains("card=100"),
-            "expected card=100 (200-100), got: {line}");
-        assert!(line.contains("lo=100"),
-            "expected lo=100, got: {line}");
+        assert!(
+            line.contains("card=100"),
+            "expected card=100 (200-100), got: {line}"
+        );
+        assert!(line.contains("lo=100"), "expected lo=100, got: {line}");
     }
 }
 
@@ -1355,6 +1452,8 @@ phases:
     let output = cmd.output().expect("failed to run nbrs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let count = stdout.lines().filter(|l| l.starts_with("row=")).count();
-    assert_eq!(count, 100,
-        "single-quoted cursor='0..10%' should narrow to 100 rows; got {count}");
+    assert_eq!(
+        count, 100,
+        "single-quoted cursor='0..10%' should narrow to 100 rows; got {count}"
+    );
 }

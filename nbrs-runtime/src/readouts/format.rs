@@ -12,9 +12,7 @@
 /// deterministically from `tick % 10` so a refresh actor
 /// firing at a steady cadence renders smooth animation.
 pub fn spinner_frame(tick: u64) -> char {
-    static FRAMES: [char; 10] = [
-        '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-    ];
+    static FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     FRAMES[(tick as usize) % FRAMES.len()]
 }
 
@@ -38,15 +36,23 @@ pub fn spinner_frame(tick: u64) -> char {
 /// brief over-count race during refresh doesn't render a
 /// malformed bar.
 pub fn ballot_bar(total: u64, successes: u64, errors: u64) -> String {
-    if total == 0 { return String::new(); }
+    if total == 0 {
+        return String::new();
+    }
     let total = (total as usize).min(10);
     let errors = (errors as usize).min(total);
     let successes = (successes as usize).min(total - errors);
     let pending = total - errors - successes;
     let mut s = String::with_capacity(total * 3);
-    for _ in 0..errors    { s.push('\u{2612}'); }  // ☒
-    for _ in 0..successes { s.push('\u{2611}'); }  // ☑
-    for _ in 0..pending   { s.push('\u{2610}'); }  // ☐
+    for _ in 0..errors {
+        s.push('\u{2612}');
+    } // ☒
+    for _ in 0..successes {
+        s.push('\u{2611}');
+    } // ☑
+    for _ in 0..pending {
+        s.push('\u{2610}');
+    } // ☐
     s
 }
 
@@ -67,17 +73,23 @@ pub fn braille_bar(pct: f64, width: usize) -> String {
         '\u{28F7}', // ⣷  +dot 1
         '\u{28FF}', // ⣿  full (+dot 4)
     ];
-    if width == 0 { return String::new(); }
+    if width == 0 {
+        return String::new();
+    }
     let bounded = pct.clamp(0.0, 100.0);
     let total = (bounded / 100.0 * (width as f64) * 8.0).round() as usize;
     let total = total.min(width * 8);
     let full = total / 8;
     let part = total % 8;
     let mut s = String::with_capacity(width * 3);
-    for _ in 0..full { s.push(FILL[8]); }
+    for _ in 0..full {
+        s.push(FILL[8]);
+    }
     if full < width {
         s.push(FILL[part]);
-        for _ in (full + 1)..width { s.push(FILL[0]); }
+        for _ in (full + 1)..width {
+            s.push(FILL[0]);
+        }
     }
     s
 }
@@ -173,13 +185,15 @@ pub fn format_compact_session_elapsed(secs: f64) -> String {
 /// `color` is false so the formatter stays usable in
 /// pipelined / NO_COLOR contexts.
 pub fn session_elapsed_color(secs: f64, color: bool) -> (&'static str, &'static str) {
-    if !color { return ("", ""); }
+    if !color {
+        return ("", "");
+    }
     if secs < 60.0 {
-        ("\x1b[2m",   "\x1b[0m")  // dim — early-run
+        ("\x1b[2m", "\x1b[0m") // dim — early-run
     } else if secs < 3600.0 {
-        ("",          "")          // default — mid-run
+        ("", "") // default — mid-run
     } else {
-        ("\x1b[1m",   "\x1b[0m")  // bold — long-run
+        ("\x1b[1m", "\x1b[0m") // bold — long-run
     }
 }
 
@@ -208,32 +222,32 @@ mod tests {
     /// rows column-align cleanly regardless of run length.
     #[test]
     fn compact_session_elapsed_seconds_band() {
-        assert_eq!(format_compact_session_elapsed(0.0),       "0.00000s");
-        assert_eq!(format_compact_session_elapsed(1.23456),   "1.23456s");
-        assert_eq!(format_compact_session_elapsed(9.99999),   "9.99999s");
-        assert_eq!(format_compact_session_elapsed(10.0),      "10.0000s");
-        assert_eq!(format_compact_session_elapsed(99.9999),   "99.9999s");
-        assert_eq!(format_compact_session_elapsed(100.0),     "100.000s");
-        assert_eq!(format_compact_session_elapsed(999.999),   "999.999s");
+        assert_eq!(format_compact_session_elapsed(0.0), "0.00000s");
+        assert_eq!(format_compact_session_elapsed(1.23456), "1.23456s");
+        assert_eq!(format_compact_session_elapsed(9.99999), "9.99999s");
+        assert_eq!(format_compact_session_elapsed(10.0), "10.0000s");
+        assert_eq!(format_compact_session_elapsed(99.9999), "99.9999s");
+        assert_eq!(format_compact_session_elapsed(100.0), "100.000s");
+        assert_eq!(format_compact_session_elapsed(999.999), "999.999s");
     }
 
     #[test]
     fn compact_session_elapsed_minutes_band() {
         // 1000s ≈ 16.67m — into the minutes band.
-        assert_eq!(format_compact_session_elapsed(1000.0),    "16.6667m");
+        assert_eq!(format_compact_session_elapsed(1000.0), "16.6667m");
         // Crossing through 1h.
-        assert_eq!(format_compact_session_elapsed(3599.0),    "59.9833m");
-        assert_eq!(format_compact_session_elapsed(3600.0),    "60.0000m");
+        assert_eq!(format_compact_session_elapsed(3599.0), "59.9833m");
+        assert_eq!(format_compact_session_elapsed(3600.0), "60.0000m");
         // Approaching the hours band.
-        assert_eq!(format_compact_session_elapsed(59940.0),   "999.000m");
+        assert_eq!(format_compact_session_elapsed(59940.0), "999.000m");
     }
 
     #[test]
     fn compact_session_elapsed_hours_band() {
         // 60000s = 16.667h — hours band.
-        assert_eq!(format_compact_session_elapsed(60000.0),   "16.6667h");
+        assert_eq!(format_compact_session_elapsed(60000.0), "16.6667h");
         // Long runs widen the integer part but keep 3 frac.
-        assert_eq!(format_compact_session_elapsed(360000.0),  "100.000h");
+        assert_eq!(format_compact_session_elapsed(360000.0), "100.000h");
     }
 
     /// Every value in 0..=999h must produce exactly 8 visible
@@ -241,14 +255,16 @@ mod tests {
     #[test]
     fn compact_session_elapsed_fixed_width_under_a_thousand_hours() {
         let samples = [
-            0.0, 0.5, 1.0, 9.999, 10.0, 99.99, 100.0, 999.999,
-            1000.0, 5000.0, 59940.0,
-            60000.0, 360000.0, 3500000.0,
+            0.0, 0.5, 1.0, 9.999, 10.0, 99.99, 100.0, 999.999, 1000.0, 5000.0, 59940.0, 60000.0,
+            360000.0, 3500000.0,
         ];
         for s in samples {
             let out = format_compact_session_elapsed(s);
-            assert_eq!(out.chars().count(), 8,
-                "elapsed={s} produced {out:?} (width != 8)");
+            assert_eq!(
+                out.chars().count(),
+                8,
+                "elapsed={s} produced {out:?} (width != 8)"
+            );
         }
     }
 
@@ -256,8 +272,8 @@ mod tests {
     #[test]
     fn session_elapsed_color_buckets() {
         // No color → empty spans regardless of magnitude.
-        assert_eq!(session_elapsed_color(0.5, false),     ("", ""));
-        assert_eq!(session_elapsed_color(3600.0, false),  ("", ""));
+        assert_eq!(session_elapsed_color(0.5, false), ("", ""));
+        assert_eq!(session_elapsed_color(3600.0, false), ("", ""));
         // With color, dim under a minute, default under an
         // hour, bold beyond.
         let (open_sub, _) = session_elapsed_color(0.5, true);

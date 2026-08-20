@@ -32,5 +32,5 @@
 pub mod spec;
 pub mod workload;
 
-pub use spec::{parse_spec, describe_operations, ApiOperation, BodyInfo, FieldInfo, ParamInfo};
+pub use spec::{ApiOperation, BodyInfo, FieldInfo, ParamInfo, describe_operations, parse_spec};
 pub use workload::generate_ops;

@@ -75,22 +75,22 @@
 //! - SRD 40 / 42 — metrics capture, cadence reporter,
 //!   subscription dispatch
 
-pub mod labels;
-pub mod instruments;
-pub mod summaries;
-pub mod selector;
-pub mod controls;
-pub mod thread_pools;
-pub mod scheduler;
-pub mod reporters;
-pub mod cells;
-pub mod component;
-pub mod diag;
-pub mod snapshot;
-pub mod validation;
 pub mod cadence;
 pub mod cadence_reporter;
+pub mod cells;
+pub mod component;
+pub mod controls;
+pub mod diag;
+pub mod instruments;
+pub mod labels;
 pub mod metrics_query;
+pub mod reporters;
+pub mod scheduler;
+pub mod selector;
+pub mod snapshot;
+pub mod summaries;
+pub mod thread_pools;
+pub mod validation;
 // Polydat metric-reading nodes — registered into polydat's
 // node catalog via the `inventory` channel. Lives here (not in
 // polydat) so polydat stays free of a reverse dep and can publish

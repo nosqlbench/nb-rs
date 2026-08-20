@@ -41,9 +41,7 @@
 use veks_completion::{CategoryTag, CommandTree, LevelTag, Node, StrictNode, fn_provider};
 
 use nbrs_runtime::adapter::registered_driver_names;
-use nbrs_runtime::runner::{
-    resolve_workload_file_public, scenarios_in_workload_file,
-};
+use nbrs_runtime::runner::{resolve_workload_file_public, scenarios_in_workload_file};
 
 // ---------------------------------------------------------------------------
 // Categories — closed enum implementing veks_completion::CategoryTag so the
@@ -136,96 +134,279 @@ pub fn build_tree() -> CommandTree {
 /// space is free-form (cycles, rate, tags, …) carry
 /// [`free_form`] so they still appear as option tokens.
 pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
-    crate::cli_spec::KvParam { key: "workload=", provider: workload_provider },
+    crate::cli_spec::KvParam {
+        key: "workload=",
+        provider: workload_provider,
+    },
     // SRD-108 — the implementation module bound into a logical
     // workload's abstract op slots.
-    crate::cli_spec::KvParam { key: "impl=", provider: workload_provider },
-    crate::cli_spec::KvParam { key: "scenario=", provider: scenario_provider },
-    crate::cli_spec::KvParam { key: "adapter=", provider: adapter_provider },
-    crate::cli_spec::KvParam { key: "driver=", provider: adapter_provider },
-    crate::cli_spec::KvParam { key: "profiler=", provider: static_profiler },
-    crate::cli_spec::KvParam { key: "tui=", provider: static_tui },
-    crate::cli_spec::KvParam { key: "format=", provider: static_stdout_format },
-    crate::cli_spec::KvParam { key: "dryrun=", provider: static_dryrun },
-    crate::cli_spec::KvParam { key: "sysmon=", provider: static_sysmon },
-    crate::cli_spec::KvParam { key: "watch=", provider: static_watch },
-    crate::cli_spec::KvParam { key: "scope=", provider: static_scope },
-    crate::cli_spec::KvParam { key: "on_removed=", provider: static_on_removed },
-    crate::cli_spec::KvParam { key: "seq=", provider: static_seq },
-    crate::cli_spec::KvParam { key: "kernel_opt=", provider: static_kernel_opt },
-    crate::cli_spec::KvParam { key: "skipped_phases=", provider: static_skipped_phases },
-    crate::cli_spec::KvParam { key: "completed_phases=", provider: static_completed_phases },
-    crate::cli_spec::KvParam { key: "jit=", provider: static_jit },
-    crate::cli_spec::KvParam { key: "phases=", provider: workload_phase_provider },
-    crate::cli_spec::KvParam { key: "resume=", provider: session_name_provider },
-    crate::cli_spec::KvParam { key: "header=", provider: bool_values },
-    crate::cli_spec::KvParam { key: "color=", provider: bool_values },
-    crate::cli_spec::KvParam { key: "inspector=", provider: bool_values },
-    crate::cli_spec::KvParam { key: "resume_latest=", provider: bool_values },
+    crate::cli_spec::KvParam {
+        key: "impl=",
+        provider: workload_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "scenario=",
+        provider: scenario_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "adapter=",
+        provider: adapter_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "driver=",
+        provider: adapter_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "profiler=",
+        provider: static_profiler,
+    },
+    crate::cli_spec::KvParam {
+        key: "tui=",
+        provider: static_tui,
+    },
+    crate::cli_spec::KvParam {
+        key: "format=",
+        provider: static_stdout_format,
+    },
+    crate::cli_spec::KvParam {
+        key: "dryrun=",
+        provider: static_dryrun,
+    },
+    crate::cli_spec::KvParam {
+        key: "sysmon=",
+        provider: static_sysmon,
+    },
+    crate::cli_spec::KvParam {
+        key: "watch=",
+        provider: static_watch,
+    },
+    crate::cli_spec::KvParam {
+        key: "scope=",
+        provider: static_scope,
+    },
+    crate::cli_spec::KvParam {
+        key: "on_removed=",
+        provider: static_on_removed,
+    },
+    crate::cli_spec::KvParam {
+        key: "seq=",
+        provider: static_seq,
+    },
+    crate::cli_spec::KvParam {
+        key: "kernel_opt=",
+        provider: static_kernel_opt,
+    },
+    crate::cli_spec::KvParam {
+        key: "skipped_phases=",
+        provider: static_skipped_phases,
+    },
+    crate::cli_spec::KvParam {
+        key: "completed_phases=",
+        provider: static_completed_phases,
+    },
+    crate::cli_spec::KvParam {
+        key: "jit=",
+        provider: static_jit,
+    },
+    crate::cli_spec::KvParam {
+        key: "phases=",
+        provider: workload_phase_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "resume=",
+        provider: session_name_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "header=",
+        provider: bool_values,
+    },
+    crate::cli_spec::KvParam {
+        key: "color=",
+        provider: bool_values,
+    },
+    crate::cli_spec::KvParam {
+        key: "inspector=",
+        provider: bool_values,
+    },
+    crate::cli_spec::KvParam {
+        key: "resume_latest=",
+        provider: bool_values,
+    },
     // SRD-106 — override the workload's `stick_session:` declaration
     // from the CLI (`true` forces stick on, `false` disables it).
-    crate::cli_spec::KvParam { key: "stick_session=", provider: bool_values },
-    crate::cli_spec::KvParam { key: "force_retry_failed=", provider: bool_values },
-    crate::cli_spec::KvParam { key: "profiler_callgraph=", provider: bool_values },
-    crate::cli_spec::KvParam { key: "schedule=", provider: static_schedule },
+    crate::cli_spec::KvParam {
+        key: "stick_session=",
+        provider: bool_values,
+    },
+    crate::cli_spec::KvParam {
+        key: "force_retry_failed=",
+        provider: bool_values,
+    },
+    crate::cli_spec::KvParam {
+        key: "profiler_callgraph=",
+        provider: bool_values,
+    },
+    crate::cli_spec::KvParam {
+        key: "schedule=",
+        provider: static_schedule,
+    },
     // Free-form value spaces — listed so the option completes,
     // value typed freely.
-    crate::cli_spec::KvParam { key: "op=", provider: free_form },
-    crate::cli_spec::KvParam { key: "cycles=", provider: free_form },
-    crate::cli_spec::KvParam { key: "concurrency=", provider: free_form },
-    crate::cli_spec::KvParam { key: "rate=", provider: free_form },
-    crate::cli_spec::KvParam { key: "errors=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "op=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "cycles=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "concurrency=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "rate=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "errors=",
+        provider: free_form,
+    },
     // SRD-82 Part 3b — workload-root total-attempts budget (the `tries`
     // sigil for the conditional tries wrapper). Absent → single attempt.
-    crate::cli_spec::KvParam { key: "tries=", provider: free_form },
-    crate::cli_spec::KvParam { key: "error_rate_max=", provider: free_form },
-    crate::cli_spec::KvParam { key: "tags=", provider: free_form },
-    crate::cli_spec::KvParam { key: "filename=", provider: free_form },
-    crate::cli_spec::KvParam { key: "separator=", provider: free_form },
-    crate::cli_spec::KvParam { key: "stanza_concurrency=", provider: free_form },
-    crate::cli_spec::KvParam { key: "sc=", provider: free_form },
-    crate::cli_spec::KvParam { key: "summary=", provider: free_form },
-    crate::cli_spec::KvParam { key: "metrics=", provider: free_form },
-    crate::cli_spec::KvParam { key: "limit=", provider: free_form },
-    crate::cli_spec::KvParam { key: "latency_cadences=", provider: free_form },
-    crate::cli_spec::KvParam { key: "jobname=", provider: free_form },
-    crate::cli_spec::KvParam { key: "instance=", provider: free_form },
-    crate::cli_spec::KvParam { key: "prompush_apikeyfile=", provider: free_form },
-    crate::cli_spec::KvParam { key: "trace=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "tries=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "error_rate_max=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "tags=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "filename=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "separator=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "stanza_concurrency=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "sc=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "summary=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "metrics=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "limit=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "latency_cadences=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "jobname=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "instance=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "prompush_apikeyfile=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "trace=",
+        provider: free_form,
+    },
     // Log-level floors (SRD-41) — accepted in both `-` and `_`
     // spellings; `loglevel`/`loglevel-display` set the display
     // (stderr) floor, `loglevel-retain` the session.log floor.
-    crate::cli_spec::KvParam { key: "loglevel=", provider: free_form },
-    crate::cli_spec::KvParam { key: "loglevel-display=", provider: free_form },
-    crate::cli_spec::KvParam { key: "loglevel_display=", provider: free_form },
-    crate::cli_spec::KvParam { key: "loglevel-retain=", provider: free_form },
-    crate::cli_spec::KvParam { key: "loglevel_retain=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "loglevel=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "loglevel-display=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "loglevel_display=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "loglevel-retain=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "loglevel_retain=",
+        provider: free_form,
+    },
     // `latency-cadences=` dash spelling (the `_` form is above).
-    crate::cli_spec::KvParam { key: "latency-cadences=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "latency-cadences=",
+        provider: free_form,
+    },
     // `scenarios=` — multi-scenario selector.
-    crate::cli_spec::KvParam { key: "scenarios=", provider: scenario_provider },
+    crate::cli_spec::KvParam {
+        key: "scenarios=",
+        provider: scenario_provider,
+    },
     // SRD-86 — finest metrics cadence + scheduler base interval
     // (e.g. `100ms`/`200ms`), so a windowed optimizer objective
     // settles in a fraction of the default 1s-cadence wall-clock.
-    crate::cli_spec::KvParam { key: "metrics_cadence=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "metrics_cadence=",
+        provider: free_form,
+    },
     // SRD-91 — op-outcome instrument detail. `counts` or `timers`
     // (global default), with optional per-family overrides in one value:
     // `metrics_detail=timers,attempt_success:counts,attempt_failure:counts`.
-    crate::cli_spec::KvParam { key: "metrics_detail=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "metrics_detail=",
+        provider: free_form,
+    },
     // Metrics output sinks. Both have a `--flag` spelling too; they are listed
     // here because the runner reads them from params as well
     // (`params.get("metrics-log")` / `params.get("per-instance-metrics")`), and
     // this list IS the known-param allow-list — an unlisted key that the runner
     // nonetheless honours gets reported as unknown, which is the worst of both.
-    crate::cli_spec::KvParam { key: "metrics-log=", provider: free_form },
-    crate::cli_spec::KvParam { key: "per-instance-metrics=", provider: bool_values },
+    crate::cli_spec::KvParam {
+        key: "metrics-log=",
+        provider: free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "per-instance-metrics=",
+        provider: bool_values,
+    },
     // Bare `session=<path|name>`, the sibling of `--session`. Accepted by
     // `resolve_session_dir` for every command, run included, so it must be a
     // known param here or a run that honours it also warns that it is unknown.
-    crate::cli_spec::KvParam { key: "session=", provider: session_name_provider },
+    crate::cli_spec::KvParam {
+        key: "session=",
+        provider: session_name_provider,
+    },
     // The runner reads a bare `report-openmetrics-to=<url>` beside the
     // `--report-openmetrics-to` flag spelling, so it is a known param too.
-    crate::cli_spec::KvParam { key: "report-openmetrics-to=", provider: free_form },
+    crate::cli_spec::KvParam {
+        key: "report-openmetrics-to=",
+        provider: free_form,
+    },
 ];
 
 /// The run-style `key=value` param vocabulary (each key sans its trailing
@@ -236,7 +417,10 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
 /// hand-synced copy. Adding a param to `RUN_KV_PARAMS` makes it complete
 /// AND validate with no second edit.
 pub fn known_param_keys() -> Vec<&'static str> {
-    RUN_KV_PARAMS.iter().map(|kv| kv.key.trim_end_matches('=')).collect()
+    RUN_KV_PARAMS
+        .iter()
+        .map(|kv| kv.key.trim_end_matches('='))
+        .collect()
 }
 
 // ── Closed-set / dynamic value providers (audit 2026-06-11) ──
@@ -291,12 +475,15 @@ pub(crate) fn session_name_provider(partial: &str, _ctx: &[&str]) -> Vec<String>
     roots.push(std::path::PathBuf::from("logs"));
     let mut out: Vec<String> = Vec::new();
     for root in roots {
-        let Ok(rd) = std::fs::read_dir(&root) else { continue };
-        out.extend(rd
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|n| n.starts_with(partial)));
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        out.extend(
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.starts_with(partial)),
+        );
     }
     out.sort();
     out.dedup();
@@ -319,21 +506,27 @@ pub(crate) fn phase_name_db_provider(partial: &str, ctx: &[&str]) -> Vec<String>
     }
     let Ok(conn) = rusqlite::Connection::open_with_flags(
         &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else { return Vec::new() };
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
          WHERE type='table' AND name='phase_outcomes')",
-        [],
-        |r| r.get::<_, i64>(0),
-    ).map(|n| n != 0).unwrap_or(false);
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n != 0)
+        .unwrap_or(false);
     if !exists {
         return Vec::new();
     }
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT DISTINCT phase_name FROM phase_outcomes ORDER BY phase_name",
-    ) else { return Vec::new() };
+    let Ok(mut stmt) =
+        conn.prepare("SELECT DISTINCT phase_name FROM phase_outcomes ORDER BY phase_name")
+    else {
+        return Vec::new();
+    };
     let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
         return Vec::new();
     };
@@ -359,15 +552,15 @@ pub(crate) fn metrics_range_provider(partial: &str, ctx: &[&str]) -> Vec<String>
     if db_path.exists()
         && let Ok(conn) = rusqlite::Connection::open_with_flags(
             &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
     {
         // `prepare` fails cleanly if `sample_value` is absent → just `all`.
         if let Ok(mut stmt) = conn.prepare(
             "SELECT DISTINCT interval_ms FROM sample_value \
              WHERE interval_ms > 0 ORDER BY interval_ms",
-        ) && let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+        ) && let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0))
+        {
             for ms in rows.filter_map(|r| r.ok()) {
                 out.push(format_duration_ms(ms));
             }
@@ -379,11 +572,17 @@ pub(crate) fn metrics_range_provider(partial: &str, ctx: &[&str]) -> Vec<String>
 /// Format a millisecond window as a compact metricsql duration:
 /// `1000 → "1s"`, `60000 → "1m"`, else `"<ms>ms"`.
 fn format_duration_ms(ms: i64) -> String {
-    if ms % 86_400_000 == 0 { format!("{}d", ms / 86_400_000) }
-    else if ms % 3_600_000 == 0 { format!("{}h", ms / 3_600_000) }
-    else if ms % 60_000 == 0 { format!("{}m", ms / 60_000) }
-    else if ms % 1_000 == 0 { format!("{}s", ms / 1_000) }
-    else { format!("{ms}ms") }
+    if ms % 86_400_000 == 0 {
+        format!("{}d", ms / 86_400_000)
+    } else if ms % 3_600_000 == 0 {
+        format!("{}h", ms / 3_600_000)
+    } else if ms % 60_000 == 0 {
+        format!("{}m", ms / 60_000)
+    } else if ms % 1_000 == 0 {
+        format!("{}s", ms / 1_000)
+    } else {
+        format!("{ms}ms")
+    }
 }
 
 /// `phases=` filter completion: phase names declared by the
@@ -394,15 +593,17 @@ fn workload_phase_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
         if let Some(name) = word.strip_prefix("workload=") {
             if let Some(text) = workload_text_for_completion(name)
                 && let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text)
-                    && let Some(phases) = doc.get("phases").and_then(|v| v.as_mapping()) {
-                        let mut out: Vec<String> = phases.keys()
-                            .filter_map(|k| k.as_str())
-                            .filter(|n| n.starts_with(partial))
-                            .map(|n| n.to_string())
-                            .collect();
-                        out.sort();
-                        return out;
-                    }
+                && let Some(phases) = doc.get("phases").and_then(|v| v.as_mapping())
+            {
+                let mut out: Vec<String> = phases
+                    .keys()
+                    .filter_map(|k| k.as_str())
+                    .filter(|n| n.starts_with(partial))
+                    .map(|n| n.to_string())
+                    .collect();
+                out.sort();
+                return out;
+            }
             return Vec::new();
         }
     }
@@ -412,7 +613,8 @@ fn workload_phase_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
 /// Inspector one-shot command names — the same canonical set
 /// the unix-socket server dispatches on.
 pub(crate) fn inspector_command_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    nbrs_tui::inspector_server::COMMAND_NAMES.iter()
+    nbrs_tui::inspector_server::COMMAND_NAMES
+        .iter()
         .filter(|c| c.starts_with(partial))
         .map(|c| c.to_string())
         .collect()
@@ -458,7 +660,11 @@ pub(crate) fn dirs_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| n.starts_with(name_prefix) && !n.starts_with('.'))
         .map(|n| {
-            let base = if dir == "./" && !partial.starts_with("./") { "" } else { dir };
+            let base = if dir == "./" && !partial.starts_with("./") {
+                ""
+            } else {
+                dir
+            };
             format!("{base}{n}/")
         })
         .collect();
@@ -506,8 +712,6 @@ pub(crate) fn spec_file_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     workload_file_candidates(partial)
 }
 
-
-
 /// Handle the `completions` subcommand:
 ///
 /// - `nbrs completions` (no args) — print one `source <(...)`
@@ -525,7 +729,8 @@ pub(crate) fn spec_file_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
 ///   the activation line's `source <(... --shell bash)` pulls
 ///   in.
 pub fn print_completions(args: &[String]) {
-    let shell = args.iter()
+    let shell = args
+        .iter()
         .position(|a| a == "--shell")
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str());
@@ -538,7 +743,9 @@ pub fn print_completions(args: &[String]) {
                 "elvish" => veks_completion::Shell::Elvish,
                 "powershell" => veks_completion::Shell::PowerShell,
                 other => {
-                    eprintln!("nbrs: unknown shell '{other}' (try bash, zsh, fish, elvish, powershell)");
+                    eprintln!(
+                        "nbrs: unknown shell '{other}' (try bash, zsh, fish, elvish, powershell)"
+                    );
                     return;
                 }
             };
@@ -582,11 +789,14 @@ fn print_activation_line() {
 pub fn handle_complete_env(tree: &CommandTree) -> bool {
     let env_set = std::env::var("_NBRS_COMPLETE").ok().as_deref() == Some("bash")
         || std::env::var("COMPLETE").ok().as_deref() == Some("bash");
-    if !env_set { return false; }
+    if !env_set {
+        return false;
+    }
 
     let argv: Vec<String> = std::env::args().collect();
     let line = argv.get(1).cloned().unwrap_or_default();
-    let point: usize = argv.get(2)
+    let point: usize = argv
+        .get(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(line.len());
     let (prior, cur) = split_line_local(&line, point);
@@ -619,7 +829,9 @@ pub fn handle_complete_env(tree: &CommandTree) -> bool {
         let mut p = prior.clone();
         p.push(flag);
         (p, partial)
-    } else { (prior, cur) };
+    } else {
+        (prior, cur)
+    };
 
     let mut words_owned: Vec<String> = vec!["nbrs".to_string()];
     words_owned.extend(eff_prior);
@@ -700,21 +912,31 @@ fn split_line_local(line: &str, point: usize) -> (Vec<String>, String) {
     let mut chars = head.chars().peekable();
     while let Some(ch) = chars.next() {
         match in_quote {
-            Some(q) if ch == q => { in_quote = None; }
+            Some(q) if ch == q => {
+                in_quote = None;
+            }
             Some(_) => cur.push(ch),
             None => match ch {
-                '\'' | '"' => { in_quote = Some(ch); }
-                '\\' => { if let Some(n) = chars.next() { cur.push(n); } }
+                '\'' | '"' => {
+                    in_quote = Some(ch);
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        cur.push(n);
+                    }
+                }
                 ' ' | '\t' => {
                     if !cur.is_empty() {
                         words.push(std::mem::take(&mut cur));
                     }
                 }
                 _ => cur.push(ch),
-            }
+            },
         }
     }
-    if !words.is_empty() { words.remove(0); }
+    if !words.is_empty() {
+        words.remove(0);
+    }
     (words, cur)
 }
 
@@ -751,8 +973,7 @@ fn detect_tap(app: &str, input_key: &str, max_level: u32) -> u32 {
         });
     let prev = prev_owned.as_ref().map(|(st, k)| (*st, k.as_str()));
 
-    let (tap_count, next) =
-        veks_completion::next_tap_state(prev, now_ms, cur_key, max_level);
+    let (tap_count, next) = veks_completion::next_tap_state(prev, now_ms, cur_key, max_level);
     if let Ok(mut f) = std::fs::File::create(&tap_file) {
         let _ = write!(f, "{} {} {}", next.time_ms, next.count, cur_key);
     }
@@ -765,8 +986,16 @@ fn detect_tap(app: &str, input_key: &str, max_level: u32) -> u32 {
 /// [`value_taking_flags`] (which treats them as value-taking), so the two cannot
 /// disagree about what the surface is.
 pub(crate) const REPORT_DISPATCH_VALUE_FLAGS: &[&str] = &[
-    "--name", "--at", "--contextual", "--rename", "--group",
-    "--workload", "--session", "--db", "--body", "--body-file",
+    "--name",
+    "--at",
+    "--contextual",
+    "--rename",
+    "--group",
+    "--workload",
+    "--session",
+    "--db",
+    "--body",
+    "--body-file",
 ];
 
 /// Every flag spelling declared as taking a value, DERIVED from the command spec
@@ -779,8 +1008,7 @@ pub(crate) const REPORT_DISPATCH_VALUE_FLAGS: &[&str] = &[
 /// its `--flag=<partial>` form completes nothing, so a correctly declared flag
 /// still behaves as though it takes no value.
 fn value_taking_flags() -> &'static std::collections::HashSet<String> {
-    static SET: std::sync::OnceLock<std::collections::HashSet<String>> =
-        std::sync::OnceLock::new();
+    static SET: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
     SET.get_or_init(|| {
         let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -788,11 +1016,17 @@ fn value_taking_flags() -> &'static std::collections::HashSet<String> {
             for f in &cmd.flags {
                 if matches!(f.arity, crate::cli_spec::Arity::Value) {
                     out.insert(f.long.to_string());
-                    if let Some(short) = f.short { out.insert(short.to_string()); }
-                    for a in f.aliases { out.insert(a.to_string()); }
+                    if let Some(short) = f.short {
+                        out.insert(short.to_string());
+                    }
+                    for a in f.aliases {
+                        out.insert(a.to_string());
+                    }
                 }
             }
-            for sub in &cmd.subcommands { walk(sub, out); }
+            for sub in &cmd.subcommands {
+                walk(sub, out);
+            }
         }
         walk(&crate::cli_spec::root::root(), &mut out);
 
@@ -810,12 +1044,16 @@ fn value_taking_flags() -> &'static std::collections::HashSet<String> {
                 out.insert(f.to_string());
             }
         }
-        for f in REPORT_DISPATCH_VALUE_FLAGS { out.insert((*f).to_string()); }
+        for f in REPORT_DISPATCH_VALUE_FLAGS {
+            out.insert((*f).to_string());
+        }
         // The plot/report parser keeps its OWN list of value-taking flags, which it
         // reads to tell a flag's value from a positional spec. That list is
         // authoritative for those commands (`--filter`, the `--y*` axis family,
         // …), so union it rather than restate it here.
-        for f in crate::plot_metrics::FLAGS_TAKING_VALUE { out.insert((*f).to_string()); }
+        for f in crate::plot_metrics::FLAGS_TAKING_VALUE {
+            out.insert((*f).to_string());
+        }
         out
     })
 }
@@ -836,9 +1074,13 @@ fn flag_takes_value(cur: &str) -> bool {
 /// flag, so the attached spelling never reached the value provider. Both spellings
 /// are accepted by the parsers, so both must complete.
 fn split_attached_value(cur: &str) -> Option<(String, String)> {
-    if !cur.starts_with('-') { return None; }
+    if !cur.starts_with('-') {
+        return None;
+    }
     let (flag, partial) = cur.split_once('=')?;
-    if !flag_takes_value(flag) { return None; }
+    if !flag_takes_value(flag) {
+        return None;
+    }
     Some((flag.to_string(), partial.to_string()))
 }
 
@@ -858,9 +1100,12 @@ fn split_attached_value(cur: &str) -> Option<(String, String)> {
 const REPORT_POSITIONAL_WORDS: &[&str] = &["all", "list", "figure", "rename", "scratch"];
 
 fn with_report_words(mut names: Vec<String>, partial: &str) -> Vec<String> {
-    names.extend(REPORT_POSITIONAL_WORDS.iter()
-        .filter(|w| w.starts_with(partial))
-        .map(|w| (*w).to_string()));
+    names.extend(
+        REPORT_POSITIONAL_WORDS
+            .iter()
+            .filter(|w| w.starts_with(partial))
+            .map(|w| (*w).to_string()),
+    );
     names.sort();
     names.dedup();
     names
@@ -892,7 +1137,7 @@ fn report_name_slot_open(ctx: &[&str]) -> bool {
                 i += 1;
             }
         } else if !w.contains('=') && !REPORT_POSITIONAL_WORDS.contains(&w) {
-            return false;   // a bare, non-keyword word — that's the name
+            return false; // a bare, non-keyword word — that's the name
         }
         i += 1;
     }
@@ -936,7 +1181,12 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
         // (`opts.create = true` in summary's parser). The retired
         // `flag_takes_value` list wrongly counted it as value-taking, so
         // completion advanced past it and treated the NEXT token as its value.
-        "--add", "--replace", "--stdout", "--ascii", "--dry-run", "--create",
+        "--add",
+        "--replace",
+        "--stdout",
+        "--ascii",
+        "--dry-run",
+        "--create",
     ];
 
     let mut node = Node::leaf_with_flags(&all_value_flags, bool_flags);
@@ -946,7 +1196,9 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
     // closed set through a dedicated tiny `fn` rather than a
     // factory closure.
     for d in vocab::ALL_DIRECTIVES {
-        if !d.applies_to.contains(kind) { continue; }
+        if !d.applies_to.contains(kind) {
+            continue;
+        }
         match d.value {
             ValueProvider::Closed(_) => {
                 if let Some(provider) = closed_set_provider_for(d.yaml_directive) {
@@ -954,16 +1206,13 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
                 }
             }
             ValueProvider::DbMetricNames => {
-                node = node.with_value_provider(
-                    d.cli_flag, fn_provider(metric_provider));
+                node = node.with_value_provider(d.cli_flag, fn_provider(metric_provider));
             }
             ValueProvider::DbLabelKeys => {
-                node = node.with_value_provider(
-                    d.cli_flag, fn_provider(series_provider));
+                node = node.with_value_provider(d.cli_flag, fn_provider(series_provider));
             }
             ValueProvider::DbLabelKeyValuePairs => {
-                node = node.with_value_provider(
-                    d.cli_flag, fn_provider(filter_provider));
+                node = node.with_value_provider(d.cli_flag, fn_provider(filter_provider));
             }
             // Number / HexColor / Json / Text / Path:
             // suggestions don't help (free-form). Leave the
@@ -991,12 +1240,12 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
     // everyday use favour (`nbrs table compaction_shape`). Kind-specific, so
     // `table` offers table items and `plot` offers plots rather than both.
     node = match kind {
-        nbrs_workload::report::Kind::Plot =>
-            node.with_positional_provider(fn_provider(plot_positional_provider))
-                .with_positional_slots(REPORT_POSITIONAL_SLOTS),
-        nbrs_workload::report::Kind::Table =>
-            node.with_positional_provider(fn_provider(table_positional_provider))
-                .with_positional_slots(REPORT_POSITIONAL_SLOTS),
+        nbrs_workload::report::Kind::Plot => node
+            .with_positional_provider(fn_provider(plot_positional_provider))
+            .with_positional_slots(REPORT_POSITIONAL_SLOTS),
+        nbrs_workload::report::Kind::Table => node
+            .with_positional_provider(fn_provider(table_positional_provider))
+            .with_positional_slots(REPORT_POSITIONAL_SLOTS),
         // text/file/details aren't accepted at this position by the parser yet
         // (see the ignored `report_text_excludes_figure_directives` test), so
         // advertising names for them would promise a path that errors.
@@ -1010,47 +1259,55 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
 /// matching closed-set provider fn-pointer. `None` means the
 /// directive's value space isn't a closed set (handled by
 /// the calling match arm).
-fn closed_set_provider_for(yaml_directive: &str)
-    -> Option<crate::cli_spec::DynamicOptions>
-{
+fn closed_set_provider_for(yaml_directive: &str) -> Option<crate::cli_spec::DynamicOptions> {
     match yaml_directive {
         "palette" => Some(palette_provider),
-        "line"    => Some(line_styles_provider),
-        "marker"  => Some(marker_shapes_provider),
-        "agg"     => Some(agg_fns_provider),
+        "line" => Some(line_styles_provider),
+        "marker" => Some(marker_shapes_provider),
+        "agg" => Some(agg_fns_provider),
         "x-scale" | "y-scale" => Some(axis_scales_provider),
         _ => None,
     }
 }
 
 fn palette_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    nbrs_workload::report::vocab::PALETTE_NAMES.iter()
+    nbrs_workload::report::vocab::PALETTE_NAMES
+        .iter()
         .filter(|s| s.starts_with(partial))
-        .map(|s| s.to_string()).collect()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn line_styles_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    nbrs_workload::report::vocab::LINE_STYLES.iter()
+    nbrs_workload::report::vocab::LINE_STYLES
+        .iter()
         .filter(|s| s.starts_with(partial))
-        .map(|s| s.to_string()).collect()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn marker_shapes_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    nbrs_workload::report::vocab::MARKER_SHAPES.iter()
+    nbrs_workload::report::vocab::MARKER_SHAPES
+        .iter()
         .filter(|s| s.starts_with(partial))
-        .map(|s| s.to_string()).collect()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn agg_fns_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    nbrs_workload::report::vocab::AGG_FNS.iter()
+    nbrs_workload::report::vocab::AGG_FNS
+        .iter()
         .filter(|s| s.starts_with(partial))
-        .map(|s| s.to_string()).collect()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn axis_scales_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    nbrs_workload::report::vocab::AXIS_SCALES.iter()
+    nbrs_workload::report::vocab::AXIS_SCALES
+        .iter()
         .filter(|s| s.starts_with(partial))
-        .map(|s| s.to_string()).collect()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Closed set for `--at <scope>`: `root` plus the prefix forms
@@ -1059,7 +1316,8 @@ fn axis_scales_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
 /// out of scope for this surface — completion stops at the
 /// prefix and the user types the name.
 fn at_anchor_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    ["root", "scenario:", "phase:", "op:"].iter()
+    ["root", "scenario:", "phase:", "op:"]
+        .iter()
         .filter(|s| s.starts_with(partial))
         .map(|s| s.to_string())
         .collect()
@@ -1067,7 +1325,8 @@ fn at_anchor_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
 
 /// Closed set for `--contextual <mode>`.
 fn contextual_mode_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    ["auto", "root", "scenario", "phase", "op"].iter()
+    ["auto", "root", "scenario", "phase", "op"]
+        .iter()
         .filter(|s| s.starts_with(partial))
         .map(|s| s.to_string())
         .collect()
@@ -1075,10 +1334,7 @@ fn contextual_mode_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
 
 fn table_node() -> StrictNode<true, true> {
     // Unadvertised alias for `nbrs report table ...` (SRD-46).
-    StrictNode::leaf_with_flags(
-        &["--db", "--format", "--output", "--name"],
-        &["--create"],
-    )
+    StrictNode::leaf_with_flags(&["--db", "--format", "--output", "--name"], &["--create"])
         .with_value_provider("--name", fn_provider(summary_name_provider))
         .with_value_provider("workload=", fn_provider(workload_provider))
         .with_category(Category::Tools.tag())
@@ -1100,22 +1356,31 @@ fn metrics_node() -> StrictNode<true, true> {
     // sourced from `metrics_cmd` (LIST_FLAGS / MATCH_FLAGS) so
     // the parser and completion stay in lockstep — adding a
     // flag in one place is enough to surface it in tab.
-    let list_flags  = crate::metrics_cmd::list_all_flags();
-    let list_bools  = crate::metrics_cmd::LIST_BOOL_FLAGS;
+    let list_flags = crate::metrics_cmd::list_all_flags();
+    let list_bools = crate::metrics_cmd::LIST_BOOL_FLAGS;
     let match_flags = crate::metrics_cmd::match_all_flags();
     StrictNode::group(vec![
         // SRD-93: `list` is the structure view (`show` its deprecated
         // alias); `summarize` carries the per-leaf value summaries.
-        ("list",  Node::leaf_with_flags(&list_flags,  list_bools)
-            .with_value_provider("--format", fn_provider(static_metrics_format))),
-        ("summarize", Node::leaf_with_flags(&list_flags, list_bools)
-            .with_value_provider("--format", fn_provider(static_metrics_format))),
-        ("show",  Node::leaf_with_flags(&list_flags,  list_bools)
-            .with_value_provider("--format", fn_provider(static_metrics_format))),
+        (
+            "list",
+            Node::leaf_with_flags(&list_flags, list_bools)
+                .with_value_provider("--format", fn_provider(static_metrics_format)),
+        ),
+        (
+            "summarize",
+            Node::leaf_with_flags(&list_flags, list_bools)
+                .with_value_provider("--format", fn_provider(static_metrics_format)),
+        ),
+        (
+            "show",
+            Node::leaf_with_flags(&list_flags, list_bools)
+                .with_value_provider("--format", fn_provider(static_metrics_format)),
+        ),
         ("match", Node::leaf_with_flags(&match_flags, &[])),
     ])
-        .with_category(Category::Tools.tag())
-        .with_level(Level::Secondary.rank())
+    .with_category(Category::Tools.tag())
+    .with_level(Level::Secondary.rank())
 }
 
 /// Closed-set value provider for `nbrs metrics list/show
@@ -1133,21 +1398,29 @@ fn describe_node() -> StrictNode<true, true> {
     // `wiring functions`).
     StrictNode::group(vec![
         ("adapter", Node::leaf(&[])),
-        ("wiring", Node::group(vec![
-            ("functions",    Node::leaf_with_flags(&[], &["--verbose", "-v"])),
-            ("functions-md", Node::leaf(&[])),
-            ("types",        Node::leaf(&[])),
-            ("types-md",     Node::leaf(&[])),
-            ("stdlib",       Node::leaf(&[])),
-            ("dag",          Node::leaf(&[])),
-            ("modules",      Node::leaf(&[])),
-        ])),
+        (
+            "wiring",
+            Node::group(vec![
+                (
+                    "functions",
+                    Node::leaf_with_flags(&[], &["--verbose", "-v"]),
+                ),
+                ("functions-md", Node::leaf(&[])),
+                ("types", Node::leaf(&[])),
+                ("types-md", Node::leaf(&[])),
+                ("stdlib", Node::leaf(&[])),
+                ("dag", Node::leaf(&[])),
+                ("modules", Node::leaf(&[])),
+            ]),
+        ),
         ("wrappers", Node::leaf(&[])),
-        ("op", Node::leaf(&[])
-            .with_value_provider("workload=", fn_provider(workload_provider))),
+        (
+            "op",
+            Node::leaf(&[]).with_value_provider("workload=", fn_provider(workload_provider)),
+        ),
     ])
-        .with_category(Category::Documentation.tag())
-        .with_level(Level::FullSurface.rank())
+    .with_category(Category::Documentation.tag())
+    .with_level(Level::FullSurface.rank())
 }
 
 fn bench_node() -> StrictNode<true, true> {
@@ -1159,27 +1432,40 @@ fn bench_node() -> StrictNode<true, true> {
 fn plot_node() -> StrictNode<true, true> {
     StrictNode::leaf_with_flags(
         &[
-            "--db", "--output", "--metric", "--x", "--series",
-            "--filter", "--agg", "--name", "--title", "--xlabel",
-            "--ylabel", "--x-scale", "--y-scale", "--width", "--height", "--scale",
+            "--db",
+            "--output",
+            "--metric",
+            "--x",
+            "--series",
+            "--filter",
+            "--agg",
+            "--name",
+            "--title",
+            "--xlabel",
+            "--ylabel",
+            "--x-scale",
+            "--y-scale",
+            "--width",
+            "--height",
+            "--scale",
             "--csv-also",
         ],
         &["--verbose"],
     )
-        .with_value_provider("--name", fn_provider(plot_name_provider))
-        .with_value_provider("--metric", fn_provider(metric_provider))
-        .with_value_provider("--series", fn_provider(series_provider))
-        .with_value_provider("--x", fn_provider(series_provider))
-        .with_value_provider("--filter", fn_provider(filter_provider))
-        // `workload=<file.yaml>` sources named plots from the
-        // YAML's `plot:` block instead of the metrics db.
-        .with_value_provider("workload=", fn_provider(workload_provider))
-        .with_category(Category::Tools.tag())
-        // Same tier as `summary` — both are post-hoc analysis
-        // tools over the metrics db, both replay stored named
-        // specs by `--name`. Surfacing them at the same TAB
-        // level keeps the UX symmetrical.
-        .with_level(Level::Secondary.rank())
+    .with_value_provider("--name", fn_provider(plot_name_provider))
+    .with_value_provider("--metric", fn_provider(metric_provider))
+    .with_value_provider("--series", fn_provider(series_provider))
+    .with_value_provider("--x", fn_provider(series_provider))
+    .with_value_provider("--filter", fn_provider(filter_provider))
+    // `workload=<file.yaml>` sources named plots from the
+    // YAML's `plot:` block instead of the metrics db.
+    .with_value_provider("workload=", fn_provider(workload_provider))
+    .with_category(Category::Tools.tag())
+    // Same tier as `summary` — both are post-hoc analysis
+    // tools over the metrics db, both replay stored named
+    // specs by `--name`. Surfacing them at the same TAB
+    // level keeps the UX symmetrical.
+    .with_level(Level::Secondary.rank())
 }
 
 fn web_node() -> StrictNode<true, true> {
@@ -1248,26 +1534,26 @@ pub fn execution_id_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     }
     let conn = match rusqlite::Connection::open_with_flags(
         &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
     // Verify table exists before querying — sessions from
     // before SRD-77 won't have it.
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
          WHERE type='table' AND name='executions')",
-        [],
-        |r| r.get::<_, i64>(0),
-    ).map(|n| n != 0).unwrap_or(false);
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n != 0)
+        .unwrap_or(false);
     if !exists {
         return Vec::new();
     }
-    let mut stmt = match conn.prepare(
-        "SELECT exec_id FROM executions ORDER BY exec_id"
-    ) {
+    let mut stmt = match conn.prepare("SELECT exec_id FROM executions ORDER BY exec_id") {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -1312,17 +1598,30 @@ fn static_sysmon(partial: &str, _ctx: &[&str]) -> Vec<String> {
         Some(i) => (&partial[..=i], &partial[i + 1..]),
         None => ("", partial),
     };
-    filter_prefix(&["all", "any", "cpu", "io", "ram", "rambw", "storage"], part)
-        .into_iter()
-        .map(|c| format!("{done}{c}"))
-        .collect()
+    filter_prefix(
+        &["all", "any", "cpu", "io", "ram", "rambw", "storage"],
+        part,
+    )
+    .into_iter()
+    .map(|c| format!("{done}{c}"))
+    .collect()
 }
 
 fn static_dryrun(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(
-        &["phase", "dispenser", "op", "cycle", "full",
-          "controls", "wiring", "labels",
-          "silent", "fields", "json"],
+        &[
+            "phase",
+            "dispenser",
+            "op",
+            "cycle",
+            "full",
+            "controls",
+            "wiring",
+            "labels",
+            "silent",
+            "fields",
+            "json",
+        ],
         partial,
     )
 }
@@ -1363,10 +1662,16 @@ pub(crate) fn socket_path_provider(partial: &str, _ctx: &[&str]) -> Vec<String> 
     let mut out: Vec<String> = Vec::new();
     for entry in read.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
-        if !(name.starts_with("nbrs-") && name.ends_with(".sock")) { continue; }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !(name.starts_with("nbrs-") && name.ends_with(".sock")) {
+            continue;
+        }
         let full = path.to_string_lossy().into_owned();
-        if full.starts_with(partial) { out.push(full); }
+        if full.starts_with(partial) {
+            out.push(full);
+        }
     }
     out.sort();
     out
@@ -1382,10 +1687,19 @@ pub(crate) fn pid_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     };
     let mut out: Vec<String> = Vec::new();
     for entry in read.flatten() {
-        let Some(name) = entry.path().file_name().and_then(|s| s.to_str().map(str::to_string))
-            else { continue };
-        let Some(rest) = name.strip_prefix("nbrs-") else { continue };
-        let Some(pid_str) = rest.strip_suffix(".sock") else { continue };
+        let Some(name) = entry
+            .path()
+            .file_name()
+            .and_then(|s| s.to_str().map(str::to_string))
+        else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix("nbrs-") else {
+            continue;
+        };
+        let Some(pid_str) = rest.strip_suffix(".sock") else {
+            continue;
+        };
         if pid_str.parse::<u32>().is_ok() && pid_str.starts_with(partial) {
             out.push(pid_str.to_string());
         }
@@ -1441,7 +1755,8 @@ fn summary_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     let db_path = db_path_from_context(ctx);
     let stored: Vec<String> = crate::summary::list_stored_summary_names(&db_path);
     if !stored.is_empty() {
-        return stored.into_iter()
+        return stored
+            .into_iter()
             .filter(|n| n.starts_with(partial))
             .collect();
     }
@@ -1486,7 +1801,8 @@ fn plot_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     let db_path = db_path_from_context(ctx);
     let stored: Vec<String> = crate::plot_metrics::list_stored_plot_names(&db_path);
     if !stored.is_empty() {
-        return stored.into_iter()
+        return stored
+            .into_iter()
             .filter(|n| n.starts_with(partial))
             .collect();
     }
@@ -1524,14 +1840,18 @@ fn series_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     let mut keys = crate::plot_metrics::list_label_keys(&db_path, metric_pattern.as_deref());
 
     let mut used: std::collections::HashSet<String> = used_label_keys(ctx)
-        .into_iter().map(|s| s.to_string()).collect();
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
     let (head, tail) = match partial.rfind(',') {
         Some(i) => (&partial[..=i], &partial[i + 1..]),
         None => ("", partial),
     };
     for k in head.split(',') {
         let k = k.trim();
-        if !k.is_empty() { used.insert(k.to_string()); }
+        if !k.is_empty() {
+            used.insert(k.to_string());
+        }
     }
     keys.retain(|k| !used.contains(k));
     keys.into_iter()
@@ -1545,7 +1865,9 @@ fn series_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
 /// supply the value freely (no enumeration — the value space is
 /// arbitrary strings).
 fn filter_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
-    if partial.contains('=') { return Vec::new(); }
+    if partial.contains('=') {
+        return Vec::new();
+    }
     let db_path = db_path_from_context(ctx);
     let workload_path = workload_from_context(ctx);
     let metric_pattern = metric_from_context(ctx, &db_path, workload_path.as_deref());
@@ -1566,7 +1888,9 @@ fn metric_from_context(
 ) -> Option<String> {
     let mut iter = ctx.iter();
     while let Some(&w) = iter.next() {
-        if w == "--metric" && let Some(&v) = iter.next() {
+        if w == "--metric"
+            && let Some(&v) = iter.next()
+        {
             return Some(v.to_string());
         }
         if let Some(v) = w.strip_prefix("--metric=") {
@@ -1575,7 +1899,9 @@ fn metric_from_context(
     }
     let mut iter = ctx.iter();
     while let Some(&w) = iter.next() {
-        if w == "--name" && let Some(&v) = iter.next() {
+        if w == "--name"
+            && let Some(&v) = iter.next()
+        {
             return crate::plot_metrics::metric_for_plot_name(db_path, workload_path, v);
         }
         if let Some(v) = w.strip_prefix("--name=") {
@@ -1596,11 +1922,15 @@ fn used_label_keys<'a>(ctx: &'a [&'a str]) -> std::collections::HashSet<&'a str>
             iter.next().copied()
         } else if let Some(v) = w.strip_prefix("--x=") {
             Some(v)
-        } else { w.strip_prefix("--series=") };
+        } else {
+            w.strip_prefix("--series=")
+        };
         if let Some(v) = val {
             for k in v.split(',') {
                 let k = k.trim();
-                if !k.is_empty() { out.insert(k); }
+                if !k.is_empty() {
+                    out.insert(k);
+                }
             }
         }
     }
@@ -1629,7 +1959,9 @@ fn workload_from_context(ctx: &[&str]) -> Option<std::path::PathBuf> {
             // requiring the user to know where the yaml lives.
             if let Some(p) = crate::cli::resolve_workload_path(v) {
                 let pb = std::path::PathBuf::from(p);
-                if pb.exists() { return Some(pb); }
+                if pb.exists() {
+                    return Some(pb);
+                }
             }
             let candidate = std::path::PathBuf::from(v);
             if candidate.exists() {
@@ -1643,7 +1975,9 @@ fn workload_from_context(ctx: &[&str]) -> Option<std::path::PathBuf> {
                     && let Some(yaml) = crate::cli::resolve_workload_path(&name)
                 {
                     let p = std::path::PathBuf::from(yaml);
-                    if p.exists() { return Some(p); }
+                    if p.exists() {
+                        return Some(p);
+                    }
                 }
             } else if candidate.extension().is_none()
                 && let Some(name) = workload_name_from_db(&candidate)
@@ -1651,7 +1985,9 @@ fn workload_from_context(ctx: &[&str]) -> Option<std::path::PathBuf> {
             {
                 // Bare `workload=metrics.db`-style — try as-is.
                 let p = std::path::PathBuf::from(yaml);
-                if p.exists() { return Some(p); }
+                if p.exists() {
+                    return Some(p);
+                }
             }
         }
     }
@@ -1663,7 +1999,9 @@ fn workload_from_context(ctx: &[&str]) -> Option<std::path::PathBuf> {
 /// path) so completion can map back to the declared yaml via
 /// `resolve_workload_path`.
 fn workload_name_from_db(db_path: &std::path::Path) -> Option<String> {
-    if !db_path.exists() { return None; }
+    if !db_path.exists() {
+        return None;
+    }
     let conn = rusqlite::Connection::open(db_path).ok()?;
     // `workload` is per-execution metadata; latest execution wins
     // (falls back to legacy session_metadata).
@@ -1688,7 +2026,8 @@ fn db_path_from_context(ctx: &[&str]) -> std::path::PathBuf {
     let mut iter = ctx.iter();
     while let Some(&w) = iter.next() {
         if w == "--db"
-            && let Some(&v) = iter.next() {
+            && let Some(&v) = iter.next()
+        {
             return std::path::PathBuf::from(v);
         }
         if let Some(v) = w.strip_prefix("--db=") {
@@ -1721,15 +2060,20 @@ pub(crate) fn workload_dynamic_params(_partial: &str, ctx: &[&str]) -> Vec<Strin
             break;
         }
     }
-    let Some(name) = workload_path else { return Vec::new(); };
-    let Some(yaml) = workload_text_for_completion(&name) else { return Vec::new(); };
+    let Some(name) = workload_path else {
+        return Vec::new();
+    };
+    let Some(yaml) = workload_text_for_completion(&name) else {
+        return Vec::new();
+    };
     let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&yaml) else {
         return Vec::new();
     };
     let Some(params) = doc.get("params").and_then(|v| v.as_mapping()) else {
         return Vec::new();
     };
-    params.keys()
+    params
+        .keys()
         .filter_map(|k| k.as_str().map(|s| format!("{s}=")))
         .collect()
 }
@@ -1764,9 +2108,7 @@ fn workload_file_candidates(cur: &str) -> Vec<String> {
         let dir_prefix = &cur[..=split];
         let name_prefix = &cur[split + 1..];
         let seed = Path::new(dir_prefix.trim_end_matches('/'));
-        collect_yaml_recursive(
-            seed, dir_prefix, name_prefix, &mut out, &mut budget, 0,
-        );
+        collect_yaml_recursive(seed, dir_prefix, name_prefix, &mut out, &mut budget, 0);
     } else {
         let roots: &[(&str, &str)] = &[
             (".", ""),
@@ -1774,10 +2116,10 @@ fn workload_file_candidates(cur: &str) -> Vec<String> {
             ("examples", "examples/"),
         ];
         for (dir, prefix) in roots {
-            collect_yaml_recursive(
-                Path::new(dir), prefix, cur, &mut out, &mut budget, 0,
-            );
-            if budget == 0 { break; }
+            collect_yaml_recursive(Path::new(dir), prefix, cur, &mut out, &mut budget, 0);
+            if budget == 0 {
+                break;
+            }
         }
     }
     out.sort();
@@ -1798,31 +2140,44 @@ fn collect_yaml_recursive(
     budget: &mut usize,
     current_depth: usize,
 ) {
-    if *budget == 0 { return; }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    if *budget == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
-        if *budget == 0 { return; }
+        if *budget == 0 {
+            return;
+        }
         *budget -= 1;
-        let Some(name_os) = entry.path().file_name().map(|n| n.to_owned()) else { continue };
+        let Some(name_os) = entry.path().file_name().map(|n| n.to_owned()) else {
+            continue;
+        };
         let name = name_os.to_string_lossy().to_string();
-        if name.starts_with('.') { continue; }
-        if current_depth == 0 && !name.starts_with(name_prefix) { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
+        if current_depth == 0 && !name.starts_with(name_prefix) {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
-            if matches!(name.as_str(), "target" | "node_modules" | "logs") { continue; }
+            if matches!(name.as_str(), "target" | "node_modules" | "logs") {
+                continue;
+            }
             // Descend so files at depth N (N = WORKLOAD_MAX_DEPTH)
             // remain visible. The cap counts the deepest dir
             // entries we read, not the dir we recurse into.
             if current_depth < WORKLOAD_MAX_DEPTH {
                 let child_prefix = format!("{emit_prefix}{name}/");
-                collect_yaml_recursive(
-                    &path, &child_prefix, "", out, budget, current_depth + 1,
-                );
+                collect_yaml_recursive(&path, &child_prefix, "", out, budget, current_depth + 1);
             }
             continue;
         }
         if let Some(ext) = path.extension()
-            && (ext == "yaml" || ext == "yml") {
+            && (ext == "yaml" || ext == "yml")
+        {
             out.push(format!("{emit_prefix}{name}"));
         }
     }
@@ -1848,7 +2203,9 @@ fn scenario_candidates(cur: &str, prior: &[String]) -> Vec<String> {
             None
         }
     });
-    let Some(name) = workload else { return Vec::new(); };
+    let Some(name) = workload else {
+        return Vec::new();
+    };
     let mut scenarios = if let Some(path) = resolve_workload_file_public(&name) {
         scenarios_in_workload_file(&path)
     } else if let Some(text) = workload_text_for_completion(&name) {
@@ -1889,18 +2246,24 @@ trait CommandTreeExt {
 impl CommandTreeExt for CommandTree {
     #[cfg(feature = "openapi")]
     fn with_openapi_commands(self) -> Self {
-        self.strict_command("describe-openapi",
+        self.strict_command(
+            "describe-openapi",
             StrictNode::leaf(&[])
                 .with_category(Category::Documentation.tag())
-                .with_level(Level::FullSurface.rank()))
-            .strict_command("run-openapi",
-                StrictNode::leaf(&[])
-                    .with_category(Category::Workloads.tag())
-                    .with_level(Level::FullSurface.rank()))
+                .with_level(Level::FullSurface.rank()),
+        )
+        .strict_command(
+            "run-openapi",
+            StrictNode::leaf(&[])
+                .with_category(Category::Workloads.tag())
+                .with_level(Level::FullSurface.rank()),
+        )
     }
 
     #[cfg(not(feature = "openapi"))]
-    fn with_openapi_commands(self) -> Self { self }
+    fn with_openapi_commands(self) -> Self {
+        self
+    }
 }
 
 // ── cli_spec entry for `nbrs completions` ─────────────────
@@ -1908,12 +2271,15 @@ impl CommandTreeExt for CommandTree {
 /// `nbrs completions [--shell <name>]` — emit the bash/zsh
 /// completion shim or the activation eval line. Walker-parsed.
 pub fn spec() -> crate::cli_spec::Command {
-    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
-        Level, ParsedCommand, ValueProvider};
+    use crate::cli_spec::{
+        Arity, Category, Command, Flag, Handler, Level, ParsedCommand, ValueProvider,
+    };
     fn shells(p: &str, _: &[&str]) -> Vec<String> {
-        ["bash","zsh","fish","elvish","powershell"].iter()
+        ["bash", "zsh", "fish", "elvish", "powershell"]
+            .iter()
             .filter(|s| s.starts_with(p))
-            .map(|s| s.to_string()).collect()
+            .map(|s| s.to_string())
+            .collect()
     }
     fn handle(p: ParsedCommand) -> Result<(), String> {
         let mut argv: Vec<String> = Vec::new();
@@ -1930,8 +2296,11 @@ pub fn spec() -> crate::cli_spec::Command {
         category: Category::Shell,
         level: Level::FullSurface,
         flags: vec![Flag {
-            long: "--shell", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::Custom(shells),
+            long: "--shell",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(shells),
             help: "bash | zsh | fish | elvish | powershell. Omit for activation line.",
             repeatable: false,
         }],
@@ -1959,8 +2328,10 @@ mod walker_tests {
     fn value_taking_flags_are_derived_from_the_spec() {
         // Previously missing, and the reason this was found.
         for flag in ["--execution", "--range", "--family", "--by", "--tofile"] {
-            assert!(flag_takes_value(flag),
-                "{flag} is declared Arity::Value in the spec and must be known");
+            assert!(
+                flag_takes_value(flag),
+                "{flag} is declared Arity::Value in the spec and must be known"
+            );
         }
         // Still covers what the hand-written list covered.
         for flag in ["--db", "--session", "--name", "--metric", "--format"] {
@@ -1968,10 +2339,18 @@ mod walker_tests {
         }
         // Bool flags must stay OUT: treating one as value-taking would swallow
         // the following token as its value.
-        for flag in ["--strict", "--all-executions", "--no-prompt", "--ascii",
-                     "--per-instance-metrics", "--metrics-log"] {
-            assert!(!flag_takes_value(flag),
-                "{flag} takes no value; advertising one would eat the next token");
+        for flag in [
+            "--strict",
+            "--all-executions",
+            "--no-prompt",
+            "--ascii",
+            "--per-instance-metrics",
+            "--metrics-log",
+        ] {
+            assert!(
+                !flag_takes_value(flag),
+                "{flag} takes no value; advertising one would eat the next token"
+            );
         }
     }
 
@@ -1984,18 +2363,48 @@ mod walker_tests {
     #[test]
     fn derived_set_covers_the_retired_hand_written_list() {
         const RETIRED: &[&str] = &[
-            "--name", "--metric", "--x", "--series", "--filter",
-            "--db", "--output", "--label", "--palette",
-            "--line", "--line-width", "--marker", "--marker-size",
-            "--figure-num", "--title", "--xlabel", "--ylabel",
-            "--x-scale", "--y-scale", "--width", "--height", "--scale",
-            "--csv-also", "--report", "--update-markdown",
-            "--add-to-markdown", "--format", "--create",
-            "--session", "--session-name", "--session-path",
-            "--session-reuse", "--session-keep", "--session-shelflife",
-            "--resume", "--polydat-lib", "--pid", "--socket",
+            "--name",
+            "--metric",
+            "--x",
+            "--series",
+            "--filter",
+            "--db",
+            "--output",
+            "--label",
+            "--palette",
+            "--line",
+            "--line-width",
+            "--marker",
+            "--marker-size",
+            "--figure-num",
+            "--title",
+            "--xlabel",
+            "--ylabel",
+            "--x-scale",
+            "--y-scale",
+            "--width",
+            "--height",
+            "--scale",
+            "--csv-also",
+            "--report",
+            "--update-markdown",
+            "--add-to-markdown",
+            "--format",
+            "--create",
+            "--session",
+            "--session-name",
+            "--session-path",
+            "--session-reuse",
+            "--session-keep",
+            "--session-shelflife",
+            "--resume",
+            "--polydat-lib",
+            "--pid",
+            "--socket",
         ];
-        let missing: Vec<&str> = RETIRED.iter().copied()
+        let missing: Vec<&str> = RETIRED
+            .iter()
+            .copied()
             .filter(|f| !flag_takes_value(f))
             // `--create` is the one deliberate omission: the retired list had it
             // WRONG. Summary's parser sets `opts.create = true` and reads no
@@ -2004,24 +2413,34 @@ mod walker_tests {
             // value. Deriving from the spec corrects that.
             .filter(|f| *f != "--create")
             .collect();
-        assert!(missing.is_empty(),
+        assert!(
+            missing.is_empty(),
             "the derived set must not lose flags the hand-written list had: \
-             {missing:?}");
-        assert!(!flag_takes_value("--create"),
-            "--create is a boolean; the retired list misclassified it");
+             {missing:?}"
+        );
+        assert!(
+            !flag_takes_value("--create"),
+            "--create is a boolean; the retired list misclassified it"
+        );
     }
 
     /// `--flag=<partial>` must complete its value, like `--flag <partial>` does.
     #[test]
     fn attached_flag_values_are_split_for_completion() {
-        assert_eq!(split_attached_value("--execution=7"),
-            Some(("--execution".to_string(), "7".to_string())));
+        assert_eq!(
+            split_attached_value("--execution=7"),
+            Some(("--execution".to_string(), "7".to_string()))
+        );
         // Empty partial ⇒ offer everything.
-        assert_eq!(split_attached_value("--execution="),
-            Some(("--execution".to_string(), String::new())));
+        assert_eq!(
+            split_attached_value("--execution="),
+            Some(("--execution".to_string(), String::new()))
+        );
         // A value containing `=` splits only at the FIRST one.
-        assert_eq!(split_attached_value("--filter=k=v"),
-            Some(("--filter".to_string(), "k=v".to_string())));
+        assert_eq!(
+            split_attached_value("--filter=k=v"),
+            Some(("--filter".to_string(), "k=v".to_string()))
+        );
         // Bool flags and bare params are not this shape.
         assert_eq!(split_attached_value("--strict=1"), None);
         assert_eq!(split_attached_value("session=/tmp/s"), None);
@@ -2040,24 +2459,41 @@ mod walker_tests {
     fn report_item_names_complete_at_the_positional() {
         // `report_name_slot_open` is the gate; drive it directly since the name
         // sources need a session db or workload on disk.
-        assert!(report_name_slot_open(&[]), "empty line: the name slot is open");
-        assert!(report_name_slot_open(&["workload=w.yaml"]),
-            "a kv param must not consume the name slot");
-        assert!(report_name_slot_open(&["workload=w.yaml", "session=/tmp/s"]),
-            "several kv params must not consume it either");
-        assert!(report_name_slot_open(&["--db", "/tmp/m.db"]),
-            "a value flag and its value must not consume it");
-        assert!(report_name_slot_open(&["--ascii"]),
-            "a bool flag must not consume it");
-        assert!(report_name_slot_open(&["all"]),
-            "a structural word is not the item name");
+        assert!(
+            report_name_slot_open(&[]),
+            "empty line: the name slot is open"
+        );
+        assert!(
+            report_name_slot_open(&["workload=w.yaml"]),
+            "a kv param must not consume the name slot"
+        );
+        assert!(
+            report_name_slot_open(&["workload=w.yaml", "session=/tmp/s"]),
+            "several kv params must not consume it either"
+        );
+        assert!(
+            report_name_slot_open(&["--db", "/tmp/m.db"]),
+            "a value flag and its value must not consume it"
+        );
+        assert!(
+            report_name_slot_open(&["--ascii"]),
+            "a bool flag must not consume it"
+        );
+        assert!(
+            report_name_slot_open(&["all"]),
+            "a structural word is not the item name"
+        );
 
         // Once a real name is present the provider must go quiet rather than
         // suggest a second one.
-        assert!(!report_name_slot_open(&["compaction_shape"]),
-            "an item name fills the slot");
-        assert!(!report_name_slot_open(&["workload=w.yaml", "compaction_shape"]),
-            "…including after a kv param");
+        assert!(
+            !report_name_slot_open(&["compaction_shape"]),
+            "an item name fills the slot"
+        );
+        assert!(
+            !report_name_slot_open(&["workload=w.yaml", "compaction_shape"]),
+            "…including after a kv param"
+        );
     }
 
     /// The db-backed value providers must read the session named ON THE LINE.
@@ -2074,7 +2510,9 @@ mod walker_tests {
         use nbrs_metrics::scheduler::Reporter;
 
         let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!("nbrs-provider-ctx-{n:x}"));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("metrics.db");
@@ -2088,20 +2526,26 @@ mod walker_tests {
 
         let db_arg = db.to_string_lossy().to_string();
         let got = execution_id_provider("", &["--db", &db_arg]);
-        assert!(got.iter().any(|e| e == "77"),
-            "`--db <path>` must select the db: {got:?}");
+        assert!(
+            got.iter().any(|e| e == "77"),
+            "`--db <path>` must select the db: {got:?}"
+        );
 
         let session_flag = format!("--session={}", dir.display());
         let got = execution_id_provider("", &[&session_flag]);
-        assert!(got.iter().any(|e| e == "77"),
-            "`--session=<dir>` must select the db: {got:?}");
+        assert!(
+            got.iter().any(|e| e == "77"),
+            "`--session=<dir>` must select the db: {got:?}"
+        );
 
         // The bare spelling resolves identically — read_session_dir routes
         // through the same resolver.
         let bare = format!("session={}", dir.display());
         let got = execution_id_provider("", &[&bare]);
-        assert!(got.iter().any(|e| e == "77"),
-            "bare `session=<dir>` must select the db: {got:?}");
+        assert!(
+            got.iter().any(|e| e == "77"),
+            "bare `session=<dir>` must select the db: {got:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2115,14 +2559,18 @@ mod walker_tests {
     fn session_provider_scans_the_runtime_sessions_root() {
         let root = nbrs_runtime::session::default_sessions_root();
         let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let name = format!("zz-provider-probe-{n:x}");
         std::fs::create_dir_all(root.join(&name)).unwrap();
 
         let got = session_name_provider("zz-provider-probe-", &[]);
         let _ = std::fs::remove_dir_all(root.join(&name));
-        assert!(got.contains(&name),
-            "provider must list sessions under {root:?}, got {got:?}");
+        assert!(
+            got.contains(&name),
+            "provider must list sessions under {root:?}, got {got:?}"
+        );
     }
 
     fn tempdir(tag: &str) -> std::path::PathBuf {
@@ -2133,9 +2581,10 @@ mod walker_tests {
         // make the walker treat its own root as noise and find
         // nothing.
         let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::path::PathBuf::from("/tmp")
-            .join(format!("nbrs-completion-{tag}-{n:x}"));
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::path::PathBuf::from("/tmp").join(format!("nbrs-completion-{tag}-{n:x}"));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -2158,11 +2607,18 @@ mod walker_tests {
         let prefix = format!("{}/", root.display());
         collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
         assert!(out.iter().any(|p| p.ends_with("a.yaml")), "got: {out:?}");
-        assert!(out.iter().any(|p| p.ends_with("sub/b.yaml")), "got: {out:?}");
-        assert!(out.iter().any(|p| p.ends_with("sub/deeper/c.yaml")),
-            "got: {out:?}");
-        assert!(out.iter().any(|p| p.ends_with("sub/deeper/even/d.yaml")),
-            "got: {out:?}");
+        assert!(
+            out.iter().any(|p| p.ends_with("sub/b.yaml")),
+            "got: {out:?}"
+        );
+        assert!(
+            out.iter().any(|p| p.ends_with("sub/deeper/c.yaml")),
+            "got: {out:?}"
+        );
+        assert!(
+            out.iter().any(|p| p.ends_with("sub/deeper/even/d.yaml")),
+            "got: {out:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2177,10 +2633,14 @@ mod walker_tests {
         let mut budget = WORKLOAD_MAX_FILES_SCANNED;
         let prefix = format!("{}/", root.display());
         collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
-        assert!(out.iter().any(|p| p.ends_with("L4/inside4.yaml")),
-            "depth-4 entry visible: {out:?}");
-        assert!(!out.iter().any(|p| p.ends_with("too_deep.yaml")),
-            "depth-5 entry NOT visible: {out:?}");
+        assert!(
+            out.iter().any(|p| p.ends_with("L4/inside4.yaml")),
+            "depth-4 entry visible: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|p| p.ends_with("too_deep.yaml")),
+            "depth-5 entry NOT visible: {out:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2213,9 +2673,18 @@ mod walker_tests {
         let prefix = format!("{}/", root.display());
         collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
         assert!(out.iter().any(|p| p.ends_with("good.yaml")));
-        assert!(!out.iter().any(|p| p.contains("target/")), "target/ skipped: {out:?}");
-        assert!(!out.iter().any(|p| p.contains("node_modules/")), "node_modules/ skipped: {out:?}");
-        assert!(!out.iter().any(|p| p.contains("/logs/")), "logs/ skipped: {out:?}");
+        assert!(
+            !out.iter().any(|p| p.contains("target/")),
+            "target/ skipped: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|p| p.contains("node_modules/")),
+            "node_modules/ skipped: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|p| p.contains("/logs/")),
+            "logs/ skipped: {out:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2231,11 +2700,18 @@ mod walker_tests {
         let mut budget = WORKLOAD_MAX_FILES_SCANNED;
         let prefix = format!("{}/", root.display());
         collect_yaml_recursive(&root, &prefix, "alp", &mut out, &mut budget, 0);
-        assert!(out.iter().any(|p| p.ends_with("alpha.yaml")), "got: {out:?}");
-        assert!(!out.iter().any(|p| p.ends_with("beta.yaml")),
-            "beta filtered: {out:?}");
-        assert!(!out.iter().any(|p| p.ends_with("anything.yaml")),
-            "non-matching subdir not descended: {out:?}");
+        assert!(
+            out.iter().any(|p| p.ends_with("alpha.yaml")),
+            "got: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|p| p.ends_with("beta.yaml")),
+            "beta filtered: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|p| p.ends_with("anything.yaml")),
+            "non-matching subdir not descended: {out:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2263,11 +2739,13 @@ mod walker_tests {
         // glob-match and errored). Cleaned up so completion
         // doesn't lie about the surface.
         let cands = complete(&["nbrs", "report", ""]);
-        for required in ["plot", "table", "list", "all", "figure",
-                         "rename", "scratch"]
-        {
-            assert!(cands.iter().any(|c| c == required),
-                "missing subcommand `{required}` in: {cands:?}");
+        for required in [
+            "plot", "table", "list", "all", "figure", "rename", "scratch",
+        ] {
+            assert!(
+                cands.iter().any(|c| c == required),
+                "missing subcommand `{required}` in: {cands:?}"
+            );
         }
     }
 
@@ -2278,48 +2756,95 @@ mod walker_tests {
         // (cli_spec §raw_args) — this is the gap that left `--lookback`
         // etc. un-completable, plus the new `--range`.
         let cands = complete(&["nbrs", "metrics", "query", "--"]);
-        for required in ["--range", "--family", "--lookback", "--at", "--step",
-                         "--stale-window", "--all-samples", "--db"]
-        {
-            assert!(cands.iter().any(|c| c == required),
-                "missing flag `{required}` for `metrics query` in: {cands:?}");
+        for required in [
+            "--range",
+            "--family",
+            "--lookback",
+            "--at",
+            "--step",
+            "--stale-window",
+            "--all-samples",
+            "--db",
+        ] {
+            assert!(
+                cands.iter().any(|c| c == required),
+                "missing flag `{required}` for `metrics query` in: {cands:?}"
+            );
         }
     }
 
     #[test]
     fn report_plot_offers_plot_directives() {
         let cands = complete(&["nbrs", "report", "plot", "demo", "--"]);
-        for required in ["--over", "--by", "--where", "--agg",
-                         "--label", "--palette", "--line",
-                         "--width", "--marker", "--size",
-                         "--color", "--metric",
-                         "--xlabel", "--ylabel", "--x-scale", "--y-scale",
-                         "--style",
-                         // Orthogonal dispatch flags.
-                         "--add", "--at", "--contextual", "--replace",
-                         "--rename", "--group", "--workload", "--dry-run",
-                         "--name"]
-        {
-            assert!(cands.iter().any(|c| c == required),
-                "missing flag `{required}` in plot completions: {cands:?}");
+        for required in [
+            "--over",
+            "--by",
+            "--where",
+            "--agg",
+            "--label",
+            "--palette",
+            "--line",
+            "--width",
+            "--marker",
+            "--size",
+            "--color",
+            "--metric",
+            "--xlabel",
+            "--ylabel",
+            "--x-scale",
+            "--y-scale",
+            "--style",
+            // Orthogonal dispatch flags.
+            "--add",
+            "--at",
+            "--contextual",
+            "--replace",
+            "--rename",
+            "--group",
+            "--workload",
+            "--dry-run",
+            "--name",
+        ] {
+            assert!(
+                cands.iter().any(|c| c == required),
+                "missing flag `{required}` in plot completions: {cands:?}"
+            );
         }
     }
 
     #[test]
     fn report_table_excludes_plot_only_directives() {
         let cands = complete(&["nbrs", "report", "table", "demo", "--"]);
-        for forbidden in ["--xlabel", "--ylabel", "--x-scale", "--y-scale",
-                          "--marker", "--line", "--width", "--size"]
-        {
-            assert!(!cands.iter().any(|c| c == forbidden),
-                "table completions should not offer `{forbidden}` (plot-only): {cands:?}");
+        for forbidden in [
+            "--xlabel",
+            "--ylabel",
+            "--x-scale",
+            "--y-scale",
+            "--marker",
+            "--line",
+            "--width",
+            "--size",
+        ] {
+            assert!(
+                !cands.iter().any(|c| c == forbidden),
+                "table completions should not offer `{forbidden}` (plot-only): {cands:?}"
+            );
         }
         // Data-shape directives still apply to tables.
-        for required in ["--over", "--by", "--where", "--agg",
-                         "--metric", "--label", "--palette", "--color"]
-        {
-            assert!(cands.iter().any(|c| c == required),
-                "table completions missing `{required}`: {cands:?}");
+        for required in [
+            "--over",
+            "--by",
+            "--where",
+            "--agg",
+            "--metric",
+            "--label",
+            "--palette",
+            "--color",
+        ] {
+            assert!(
+                cands.iter().any(|c| c == required),
+                "table completions missing `{required}`: {cands:?}"
+            );
         }
     }
 
@@ -2330,58 +2855,73 @@ mod walker_tests {
                 flag-form path is extended to non-figure kinds."]
     fn report_text_excludes_figure_directives() {
         let cands = complete(&["nbrs", "report", "text", "intro", "--"]);
-        for forbidden in ["--over", "--by", "--where", "--agg",
-                          "--metric", "--x-scale", "--y-scale", "--marker"]
-        {
-            assert!(!cands.iter().any(|c| c == forbidden),
-                "text completions should not offer `{forbidden}`: {cands:?}");
+        for forbidden in [
+            "--over",
+            "--by",
+            "--where",
+            "--agg",
+            "--metric",
+            "--x-scale",
+            "--y-scale",
+            "--marker",
+        ] {
+            assert!(
+                !cands.iter().any(|c| c == forbidden),
+                "text completions should not offer `{forbidden}`: {cands:?}"
+            );
         }
         for required in ["--label", "--body", "--body-file"] {
-            assert!(cands.iter().any(|c| c == required),
-                "text completions missing `{required}`: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "text completions missing `{required}`: {cands:?}"
+            );
         }
     }
 
     #[test]
     fn palette_value_completion_offers_closed_set() {
-        let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--palette", ""]);
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--palette", ""]);
         for required in nbrs_workload::report::vocab::PALETTE_NAMES {
-            assert!(cands.iter().any(|c| c == required),
-                "palette completion missing `{required}`: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "palette completion missing `{required}`: {cands:?}"
+            );
         }
         // Sanity: should NOT offer arbitrary strings.
-        assert!(!cands.iter().any(|c| c == "nope"),
-            "completion shouldn't offer arbitrary values: {cands:?}");
+        assert!(
+            !cands.iter().any(|c| c == "nope"),
+            "completion shouldn't offer arbitrary values: {cands:?}"
+        );
     }
 
     #[test]
     fn agg_value_completion_offers_closed_set() {
-        let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--agg", ""]);
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--agg", ""]);
         for required in nbrs_workload::report::vocab::AGG_FNS {
-            assert!(cands.iter().any(|c| c == required),
-                "agg completion missing `{required}`: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "agg completion missing `{required}`: {cands:?}"
+            );
         }
     }
 
     #[test]
     fn x_scale_value_completion_offers_linear_log() {
-        let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--x-scale", ""]);
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--x-scale", ""]);
         assert!(cands.iter().any(|c| c == "linear"));
         assert!(cands.iter().any(|c| c == "log"));
     }
 
     #[test]
     fn marker_value_completion_offers_shape_set() {
-        let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--marker", ""]);
-        for required in ["circle", "square", "triangle", "diamond",
-                         "plus", "cross", "none"]
-        {
-            assert!(cands.iter().any(|c| c == required),
-                "marker completion missing `{required}`: {cands:?}");
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--marker", ""]);
+        for required in [
+            "circle", "square", "triangle", "diamond", "plus", "cross", "none",
+        ] {
+            assert!(
+                cands.iter().any(|c| c == required),
+                "marker completion missing `{required}`: {cands:?}"
+            );
         }
     }
 
@@ -2389,18 +2929,21 @@ mod walker_tests {
     fn at_anchor_completion_offers_scope_prefixes() {
         let cands = complete(&["nbrs", "report", "plot", "demo", "--at", ""]);
         for required in ["root", "scenario:", "phase:", "op:"] {
-            assert!(cands.iter().any(|c| c == required),
-                "--at completion missing `{required}`: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "--at completion missing `{required}`: {cands:?}"
+            );
         }
     }
 
     #[test]
     fn contextual_completion_offers_all_modes() {
-        let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--contextual", ""]);
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--contextual", ""]);
         for required in ["auto", "root", "scenario", "phase", "op"] {
-            assert!(cands.iter().any(|c| c == required),
-                "--contextual completion missing `{required}`: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "--contextual completion missing `{required}`: {cands:?}"
+            );
         }
     }
 
@@ -2408,8 +2951,10 @@ mod walker_tests {
     fn report_scratch_subcommands_listed() {
         let cands = complete(&["nbrs", "report", "scratch", ""]);
         for required in ["list", "clean", "promote"] {
-            assert!(cands.iter().any(|c| c == required),
-                "scratch subcommand `{required}` missing: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "scratch subcommand `{required}` missing: {cands:?}"
+            );
         }
     }
 
@@ -2417,19 +2962,22 @@ mod walker_tests {
     fn report_rename_offers_replace_and_dry_run() {
         let cands = complete(&["nbrs", "report", "rename", "old_name", "new_name", "--"]);
         for required in ["--replace", "--dry-run", "--workload"] {
-            assert!(cands.iter().any(|c| c == required),
-                "rename completion missing `{required}`: {cands:?}");
+            assert!(
+                cands.iter().any(|c| c == required),
+                "rename completion missing `{required}`: {cands:?}"
+            );
         }
     }
 
     #[test]
     fn closed_set_filters_by_partial() {
         // `--palette w` should narrow to palettes starting with `w`.
-        let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--palette", "w"]);
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--palette", "w"]);
         assert!(cands.iter().any(|c| c == "wong"));
         // Other palettes filtered.
-        assert!(!cands.iter().any(|c| c == "ibm"),
-            "filter should remove non-matching: {cands:?}");
+        assert!(
+            !cands.iter().any(|c| c == "ibm"),
+            "filter should remove non-matching: {cands:?}"
+        );
     }
 }

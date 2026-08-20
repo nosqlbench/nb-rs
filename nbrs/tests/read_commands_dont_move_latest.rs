@@ -79,8 +79,11 @@ impl Sandbox {
         let mut v: Vec<String> = std::fs::read_dir(self.path.join("sessions"))
             .expect("read sessions/")
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir() && !t.is_symlink())
-                .unwrap_or(false))
+            .filter(|e| {
+                e.file_type()
+                    .map(|t| t.is_dir() && !t.is_symlink())
+                    .unwrap_or(false)
+            })
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         v.sort();
@@ -109,14 +112,24 @@ fn a_read_command_does_not_repoint_latest() {
     let second = sb.run();
 
     let dirs = sb.session_dirs();
-    assert_eq!(dirs.len(), 2, "expected two sessions, got {dirs:?}:\n{second}");
+    assert_eq!(
+        dirs.len(),
+        2,
+        "expected two sessions, got {dirs:?}:\n{second}"
+    );
     let newest = sb.latest();
-    let older = dirs.iter().find(|d| Path::new(d) != newest.as_path())
+    let older = dirs
+        .iter()
+        .find(|d| Path::new(d) != newest.as_path())
         .expect("one session that is not the latest");
 
     // Read the OLDER session by name — the case that used to hijack the link.
-    let out = sb.nbrs(&["metrics", "query", "cycles_total",
-                        &format!("--session=sessions/{older}")]);
+    let out = sb.nbrs(&[
+        "metrics",
+        "query",
+        "cycles_total",
+        &format!("--session=sessions/{older}"),
+    ]);
 
     // Not vacuous: the read must actually have targeted the older session. Every
     // series carries a `session="…"` label, so the output names the db it read.
@@ -125,7 +138,8 @@ fn a_read_command_does_not_repoint_latest() {
         "the read must resolve the NAMED session (expected {older}); got:\n{out}"
     );
     assert_eq!(
-        sb.latest(), newest,
+        sb.latest(),
+        newest,
         "a read-only command must leave sessions/latest alone; got:\n{out}"
     );
 }
@@ -138,15 +152,27 @@ fn a_write_still_claims_latest_including_a_named_session() {
     let sb = Sandbox::new("write");
     sb.run();
     let auto = sb.latest();
-    assert!(auto.to_string_lossy().starts_with("default_"),
-        "a bare run claims latest for its auto-id, got {auto:?}");
+    assert!(
+        auto.to_string_lossy().starts_with("default_"),
+        "a bare run claims latest for its auto-id, got {auto:?}"
+    );
 
-    let out = sb.nbrs(&["run", "workload=w.yaml", "adapter=stdout", "cycles=2",
-                        "--session-name=mysess"]);
-    assert_eq!(sb.latest(), Path::new("mysess"),
-        "a run with an explicit session name must claim latest; got:\n{out}");
-    assert!(sb.path.join("sessions/mysess/metrics.db").exists(),
-        "the named session must hold the run's artifacts; got:\n{out}");
+    let out = sb.nbrs(&[
+        "run",
+        "workload=w.yaml",
+        "adapter=stdout",
+        "cycles=2",
+        "--session-name=mysess",
+    ]);
+    assert_eq!(
+        sb.latest(),
+        Path::new("mysess"),
+        "a run with an explicit session name must claim latest; got:\n{out}"
+    );
+    assert!(
+        sb.path.join("sessions/mysess/metrics.db").exists(),
+        "the named session must hold the run's artifacts; got:\n{out}"
+    );
 }
 
 /// The consequence that made this worth fixing: an intervening read must not
@@ -160,17 +186,31 @@ fn a_read_does_not_change_what_resume_latest_resumes() {
 
     let dirs = sb.session_dirs();
     let newest = sb.latest();
-    let older = dirs.iter().find(|d| Path::new(d) != newest.as_path())
+    let older = dirs
+        .iter()
+        .find(|d| Path::new(d) != newest.as_path())
         .expect("one non-latest session");
 
-    sb.nbrs(&["metrics", "query", "cycles_total",
-              &format!("--session=sessions/{older}")]);
-    let out = sb.nbrs(&["run", "workload=w.yaml", "adapter=stdout", "cycles=2",
-                        "--resume-latest"]);
+    sb.nbrs(&[
+        "metrics",
+        "query",
+        "cycles_total",
+        &format!("--session=sessions/{older}"),
+    ]);
+    let out = sb.nbrs(&[
+        "run",
+        "workload=w.yaml",
+        "adapter=stdout",
+        "cycles=2",
+        "--resume-latest",
+    ]);
 
-    assert_eq!(sb.latest(), newest,
+    assert_eq!(
+        sb.latest(),
+        newest,
         "--resume-latest must still target the newest real run after a read; \
-         got:\n{out}");
+         got:\n{out}"
+    );
 }
 
 /// A read-only command must not DELETE sessions.
@@ -198,15 +238,21 @@ fn a_read_command_does_not_purge_sessions() {
     sb.run();
     let before = sb.session_dirs();
     assert_eq!(before.len(), 3, "expected three sessions, got {before:?}");
-    let oldest = before[0].clone();   // sorted by name ⇒ by timestamp
+    let oldest = before[0].clone(); // sorted by name ⇒ by timestamp
 
     let out = sb.nbrs(&["metrics", "query", "cycles_total", "--session-keep=1"]);
 
-    assert!(sb.session_dirs().contains(&oldest),
+    assert!(
+        sb.session_dirs().contains(&oldest),
         "a read must not purge the oldest session under an eager --session-keep; \
-         got {:?}:\n{out}", sb.session_dirs());
-    assert_eq!(sb.session_dirs(), before,
-        "a read must not purge ANY session; got:\n{out}");
+         got {:?}:\n{out}",
+        sb.session_dirs()
+    );
+    assert_eq!(
+        sb.session_dirs(),
+        before,
+        "a read must not purge ANY session; got:\n{out}"
+    );
 }
 
 /// The other half: a session-creating command still retires old ones, so bounding
@@ -224,10 +270,17 @@ fn a_write_still_purges_under_the_cap() {
     let oldest = before[0].clone();
 
     tick();
-    let out = sb.nbrs(&["run", "workload=w.yaml", "adapter=stdout", "cycles=2",
-                        "--session-keep=1"]);
+    let out = sb.nbrs(&[
+        "run",
+        "workload=w.yaml",
+        "adapter=stdout",
+        "cycles=2",
+        "--session-keep=1",
+    ]);
     let after = sb.session_dirs();
-    assert!(!after.contains(&oldest),
+    assert!(
+        !after.contains(&oldest),
         "a writing command must still retire the oldest session under the cap; \
-         got {after:?}:\n{out}");
+         got {after:?}:\n{out}"
+    );
 }

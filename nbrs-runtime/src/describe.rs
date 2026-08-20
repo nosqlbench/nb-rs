@@ -11,27 +11,30 @@
 //! concept is "wiring" between named values, not the kernel
 //! representation.
 
-use std::sync::Arc;
 use polydat::kernel::PolydatProgram;
+use std::sync::Arc;
 
 /// Print wiring analysis for a phase/iteration scope.
 ///
 /// Called by the runner at the point where it would normally
 /// dispatch cycles. The kernel has already been compiled through
 /// the exact same pipeline as execution.
-pub fn print_wiring_analysis(
-    phase_name: &str,
-    iter_note: &str,
-    program: &Arc<PolydatProgram>,
-) {
+pub fn print_wiring_analysis(phase_name: &str, iter_note: &str, program: &Arc<PolydatProgram>) {
     let input_names = program.input_names();
     let coord_count = program.coord_count();
 
-    println!("  Phase '{phase_name}'{iter_note} ({} nodes, {} outputs):",
-        program.node_count(), program.output_count());
+    println!(
+        "  Phase '{phase_name}'{iter_note} ({} nodes, {} outputs):",
+        program.node_count(),
+        program.output_count()
+    );
 
     for (i, name) in input_names.iter().enumerate() {
-        let kind = if i < coord_count { "coordinate" } else { "extern" };
+        let kind = if i < coord_count {
+            "coordinate"
+        } else {
+            "extern"
+        };
         println!("    input {name}: {kind}");
     }
 
@@ -55,9 +58,15 @@ pub fn print_wiring_analysis(
         // stable.
         let mod_str = {
             let mut tags: Vec<&str> = Vec::new();
-            if modifier.is_const() { tags.push("final"); }
-            if modifier.is_shared() { tags.push("shared"); }
-            if modifier.is_volatile() { tags.push("volatile"); }
+            if modifier.is_const() {
+                tags.push("final");
+            }
+            if modifier.is_shared() {
+                tags.push("shared");
+            }
+            if modifier.is_volatile() {
+                tags.push("volatile");
+            }
             if tags.is_empty() {
                 String::new()
             } else {
@@ -67,7 +76,9 @@ pub fn print_wiring_analysis(
         let mod_str = mod_str.as_str();
         let out_type = if port_idx < meta.outs.len() {
             format!("{:?}", meta.outs[port_idx].typ)
-        } else { "?".into() };
+        } else {
+            "?".into()
+        };
 
         print!("    {name}{mod_str}: {out_type}");
         if is_const {
@@ -80,19 +91,26 @@ pub fn print_wiring_analysis(
 
         let wiring = program.node_wiring(node_idx);
         if !wiring.is_empty() {
-            let descs: Vec<String> = wiring.iter().map(|w| match w {
-                polydat::kernel::WireSource::Input(idx) => {
-                    if *idx < input_names.len() {
-                        format!("input:{}", input_names[*idx])
-                    } else {
-                        format!("input:{idx}")
+            let descs: Vec<String> = wiring
+                .iter()
+                .map(|w| match w {
+                    polydat::kernel::WireSource::Input(idx) => {
+                        if *idx < input_names.len() {
+                            format!("input:{}", input_names[*idx])
+                        } else {
+                            format!("input:{idx}")
+                        }
                     }
-                }
-                polydat::kernel::WireSource::NodeOutput(ni, pi) => {
-                    let u = program.node_meta(*ni);
-                    if *pi == 0 { u.name.clone() } else { format!("{}[{pi}]", u.name) }
-                }
-            }).collect();
+                    polydat::kernel::WireSource::NodeOutput(ni, pi) => {
+                        let u = program.node_meta(*ni);
+                        if *pi == 0 {
+                            u.name.clone()
+                        } else {
+                            format!("{}[{pi}]", u.name)
+                        }
+                    }
+                })
+                .collect();
             println!("      node: {}({})", meta.name, descs.join(", "));
         }
     }

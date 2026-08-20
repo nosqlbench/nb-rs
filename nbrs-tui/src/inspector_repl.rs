@@ -29,15 +29,15 @@ use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-#[cfg(windows)]
-use uds_windows::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use uds_windows::UnixStream;
 
+use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -72,10 +72,18 @@ pub fn discover_sockets() -> Vec<DiscoveredSocket> {
     let mut out = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
-        let Some(rest) = name.strip_prefix("nbrs-") else { continue };
-        let Some(pid_str) = rest.strip_suffix(".sock") else { continue };
-        let Ok(pid) = pid_str.parse::<u32>() else { continue };
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix("nbrs-") else {
+            continue;
+        };
+        let Some(pid_str) = rest.strip_suffix(".sock") else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
         if !pid_alive(pid) {
             // Stale socket — owning process is gone. Don't
             // surface it; the user can clean up by hand if
@@ -118,13 +126,17 @@ pub fn query(path: &Path, command: &str) -> io::Result<String> {
     for _ in 0..3 {
         match query_once(path, command) {
             Ok(s) => return Ok(s),
-            Err(e) if matches!(
-                e.kind(),
-                io::ErrorKind::TimedOut
-                    | io::ErrorKind::WouldBlock
-                    | io::ErrorKind::ConnectionReset
-                    | io::ErrorKind::Interrupted
-            ) => last_err = Some(e),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                last_err = Some(e)
+            }
             Err(e) => return Err(e),
         }
     }
@@ -241,10 +253,7 @@ const VOCAB_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// `Arc<Mutex<ServerVocab>>` it writes to. When the REPL drops
 /// the Arc clone the thread sees a stale clone and continues
 /// harmlessly until the process exits.
-fn spawn_vocab_refresh(
-    socket: PathBuf,
-    vocab: Arc<Mutex<ServerVocab>>,
-) {
+fn spawn_vocab_refresh(socket: PathBuf, vocab: Arc<Mutex<ServerVocab>>) {
     std::thread::Builder::new()
         .name("inspector-vocab".into())
         .spawn(move || {
@@ -269,9 +278,9 @@ fn refresh_vocab_once(socket: &Path) -> ServerVocab {
             let parts: Vec<&str> = line.splitn(7, '|').map(str::trim).collect();
             if parts.len() >= 4 {
                 vocab.controls.push(ControlInfo {
-                    name:       parts[1].to_string(),
+                    name: parts[1].to_string(),
                     value_type: parts[2].to_string(),
-                    value:      parts[3].to_string(),
+                    value: parts[3].to_string(),
                 });
             }
         }
@@ -286,7 +295,9 @@ fn refresh_vocab_once(socket: &Path) -> ServerVocab {
     if let Ok(resp) = query(socket, "metrics") {
         for line in resp.lines() {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('(') { continue; }
+            if trimmed.is_empty() || trimmed.starts_with('(') {
+                continue;
+            }
             vocab.metrics.push(trimmed.to_string());
         }
     }
@@ -302,15 +313,19 @@ fn split_metric_row(row: &str) -> Option<(String, Vec<(String, String)>)> {
     let (family, body) = match row.find('{') {
         Some(idx) => {
             let (f, rest) = row.split_at(idx);
-            if !rest.ends_with('}') { return None; }
-            (f.to_string(), &rest[1..rest.len()-1])
+            if !rest.ends_with('}') {
+                return None;
+            }
+            (f.to_string(), &rest[1..rest.len() - 1])
         }
         None => (row.to_string(), ""),
     };
     let mut pairs: Vec<(String, String)> = Vec::new();
     for piece in body.split(',') {
         let p = piece.trim();
-        if p.is_empty() { continue; }
+        if p.is_empty() {
+            continue;
+        }
         if let Some((k, v)) = p.split_once('=') {
             // Strip surrounding quotes (server uses Prometheus
             // style: `key="value"`).
@@ -419,16 +434,22 @@ impl ReplApp {
         }
     }
 
-    fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -> io::Result<()> {
+    fn event_loop(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stderr>>,
+    ) -> io::Result<()> {
         while !self.should_quit {
             // Refresh pinned metrics if the interval elapsed.
             self.maybe_refresh_pins();
             terminal.draw(|frame| self.draw(frame))?;
             if event::poll(Duration::from_millis(100))?
-                && let Event::Key(k) = event::read()? {
-                    if k.kind != KeyEventKind::Press { continue; }
-                    self.handle_key(k.code, k.modifiers);
+                && let Event::Key(k) = event::read()?
+            {
+                if k.kind != KeyEventKind::Press {
+                    continue;
                 }
+                self.handle_key(k.code, k.modifiers);
+            }
         }
         Ok(())
     }
@@ -446,14 +467,18 @@ impl ReplApp {
             KeyCode::Up => self.history_prev(),
             KeyCode::Down => self.history_next(),
             KeyCode::Left => {
-                if self.cursor > 0 { self.cursor -= 1; }
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                }
             }
             KeyCode::Right => {
-                if self.cursor < self.input.len() { self.cursor += 1; }
+                if self.cursor < self.input.len() {
+                    self.cursor += 1;
+                }
             }
             KeyCode::Home => self.cursor = 0,
-            KeyCode::End  => self.cursor = self.input.len(),
-            KeyCode::PageUp   => self.scroll = self.scroll.saturating_add(8),
+            KeyCode::End => self.cursor = self.input.len(),
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(8),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(8),
             KeyCode::Esc => {
                 // Esc clears the current input. Helpful when
@@ -472,7 +497,9 @@ impl ReplApp {
     }
 
     fn delete_back(&mut self) {
-        if self.cursor == 0 { return; }
+        if self.cursor == 0 {
+            return;
+        }
         // Walk back one char (UTF-8 boundary).
         let mut new_cursor = self.cursor - 1;
         while !self.input.is_char_boundary(new_cursor) && new_cursor > 0 {
@@ -578,7 +605,9 @@ impl ReplApp {
     }
 
     fn complete_command(&mut self, prefix: &str) {
-        let matches: Vec<&String> = self.commands.iter()
+        let matches: Vec<&String> = self
+            .commands
+            .iter()
             .filter(|c| c.starts_with(prefix))
             .collect();
         match matches.as_slice() {
@@ -604,7 +633,8 @@ impl ReplApp {
             let v = self.vocab.lock().ok();
             v.map(|g| g.controls.clone()).unwrap_or_default()
         };
-        let matches: Vec<&ControlInfo> = controls.iter()
+        let matches: Vec<&ControlInfo> = controls
+            .iter()
             .filter(|c| c.name.starts_with(prefix))
             .collect();
         match matches.as_slice() {
@@ -619,8 +649,10 @@ impl ReplApp {
                 // it (no-op submit), they press Enter.
                 self.set_input(format!("set {} {}", single.name, single.value));
                 self.scrollback.push(Line::from(Span::styled(
-                    format!("  ({}: type={}, current={})",
-                        single.name, single.value_type, single.value),
+                    format!(
+                        "  ({}: type={}, current={})",
+                        single.name, single.value_type, single.value
+                    ),
                     Style::default().fg(Color::DarkGray),
                 )));
                 self.trim_scrollback();
@@ -634,7 +666,8 @@ impl ReplApp {
                 // Show name + type + current value for each match
                 // so the operator can pick by what the controls
                 // currently hold, not just by name.
-                let pretty: Vec<String> = many.iter()
+                let pretty: Vec<String> = many
+                    .iter()
                     .map(|c| format!("{} ({}={})", c.name, c.value_type, c.value))
                     .collect();
                 self.scrollback.push(Line::from(Span::styled(
@@ -666,11 +699,11 @@ impl ReplApp {
         // label so `bool` and `Bool` both work.
         let ty = info.value_type.to_lowercase();
         if ty == "bool" || ty == "boolean" {
-            let candidates: Vec<&'static str> =
-                ["true", "false"].iter()
-                    .copied()
-                    .filter(|s| s.starts_with(prefix))
-                    .collect();
+            let candidates: Vec<&'static str> = ["true", "false"]
+                .iter()
+                .copied()
+                .filter(|s| s.starts_with(prefix))
+                .collect();
             match candidates.as_slice() {
                 [] => return false,
                 [single] => {
@@ -679,7 +712,7 @@ impl ReplApp {
                 }
                 many => {
                     let lcp = longest_common_prefix(
-                        &many.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+                        &many.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                     );
                     if lcp.len() > prefix.len() {
                         self.set_input(format!("set {} {}", info.name, lcp));
@@ -703,8 +736,10 @@ impl ReplApp {
         }
         // Type hint as a non-completing nudge.
         self.scrollback.push(Line::from(Span::styled(
-            format!("  ({}: type={}, current={})",
-                info.name, info.value_type, info.value),
+            format!(
+                "  ({}: type={}, current={})",
+                info.name, info.value_type, info.value
+            ),
             Style::default().fg(Color::DarkGray),
         )));
         self.trim_scrollback();
@@ -720,14 +755,14 @@ impl ReplApp {
         match rest.find('{') {
             None => {
                 let prefix = rest;
-                let mut families: Vec<String> = metrics.iter()
+                let mut families: Vec<String> = metrics
+                    .iter()
                     .filter_map(|row| split_metric_row(row).map(|(f, _)| f))
                     .collect();
                 families.sort();
                 families.dedup();
-                let candidates: Vec<&String> = families.iter()
-                    .filter(|f| f.starts_with(prefix))
-                    .collect();
+                let candidates: Vec<&String> =
+                    families.iter().filter(|f| f.starts_with(prefix)).collect();
                 match candidates.as_slice() {
                     [] => self.note_no_completion(prefix),
                     [single] => {
@@ -751,7 +786,7 @@ impl ReplApp {
             }
             Some(brace_idx) => {
                 let family = &rest[..brace_idx];
-                let body = &rest[brace_idx+1..];
+                let body = &rest[brace_idx + 1..];
                 self.complete_metric_label(family, body, &metrics);
             }
         }
@@ -761,20 +796,16 @@ impl ReplApp {
     /// trailing token is a partial key (no `=`) or a partial
     /// value (after `=`), and complete from the cached metrics
     /// instances filtered by family.
-    fn complete_metric_label(
-        &mut self,
-        family: &str,
-        body: &str,
-        metrics: &[String],
-    ) {
+    fn complete_metric_label(&mut self, family: &str, body: &str, metrics: &[String]) {
         // Find the trailing partial token after the last `,`.
         let last = body.rsplit(',').next().unwrap_or("").trim_start();
         let mut matching_instances: Vec<Vec<(String, String)>> = Vec::new();
         for row in metrics {
             if let Some((f, pairs)) = split_metric_row(row)
-                && (family == "*" || f == family) {
-                    matching_instances.push(pairs);
-                }
+                && (family == "*" || f == family)
+            {
+                matching_instances.push(pairs);
+            }
         }
 
         // Decide between key-completion and value-completion.
@@ -785,10 +816,13 @@ impl ReplApp {
             let mut values: HashSet<String> = HashSet::new();
             for inst in &matching_instances {
                 for (k, v) in inst {
-                    if k == key { values.insert(v.clone()); }
+                    if k == key {
+                        values.insert(v.clone());
+                    }
                 }
             }
-            let mut sorted: Vec<String> = values.into_iter()
+            let mut sorted: Vec<String> = values
+                .into_iter()
                 .filter(|v| v.starts_with(partial_val))
                 .collect();
             sorted.sort();
@@ -796,19 +830,17 @@ impl ReplApp {
             match sorted.as_slice() {
                 [] => self.note_no_completion(&prefix_to_replace),
                 [single] => {
-                    let new_input = self.input.replace(
-                        &format!("{key}={partial_val}"),
-                        &format!("{key}={single}"),
-                    );
+                    let new_input = self
+                        .input
+                        .replace(&format!("{key}={partial_val}"), &format!("{key}={single}"));
                     self.set_input(new_input);
                 }
                 many => {
                     let lcp = longest_common_prefix(many);
                     if lcp.len() > partial_val.len() {
-                        let new_input = self.input.replace(
-                            &format!("{key}={partial_val}"),
-                            &format!("{key}={lcp}"),
-                        );
+                        let new_input = self
+                            .input
+                            .replace(&format!("{key}={partial_val}"), &format!("{key}={lcp}"));
                         self.set_input(new_input);
                     }
                     self.scrollback.push(Line::from(Span::styled(
@@ -827,7 +859,8 @@ impl ReplApp {
                     keys.insert(k.clone());
                 }
             }
-            let mut sorted: Vec<String> = keys.into_iter()
+            let mut sorted: Vec<String> = keys
+                .into_iter()
                 .filter(|k| k.starts_with(partial))
                 .collect();
             sorted.sort();
@@ -837,8 +870,7 @@ impl ReplApp {
                     // Replace the last token (the partial key)
                     // with `single=` so the user immediately
                     // sees the next completion stage.
-                    let new = self.input.trim_end_matches(partial).to_string()
-                        + single + "=";
+                    let new = self.input.trim_end_matches(partial).to_string() + single + "=";
                     self.set_input(new);
                 }
                 many => {
@@ -866,7 +898,9 @@ impl ReplApp {
     }
 
     fn history_prev(&mut self) {
-        if self.history.is_empty() { return; }
+        if self.history.is_empty() {
+            return;
+        }
         if self.history_idx > 0 {
             self.history_idx -= 1;
             self.input = self.history[self.history_idx].clone();
@@ -890,7 +924,9 @@ impl ReplApp {
         let line = std::mem::take(&mut self.input);
         self.cursor = 0;
         let trimmed = line.trim();
-        if trimmed.is_empty() { return; }
+        if trimmed.is_empty() {
+            return;
+        }
 
         // REPL-local meta-commands take priority over server
         // dispatch.
@@ -1038,7 +1074,10 @@ impl ReplApp {
             return format!("ERR parse: '{arg}' is not a positive integer or 'all'");
         };
         if idx_1based == 0 || idx_1based > self.pinned.len() {
-            return format!("ERR out_of_range: have {} pin(s), got {idx_1based}", self.pinned.len());
+            return format!(
+                "ERR out_of_range: have {} pin(s), got {idx_1based}",
+                self.pinned.len()
+            );
         }
         let removed = self.pinned.remove(idx_1based - 1);
         format!("OK unpinned: {}", removed.selector)
@@ -1074,19 +1113,21 @@ impl ReplApp {
     }
 
     fn maybe_refresh_pins(&mut self) {
-        if self.pinned.is_empty() { return; }
+        if self.pinned.is_empty() {
+            return;
+        }
         let now = Instant::now();
         let due = match self.last_pin_sweep {
             None => true,
             Some(t) => now.duration_since(t) >= self.pin_refresh_interval,
         };
-        if !due { return; }
+        if !due {
+            return;
+        }
         self.last_pin_sweep = Some(now);
         // Snapshot selectors first so we don't hold a borrow
         // while issuing socket queries.
-        let selectors: Vec<String> = self.pinned.iter()
-            .map(|p| p.selector.clone())
-            .collect();
+        let selectors: Vec<String> = self.pinned.iter().map(|p| p.selector.clone()).collect();
         let mut updates: Vec<String> = Vec::with_capacity(selectors.len());
         for sel in &selectors {
             let resp = match query(&self.socket, &format!("metric {sel}")) {
@@ -1114,7 +1155,9 @@ impl ReplApp {
     /// (1 header line + rendered line count) for every pin,
     /// capped at [`PIN_PANE_MAX_LINES`].
     fn pin_pane_height(&self) -> u16 {
-        if self.pinned.is_empty() { return 0; }
+        if self.pinned.is_empty() {
+            return 0;
+        }
         let mut total: usize = 0;
         for entry in &self.pinned {
             // 1 header line per pin, plus the lines of the
@@ -1130,14 +1173,8 @@ impl ReplApp {
         let mut out: Vec<Line<'static>> = Vec::new();
         for (i, entry) in self.pinned.iter().enumerate() {
             out.push(Line::from(vec![
-                Span::styled(
-                    format!("[{}] ", i + 1),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    entry.selector.clone(),
-                    Style::default().fg(Color::Cyan),
-                ),
+                Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Yellow)),
+                Span::styled(entry.selector.clone(), Style::default().fg(Color::Cyan)),
             ]));
             for r in entry.rendered.lines() {
                 out.push(Line::from(r.to_string()));
@@ -1165,17 +1202,14 @@ impl ReplApp {
             // Trim to the pane's available inner height (border
             // already accounted for in pin_pane_height).
             let inner_h = chunks[0].height.saturating_sub(2) as usize;
-            let visible: Vec<Line<'static>> = pin_lines.into_iter()
-                .take(inner_h)
-                .collect();
-            let pinned = Paragraph::new(visible)
-                .block(Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(
-                        " pinned ({} · refresh={:.1}s) ",
-                        self.pinned.len(),
-                        self.pin_refresh_interval.as_secs_f64(),
-                    )));
+            let visible: Vec<Line<'static>> = pin_lines.into_iter().take(inner_h).collect();
+            let pinned = Paragraph::new(visible).block(
+                Block::default().borders(Borders::ALL).title(format!(
+                    " pinned ({} · refresh={:.1}s) ",
+                    self.pinned.len(),
+                    self.pin_refresh_interval.as_secs_f64(),
+                )),
+            );
             frame.render_widget(pinned, chunks[0]);
         }
 
@@ -1184,15 +1218,18 @@ impl ReplApp {
         let total = self.scrollback.len();
         let tail_offset = total.saturating_sub(visible);
         let top = tail_offset.saturating_sub(self.scroll as usize);
-        let view: Vec<Line<'static>> = self.scrollback.iter()
+        let view: Vec<Line<'static>> = self
+            .scrollback
+            .iter()
             .skip(top)
             .take(visible)
             .cloned()
             .collect();
-        let scrollback = Paragraph::new(view)
-            .block(Block::default()
+        let scrollback = Paragraph::new(view).block(
+            Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" nbrs inspector — {} ", self.socket.display())));
+                .title(format!(" nbrs inspector — {} ", self.socket.display())),
+        );
         frame.render_widget(scrollback, chunks[1]);
 
         // Input line.
@@ -1207,10 +1244,7 @@ impl ReplApp {
         ]));
         frame.render_widget(prompt, inner);
         // Cursor: start of inner + "> " (2 cells) + cursor index.
-        frame.set_cursor_position(Position::new(
-            inner.x + 2 + self.cursor as u16,
-            inner.y,
-        ));
+        frame.set_cursor_position(Position::new(inner.x + 2 + self.cursor as u16, inner.y));
     }
 }
 
@@ -1227,15 +1261,21 @@ fn readout_name_candidates(prefix: &str) -> Vec<&'static str> {
 }
 
 fn longest_common_prefix(strs: &[String]) -> String {
-    if strs.is_empty() { return String::new(); }
+    if strs.is_empty() {
+        return String::new();
+    }
     let mut prefix: Vec<u8> = strs[0].as_bytes().to_vec();
     for s in &strs[1..] {
         let bytes = s.as_bytes();
-        let len = prefix.iter().zip(bytes.iter())
+        let len = prefix
+            .iter()
+            .zip(bytes.iter())
             .take_while(|(a, b)| a == b)
             .count();
         prefix.truncate(len);
-        if prefix.is_empty() { break; }
+        if prefix.is_empty() {
+            break;
+        }
     }
     String::from_utf8_lossy(&prefix).into_owned()
 }
@@ -1250,14 +1290,16 @@ mod tests {
 
     #[test]
     fn split_metric_row_parses_family_and_labels() {
-        let (family, pairs) = split_metric_row(
-            "cycles_servicetime{phase=\"pvs_query\",table=\"fknn\"}",
-        ).unwrap();
+        let (family, pairs) =
+            split_metric_row("cycles_servicetime{phase=\"pvs_query\",table=\"fknn\"}").unwrap();
         assert_eq!(family, "cycles_servicetime");
-        assert_eq!(pairs, vec![
-            ("phase".to_string(), "pvs_query".to_string()),
-            ("table".to_string(), "fknn".to_string()),
-        ]);
+        assert_eq!(
+            pairs,
+            vec![
+                ("phase".to_string(), "pvs_query".to_string()),
+                ("table".to_string(), "fknn".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -1293,11 +1335,14 @@ mod tests {
 
     #[test]
     fn longest_common_prefix_works() {
-        assert_eq!(longest_common_prefix(&[
-            "concurrency".to_string(),
-            "concurrent".to_string(),
-        ]), "concurren");
-        assert_eq!(longest_common_prefix(&["a".to_string(), "b".to_string()]), "");
+        assert_eq!(
+            longest_common_prefix(&["concurrency".to_string(), "concurrent".to_string(),]),
+            "concurren"
+        );
+        assert_eq!(
+            longest_common_prefix(&["a".to_string(), "b".to_string()]),
+            ""
+        );
         assert_eq!(longest_common_prefix(&[]), "");
     }
 }

@@ -101,11 +101,15 @@ fn main() {
         );
     }
     let _ = writeln!(src, "];");
-    std::fs::write(out_dir.join("bundled_workloads.rs"), src)
-        .expect("write bundled_workloads.rs");
+    std::fs::write(out_dir.join("bundled_workloads.rs"), src).expect("write bundled_workloads.rs");
 }
 
-fn walk(dir: &Path, namespace: &str, tier_expr: &'static str, out: &mut Vec<(String, &'static str, String)>) {
+fn walk(
+    dir: &Path,
+    namespace: &str,
+    tier_expr: &'static str,
+    out: &mut Vec<(String, &'static str, String)>,
+) {
     let mut children: Vec<_> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
         .map(|r| r.expect("dir entry"))
@@ -129,7 +133,9 @@ fn walk(dir: &Path, namespace: &str, tier_expr: &'static str, out: &mut Vec<(Str
         if fname.starts_with('_') {
             continue;
         }
-        let Some(stem) = fname.strip_suffix(".yaml").or_else(|| fname.strip_suffix(".yml"))
+        let Some(stem) = fname
+            .strip_suffix(".yaml")
+            .or_else(|| fname.strip_suffix(".yml"))
         else {
             continue;
         };

@@ -10,7 +10,6 @@
 //!
 //! This module parses those triples from markdown and validates them.
 
-
 /// A single spectest triple extracted from a markdown file.
 #[derive(Debug, Clone)]
 pub struct SpecTestCase {
@@ -108,13 +107,19 @@ pub fn validate_spec_test(test: &SpecTestCase) -> Result<(), String> {
 
     // Stage 2: Validate YAML↔JSON equivalence (if json provided)
     if !test.json_expected.is_empty() {
-        let json_value: serde_json::Value = serde_json::from_str(&test.json_expected)
-            .map_err(|e| format!("[line {}] JSON parse error in expected: {e}", test.line_number))?;
+        let json_value: serde_json::Value =
+            serde_json::from_str(&test.json_expected).map_err(|e| {
+                format!(
+                    "[line {}] JSON parse error in expected: {e}",
+                    test.line_number
+                )
+            })?;
 
         if !json_values_equivalent(&yaml_value, &json_value) {
             return Err(format!(
                 "[line {}] YAML↔JSON mismatch in '{}'\n  YAML parsed as: {}\n  JSON expected:  {}",
-                test.line_number, test.title,
+                test.line_number,
+                test.title,
                 serde_json::to_string(&yaml_value).unwrap_or_default(),
                 serde_json::to_string(&json_value).unwrap_or_default(),
             ));
@@ -136,27 +141,30 @@ pub fn validate_spec_test(test: &SpecTestCase) -> Result<(), String> {
 
         // Compare each expected op against our output
         if let serde_json::Value::Array(expected_arr) = &expected_ops
-            && let serde_json::Value::Array(our_arr) = &our_ops {
-                for (idx, expected_op) in expected_arr.iter().enumerate() {
-                    // Find matching op by name
-                    let expected_name = expected_op.get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+            && let serde_json::Value::Array(our_arr) = &our_ops
+        {
+            for (idx, expected_op) in expected_arr.iter().enumerate() {
+                // Find matching op by name
+                let expected_name = expected_op
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
 
-                    let our_op = our_arr.iter()
-                        .find(|o| o.get("name").and_then(|v| v.as_str()) == Some(expected_name));
+                let our_op = our_arr
+                    .iter()
+                    .find(|o| o.get("name").and_then(|v| v.as_str()) == Some(expected_name));
 
-                    if let Some(our_op) = our_op {
-                        // Compare key fields
-                        validate_op_fields(expected_op, our_op, &test.title, test.line_number, idx)?;
-                    } else {
-                        return Err(format!(
-                            "[line {}] Op '{}' expected but not found in output for '{}'",
-                            test.line_number, expected_name, test.title,
-                        ));
-                    }
+                if let Some(our_op) = our_op {
+                    // Compare key fields
+                    validate_op_fields(expected_op, our_op, &test.title, test.line_number, idx)?;
+                } else {
+                    return Err(format!(
+                        "[line {}] Op '{}' expected but not found in output for '{}'",
+                        test.line_number, expected_name, test.title,
+                    ));
                 }
             }
+        }
     }
 
     Ok(())
@@ -168,11 +176,16 @@ fn json_values_equivalent(a: &serde_json::Value, b: &serde_json::Value) -> bool 
     match (a, b) {
         (serde_json::Value::Object(am), serde_json::Value::Object(bm)) => {
             // All keys in a must be in b with equivalent values
-            am.iter().all(|(k, v)| bm.get(k).is_some_and(|bv| json_values_equivalent(v, bv)))
+            am.iter()
+                .all(|(k, v)| bm.get(k).is_some_and(|bv| json_values_equivalent(v, bv)))
                 && bm.iter().all(|(k, _)| am.contains_key(k))
         }
         (serde_json::Value::Array(aa), serde_json::Value::Array(ba)) => {
-            aa.len() == ba.len() && aa.iter().zip(ba.iter()).all(|(a, b)| json_values_equivalent(a, b))
+            aa.len() == ba.len()
+                && aa
+                    .iter()
+                    .zip(ba.iter())
+                    .all(|(a, b)| json_values_equivalent(a, b))
         }
         (serde_json::Value::String(a), serde_json::Value::String(b)) => a == b,
         (serde_json::Value::Number(a), serde_json::Value::Number(b)) => a == b,
@@ -194,56 +207,62 @@ fn validate_op_fields(
     let exp_name = expected.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let act_name = actual.get("name").and_then(|v| v.as_str()).unwrap_or("");
     if exp_name != act_name {
-        return Err(format!("[line {line}] Op {idx} name mismatch in '{title}': expected '{exp_name}', got '{act_name}'"));
+        return Err(format!(
+            "[line {line}] Op {idx} name mismatch in '{title}': expected '{exp_name}', got '{act_name}'"
+        ));
     }
 
     // Check op fields
     if let Some(exp_op) = expected.get("op")
         && let Some(act_op) = actual.get("op")
-            && !json_values_equivalent(exp_op, act_op) {
-                return Err(format!(
-                    "[line {line}] Op '{exp_name}' op fields mismatch in '{title}'\n  expected: {}\n  actual:   {}",
-                    serde_json::to_string(exp_op).unwrap_or_default(),
-                    serde_json::to_string(act_op).unwrap_or_default(),
-                ));
-            }
+        && !json_values_equivalent(exp_op, act_op)
+    {
+        return Err(format!(
+            "[line {line}] Op '{exp_name}' op fields mismatch in '{title}'\n  expected: {}\n  actual:   {}",
+            serde_json::to_string(exp_op).unwrap_or_default(),
+            serde_json::to_string(act_op).unwrap_or_default(),
+        ));
+    }
 
     // Check tags (if expected has them)
     if let Some(exp_tags) = expected.get("tags")
         && let Some(act_tags) = actual.get("tags")
-            && let (Some(exp_map), Some(act_map)) = (exp_tags.as_object(), act_tags.as_object()) {
-                for (key, exp_val) in exp_map {
-                    if let Some(act_val) = act_map.get(key) {
-                        if exp_val != act_val {
-                            return Err(format!(
-                                "[line {line}] Op '{exp_name}' tag '{key}' mismatch in '{title}': expected {exp_val}, got {act_val}"
-                            ));
-                        }
-                    } else {
-                        return Err(format!(
-                            "[line {line}] Op '{exp_name}' missing tag '{key}' in '{title}'"
-                        ));
-                    }
+        && let (Some(exp_map), Some(act_map)) = (exp_tags.as_object(), act_tags.as_object())
+    {
+        for (key, exp_val) in exp_map {
+            if let Some(act_val) = act_map.get(key) {
+                if exp_val != act_val {
+                    return Err(format!(
+                        "[line {line}] Op '{exp_name}' tag '{key}' mismatch in '{title}': expected {exp_val}, got {act_val}"
+                    ));
                 }
+            } else {
+                return Err(format!(
+                    "[line {line}] Op '{exp_name}' missing tag '{key}' in '{title}'"
+                ));
             }
+        }
+    }
 
     // Check bindings (if expected has them)
     if let Some(exp_bindings) = expected.get("bindings")
         && let Some(act_bindings) = actual.get("bindings")
-            && !json_values_equivalent(exp_bindings, act_bindings) {
-                return Err(format!(
-                    "[line {line}] Op '{exp_name}' bindings mismatch in '{title}'"
-                ));
-            }
+        && !json_values_equivalent(exp_bindings, act_bindings)
+    {
+        return Err(format!(
+            "[line {line}] Op '{exp_name}' bindings mismatch in '{title}'"
+        ));
+    }
 
     // Check params (if expected has them)
     if let Some(exp_params) = expected.get("params")
         && let Some(act_params) = actual.get("params")
-            && !json_values_equivalent(exp_params, act_params) {
-                return Err(format!(
-                    "[line {line}] Op '{exp_name}' params mismatch in '{title}'"
-                ));
-            }
+        && !json_values_equivalent(exp_params, act_params)
+    {
+        return Err(format!(
+            "[line {line}] Op '{exp_name}' params mismatch in '{title}'"
+        ));
+    }
 
     Ok(())
 }

@@ -35,8 +35,8 @@
 //! [`super::phase_pulse::PhaseStopEvaluator`] callback registered on the
 //! metrics cadence feed.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -82,7 +82,11 @@ pub struct SettleReading {
 
 impl Default for SettleReading {
     fn default() -> Self {
-        Self { value: 0.0, stable: false, pulses: 0 }
+        Self {
+            value: 0.0,
+            stable: false,
+            pulses: 0,
+        }
     }
 }
 
@@ -105,12 +109,7 @@ impl SettleInterpreter {
     /// the input poked to advance the generation each pulse;
     /// `value_wire` / `stable_wire` are the `is_stable` multi-output
     /// wire names.
-    pub fn new(
-        kernel: PolydatKernel,
-        source: &str,
-        value_wire: &str,
-        stable_wire: &str,
-    ) -> Self {
+    pub fn new(kernel: PolydatKernel, source: &str, value_wire: &str, stable_wire: &str) -> Self {
         let source_input = kernel.program().find_input(source);
         Self {
             kernel,
@@ -143,7 +142,11 @@ impl SettleInterpreter {
         let stable = self.kernel.pull(&self.stable_wire).as_u64() != 0;
         let value = self.kernel.pull(&self.value_wire).as_f64();
 
-        let reading = SettleReading { value, stable, pulses: self.pulses };
+        let reading = SettleReading {
+            value,
+            stable,
+            pulses: self.pulses,
+        };
         self.register.store(Arc::new(reading));
         reading
     }
@@ -222,7 +225,9 @@ impl PulseEvaluator for SettleEvaluator {
         // Advance the objective kernel's generation so its volatile
         // reader re-reads the latest published window, then read it.
         if let Some(idx) = self.poke {
-            self.objective.state().set_input(idx, Value::U64(self.pulses));
+            self.objective
+                .state()
+                .set_input(idx, Value::U64(self.pulses));
         }
         let obj = objective_to_f64(self.objective.pull(&self.objective_wire));
         // SRD-89 — a NaN objective is a windowed metric reading **no data** (an
@@ -283,8 +288,7 @@ const READER_NODES: &[&str] = &[
 /// the phase's objective may be a volatile windowed metric that the
 /// one-shot post-completion read cannot capture.
 pub fn program_reads_live_metrics(program: &PolydatProgram) -> bool {
-    (0..program.node_count())
-        .any(|i| READER_NODES.contains(&program.node_meta(i).name.as_str()))
+    (0..program.node_count()).any(|i| READER_NODES.contains(&program.node_meta(i).name.as_str()))
 }
 
 /// Node name of the session-cumulative reader (`metric(...)`), which
@@ -298,8 +302,7 @@ const SESSION_CUMULATIVE_READER: &str = "metric";
 /// warmup gate cannot isolate (no window to clear). The settle warns
 /// rather than silently treating it as per-coordinate.
 fn program_reads_session_cumulative_metrics(program: &PolydatProgram) -> bool {
-    (0..program.node_count())
-        .any(|i| program.node_meta(i).name == SESSION_CUMULATIVE_READER)
+    (0..program.node_count()).any(|i| program.node_meta(i).name == SESSION_CUMULATIVE_READER)
 }
 
 /// Warn at most once per distinct objective string that it reads a
@@ -369,8 +372,7 @@ pub fn start_settle(
     // A session-cumulative `metric(...)` objective has no bounded window
     // for the gate to scope, so it cannot isolate per-coordinate — warn
     // once and servo the author to a windowed reader.
-    if program_reads_session_cumulative_metrics(program)
-        && warn_once_session_cumulative(objective)
+    if program_reads_session_cumulative_metrics(program) && warn_once_session_cumulative(objective)
     {
         crate::diag!(
             crate::observer::LogLevel::Warn,
@@ -403,7 +405,12 @@ pub fn start_settle(
     // prior coordinate before a stable verdict is honored.
     let min_viable = cadence.saturating_mul(SETTLE_HORIZON as u32);
     let eval = SettleEvaluator::new(
-        obj_kernel, objective, "cycle", interp, SETTLE_TIMEOUT, min_viable,
+        obj_kernel,
+        objective,
+        "cycle",
+        interp,
+        SETTLE_TIMEOUT,
+        min_viable,
     );
     let register = eval.register();
 
@@ -420,10 +427,12 @@ pub fn start_settle(
                 as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         }));
     }
-    let subscriber = reporter
-        .subscribe(cadence, Box::new(pse), opts)
-        .ok()?;
-    Some(SettleHandle { subscriber, register, outcome })
+    let subscriber = reporter.subscribe(cadence, Box::new(pse), opts).ok()?;
+    Some(SettleHandle {
+        subscriber,
+        register,
+        outcome,
+    })
 }
 
 #[cfg(test)]
@@ -462,7 +471,10 @@ mod tests {
             last = i.pulse(5.0);
         }
         assert!(last.stable, "a steady value settles");
-        assert!((i.register().load().value - 5.0).abs() < 1e-9, "register holds the steady level");
+        assert!(
+            (i.register().load().value - 5.0).abs() < 1e-9,
+            "register holds the steady level"
+        );
     }
 
     #[test]
@@ -486,7 +498,10 @@ mod tests {
         let o = verdict.expect("a steady objective settles within the budget");
         assert_eq!(o.disposition, Disposition::Interrupted);
         assert_eq!(o.validity, Validity::Succeeded);
-        assert!((reg.load().value - 5.0).abs() < 1e-9, "settled register reads 5.0");
+        assert!(
+            (reg.load().value - 5.0).abs() < 1e-9,
+            "settled register reads 5.0"
+        );
     }
 
     #[test]
@@ -500,11 +515,18 @@ mod tests {
             Duration::ZERO,
         );
         // First pulse starts the clock; the ramp never settles.
-        assert!(ev.evaluate(&window()).is_none(), "no verdict before timeout");
+        assert!(
+            ev.evaluate(&window()).is_none(),
+            "no verdict before timeout"
+        );
         std::thread::sleep(Duration::from_millis(55));
         let o = ev.evaluate(&window()).expect("timeout fires a verdict");
         assert_eq!(o.disposition, Disposition::Interrupted);
-        assert_eq!(o.validity, Validity::Failed, "a settle timeout is the untrustworthy quadrant");
+        assert_eq!(
+            o.validity,
+            Validity::Failed,
+            "a settle timeout is the untrustworthy quadrant"
+        );
     }
 
     #[test]
@@ -531,7 +553,9 @@ mod tests {
             );
         }
         std::thread::sleep(Duration::from_millis(70));
-        let o = ev.evaluate(&window()).expect("settles once min_viable has elapsed");
+        let o = ev
+            .evaluate(&window())
+            .expect("settles once min_viable has elapsed");
         assert_eq!(o.disposition, Disposition::Interrupted);
         assert_eq!(o.validity, Validity::Succeeded);
     }

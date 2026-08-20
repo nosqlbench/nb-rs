@@ -63,7 +63,7 @@ pub(crate) fn short_value(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use crate::wrapper_registry::{WrapperRegistry, WrapperSubject};
-    use crate::wrapper_resolver::{WrapperResolver, WrapperActivation};
+    use crate::wrapper_resolver::{WrapperActivation, WrapperResolver};
     use nbrs_workload::model::ParsedOp;
 
     fn empty_template(name: &str) -> ParsedOp {
@@ -75,8 +75,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let names: Vec<&str> = r.iter().map(|reg| reg.name.as_str()).collect();
         for expected in [
-            "traverse", "delay", "validate", "poll",
-            "if", "fields", "result", "metrics",
+            "traverse", "delay", "validate", "poll", "if", "fields", "result", "metrics",
         ] {
             assert!(
                 names.contains(&expected),
@@ -89,15 +88,20 @@ mod tests {
     fn default_order_passes_constraint_validation() {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r);
-        assert!(resolver.is_ok(),
-            "default order should validate: {:?}", resolver.err());
+        assert!(
+            resolver.is_ok(),
+            "default order should validate: {:?}",
+            resolver.err()
+        );
     }
 
     #[test]
     fn empty_template_resolves_to_always_on_set() {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
-        let plan = resolver.resolve(WrapperSubject::Op(&empty_template("noop")), &r).unwrap();
+        let plan = resolver
+            .resolve(WrapperSubject::Op(&empty_template("noop")), &r)
+            .unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // The three always-on wrappers in innermost→outermost order:
         // traverse (innermost; reads body to count rows / extract
@@ -116,15 +120,18 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("noop");
-        t.params.insert("dryrun".into(),
-            serde_json::Value::String("silent".into()));
+        t.params
+            .insert("dryrun".into(), serde_json::Value::String("silent".into()));
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // `errors` sits outside even dryrun (it is inert on the
         // short-circuit's Ok) — dryrun is the outermost DISPATCHED
         // layer; the errors slot is the hand-placed terminal observer.
-        assert_eq!(names, vec!["traverse", "result", "dryrun", "errors"],
-            "dryrun marker present → dryrun wrapper in plan");
+        assert_eq!(
+            names,
+            vec!["traverse", "result", "dryrun", "errors"],
+            "dryrun marker present → dryrun wrapper in plan"
+        );
     }
 
     #[test]
@@ -132,22 +139,33 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("v_op");
-        t.params.insert("verify".into(),
-            serde_json::Value::String("min_rows >= 1".into()));
+        t.params.insert(
+            "verify".into(),
+            serde_json::Value::String("min_rows >= 1".into()),
+        );
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
 
         // Traverse must be present and must precede validate.
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         let i_traverse = names.iter().position(|n| *n == "traverse").unwrap();
         let i_validate = names.iter().position(|n| *n == "validate").unwrap();
-        assert!(i_traverse < i_validate,
-            "traverse must be inside validate: {names:?}");
+        assert!(
+            i_traverse < i_validate,
+            "traverse must be inside validate: {names:?}"
+        );
 
         // Activation provenance distinguishes triggered vs transitive.
         let validate_act = plan.activation(crate::validation::WRAPPER_NAME).unwrap();
-        assert!(matches!(validate_act,
-            WrapperActivation::OwnedField { field: "verify", .. }),
-            "validate should be OwnedField(verify): {validate_act:?}");
+        assert!(
+            matches!(
+                validate_act,
+                WrapperActivation::OwnedField {
+                    field: "verify",
+                    ..
+                }
+            ),
+            "validate should be OwnedField(verify): {validate_act:?}"
+        );
     }
 
     #[test]
@@ -155,10 +173,15 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("v_op");
-        t.params.insert("verify".into(),
-            serde_json::Value::String("min_rows >= 1".into()));
+        t.params.insert(
+            "verify".into(),
+            serde_json::Value::String("min_rows >= 1".into()),
+        );
         match resolver.resolve_with_order(WrapperSubject::Op(&t), &r, &["validate", "result"]) {
-            Err(crate::wrapper_resolver::ResolveError::OverridePermutationMismatch { missing: Some(_), .. }) => {}
+            Err(crate::wrapper_resolver::ResolveError::OverridePermutationMismatch {
+                missing: Some(_),
+                ..
+            }) => {}
             Err(other) => panic!("expected missing-wrapper error; got {other:?}"),
             Ok(_) => panic!("override missing a triggered wrapper must error"),
         }
@@ -169,10 +192,15 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let t = empty_template("noop");
-        match resolver.resolve_with_order(WrapperSubject::Op(&t), &r,
-            &["traverse", "poll", "result", "errors"])
-        {
-            Err(crate::wrapper_resolver::ResolveError::OverridePermutationMismatch { extra: Some(_), .. }) => {}
+        match resolver.resolve_with_order(
+            WrapperSubject::Op(&t),
+            &r,
+            &["traverse", "poll", "result", "errors"],
+        ) {
+            Err(crate::wrapper_resolver::ResolveError::OverridePermutationMismatch {
+                extra: Some(_),
+                ..
+            }) => {}
             Err(other) => panic!("expected extra-wrapper error; got {other:?}"),
             Ok(_) => panic!("override naming a non-triggered wrapper must error"),
         }
@@ -183,9 +211,11 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let t = empty_template("noop");
-        match resolver.resolve_with_order(WrapperSubject::Op(&t), &r,
-            &["traverse", "validatte", "result"])
-        {
+        match resolver.resolve_with_order(
+            WrapperSubject::Op(&t),
+            &r,
+            &["traverse", "validatte", "result"],
+        ) {
             Err(crate::wrapper_resolver::ResolveError::UnknownWrapper { name, suggestion }) => {
                 assert_eq!(name, "validatte");
                 assert_eq!(suggestion, Some("validate"));
@@ -199,21 +229,23 @@ mod tests {
     fn cli_default_order_replaces_built_in_tiebreaker() {
         let r = WrapperRegistry::from_inventory();
         let custom = vec![
-            "traverse", "delay", "validate", "if", "poll",
-            "fields", "result", "metrics",
+            "traverse", "delay", "validate", "if", "poll", "fields", "result", "metrics",
         ];
         let resolver = WrapperResolver::from_names(&custom, &r).unwrap();
         let mut t = empty_template("flexible");
-        t.params.insert("poll".into(),
-            serde_json::Value::String("await_empty".into()));
+        t.params.insert(
+            "poll".into(),
+            serde_json::Value::String("await_empty".into()),
+        );
         t.condition = Some("flag".into());
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
-        let names: Vec<&str> = plan.stack.iter()
-            .map(|reg| reg.name.as_str()).collect();
+        let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         let i_if = names.iter().position(|n| *n == "if").unwrap();
         let i_poll = names.iter().position(|n| *n == "poll").unwrap();
-        assert!(i_if < i_poll,
-            "custom default should place if INSIDE poll: {names:?}");
+        assert!(
+            i_if < i_poll,
+            "custom default should place if INSIDE poll: {names:?}"
+        );
     }
 
     #[test]
@@ -221,28 +253,38 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("flexible");
-        t.params.insert("verify".into(),
-            serde_json::Value::String("ok".into()));
-        t.params.insert("poll".into(),
-            serde_json::Value::String("await_empty".into()));
-        let plan = resolver.resolve_with_order(WrapperSubject::Op(&t), &r,
-            &["traverse", "poll", "validate", "result", "errors"]).unwrap();
-        let names: Vec<&str> = plan.stack.iter()
-            .map(|reg| reg.name.as_str()).collect();
-        assert_eq!(names, vec!["traverse", "poll", "validate", "result", "errors"]);
+        t.params
+            .insert("verify".into(), serde_json::Value::String("ok".into()));
+        t.params.insert(
+            "poll".into(),
+            serde_json::Value::String("await_empty".into()),
+        );
+        let plan = resolver
+            .resolve_with_order(
+                WrapperSubject::Op(&t),
+                &r,
+                &["traverse", "poll", "validate", "result", "errors"],
+            )
+            .unwrap();
+        let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["traverse", "poll", "validate", "result", "errors"]
+        );
     }
 
     #[test]
     fn strict_without_verify_is_misplaced() {
         let r = WrapperRegistry::from_inventory();
         let mut t = empty_template("noop");
-        t.params.insert("strict".into(), serde_json::Value::Bool(true));
+        t.params
+            .insert("strict".into(), serde_json::Value::Bool(true));
         let violations = r.misplaced_fields(WrapperSubject::Op(&t));
-        let names: Vec<(&str, &str)> = violations.iter()
-            .map(|(w, f)| (w.as_str(), *f))
-            .collect();
-        assert!(names.contains(&("validate", "strict")),
-            "strict alone must be misplaced; got {names:?}");
+        let names: Vec<(&str, &str)> = violations.iter().map(|(w, f)| (w.as_str(), *f)).collect();
+        assert!(
+            names.contains(&("validate", "strict")),
+            "strict alone must be misplaced; got {names:?}"
+        );
     }
 
     #[test]
@@ -250,16 +292,25 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let mut t = empty_template("polled");
         let mut cfg = serde_json::Map::new();
-        cfg.insert("mode".into(), serde_json::Value::String("await_empty".into()));
+        cfg.insert(
+            "mode".into(),
+            serde_json::Value::String("await_empty".into()),
+        );
         cfg.insert("interval_ms".into(), serde_json::Value::Number(5000.into()));
-        cfg.insert("timeout_ms".into(), serde_json::Value::Number(600_000.into()));
-        t.params.insert("poll".into(), serde_json::Value::Object(cfg));
+        cfg.insert(
+            "timeout_ms".into(),
+            serde_json::Value::Number(600_000.into()),
+        );
+        t.params
+            .insert("poll".into(), serde_json::Value::Object(cfg));
         // poll: <map> triggers the wrapper through the registry.
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
-        let names: Vec<&str> = plan.stack.iter()
-            .map(|reg| reg.name.as_str()).collect();
-        assert!(names.contains(&"poll"), "poll wrapper should activate: {names:?}");
+        let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
+        assert!(
+            names.contains(&"poll"),
+            "poll wrapper should activate: {names:?}"
+        );
         // And `poll:` is the wrapper's only owned field, so it's
         // never misplaced.
         let violations = r.misplaced_fields(WrapperSubject::Op(&t));
@@ -272,13 +323,17 @@ mod tests {
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("full");
         t.delay = Some(nbrs_workload::model::DelaySpec::Before("rate".into()));
-        t.params.insert("verify".into(),
-            serde_json::Value::String("ok".into()));
-        t.params.insert("poll".into(),
-            serde_json::Value::String("await_empty".into()));
+        t.params
+            .insert("verify".into(), serde_json::Value::String("ok".into()));
+        t.params.insert(
+            "poll".into(),
+            serde_json::Value::String("await_empty".into()),
+        );
         t.condition = Some("flag".into());
-        t.params.insert("fields".into(), serde_json::Value::Bool(true));
-        t.metrics.insert("recall".into(),
+        t.params
+            .insert("fields".into(), serde_json::Value::Bool(true));
+        t.metrics.insert(
+            "recall".into(),
             nbrs_workload::model::MetricSpec {
                 cell: Default::default(),
                 value: "recall_value".into(),
@@ -286,7 +341,8 @@ mod tests {
                 kind: None,
                 unit: None,
                 format: None,
-            });
+            },
+        );
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // `fields` sits outer of dryrun to support `dryrun=fields`
@@ -295,10 +351,13 @@ mod tests {
         // absolute outermost terminal-outcome observer. With no
         // `dryrun:` injected on this op the dispatched stack ends at
         // `fields`, with the errors slot outside it.
-        assert_eq!(names, vec![
-            "traverse", "delay", "validate", "poll",
-            "if", "result", "metrics", "fields", "errors",
-        ]);
+        assert_eq!(
+            names,
+            vec![
+                "traverse", "delay", "validate", "poll", "if", "result", "metrics", "fields",
+                "errors",
+            ]
+        );
     }
 
     /// Regression: when an op carries the injected `dryrun:`
@@ -309,19 +368,26 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("drop_keyspace");
-        t.params.insert("memo".into(),
-            serde_json::Value::String("dropping keyspace".into()));
-        t.params.insert("dryrun".into(),
-            serde_json::Value::String("silent".into()));
+        t.params.insert(
+            "memo".into(),
+            serde_json::Value::String("dropping keyspace".into()),
+        );
+        t.params
+            .insert("dryrun".into(), serde_json::Value::String("silent".into()));
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
-        let names: Vec<&str> = plan.stack.iter()
-            .map(|reg| reg.name.as_str()).collect();
-        let i_memo = names.iter().position(|n| *n == "memo")
+        let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
+        let i_memo = names
+            .iter()
+            .position(|n| *n == "memo")
             .expect("memo triggered by memo: param");
-        let i_dryrun = names.iter().position(|n| *n == "dryrun")
+        let i_dryrun = names
+            .iter()
+            .position(|n| *n == "dryrun")
             .expect("dryrun triggered by injected dryrun: param");
-        assert!(i_memo < i_dryrun,
-            "memo must be inside dryrun in default order; got {names:?}");
+        assert!(
+            i_memo < i_dryrun,
+            "memo must be inside dryrun in default order; got {names:?}"
+        );
     }
 
     /// Variant: when EVERY wrapper activates (full template
@@ -336,17 +402,21 @@ mod tests {
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("full");
         t.delay = Some(nbrs_workload::model::DelaySpec::Before("rate".into()));
-        t.params.insert("verify".into(),
-            serde_json::Value::String("ok".into()));
-        t.params.insert("poll".into(),
-            serde_json::Value::String("await_empty".into()));
+        t.params
+            .insert("verify".into(), serde_json::Value::String("ok".into()));
+        t.params.insert(
+            "poll".into(),
+            serde_json::Value::String("await_empty".into()),
+        );
         t.condition = Some("flag".into());
-        t.params.insert("fields".into(), serde_json::Value::Bool(true));
-        t.params.insert("memo".into(),
-            serde_json::Value::String("doing X".into()));
-        t.params.insert("dryrun".into(),
-            serde_json::Value::String("silent".into()));
-        t.metrics.insert("recall".into(),
+        t.params
+            .insert("fields".into(), serde_json::Value::Bool(true));
+        t.params
+            .insert("memo".into(), serde_json::Value::String("doing X".into()));
+        t.params
+            .insert("dryrun".into(), serde_json::Value::String("silent".into()));
+        t.metrics.insert(
+            "recall".into(),
             nbrs_workload::model::MetricSpec {
                 cell: Default::default(),
                 value: "recall_value".into(),
@@ -354,32 +424,47 @@ mod tests {
                 kind: None,
                 unit: None,
                 format: None,
-            });
+            },
+        );
         let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
-        let names: Vec<&str> = plan.stack.iter()
-            .map(|reg| reg.name.as_str()).collect();
+        let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // `errors` (SRD-82 Part 3b) is the absolute outermost slot —
         // inert on dryrun's Ok short-circuit; `fields` sits outer of
         // dryrun so its pre-execute render fires before the
         // short-circuit; `dryrun` is third-outermost. Every other
         // wrapper is inside DRYRUN's short-circuit.
-        assert_eq!(*names.last().unwrap(), "errors",
-            "errors must be the absolute outermost slot; got {names:?}");
-        assert_eq!(names[names.len() - 2], "fields",
+        assert_eq!(
+            *names.last().unwrap(),
+            "errors",
+            "errors must be the absolute outermost slot; got {names:?}"
+        );
+        assert_eq!(
+            names[names.len() - 2],
+            "fields",
             "fields must sit just below errors — its pre-execute render \
-             must fire before DRYRUN's short-circuit; got {names:?}");
-        let dryrun_idx = names.iter().position(|n| *n == "dryrun")
+             must fire before DRYRUN's short-circuit; got {names:?}"
+        );
+        let dryrun_idx = names
+            .iter()
+            .position(|n| *n == "dryrun")
             .expect("dryrun triggered by injected dryrun: param");
-        assert_eq!(dryrun_idx, names.len() - 3,
-            "dryrun must sit just below fields; got {names:?}");
+        assert_eq!(
+            dryrun_idx,
+            names.len() - 3,
+            "dryrun must sit just below fields; got {names:?}"
+        );
         // Every wrapper inner of dryrun is short-circuited
         // — assert the non-fields/non-dryrun/non-errors set lives
         // strictly inside dryrun.
         for n in &names {
-            if *n == "fields" || *n == "dryrun" || *n == "errors" { continue; }
+            if *n == "fields" || *n == "dryrun" || *n == "errors" {
+                continue;
+            }
             let i = names.iter().position(|x| x == n).unwrap();
-            assert!(i < dryrun_idx,
-                "{n} must sit inside dryrun's short-circuit; got {names:?}");
+            assert!(
+                i < dryrun_idx,
+                "{n} must sit inside dryrun's short-circuit; got {names:?}"
+            );
         }
     }
 }

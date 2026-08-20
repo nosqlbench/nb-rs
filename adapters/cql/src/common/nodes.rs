@@ -51,9 +51,9 @@ fn cql_timeuuid(seed: u64) -> String {
 
     let time_low: u32 = (h1 & 0xFFFF_FFFF) as u32;
     let time_mid: u16 = ((h1 >> 32) & 0xFFFF) as u16;
-    let time_hi:  u16 = (((h1 >> 48) & 0x0FFF) as u16) | 0x1000; // version 1
-    let clock_seq: u16 = ((h2 & 0x3FFF) as u16) | 0x8000;        // variant RFC 4122
-    let node:     u64 = (h2 >> 16) & 0xFFFF_FFFF_FFFF;           // 48-bit node
+    let time_hi: u16 = (((h1 >> 48) & 0x0FFF) as u16) | 0x1000; // version 1
+    let clock_seq: u16 = ((h2 & 0x3FFF) as u16) | 0x8000; // variant RFC 4122
+    let node: u64 = (h2 >> 16) & 0xFFFF_FFFF_FFFF; // 48-bit node
 
     format!("{time_low:08x}-{time_mid:04x}-{time_hi:04x}-{clock_seq:04x}-{node:012x}")
 }
@@ -120,8 +120,8 @@ mod tests {
     /// Drive the macro-authored node by feeding the seed as a const literal
     /// (folds through the wire) and pulling the result.
     fn run(seed: u64) -> String {
-        let mut k = compile_polydat(&format!("out := cql_timeuuid({seed})"))
-            .expect("compile cql_timeuuid");
+        let mut k =
+            compile_polydat(&format!("out := cql_timeuuid({seed})")).expect("compile cql_timeuuid");
         k.pull("out").as_str().to_string()
     }
 
@@ -140,7 +140,11 @@ mod tests {
         let s = run(0xCAFE_BABE);
         // 8-4-4-4-12 hex
         let parts: Vec<&str> = s.split('-').collect();
-        assert_eq!(parts.len(), 5, "expected 5 hyphen-separated fields, got {s}");
+        assert_eq!(
+            parts.len(),
+            5,
+            "expected 5 hyphen-separated fields, got {s}"
+        );
         assert_eq!(parts[0].len(), 8, "{s}");
         assert_eq!(parts[1].len(), 4, "{s}");
         assert_eq!(parts[2].len(), 4, "{s}");
@@ -150,6 +154,9 @@ mod tests {
         assert!(parts[2].starts_with('1'), "version must be 1, got {s}");
         // Variant field: fourth group's first hex char must be 8/9/a/b.
         let v = parts[3].chars().next().unwrap();
-        assert!(matches!(v, '8' | '9' | 'a' | 'b'), "variant byte must be 10xx, got {s}");
+        assert!(
+            matches!(v, '8' | '9' | 'a' | 'b'),
+            "variant byte must be 10xx, got {s}"
+        );
     }
 }

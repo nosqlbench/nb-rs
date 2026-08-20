@@ -45,8 +45,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-tagcomp-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-tagcomp-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         std::fs::write(dir.join("blueprint.yaml"), BLUEPRINT).expect("write blueprint");
         std::fs::write(dir.join("impl_a.yaml"), IMPL_A).expect("write impl");
@@ -84,7 +84,10 @@ fn extends_contributed_block_ops_bind_via_phase_selector() {
     let sandbox = Sandbox::new("pair");
     let (stdout, stderr, ok) = sandbox.run("impl_a.yaml");
     assert!(ok, "composed run must complete; stderr:\n{stderr}");
-    let ticks = stdout.lines().filter(|l| l.trim() == "PROTO_A_TICK").count();
+    let ticks = stdout
+        .lines()
+        .filter(|l| l.trim() == "PROTO_A_TICK")
+        .count();
     assert_eq!(ticks, 4, "blueprint cycles × impl op; stdout:\n{stdout}");
 }
 
@@ -95,6 +98,8 @@ fn blueprint_alone_fails_at_load_with_a_named_error() {
     let sandbox = Sandbox::new("alone");
     let (_, stderr, ok) = sandbox.run("blueprint.yaml");
     assert!(!ok, "a selector-only blueprint must not run bare");
-    assert!(stderr.contains("measure") && stderr.contains("matched no ops"),
-        "the error names the phase and the empty match; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("measure") && stderr.contains("matched no ops"),
+        "the error names the phase and the empty match; stderr:\n{stderr}"
+    );
 }

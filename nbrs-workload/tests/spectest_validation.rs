@@ -7,7 +7,7 @@
 //! Each markdown file in workload_definition/ contains test triples
 //! (yaml → json → ops) that are extracted, parsed, and validated.
 
-use nbrs_workload::spectest::{extract_spec_tests, validate_spec_test, run_spec_tests};
+use nbrs_workload::spectest::{extract_spec_tests, run_spec_tests, validate_spec_test};
 
 /// Load a spec file and return its content.
 macro_rules! spec_file {
@@ -25,7 +25,10 @@ fn spectest_04_op_template_basics() {
             eprintln!("{e}");
         }
     }
-    assert!(passed > 0, "no spec tests found in 04_op_template_basics.md");
+    assert!(
+        passed > 0,
+        "no spec tests found in 04_op_template_basics.md"
+    );
     eprintln!("04_op_template_basics: {passed} passed, {failed} failed");
     // Don't fail on mismatches yet — track progress
 }
@@ -39,7 +42,10 @@ fn spectest_05_op_template_payloads() {
             eprintln!("{e}");
         }
     }
-    assert!(passed > 0 || failed > 0, "no spec tests found in 05_op_template_payloads.md");
+    assert!(
+        passed > 0 || failed > 0,
+        "no spec tests found in 05_op_template_payloads.md"
+    );
     eprintln!("05_op_template_payloads: {passed} passed, {failed} failed");
 }
 
@@ -83,11 +89,26 @@ fn spectest_02_workload_structure() {
 #[test]
 fn spectest_all_files() {
     let files = [
-        ("02_workload_structure.md", spec_file!("02_workload_structure.md")),
-        ("04_op_template_basics.md", spec_file!("04_op_template_basics.md")),
-        ("05_op_template_payloads.md", spec_file!("05_op_template_payloads.md")),
-        ("06_op_template_variations.md", spec_file!("06_op_template_variations.md")),
-        ("07_template_variables.md", spec_file!("07_template_variables.md")),
+        (
+            "02_workload_structure.md",
+            spec_file!("02_workload_structure.md"),
+        ),
+        (
+            "04_op_template_basics.md",
+            spec_file!("04_op_template_basics.md"),
+        ),
+        (
+            "05_op_template_payloads.md",
+            spec_file!("05_op_template_payloads.md"),
+        ),
+        (
+            "06_op_template_variations.md",
+            spec_file!("06_op_template_variations.md"),
+        ),
+        (
+            "07_template_variables.md",
+            spec_file!("07_template_variables.md"),
+        ),
     ];
 
     let mut total_passed = 0;

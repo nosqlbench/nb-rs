@@ -28,7 +28,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use nbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use polydat::ast::Value;
 use scylla::client::session::Session;
-use scylla::statement::{Consistency, batch::{Batch, BatchType}, prepared::PreparedStatement};
+use scylla::statement::{
+    Consistency,
+    batch::{Batch, BatchType},
+    prepared::PreparedStatement,
+};
 
 use super::{ScyllaResultBody, binders, format_cql_error, op_error};
 use crate::common::size_estimator;
@@ -133,7 +137,9 @@ impl ScyllaBatchDispenser {
             rows_total: AtomicU64::new(0),
             batch_writes: AtomicU64::new(0),
             modifiers,
-            retry_safe, canonical_kernel }
+            retry_safe,
+            canonical_kernel,
+        }
     }
 
     /// Execute one CQL `Batch` over the given row-value sets. Returns
@@ -150,8 +156,10 @@ impl ScyllaBatchDispenser {
         let col_specs = self.prepared.get_variable_col_specs();
         let mut rows: Vec<Vec<binders::NbrsCell<'_>>> = Vec::with_capacity(row_value_sets.len());
         for values in row_value_sets {
-            rows.push(binders::build_row(col_specs, values)
-                .map_err(|e| op_error("bind_error", e, false))?);
+            rows.push(
+                binders::build_row(col_specs, values)
+                    .map_err(|e| op_error("bind_error", e, false))?,
+            );
         }
         let row_count = rows.len();
 
@@ -163,8 +171,8 @@ impl ScyllaBatchDispenser {
             batch.append_statement((*self.prepared).clone());
         }
 
-        let result = self.session.batch(&batch, rows).await
-            .map_err(|e| op_error(
+        let result = self.session.batch(&batch, rows).await.map_err(|e| {
+            op_error(
                 "cql_error",
                 format!(
                     "batch ({row_count} rows): {}",
@@ -173,7 +181,8 @@ impl ScyllaBatchDispenser {
                 // Retryable = the batch's derived retry-safety (inner
                 // statements, computed once at init) AND error transience.
                 self.retry_safe && crate::common::cql_error_is_retryable(&e.to_string()),
-            ))?;
+            )
+        })?;
 
         let body = ScyllaResultBody::from_query_result(result);
         // Surface a sub-batch body only when the server returned rows
@@ -190,7 +199,6 @@ impl ScyllaBatchDispenser {
 }
 
 impl OpDispenser for ScyllaBatchDispenser {
-
     fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
@@ -206,7 +214,9 @@ impl OpDispenser for ScyllaBatchDispenser {
     /// counter contract.
     fn status_counters(&self) -> Vec<(&str, u64)> {
         let total = self.rows_total.load(Ordering::Relaxed);
-        if total == 0 { return Vec::new(); }
+        if total == 0 {
+            return Vec::new();
+        }
         let batches = self.batch_writes.load(Ordering::Relaxed);
         let mut out = vec![("rows_inserted", total)];
         if batches > 0 {
@@ -219,7 +229,9 @@ impl OpDispenser for ScyllaBatchDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         // SRD-22 cover-once: read exactly the reserved sub-run — the
         // executor advanced the phase cursor by this many ordinals, so
@@ -234,7 +246,8 @@ impl OpDispenser for ScyllaBatchDispenser {
             // re-read bind values per row.
             let gather_row = |coord: u64| -> Vec<Value> {
                 wires.advance(coord);
-                self.bind_names.iter()
+                self.bind_names
+                    .iter()
                     .map(|n| wires.get(n).unwrap_or(Value::Str(String::new().into())))
                     .collect()
             };
@@ -267,7 +280,8 @@ impl OpDispenser for ScyllaBatchDispenser {
                         cur.clear();
                         cur_bytes = 0;
                     }
-                    if cur.is_empty() && row_bytes > budget
+                    if cur.is_empty()
+                        && row_bytes > budget
                         && !self.oversize_warned.swap(true, Ordering::Relaxed)
                     {
                         nbrs_runtime::diag!(
@@ -291,17 +305,17 @@ impl OpDispenser for ScyllaBatchDispenser {
             // Mirror nbrs batch dispenser's `rows_inserted`
             // capture — drives the `rows/s` status metric. Lands on
             // the per-fiber kernel via ctx.wires.write.
-            let _ = ctx.wires.write(
-                "rows_inserted",
-                polydat::ast::Value::U64(submitted as u64),
-            );
+            let _ = ctx
+                .wires
+                .write("rows_inserted", polydat::ast::Value::U64(submitted as u64));
             // Aggregate the same values onto the dispenser's status
             // counters so the display sees them through
             // `status_counters()`. Reached only on the success path (a
             // failed sub-batch returns early above), so `batch_writes`
             // counts exactly the ops that wrote rows — the denominator
             // for the true average batch size.
-            self.rows_total.fetch_add(submitted as u64, Ordering::Relaxed);
+            self.rows_total
+                .fetch_add(submitted as u64, Ordering::Relaxed);
             if submitted >= 1 {
                 self.batch_writes.fetch_add(1, Ordering::Relaxed);
             }

@@ -76,8 +76,7 @@ impl LogSink {
 /// Silently no-ops on a second call — the first session wins,
 /// matching the previous behavior of `set_log_file`.
 pub fn init(path: &Path) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .create(true).append(true).open(path)?;
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(LOG_CHANNEL_CAPACITY);
     spawn_writer_thread(file, rx);
     let _ = GLOBAL_LOG_SINK.set(LogSink {

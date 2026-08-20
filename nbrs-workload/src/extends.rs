@@ -42,8 +42,7 @@ enum Source {
 pub fn load_and_merge(path: &Path) -> Result<String, String> {
     let mut chain: Vec<String> = Vec::new();
     let merged_jval = load_recursive(Source::File(path.to_path_buf()), &mut chain)?;
-    serde_yaml::to_string(&merged_jval)
-        .map_err(|e| format!("re-serialising merged workload: {e}"))
+    serde_yaml::to_string(&merged_jval).map_err(|e| format!("re-serialising merged workload: {e}"))
 }
 
 /// SRD-85: load a bundled workload from the catalog, follow its
@@ -54,8 +53,7 @@ pub fn load_and_merge_bundled(
 ) -> Result<String, String> {
     let mut chain: Vec<String> = Vec::new();
     let merged_jval = load_recursive(Source::Bundled(bundled), &mut chain)?;
-    serde_yaml::to_string(&merged_jval)
-        .map_err(|e| format!("re-serialising merged workload: {e}"))
+    serde_yaml::to_string(&merged_jval).map_err(|e| format!("re-serialising merged workload: {e}"))
 }
 
 /// Recursive loader: parses the source, resolves any `extends:`,
@@ -65,12 +63,11 @@ pub fn load_and_merge_bundled(
 fn load_recursive(src: Source, chain: &mut Vec<String>) -> Result<JVal, String> {
     // Resolve the source to (cycle key, display name, text,
     // directory context for relative extends targets).
-    let (key, display, text, origin_dir): (String, String, String, Option<PathBuf>) = match &src
-    {
+    let (key, display, text, origin_dir): (String, String, String, Option<PathBuf>) = match &src {
         Source::File(path) => {
-            let canonical = path.canonicalize().map_err(|e| {
-                format!("extends: target not found: {} ({e})", path.display())
-            })?;
+            let canonical = path
+                .canonicalize()
+                .map_err(|e| format!("extends: target not found: {} ({e})", path.display()))?;
             let text = std::fs::read_to_string(&canonical)
                 .map_err(|e| format!("read {}: {e}", canonical.display()))?;
             let dir = canonical.parent().map(|p| p.to_path_buf());
@@ -94,8 +91,8 @@ fn load_recursive(src: Source, chain: &mut Vec<String>) -> Result<JVal, String> 
     }
     chain.push(key);
 
-    let mut jval: JVal = serde_yaml::from_str(&text)
-        .map_err(|e| format!("YAML parse error in {display}: {e}"))?;
+    let mut jval: JVal =
+        serde_yaml::from_str(&text).map_err(|e| format!("YAML parse error in {display}: {e}"))?;
 
     let extends_target = extract_extends_field(&jval, &display)?;
 
@@ -104,15 +101,18 @@ fn load_recursive(src: Source, chain: &mut Vec<String>) -> Result<JVal, String> 
             Source::Bundled(w) => Some(w.name),
             Source::File(_) => None,
         };
-        let parent_src =
-            resolve_extends_target(origin_dir.as_deref(), bundled_origin, &extends_str, &display)?;
+        let parent_src = resolve_extends_target(
+            origin_dir.as_deref(),
+            bundled_origin,
+            &extends_str,
+            &display,
+        )?;
         let parent_display = match &parent_src {
             Source::File(p) => p.display().to_string(),
             Source::Bundled(w) => format!("bundled workload `{}`", w.name),
         };
-        let parent_jval = load_recursive(parent_src, chain).map_err(|e| {
-            format!("while loading {display}'s parent {parent_display}: {e}")
-        })?;
+        let parent_jval = load_recursive(parent_src, chain)
+            .map_err(|e| format!("while loading {display}'s parent {parent_display}: {e}"))?;
 
         // Strip `extends:` from the child before merging so the
         // merge fn doesn't need to special-case it.
@@ -150,9 +150,7 @@ fn resolve_extends_target(
     target: &str,
     child_display: &str,
 ) -> Result<Source, String> {
-    let local: Option<PathBuf> = origin_dir
-        .map(|d| d.join(target))
-        .filter(|p| p.exists());
+    let local: Option<PathBuf> = origin_dir.map(|d| d.join(target)).filter(|p| p.exists());
 
     let stem = target
         .strip_suffix(".yaml")
@@ -197,7 +195,9 @@ fn extract_extends_field(jval: &JVal, source: &str) -> Result<Option<String>, St
     let Some(obj) = jval.as_object() else {
         return Err(format!("{source} top level must be a YAML mapping"));
     };
-    let Some(v) = obj.get("extends") else { return Ok(None); };
+    let Some(v) = obj.get("extends") else {
+        return Ok(None);
+    };
     match v {
         JVal::String(s) if !s.is_empty() => Ok(Some(s.clone())),
         JVal::String(_) => Err(format!("{source}: `extends:` value is empty")),
@@ -236,8 +236,12 @@ fn merge(parent: JVal, child: JVal) -> JVal {
     // Both should be objects in practice (extract_extends_field
     // already validated). Be defensive: a non-object child or
     // parent falls back to whichever is an object.
-    let Some(mut merged) = parent.as_object().cloned() else { return child; };
-    let Some(child_obj) = child.as_object() else { return JVal::Object(merged); };
+    let Some(mut merged) = parent.as_object().cloned() else {
+        return child;
+    };
+    let Some(child_obj) = child.as_object() else {
+        return JVal::Object(merged);
+    };
 
     for (key, child_val) in child_obj {
         let parent_val = merged.remove(key);
@@ -246,16 +250,16 @@ fn merge(parent: JVal, child: JVal) -> JVal {
             ("description", _) => child_val.clone(),
 
             ("params", Some(p)) => merge_per_key(p, child_val.clone()),
-            ("tags", Some(p))   => merge_per_key(p, child_val.clone()),
+            ("tags", Some(p)) => merge_per_key(p, child_val.clone()),
 
             ("bindings", Some(p)) => concat_bindings(p, child_val.clone()),
 
             ("status_metrics", Some(p)) => union_lists(p, child_val.clone()),
 
-            ("report", Some(p))    => merge_per_name(p, child_val.clone()),
+            ("report", Some(p)) => merge_per_name(p, child_val.clone()),
             ("scenarios", Some(p)) => merge_per_name(p, child_val.clone()),
-            ("phases", Some(p))    => merge_per_name(p, child_val.clone()),
-            ("blocks", Some(p))    => merge_per_name(p, child_val.clone()),
+            ("phases", Some(p)) => merge_per_name(p, child_val.clone()),
+            ("blocks", Some(p)) => merge_per_name(p, child_val.clone()),
 
             ("ops", Some(p)) => merge_ops(p, child_val.clone()),
 
@@ -269,8 +273,12 @@ fn merge(parent: JVal, child: JVal) -> JVal {
 
 /// Per-key merge: child wins on conflict, new keys added.
 fn merge_per_key(parent: JVal, child: JVal) -> JVal {
-    let Some(mut p_map) = parent.as_object().cloned() else { return child; };
-    let Some(c_map) = child.as_object() else { return JVal::Object(p_map); };
+    let Some(mut p_map) = parent.as_object().cloned() else {
+        return child;
+    };
+    let Some(c_map) = child.as_object() else {
+        return JVal::Object(p_map);
+    };
     for (k, v) in c_map {
         p_map.insert(k.clone(), v.clone());
     }
@@ -296,7 +304,9 @@ fn concat_bindings(parent: JVal, child: JVal) -> JVal {
         (JVal::String(p), JVal::String(c)) => {
             let mut out = String::with_capacity(p.len() + c.len() + 1);
             out.push_str(p);
-            if !p.ends_with('\n') { out.push('\n'); }
+            if !p.ends_with('\n') {
+                out.push('\n');
+            }
             out.push_str(c);
             JVal::String(out)
         }
@@ -308,8 +318,12 @@ fn concat_bindings(parent: JVal, child: JVal) -> JVal {
 /// List union with first-occurrence ordering and dedup. Parent's
 /// entries come first, child's appended; duplicates suppressed.
 fn union_lists(parent: JVal, child: JVal) -> JVal {
-    let Some(p_list) = parent.as_array().cloned() else { return child; };
-    let Some(c_list) = child.as_array() else { return JVal::Array(p_list); };
+    let Some(p_list) = parent.as_array().cloned() else {
+        return child;
+    };
+    let Some(c_list) = child.as_array() else {
+        return JVal::Array(p_list);
+    };
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<JVal> = Vec::with_capacity(p_list.len() + c_list.len());
     for v in p_list.into_iter().chain(c_list.iter().cloned()) {
@@ -342,8 +356,12 @@ fn merge_ops(parent: JVal, child: JVal) -> JVal {
 mod tests {
     use super::*;
 
-    fn vstr(s: &str) -> JVal { JVal::String(s.to_string()) }
-    fn arr(items: Vec<JVal>) -> JVal { JVal::Array(items) }
+    fn vstr(s: &str) -> JVal {
+        JVal::String(s.to_string())
+    }
+    fn arr(items: Vec<JVal>) -> JVal {
+        JVal::Array(items)
+    }
 
     fn mp(pairs: &[(&str, JVal)]) -> JVal {
         let mut m = serde_json::Map::new();
@@ -366,19 +384,13 @@ mod tests {
 
     #[test]
     fn concat_bindings_string_form() {
-        let merged = concat_bindings(
-            vstr("a := 1"),
-            vstr("b := 2"),
-        );
+        let merged = concat_bindings(vstr("a := 1"), vstr("b := 2"));
         assert_eq!(merged, vstr("a := 1\nb := 2"));
     }
 
     #[test]
     fn concat_bindings_preserves_trailing_newline() {
-        let merged = concat_bindings(
-            vstr("a := 1\n"),
-            vstr("b := 2"),
-        );
+        let merged = concat_bindings(vstr("a := 1\n"), vstr("b := 2"));
         assert_eq!(merged, vstr("a := 1\nb := 2"));
     }
 
@@ -397,7 +409,10 @@ mod tests {
     #[test]
     fn merge_strips_extends() {
         let parent = mp(&[("description", vstr("parent"))]);
-        let child  = mp(&[("extends", vstr("./p.yaml")), ("description", vstr("child"))]);
+        let child = mp(&[
+            ("extends", vstr("./p.yaml")),
+            ("description", vstr("child")),
+        ]);
         let merged = merge(parent, child);
         let obj = merged.as_object().unwrap();
         assert!(obj.get("extends").is_none());
@@ -406,16 +421,28 @@ mod tests {
 
     #[test]
     fn merge_phases_per_name_replace() {
-        let parent = mp(&[("phases", mp(&[
-            ("a", mp(&[("kind", vstr("p_a"))])),
-            ("b", mp(&[("kind", vstr("p_b"))])),
-        ]))]);
-        let child = mp(&[("phases", mp(&[
-            ("b", mp(&[("kind", vstr("c_b"))])),
-            ("c", mp(&[("kind", vstr("c_c"))])),
-        ]))]);
+        let parent = mp(&[(
+            "phases",
+            mp(&[
+                ("a", mp(&[("kind", vstr("p_a"))])),
+                ("b", mp(&[("kind", vstr("p_b"))])),
+            ]),
+        )]);
+        let child = mp(&[(
+            "phases",
+            mp(&[
+                ("b", mp(&[("kind", vstr("c_b"))])),
+                ("c", mp(&[("kind", vstr("c_c"))])),
+            ]),
+        )]);
         let merged = merge(parent, child);
-        let phases = merged.as_object().unwrap().get("phases").unwrap().as_object().unwrap();
+        let phases = merged
+            .as_object()
+            .unwrap()
+            .get("phases")
+            .unwrap()
+            .as_object()
+            .unwrap();
         assert_eq!(phases.len(), 3);
         assert_eq!(phases.get("a").unwrap(), &mp(&[("kind", vstr("p_a"))]));
         assert_eq!(phases.get("b").unwrap(), &mp(&[("kind", vstr("c_b"))]));

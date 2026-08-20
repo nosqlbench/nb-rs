@@ -36,9 +36,7 @@ use std::time::{Duration, Instant};
 use crate::cadence_reporter::CadenceReporter;
 use crate::component::Component;
 use crate::labels::Labels;
-use crate::snapshot::{
-    CounterValue, Metric, MetricFamily, MetricPoint, MetricSet, MetricValue,
-};
+use crate::snapshot::{CounterValue, Metric, MetricFamily, MetricPoint, MetricSet, MetricValue};
 
 /// A label-based filter for selecting which metrics a query operates
 /// on. Composes by AND — every constraint must match.
@@ -55,11 +53,16 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn all() -> Self { Self::default() }
+    pub fn all() -> Self {
+        Self::default()
+    }
 
     /// Match any series in the named family.
     pub fn family(name: impl Into<String>) -> Self {
-        Self { family: Some(name.into()), ..Default::default() }
+        Self {
+            family: Some(name.into()),
+            ..Default::default()
+        }
     }
 
     /// Builder form: constrain this selection to the named family.
@@ -76,7 +79,11 @@ impl Selection {
 
     /// Restrict to series whose label value at `key` contains
     /// `substring` (operator-friendly for path-style labels).
-    pub fn with_label_containing(mut self, key: impl Into<String>, substring: impl Into<String>) -> Self {
+    pub fn with_label_containing(
+        mut self,
+        key: impl Into<String>,
+        substring: impl Into<String>,
+    ) -> Self {
         self.label_contains.push((key.into(), substring.into()));
         self
     }
@@ -84,13 +91,18 @@ impl Selection {
     /// True when the selection's family constraint matches the
     /// candidate, or there is no family constraint.
     pub fn matches_family(&self, family_name: &str) -> bool {
-        self.family.as_deref().map(|f| f == family_name).unwrap_or(true)
+        self.family
+            .as_deref()
+            .map(|f| f == family_name)
+            .unwrap_or(true)
     }
 
     /// True when every label constraint is satisfied by `labels`.
     pub fn matches_labels(&self, labels: &Labels) -> bool {
         for (k, v) in &self.label_eq {
-            if labels.get(k) != Some(v.as_str()) { return false; }
+            if labels.get(k) != Some(v.as_str()) {
+                return false;
+            }
         }
         for (k, sub) in &self.label_contains {
             match labels.get(k) {
@@ -116,8 +128,9 @@ impl std::fmt::Display for SelectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoMatch => write!(f, "selection matched no metric instance"),
-            Self::MultipleMatches(n) =>
-                write!(f, "selection matched {n} instances, expected exactly one"),
+            Self::MultipleMatches(n) => {
+                write!(f, "selection matched {n} instances, expected exactly one")
+            }
         }
     }
 }
@@ -138,17 +151,19 @@ pub struct MetricsQuery {
 }
 
 impl MetricsQuery {
-    pub fn new(
-        reporter: Arc<CadenceReporter>,
-        component_root: Arc<RwLock<Component>>,
-    ) -> Self {
-        Self { reporter, component_root }
+    pub fn new(reporter: Arc<CadenceReporter>, component_root: Arc<RwLock<Component>>) -> Self {
+        Self {
+            reporter,
+            component_root,
+        }
     }
 
     /// Reference to the cadence reporter — exposed so consumers that
     /// need to enumerate declared cadences (e.g., per-cadence
     /// columns) can ask it directly.
-    pub fn reporter(&self) -> &Arc<CadenceReporter> { &self.reporter }
+    pub fn reporter(&self) -> &Arc<CadenceReporter> {
+        &self.reporter
+    }
 
     /// Count of phases currently in `Running` state anywhere in the
     /// session's component tree. A pure structural query — no
@@ -156,7 +171,8 @@ impl MetricsQuery {
     /// decide "live vs waiting vs done" without re-implementing
     /// that logic over its own state mirror.
     pub fn running_phase_count(&self) -> usize {
-        self.component_root.read()
+        self.component_root
+            .read()
             .map(|c| c.running_descendant_count())
             .unwrap_or(0)
     }
@@ -235,11 +251,17 @@ impl MetricsQuery {
     pub fn cadence_window(&self, cadence: Duration, selection: &Selection) -> MetricSet {
         let mut out = MetricSet::at(Instant::now(), cadence);
         for component in self.reporter.component_labels() {
-            let Some(snap) = self.reporter.latest(&component, cadence) else { continue };
+            let Some(snap) = self.reporter.latest(&component, cadence) else {
+                continue;
+            };
             for family in snap.families() {
-                if !selection.matches_family(family.name()) { continue; }
+                if !selection.matches_family(family.name()) {
+                    continue;
+                }
                 for metric in family.metrics() {
-                    if !selection.matches_labels(metric.labels()) { continue; }
+                    if !selection.matches_labels(metric.labels()) {
+                        continue;
+                    }
                     insert_metric_into(&mut out, family, metric);
                 }
             }
@@ -256,9 +278,13 @@ impl MetricsQuery {
         let cap = crate::cadence_reporter::HISTORY_RING_CAP as u128;
         let mut chosen: Option<Duration> = None;
         for layer in self.reporter.layers() {
-            if layer.hidden { continue; }
+            if layer.hidden {
+                continue;
+            }
             chosen = Some(layer.interval);
-            if layer.interval.as_nanos().saturating_mul(cap) >= span.as_nanos() { break; }
+            if layer.interval.as_nanos().saturating_mul(cap) >= span.as_nanos() {
+                break;
+            }
         }
         chosen
     }
@@ -273,17 +299,23 @@ impl MetricsQuery {
     /// latency/value distribution use [`Self::distribution_over`].
     pub fn increase_over(&self, span: Duration, selection: &Selection) -> MetricSet {
         let mut out = MetricSet::at(Instant::now(), span);
-        let Some(cadence) = self.finest_cadence_covering(span) else { return out };
+        let Some(cadence) = self.finest_cadence_covering(span) else {
+            return out;
+        };
         let windows = ((span.as_nanos().max(1)) / (cadence.as_nanos().max(1))).max(1) as usize;
         let now = Instant::now();
         for component in self.reporter.component_labels() {
             let ring = self.reporter.ring(&component, cadence);
-            if ring.is_empty() { continue; }
+            if ring.is_empty() {
+                continue;
+            }
             let end = ring.len();
             let start = end.saturating_sub(windows);
             let per = coalesce_component_windows(
                 ring[start..end].iter().map(|a| a.as_ref()),
-                selection, now, span,
+                selection,
+                now,
+                span,
             );
             // Baseline = the running total just BEFORE the span (window at
             // start-1); subtracting it turns a counter's window-end cumulative
@@ -306,17 +338,23 @@ impl MetricsQuery {
     /// distribution, never a counter increase.
     pub fn distribution_over(&self, span: Duration, selection: &Selection) -> MetricSet {
         let mut out = MetricSet::at(Instant::now(), span);
-        let Some(cadence) = self.finest_cadence_covering(span) else { return out };
+        let Some(cadence) = self.finest_cadence_covering(span) else {
+            return out;
+        };
         let windows = ((span.as_nanos().max(1)) / (cadence.as_nanos().max(1))).max(1) as usize;
         let now = Instant::now();
         for component in self.reporter.component_labels() {
             let ring = self.reporter.ring(&component, cadence);
-            if ring.is_empty() { continue; }
+            if ring.is_empty() {
+                continue;
+            }
             let end = ring.len();
             let start = end.saturating_sub(windows);
             let per = coalesce_component_windows(
                 ring[start..end].iter().map(|a| a.as_ref()),
-                selection, now, span,
+                selection,
+                now,
+                span,
             );
             for family in per.families() {
                 for metric in family.metrics() {
@@ -433,11 +471,17 @@ impl MetricHandle {
     pub fn read_now(&self) -> MetricSet {
         let mut out = MetricSet::at(Instant::now(), self.cadence);
         for component in self.reporter.component_labels() {
-            let Some(snap) = self.reporter.latest(&component, self.cadence) else { continue };
+            let Some(snap) = self.reporter.latest(&component, self.cadence) else {
+                continue;
+            };
             for family in snap.families() {
-                if !self.selection.matches_family(family.name()) { continue; }
+                if !self.selection.matches_family(family.name()) {
+                    continue;
+                }
                 for metric in family.metrics() {
-                    if !self.selection.matches_labels(metric.labels()) { continue; }
+                    if !self.selection.matches_labels(metric.labels()) {
+                        continue;
+                    }
                     insert_metric_into(&mut out, family, metric);
                 }
             }
@@ -453,11 +497,15 @@ impl MetricHandle {
     pub fn refresh(&mut self) {}
 
     /// The selection this handle was resolved against.
-    pub fn selection(&self) -> &Selection { &self.selection }
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
 
     /// Cadence this handle reads from (the smallest declared
     /// cadence at resolve time).
-    pub fn cadence(&self) -> Duration { self.cadence }
+    pub fn cadence(&self) -> Duration {
+        self.cadence
+    }
 
     /// Number of components currently tracked by the reporter —
     /// informational. Not cached; queried fresh each call.
@@ -489,7 +537,8 @@ fn insert_metric_with_mode(
     mode: crate::snapshot::CombineMode,
 ) {
     let Some(point) = metric.point() else { return };
-    let existing = out.family(family.name())
+    let existing = out
+        .family(family.name())
         .and_then(|f| f.metric_with_labels(metric.labels()))
         .is_some();
     if existing {
@@ -508,8 +557,11 @@ fn insert_metric_with_mode(
         );
         let merged = MetricSet::coalesce_with_mode(
             std::slice::from_ref(out)
-                .iter().chain(std::slice::from_ref(&tmp).iter())
-                .cloned().collect::<Vec<_>>().as_slice(),
+                .iter()
+                .chain(std::slice::from_ref(&tmp).iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .as_slice(),
             mode,
         );
         *out = merged;
@@ -539,11 +591,18 @@ fn coalesce_component_windows<'a>(
     let mut per = MetricSet::at(captured_at, interval);
     for src in sources {
         for family in src.families() {
-            if !selection.matches_family(family.name()) { continue; }
+            if !selection.matches_family(family.name()) {
+                continue;
+            }
             for metric in family.metrics() {
-                if !selection.matches_labels(metric.labels()) { continue; }
+                if !selection.matches_labels(metric.labels()) {
+                    continue;
+                }
                 insert_metric_with_mode(
-                    &mut per, family, metric, crate::snapshot::CombineMode::Coalesce,
+                    &mut per,
+                    family,
+                    metric,
+                    crate::snapshot::CombineMode::Coalesce,
                 );
             }
         }
@@ -564,7 +623,9 @@ fn insert_counter_increase_into(
     baseline: Option<&MetricSet>,
 ) {
     let Some(point) = metric.point() else { return };
-    let MetricValue::Counter(c) = point.value() else { return };
+    let MetricValue::Counter(c) = point.value() else {
+        return;
+    };
     let base = baseline
         .and_then(|b| b.family(family.name()))
         .and_then(|f| f.metric_with_labels(metric.labels()))
@@ -592,7 +653,7 @@ fn insert_counter_increase_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cadence::{Cadences, CadenceTree};
+    use crate::cadence::{CadenceTree, Cadences};
     use crate::component::{Component, ComponentState, InstrumentRef, attach};
     use crate::instruments::counter::Counter;
     use crate::snapshot::MetricValue;
@@ -600,16 +661,18 @@ mod tests {
 
     fn build_one_component_query() -> (Arc<RwLock<Component>>, Arc<CadenceReporter>, MetricsQuery) {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
-        let phase = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "load"), HashMap::new()),
-        ));
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "load"),
+            HashMap::new(),
+        )));
         attach(&root, &phase);
         {
             let mut p = phase.write().unwrap();
             p.set_state(ComponentState::Running);
             let counter = Arc::new(Counter::new(Labels::of("name", "ops")));
             counter.inc_by(7);
-            p.register_instrument("ops", InstrumentRef::Counter(counter)).unwrap();
+            p.register_instrument("ops", InstrumentRef::Counter(counter))
+                .unwrap();
         }
 
         let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
@@ -625,8 +688,10 @@ mod tests {
         // `cadence_window(smallest_declared)`. So we must ingest a
         // closed window first; before any close, `now` is empty.
         let (_root, reporter, query) = build_one_component_query();
-        assert!(query.now(&Selection::family("ops")).is_empty(),
-            "pre-close now should be empty");
+        assert!(
+            query.now(&Selection::family("ops")).is_empty(),
+            "pre-close now should be empty"
+        );
 
         let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
         let mut s = MetricSet::new(Duration::from_millis(100));
@@ -635,8 +700,16 @@ mod tests {
         reporter.flush_for_tests();
 
         let snap = query.now(&Selection::family("ops"));
-        let total = match snap.family("ops").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let total = match snap
+            .family("ops")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Counter(c) => c.cumulative,
             _ => panic!("not a counter"),
         };
@@ -654,7 +727,9 @@ mod tests {
         reporter.flush_for_tests();
 
         let snap = query.cadence_window(Duration::from_millis(100), &Selection::family("ops"));
-        let f = snap.family("ops").expect("ops family in cadence_window result");
+        let f = snap
+            .family("ops")
+            .expect("ops family in cadence_window result");
         match f.metrics().next().unwrap().point().unwrap().value() {
             MetricValue::Counter(c) => assert_eq!(c.cumulative, 99),
             _ => panic!("not a counter"),
@@ -675,12 +750,23 @@ mod tests {
         reporter.flush_for_tests();
 
         let snap = query.session_lifetime(&Selection::family("ops"));
-        let cumulative = match snap.family("ops").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let cumulative = match snap
+            .family("ops")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Counter(c) => c.cumulative,
             _ => panic!("not a counter"),
         };
-        assert_eq!(cumulative, 42, "session_lifetime cumulative overcounted (got {cumulative})");
+        assert_eq!(
+            cumulative, 42,
+            "session_lifetime cumulative overcounted (got {cumulative})"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -702,12 +788,23 @@ mod tests {
         reporter.flush_for_tests();
 
         let snap = query.increase_over(Duration::from_millis(250), &Selection::family("ops"));
-        let value = match snap.family("ops").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let value = match snap
+            .family("ops")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Counter(c) => c.cumulative,
             _ => panic!("not a counter"),
         };
-        assert_eq!(value, 20, "span increment over the recent window (got {value})");
+        assert_eq!(
+            value, 20,
+            "span increment over the recent window (got {value})"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -724,13 +821,30 @@ mod tests {
             reporter.flush_for_tests();
             std::thread::sleep(Duration::from_millis(2));
         }
-        let read = |span| match query.increase_over(span, &Selection::family("ops"))
-            .family("ops").unwrap().metrics().next().unwrap().point().unwrap().value() {
+        let read = |span| match query
+            .increase_over(span, &Selection::family("ops"))
+            .family("ops")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Counter(c) => c.cumulative,
             _ => panic!("not a counter"),
         };
-        assert_eq!(read(Duration::from_millis(100)), 10, "last window increase = 120−110");
-        assert_eq!(read(Duration::from_millis(200)), 20, "last two windows increase = 120−100");
+        assert_eq!(
+            read(Duration::from_millis(100)),
+            10,
+            "last window increase = 120−110"
+        );
+        assert_eq!(
+            read(Duration::from_millis(200)),
+            20,
+            "last two windows increase = 120−100"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -750,9 +864,18 @@ mod tests {
             reporter.flush_for_tests();
             std::thread::sleep(Duration::from_millis(2));
         }
-        let snap = query.distribution_over(Duration::from_millis(250), &Selection::family("latency"));
-        let count = match snap.family("latency").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
+        let snap =
+            query.distribution_over(Duration::from_millis(250), &Selection::family("latency"));
+        let count = match snap
+            .family("latency")
+            .unwrap()
+            .metrics()
+            .next()
+            .unwrap()
+            .point()
+            .unwrap()
+            .value()
+        {
             MetricValue::Histogram(h) => h.count,
             _ => panic!("not a histogram"),
         };
@@ -784,10 +907,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn select_one_errors_on_zero_matches() {
         let (_root, _reporter, query) = build_one_component_query();
-        let result = query.select_one(|q| q.cadence_window(
-            Duration::from_millis(100),
-            &Selection::family("nonexistent"),
-        ));
+        let result = query.select_one(|q| {
+            q.cadence_window(
+                Duration::from_millis(100),
+                &Selection::family("nonexistent"),
+            )
+        });
         assert_eq!(result.unwrap_err(), SelectError::NoMatch);
     }
 
@@ -800,10 +925,9 @@ mod tests {
         reporter.ingest(&labels, s);
         reporter.flush_for_tests();
 
-        let result = query.select_one(|q| q.cadence_window(
-            Duration::from_millis(100),
-            &Selection::family("ops"),
-        ));
+        let result = query.select_one(|q| {
+            q.cadence_window(Duration::from_millis(100), &Selection::family("ops"))
+        });
         assert!(result.is_ok());
     }
 }

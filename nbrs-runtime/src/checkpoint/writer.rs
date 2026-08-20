@@ -103,12 +103,7 @@ impl CheckpointWriter {
     /// the leading `session_start` record before returning.
     /// Subsequent `declare_phase` / lifecycle calls append events
     /// onto the same log.
-    pub fn new(
-        path: PathBuf,
-        session: String,
-        started_at: String,
-        invocation: u32,
-    ) -> Self {
+    pub fn new(path: PathBuf, session: String, started_at: String, invocation: u32) -> Self {
         let doc = Checkpoint {
             version: CHECKPOINT_VERSION,
             session: session.clone(),
@@ -366,11 +361,7 @@ impl CheckpointWriter {
 
     /// Record the latest cursor-state snapshot for a Tier 2
     /// phase.
-    pub fn update_cursor(
-        &self,
-        identity: &PhaseIdentity,
-        cursor_state: serde_json::Value,
-    ) {
+    pub fn update_cursor(&self, identity: &PhaseIdentity, cursor_state: serde_json::Value) {
         let counts = {
             let mut g = self.inner.lock().unwrap();
             let key = identity_key(identity);
@@ -479,27 +470,29 @@ impl CheckpointWriter {
         if !self.enabled {
             return None;
         }
-        let ended = self.run_reached_end
+        let ended = self
+            .run_reached_end
             .load(std::sync::atomic::Ordering::Relaxed);
         let cp = self.snapshot();
         let recoverable = cp.phases.iter().any(|e| {
-            e.skip_eligible && match e.status {
-                PhaseStatus::Completed => false,
-                // Failed (and the anomalous started-never-finished)
-                // are actionable regardless of how the run ended.
-                PhaseStatus::Failed | PhaseStatus::Running => true,
-                // Declared-but-never-started is only evidence of
-                // interruption when the run was cut short. Every
-                // pre-mapped phase is declared up front (so resume
-                // can tell "didn't run yet" from "wasn't planned"),
-                // and runtime predicates (`continue_if`, for-loop
-                // bounds) legitimately leave some entries Pending
-                // forever — a clean run end must not read those as
-                // work left behind. (Observed 2026-08-05: a fully
-                // successful 78/78 adaptive run advised resuming
-                // its 28 continue_if-excluded tiers.)
-                PhaseStatus::Pending => !ended,
-            }
+            e.skip_eligible
+                && match e.status {
+                    PhaseStatus::Completed => false,
+                    // Failed (and the anomalous started-never-finished)
+                    // are actionable regardless of how the run ended.
+                    PhaseStatus::Failed | PhaseStatus::Running => true,
+                    // Declared-but-never-started is only evidence of
+                    // interruption when the run was cut short. Every
+                    // pre-mapped phase is declared up front (so resume
+                    // can tell "didn't run yet" from "wasn't planned"),
+                    // and runtime predicates (`continue_if`, for-loop
+                    // bounds) legitimately leave some entries Pending
+                    // forever — a clean run end must not read those as
+                    // work left behind. (Observed 2026-08-05: a fully
+                    // successful 78/78 adaptive run advised resuming
+                    // its 28 continue_if-excluded tiers.)
+                    PhaseStatus::Pending => !ended,
+                }
         });
         if !recoverable {
             return None;
@@ -511,7 +504,10 @@ impl CheckpointWriter {
              SESSION_DIRECTORY) --resume\n  \
              To pin the session name for repeatable resumes:\n    \
              nbrs run <workload> --session {} (then add --resume next time)",
-            self.path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+            self.path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             cp.session,
         ))
     }
@@ -538,17 +534,13 @@ impl CheckpointWriter {
                 // Serialisation failure is a programming bug —
                 // log loudly and drop the event rather than
                 // panicking the whole session.
-                eprintln!(
-                    "checkpoint: serialise event failed: {e}; dropping record",
-                );
+                eprintln!("checkpoint: serialise event failed: {e}; dropping record",);
                 return;
             }
         };
         line.push('\n');
         if let Err(e) = g.file.write_all(line.as_bytes()) {
-            eprintln!(
-                "checkpoint: append to {}: {e}", self.path.display(),
-            );
+            eprintln!("checkpoint: append to {}: {e}", self.path.display(),);
         }
     }
 
@@ -576,31 +568,26 @@ impl CheckpointWriter {
 /// session-startup error rather than a silent skip.
 fn open_append(path: &std::path::Path) -> File {
     if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent) {
-            panic!(
-                "checkpoint: create parent dir {} for {}: {e}",
-                parent.display(),
-                path.display(),
-            );
-        }
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        panic!(
+            "checkpoint: create parent dir {} for {}: {e}",
+            parent.display(),
+            path.display(),
+        );
+    }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-        .unwrap_or_else(|e| {
-            panic!(
-                "checkpoint: open append {} failed: {e}",
-                path.display(),
-            )
-        })
+        .unwrap_or_else(|e| panic!("checkpoint: open append {} failed: {e}", path.display(),))
 }
 
 /// Build a lookup key for the index map. Identity equality is
 /// `(yaml_path, coords)` per SRD-44; the hash is sufficiency,
 /// not identity, so it's deliberately excluded from the key.
 pub(crate) fn identity_key(identity: &PhaseIdentity) -> String {
-    let path_json = serde_json::to_string(&identity.yaml_path)
-        .unwrap_or_else(|_| String::new());
+    let path_json = serde_json::to_string(&identity.yaml_path).unwrap_or_else(|_| String::new());
     format!("{path_json}\x1f{}", identity.coords)
 }
 
@@ -660,7 +647,6 @@ fn build_index(phases: &[PhaseEntry]) -> HashMap<String, usize> {
     m
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,7 +667,9 @@ mod tests {
         let d = std::env::temp_dir().join(format!(
             "nbrs-checkpoint-writer-{}",
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -692,7 +680,10 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("checkpoint.jsonl");
         let w = CheckpointWriter::new(
-            path.clone(), "sess".into(), "2026-01-01T00:00:00Z".into(), 1,
+            path.clone(),
+            "sess".into(),
+            "2026-01-01T00:00:00Z".into(),
+            1,
         );
         let id = ident("schema", "");
         w.declare_phase(id.clone(), true);
@@ -709,8 +700,11 @@ mod tests {
         // Verify the on-disk log carries each event line in order.
         let raw = std::fs::read_to_string(&path).expect("read log");
         let lines: Vec<&str> = raw.lines().collect();
-        assert_eq!(lines.len(), 4,
-            "expected session_start, phase_declared, phase_started, phase_completed");
+        assert_eq!(
+            lines.len(),
+            4,
+            "expected session_start, phase_declared, phase_started, phase_completed"
+        );
         assert!(lines[0].contains("\"type\":\"session_start\""));
         assert!(lines[1].contains("\"type\":\"phase_declared\""));
         assert!(lines[2].contains("\"type\":\"phase_started\""));
@@ -728,7 +722,9 @@ mod tests {
         let dir = tempdir();
         let w = CheckpointWriter::new(
             dir.join("checkpoint.jsonl"),
-            "sess".into(), "2026-01-01T00:00:00Z".into(), 1,
+            "sess".into(),
+            "2026-01-01T00:00:00Z".into(),
+            1,
         );
         let ran = ident("tier", "(part=0)");
         let excluded = ident("tier", "(part=17)");
@@ -738,23 +734,29 @@ mod tests {
         w.phase_completed(&ran, 1.0);
 
         // Cut short (no end mark): the Pending entry is resumable.
-        assert!(w.resume_hint().is_some(),
-            "an interrupted run must advise resuming pending phases");
+        assert!(
+            w.resume_hint().is_some(),
+            "an interrupted run must advise resuming pending phases"
+        );
 
         // Clean end: the same Pending entry was excluded by a
         // runtime predicate, not left behind.
         w.mark_run_reached_end();
-        assert!(w.resume_hint().is_none(),
+        assert!(
+            w.resume_hint().is_none(),
             "a run that reached its end must not advise resuming \
-             predicate-excluded phases");
+             predicate-excluded phases"
+        );
 
         // A failure stays actionable even after a clean end.
         let failed = ident("tier", "(part=3)");
         w.declare_phase(failed.clone(), true);
         w.phase_started(&failed);
         w.phase_failed(&failed, "boom");
-        assert!(w.resume_hint().is_some(),
-            "failed phases must keep the hint even on a clean end");
+        assert!(
+            w.resume_hint().is_some(),
+            "failed phases must keep the hint even on a clean end"
+        );
     }
 
     #[test]
@@ -771,19 +773,22 @@ mod tests {
         w.phase_completed(&id, 1.0);
         w.flush().expect("flush is a harmless no-op");
 
-        assert!(!path.exists(),
-            "dry-run must not create a checkpoint file at {}", path.display());
-        assert!(w.resume_hint().is_none(),
-            "dry-run must never advertise a resumable session");
+        assert!(
+            !path.exists(),
+            "dry-run must not create a checkpoint file at {}",
+            path.display()
+        );
+        assert!(
+            w.resume_hint().is_none(),
+            "dry-run must never advertise a resumable session"
+        );
     }
 
     #[test]
     fn redundant_declare_is_idempotent() {
         let dir = tempdir();
         let path = dir.join("c.jsonl");
-        let w = CheckpointWriter::new(
-            path.clone(), "s".into(), "t".into(), 1,
-        );
+        let w = CheckpointWriter::new(path.clone(), "s".into(), "t".into(), 1);
         let id = ident("p", "(k=1)");
         w.declare_phase(id.clone(), true);
         w.declare_phase(id.clone(), false); // re-declare ignored
@@ -794,7 +799,8 @@ mod tests {
         // Only one phase_declared in the log (plus the leading
         // session_start).
         let raw = std::fs::read_to_string(&path).expect("read");
-        let count = raw.lines()
+        let count = raw
+            .lines()
             .filter(|l| l.contains("\"type\":\"phase_declared\""))
             .count();
         assert_eq!(count, 1, "second declare must not emit a duplicate event");
@@ -808,18 +814,16 @@ mod tests {
         // the flock. Mirrors the production lifecycle: prior
         // process exits before resume starts.
         let saved = {
-            let w = CheckpointWriter::new(
-                path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1,
-            );
+            let w =
+                CheckpointWriter::new(path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1);
             let id = ident("schema", "");
             w.declare_phase(id.clone(), true);
             w.phase_completed(&id, 0.5);
             w.flush().expect("flush");
             w.snapshot()
         };
-        let w2 = CheckpointWriter::from_existing(
-            path.clone(), saved, "2026-01-01T00:01:00Z".into(), 2,
-        );
+        let w2 =
+            CheckpointWriter::from_existing(path.clone(), saved, "2026-01-01T00:01:00Z".into(), 2);
         let snap = w2.snapshot();
         assert_eq!(snap.invocation, 2);
         assert_eq!(snap.phases.len(), 1);
@@ -828,10 +832,14 @@ mod tests {
         // Log carries TWO session_start events, marking the
         // invocation boundary.
         let raw = std::fs::read_to_string(&path).expect("read");
-        let count = raw.lines()
+        let count = raw
+            .lines()
             .filter(|l| l.contains("\"type\":\"session_start\""))
             .count();
-        assert_eq!(count, 2, "resume must append a fresh session_start, not rewrite");
+        assert_eq!(
+            count, 2,
+            "resume must append a fresh session_start, not rewrite"
+        );
     }
 
     #[test]
@@ -845,9 +853,7 @@ mod tests {
         // wrapping each inner sub-walk.
         let dir = tempdir();
         let path = dir.join("c.jsonl");
-        let w = CheckpointWriter::new(
-            path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1,
-        );
+        let w = CheckpointWriter::new(path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1);
 
         // Scope coords as the executor would synthesize per
         // iteration. `coord_path` is root-first; the writer's
@@ -870,11 +876,7 @@ mod tests {
             w.emit_scope_enter("for_each", outer_coord(x), Vec::new());
             for y in ["a", "b"] {
                 // Inner enter: coords={y=…}, path=[{x=…}]
-                w.emit_scope_enter(
-                    "for_each",
-                    inner_coord(y),
-                    vec![outer_coord(x)],
-                );
+                w.emit_scope_enter("for_each", inner_coord(y), vec![outer_coord(x)]);
                 w.emit_scope_exit(
                     "for_each",
                     inner_coord(y),
@@ -891,7 +893,8 @@ mod tests {
         // is well-formed and the path/coords carry the
         // expected x/y values for each iteration.
         let raw = std::fs::read_to_string(&path).expect("read log");
-        let scope_events: Vec<serde_json::Value> = raw.lines()
+        let scope_events: Vec<serde_json::Value> = raw
+            .lines()
             .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("parse line"))
             .filter(|v| {
                 let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -899,21 +902,39 @@ mod tests {
             })
             .collect();
         // 2 outer (enter+exit) + 2*2 inner (enter+exit) = 12 events.
-        assert_eq!(scope_events.len(), 12, "expected 12 scope events, got {}", scope_events.len());
+        assert_eq!(
+            scope_events.len(),
+            12,
+            "expected 12 scope events, got {}",
+            scope_events.len()
+        );
 
-        let kind = |v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        let kind = |v: &serde_json::Value| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
         let x_at = |v: &serde_json::Value, idx: &str| -> Option<u64> {
             v.pointer(idx).and_then(|n| n.as_u64())
         };
         let y_at = |v: &serde_json::Value, idx: &str| -> Option<String> {
-            v.pointer(idx).and_then(|n| n.as_str()).map(|s| s.to_string())
+            v.pointer(idx)
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
         };
 
         // Outer entry first: coords={x=1}, path=[].
         assert_eq!(kind(&scope_events[0]), "scope_enter");
         assert_eq!(x_at(&scope_events[0], "/coords/x"), Some(1));
-        assert!(scope_events[0].pointer("/path").and_then(|p| p.as_array()).map(|a| a.is_empty()).unwrap_or(false),
-            "outer enter must have empty path");
+        assert!(
+            scope_events[0]
+                .pointer("/path")
+                .and_then(|p| p.as_array())
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+            "outer enter must have empty path"
+        );
 
         // First inner enter under x=1, y=a. path leaf-first is
         // [{x=1}].
@@ -923,7 +944,10 @@ mod tests {
 
         // First inner exit, completed.
         assert_eq!(kind(&scope_events[2]), "scope_exit");
-        assert_eq!(scope_events[2].pointer("/outcome").and_then(|s| s.as_str()), Some("completed"));
+        assert_eq!(
+            scope_events[2].pointer("/outcome").and_then(|s| s.as_str()),
+            Some("completed")
+        );
 
         // Second inner under x=1, y=b.
         assert_eq!(y_at(&scope_events[3], "/coords/y"), Some("b".to_string()));
@@ -932,7 +956,10 @@ mod tests {
         // Outer exit for x=1.
         assert_eq!(kind(&scope_events[5]), "scope_exit");
         assert_eq!(x_at(&scope_events[5], "/coords/x"), Some(1));
-        assert_eq!(scope_events[5].pointer("/outcome").and_then(|s| s.as_str()), Some("completed"));
+        assert_eq!(
+            scope_events[5].pointer("/outcome").and_then(|s| s.as_str()),
+            Some("completed")
+        );
 
         // Second outer (x=2) entry, plus its inner pairs and exit.
         assert_eq!(kind(&scope_events[6]), "scope_enter");
@@ -949,7 +976,10 @@ mod tests {
         let folded = super::super::storage::read(&path)
             .expect("read folds")
             .expect("non-empty");
-        assert!(folded.phases.is_empty(), "no phases declared, fold should be empty");
+        assert!(
+            folded.phases.is_empty(),
+            "no phases declared, fold should be empty"
+        );
     }
 
     #[test]
@@ -959,9 +989,7 @@ mod tests {
         // outcomes round-trip through the JSONL.
         let dir = tempdir();
         let path = dir.join("c.jsonl");
-        let w = CheckpointWriter::new(
-            path.clone(), "s".into(), "t".into(), 1,
-        );
+        let w = CheckpointWriter::new(path.clone(), "s".into(), "t".into(), 1);
         let mut coords = BTreeMap::new();
         coords.insert("k".into(), serde_json::Value::from(7u64));
         w.emit_scope_enter("do_while", coords.clone(), Vec::new());
@@ -969,26 +997,32 @@ mod tests {
         w.flush().expect("flush");
 
         let raw = std::fs::read_to_string(&path).expect("read");
-        let exit_line = raw.lines()
+        let exit_line = raw
+            .lines()
             .find(|l| l.contains("\"type\":\"scope_exit\""))
             .expect("scope_exit line");
         let ev: serde_json::Value = serde_json::from_str(exit_line).unwrap();
-        assert_eq!(ev.pointer("/kind").and_then(|s| s.as_str()), Some("do_while"));
-        assert_eq!(ev.pointer("/outcome").and_then(|s| s.as_str()), Some("interrupted"));
+        assert_eq!(
+            ev.pointer("/kind").and_then(|s| s.as_str()),
+            Some("do_while")
+        );
+        assert_eq!(
+            ev.pointer("/outcome").and_then(|s| s.as_str()),
+            Some("interrupted")
+        );
     }
 
     #[test]
     fn flock_blocks_concurrent_writer_on_same_path() {
         let dir = tempdir();
         let path = dir.join("c.jsonl");
-        let _w = CheckpointWriter::new(
-            path.clone(), "s".into(), "t".into(), 1,
-        );
+        let _w = CheckpointWriter::new(path.clone(), "s".into(), "t".into(), 1);
         let result = std::panic::catch_unwind(|| {
-            let _w2 = CheckpointWriter::new(
-                path.clone(), "s".into(), "t".into(), 1,
-            );
+            let _w2 = CheckpointWriter::new(path.clone(), "s".into(), "t".into(), 1);
         });
-        assert!(result.is_err(), "second writer should panic on flock contention");
+        assert!(
+            result.is_err(),
+            "second writer should panic on flock contention"
+        );
     }
 }

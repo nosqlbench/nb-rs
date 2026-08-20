@@ -25,9 +25,9 @@
 //! In-process, so the adapter / GK inventory the examples use is
 //! force-linked (this binary isn't `nbrs`).
 
+extern crate nbrs_adapter_plotter;
 extern crate nbrs_adapter_stdout;
 extern crate nbrs_adapter_testkit;
-extern crate nbrs_adapter_plotter;
 // GK/optimizer inventory the examples reach for: `nbrs_optimizers`
 // registers the optimizer methods (SRD-86) and `nbrs_metricsql`
 // registers the `metricsql*` GK functions. The `nbrs` binary
@@ -41,9 +41,11 @@ use std::sync::{Arc, Mutex};
 use nbrs_runtime::observer::{LogLevel, PhaseProgressUpdate, RunObserver};
 use nbrs_runtime::output_channel::{CaptureChannel, OutputChannel};
 use nbrs_runtime::readouts::builtins::session_summary::labeled_phase_rollup;
-use nbrs_runtime::runner::{run_executions, ExecutionSpec};
+use nbrs_runtime::runner::{ExecutionSpec, run_executions};
 use nbrs_tui::state::{EntryKind, PhaseStatus, PhaseSummary, RunState};
-use nbrs_workload::verify::{check_case_output, collect_workload_files, VerifyCase, VerifyPlan, VerifySummary};
+use nbrs_workload::verify::{
+    VerifyCase, VerifyPlan, VerifySummary, check_case_output, collect_workload_files,
+};
 
 struct TempDir {
     path: PathBuf,
@@ -79,14 +81,21 @@ struct RunStateFeedObserver {
 }
 impl RunStateFeedObserver {
     fn new(label: &str) -> Self {
-        Self { state: Mutex::new(RunState::new("", label, "")), logs: Mutex::new(Vec::new()) }
+        Self {
+            state: Mutex::new(RunState::new("", label, "")),
+            logs: Mutex::new(Vec::new()),
+        }
     }
     /// `(completed, failed, total)` over the `Phase` entries.
     fn tally(&self) -> (usize, usize, usize) {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let phases = || s.phases.iter().filter(|p| p.kind == EntryKind::Phase);
-        let completed = phases().filter(|p| matches!(p.status, PhaseStatus::Completed)).count();
-        let failed = phases().filter(|p| matches!(p.status, PhaseStatus::Failed(_))).count();
+        let completed = phases()
+            .filter(|p| matches!(p.status, PhaseStatus::Completed))
+            .count();
+        let failed = phases()
+            .filter(|p| matches!(p.status, PhaseStatus::Failed(_)))
+            .count();
         (completed, failed, phases().count())
     }
     fn lock_state(&self) -> std::sync::MutexGuard<'_, RunState> {
@@ -97,20 +106,50 @@ impl RunObserver for RunStateFeedObserver {
     fn scenario_pre_mapped(&self, tree: &nbrs_runtime::scene_tree::SceneTree) {
         self.lock_state().install_tree(tree.clone());
     }
-    fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, ops: usize, _cycles: u64, _conc: usize) {
-        self.lock_state().set_phase_running(scene_node_id, name, labels, ops);
-    }
-    fn phase_completed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_starting(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        ops: usize,
+        _cycles: u64,
+        _conc: usize,
+    ) {
         self.lock_state()
-            .set_phase_completed(scene_node_id, name, labels, duration_secs, PhaseSummary::default());
+            .set_phase_running(scene_node_id, name, labels, ops);
     }
-    fn phase_failed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
-        self.lock_state().set_phase_failed(scene_node_id, name, labels, error);
+    fn phase_completed(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        duration_secs: f64,
+    ) {
+        self.lock_state().set_phase_completed(
+            scene_node_id,
+            name,
+            labels,
+            duration_secs,
+            PhaseSummary::default(),
+        );
+    }
+    fn phase_failed(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        error: &str,
+    ) {
+        self.lock_state()
+            .set_phase_failed(scene_node_id, name, labels, error);
     }
     fn phase_progress(&self, _update: &PhaseProgressUpdate) {}
     fn run_finished(&self) {}
     fn log(&self, _level: LogLevel, message: &str) {
-        self.logs.lock().unwrap_or_else(|e| e.into_inner()).push(message.to_string());
+        self.logs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(message.to_string());
     }
 }
 
@@ -151,12 +190,17 @@ async fn verify_examples_in_process(
     // subprocess harness's per-case sandbox + chdir.
     let mut sequenced: Vec<Pending> = Vec::new();
     for f in collect_workload_files(examples) {
-        let file_label =
-            f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+        let file_label = f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
         let src = match std::fs::read_to_string(&f) {
             Ok(s) => s,
             Err(e) => {
-                summary.failures.push(format!("{file_label}: read error: {e}"));
+                summary
+                    .failures
+                    .push(format!("{file_label}: read error: {e}"));
                 continue;
             }
         };
@@ -177,11 +221,7 @@ async fn verify_examples_in_process(
                 .push(format!("{file_label}: no verification rules"));
             continue;
         }
-        let abs = f
-            .canonicalize()
-            .unwrap_or(f)
-            .to_string_lossy()
-            .into_owned();
+        let abs = f.canonicalize().unwrap_or(f).to_string_lossy().into_owned();
         for case in plan.cases {
             let label = format!("{file_label}::{}", case.name);
             let obs = Arc::new(RunStateFeedObserver::new(&label));
@@ -221,8 +261,10 @@ async fn verify_examples_in_process(
 
     for (group_idx, (sig, members)) in groups.iter().enumerate() {
         let session = sandbox.join(format!("session-{group_idx}"));
-        let mut session_args: Vec<String> =
-            vec!["--session-path".into(), session.to_string_lossy().into_owned()];
+        let mut session_args: Vec<String> = vec![
+            "--session-path".into(),
+            session.to_string_lossy().into_owned(),
+        ];
         // Apply the group's shared session params to its session setup.
         for (k, v) in sig {
             session_args.push(format!("{k}={v}"));
@@ -267,7 +309,14 @@ async fn verify_examples_in_process(
 
             let mut parts: Vec<String> = p.cap.op_lines();
             parts.extend(p.cap.log_lines().into_iter().map(|(_lvl, m)| m));
-            parts.extend(p.obs.logs.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
+            parts.extend(
+                p.obs
+                    .logs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .cloned(),
+            );
             if let Err(e) = result {
                 parts.push(e.clone());
             }
@@ -305,8 +354,10 @@ async fn verify_examples_in_process(
         let session_args: Vec<String> = if p.case.session_cwd {
             Vec::new()
         } else {
-            vec!["--session-path".into(),
-                 case_dir.join("s").to_string_lossy().into_owned()]
+            vec![
+                "--session-path".into(),
+                case_dir.join("s").to_string_lossy().into_owned(),
+            ]
         };
         let _cwd = if p.case.session_cwd {
             let prev = std::env::current_dir().expect("read cwd");
@@ -337,14 +388,18 @@ async fn verify_examples_in_process(
             let mut args = vec![format!("workload={}", p.abs)];
             args.extend(session_args.iter().cloned());
             args.extend(extra);
-            let ctx = nbrs_runtime::execution_context::ExecutionContext::
-                with_observer_and_channel(
-                    p.obs.clone() as Arc<dyn RunObserver>,
-                    p.cap.clone() as Arc<dyn OutputChannel>);
+            let ctx = nbrs_runtime::execution_context::ExecutionContext::with_observer_and_channel(
+                p.obs.clone() as Arc<dyn RunObserver>,
+                p.cap.clone() as Arc<dyn OutputChannel>,
+            );
             let result = nbrs_runtime::execution_context::scope(
                 ctx,
                 nbrs_runtime::runner::run_with_observer(
-                    &args, p.obs.clone() as Arc<dyn RunObserver>)).await;
+                    &args,
+                    p.obs.clone() as Arc<dyn RunObserver>,
+                ),
+            )
+            .await;
             last_ok = result.is_ok();
             if let Err(e) = &result {
                 if i + 1 < total {
@@ -353,9 +408,14 @@ async fn verify_examples_in_process(
                     // is its own diagnosis, not a rule mismatch.
                     early_failure = Some(format!(
                         "invocation {} of {total} failed before the `again` \
-                         steps completed: {e}", i + 1));
+                         steps completed: {e}",
+                        i + 1
+                    ));
                 }
-                p.obs.logs.lock().unwrap_or_else(|e| e.into_inner())
+                p.obs
+                    .logs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .push(e.clone());
             }
             if early_failure.is_some() {
@@ -372,11 +432,17 @@ async fn verify_examples_in_process(
         // rules match runtime lines, not cross-invocation rollups.
         let (completed, failed, total_phases) = p.obs.tally();
         let pending_phases = total_phases.saturating_sub(completed + failed);
-        let rollup =
-            labeled_phase_rollup(completed, failed, pending_phases, total_phases, false);
+        let rollup = labeled_phase_rollup(completed, failed, pending_phases, total_phases, false);
         let mut parts: Vec<String> = p.cap.op_lines();
         parts.extend(p.cap.log_lines().into_iter().map(|(_lvl, m)| m));
-        parts.extend(p.obs.logs.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
+        parts.extend(
+            p.obs
+                .logs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .cloned(),
+        );
         parts.push(rollup);
         let combined = parts.join("\n");
         match check_case_output(&p.case, &combined, last_ok, false) {
@@ -456,7 +522,10 @@ fn all_example_workloads_match_their_rules_in_process() {
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 /// DEFAULT-MIX parity pin: the `#@` directive grammar and this walker must
@@ -516,25 +585,33 @@ ops: { t: { stmt: \"X\" } }\n\
     let default_case = &plan.cases[0];
     assert_eq!(default_case.run_args, vec!["scenario=a", "k=1"]);
     assert_eq!(default_case.timeout, 33);
-    assert!(!is_sequenced(default_case),
-        "a case with only run/expect/timeout runs in the concurrent groups");
+    assert!(
+        !is_sequenced(default_case),
+        "a case with only run/expect/timeout runs in the concurrent groups"
+    );
 
     let again_case = &plan.cases[1];
     assert_eq!(again_case.name, "seq_again");
     assert_eq!(again_case.again, vec![vec!["phases=probe", "tag=zzz"]]);
-    assert!(is_sequenced(again_case),
-        "`#@ again` is a multi-invocation sequence — must route sequenced");
+    assert!(
+        is_sequenced(again_case),
+        "`#@ again` is a multi-invocation sequence — must route sequenced"
+    );
 
     let cwd_case = &plan.cases[2];
     assert_eq!(cwd_case.name, "seq_cwd");
     assert!(cwd_case.session_cwd);
     assert!(cwd_case.expect_fails.len() == 1 && cwd_case.expects.is_empty());
-    assert!(is_sequenced(cwd_case),
-        "`#@ session cwd` defeats harness session injection — must route sequenced");
+    assert!(
+        is_sequenced(cwd_case),
+        "`#@ session cwd` defeats harness session injection — must route sequenced"
+    );
 
     // `#@ requires` is plan-level: the whole file is skipped, no case runs.
     let skipped = VerifyPlan::parse("ops: { t: { stmt: \"X\" } }\n#@ requires backend\n")
         .expect("requires parses");
-    assert!(skipped.requires.is_some(),
-        "`#@ requires` must surface as a plan-level skip");
+    assert!(
+        skipped.requires.is_some(),
+        "`#@ requires` must surface as a plan-level skip"
+    );
 }

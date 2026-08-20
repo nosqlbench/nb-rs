@@ -97,7 +97,10 @@ impl Drop for AggregateIterator<'_> {
 }
 
 impl LendingIterator for AggregateIterator<'_> {
-    type Item<'a> = AggregateMeta<'a> where Self: 'a;
+    type Item<'a>
+        = AggregateMeta<'a>
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {
@@ -132,7 +135,10 @@ impl Drop for UserTypeIterator<'_> {
 }
 
 impl LendingIterator for UserTypeIterator<'_> {
-    type Item<'a> = (String, Value<'a>) where Self: 'a;
+    type Item<'a>
+        = (String, Value<'a>)
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {
@@ -179,7 +185,10 @@ unsafe impl Send for FunctionIterator<'_> {}
 unsafe impl Sync for FunctionIterator<'_> {}
 
 impl LendingIterator for FunctionIterator<'_> {
-    type Item<'a> = FunctionMeta<'a> where Self: 'a;
+    type Item<'a>
+        = FunctionMeta<'a>
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {
@@ -205,7 +214,10 @@ unsafe impl Send for TableIterator<'_> {}
 unsafe impl Sync for TableIterator<'_> {}
 
 impl LendingIterator for TableIterator<'_> {
-    type Item<'a> = TableMeta<'a> where Self: 'a;
+    type Item<'a>
+        = TableMeta<'a>
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {
@@ -231,7 +243,10 @@ unsafe impl Send for KeyspaceIterator<'_> {}
 unsafe impl Sync for KeyspaceIterator<'_> {}
 
 impl LendingIterator for KeyspaceIterator<'_> {
-    type Item<'a> = KeyspaceMeta<'a> where Self: 'a;
+    type Item<'a>
+        = KeyspaceMeta<'a>
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {
@@ -257,7 +272,10 @@ unsafe impl Send for ColumnIterator<'_> {}
 unsafe impl Sync for ColumnIterator<'_> {}
 
 impl LendingIterator for ColumnIterator<'_> {
-    type Item<'a> = ColumnMeta<'a> where Self: 'a;
+    type Item<'a>
+        = ColumnMeta<'a>
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {
@@ -286,7 +304,10 @@ unsafe impl Send for FieldIterator<'_> {}
 unsafe impl Sync for FieldIterator<'_> {}
 
 impl LendingIterator for FieldIterator<'_> {
-    type Item<'a> = Field<'a> where Self: 'a;
+    type Item<'a>
+        = Field<'a>
+    where
+        Self: 'a;
 
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
@@ -465,7 +486,10 @@ impl Drop for SetIterator<'_> {
 }
 
 impl LendingIterator for SetIterator<'_> {
-    type Item<'a> = Value<'a> where Self: 'a;
+    type Item<'a>
+        = Value<'a>
+    where
+        Self: 'a;
 
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
@@ -518,7 +542,10 @@ impl Drop for MapIterator<'_> {
 }
 
 impl LendingIterator for MapIterator<'_> {
-    type Item<'a> = (Value<'a>, Value<'a>) where Self: 'a;
+    type Item<'a>
+        = (Value<'a>, Value<'a>)
+    where
+        Self: 'a;
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
             match cass_iterator_next(self.0) {

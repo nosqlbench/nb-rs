@@ -17,10 +17,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use polydat::kernel::{PolydatKernel, PolydatProgram, PolydatState};
-use polydat::ast::Value;
-use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints::{self, BindPoint, BindQualifier};
+use nbrs_workload::model::ParsedOp;
+use polydat::ast::Value;
+use polydat::kernel::{PolydatKernel, PolydatProgram, PolydatState};
 
 /// Cached `NBRS_DIRTY_DEBUG` flag — per-cycle `std::env::var`
 /// reads measured at ~30% of single-fiber CPU; the OnceLock
@@ -105,10 +105,13 @@ impl OpBuilder {
         // sharing it. Same exclusion `reset_inputs_from` documents:
         // cells are cross-kernel shared state with their own
         // lifecycle.
-        let scope_values: Vec<(String, Value)> = kernel.scope_values()
+        let scope_values: Vec<(String, Value)> = kernel
+            .scope_values()
             .into_iter()
             .filter(|(name, _)| {
-                kernel.program().find_input(name)
+                kernel
+                    .program()
+                    .find_input(name)
                     .map(|idx| kernel.state_ref().shared_cell(idx).is_none())
                     .unwrap_or(true)
             })
@@ -121,7 +124,6 @@ impl OpBuilder {
             op_template_programs: std::collections::HashMap::new(),
         }
     }
-
 
     /// Install per-op-template kernel programs (SRD-13d Phase 9).
     /// The runner builds these from the scope tree's
@@ -141,7 +143,8 @@ impl OpBuilder {
     /// op (i.e. `materialised` and bindings non-empty); otherwise
     /// returns the activity-wide program (the flatten path).
     pub fn program_for_op(&self, name: &str) -> Arc<PolydatProgram> {
-        self.op_template_programs.get(name)
+        self.op_template_programs
+            .get(name)
             .cloned()
             .unwrap_or_else(|| self.source_kernel.program().clone())
     }
@@ -181,12 +184,15 @@ impl OpBuilder {
     pub fn canonical_kernel_for_op(&self, op_name: &str) -> Arc<PolydatKernel> {
         match self.op_template_programs.get(op_name) {
             Some(program) => {
-                let canonical = self.source_kernel.build_subscope(
-                    polydat::kernel::subcontext::PolydatMatter::builder()
-                        .program(program.clone())
-                        .build()
-                        .expect("program-form matter is infallible"),
-                ).expect("program-form subscope is infallible");
+                let canonical = self
+                    .source_kernel
+                    .build_subscope(
+                        polydat::kernel::subcontext::PolydatMatter::builder()
+                            .program(program.clone())
+                            .build()
+                            .expect("program-form matter is infallible"),
+                    )
+                    .expect("program-form subscope is infallible");
                 Arc::new(canonical)
             }
             None => self.source_kernel.clone(),
@@ -228,18 +234,18 @@ impl OpBuilder {
         // reads. Walks the pre-resolved index list — no second
         // `find_input` call.
         use polydat::kernel::Dataflow;
-        for ((name, value), idx_opt) in fb.scope_values.iter()
-            .zip(fb.scope_value_main_idx.iter())
-        {
+        for ((name, value), idx_opt) in fb.scope_values.iter().zip(fb.scope_value_main_idx.iter()) {
             if let Some(idx) = idx_opt {
-                fb.main_kernel.set_wire_idx(*idx, value.clone())
-                    .unwrap_or_else(|e| panic!(
-                        "scope value '{name}' failed typed write at scope-init: {e}"
-                    ));
+                fb.main_kernel
+                    .set_wire_idx(*idx, value.clone())
+                    .unwrap_or_else(|e| {
+                        panic!("scope value '{name}' failed typed write at scope-init: {e}")
+                    });
             }
         }
         for (node_idx, port_idx, value) in &self.init_overrides {
-            fb.state().seed_node_buffer(*node_idx, *port_idx, value.clone());
+            fb.state()
+                .seed_node_buffer(*node_idx, *port_idx, value.clone());
         }
         // SRD-68: per-fiber op-template kernels are populated by
         // `attach_dispenser_kernels`, which runs right after this
@@ -262,11 +268,15 @@ impl OpBuilder {
 fn collect_init_overrides(kernel: &PolydatKernel) -> Vec<(usize, usize, Value)> {
     let program = kernel.program();
     let init_outputs = program.const_outputs();
-    if init_outputs.is_empty() { return Vec::new(); }
+    if init_outputs.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::with_capacity(init_outputs.len());
     let state = kernel.state_ref();
     for name in init_outputs {
-        let Some(&(node_idx, port_idx)) = program.output_map_lookup(name) else { continue };
+        let Some(&(node_idx, port_idx)) = program.output_map_lookup(name) else {
+            continue;
+        };
         match state.node_buffer(node_idx, port_idx) {
             Some(v) if !matches!(v, Value::None) => {
                 out.push((node_idx, port_idx, v.clone()));
@@ -382,11 +392,16 @@ pub fn validate_bind_points(
             if let serde_json::Value::String(s) = value {
                 let bps = bindpoints::extract_bind_points(s);
                 for bp in &bps {
-                    if let BindPoint::Reference { name, qualifier, .. } = bp {
+                    if let BindPoint::Reference {
+                        name, qualifier, ..
+                    } = bp
+                    {
                         let resolvable = match qualifier {
                             BindQualifier::Bind => program.resolve_output(name).is_some(),
                             BindQualifier::Capture => capture_names.contains(name),
-                            BindQualifier::Input => program.input_names().contains(&name.to_string()),
+                            BindQualifier::Input => {
+                                program.input_names().contains(&name.to_string())
+                            }
                             BindQualifier::None => {
                                 program.resolve_output(name).is_some()
                                     || capture_names.contains(name)
@@ -426,9 +441,14 @@ impl FiberBuilder {
     /// handles are Arc-shared with the parent so writes
     /// propagate to the workload-root through the cascade.
     pub fn new(parent: &PolydatKernel) -> Self {
-        let main_kernel = parent.build_subscope(
-            polydat::kernel::subcontext::PolydatMatter::builder().program(parent.program().clone()).build().unwrap(),
-        ).expect("program-form subscope is infallible");
+        let main_kernel = parent
+            .build_subscope(
+                polydat::kernel::subcontext::PolydatMatter::builder()
+                    .program(parent.program().clone())
+                    .build()
+                    .unwrap(),
+            )
+            .expect("program-form subscope is infallible");
         Self {
             main_kernel,
             scope_values: Vec::new(),
@@ -499,7 +519,8 @@ impl FiberBuilder {
         // of `self.main_kernel` separately and iterate
         // dispensers in a way that doesn't conflict.
         let dispenser_programs: Vec<Option<std::sync::Arc<polydat::kernel::PolydatProgram>>> =
-            dispensers.iter()
+            dispensers
+                .iter()
                 .map(|d| d.canonical_kernel().map(|k| k.program().clone()))
                 .collect();
         // Build both the per-op kernels AND the parallel index
@@ -521,22 +542,24 @@ impl FiberBuilder {
                     per_op_side_effecting.push(Vec::new());
                 }
                 Some(program) => {
-                    let mut op_kernel = self.main_kernel.build_subscope(
-                        polydat::kernel::subcontext::PolydatMatter::builder()
-                            .program(program)
-                            .build()
-                            .expect("program-form matter is infallible"),
-                    ).expect("program-form subscope from fiber.main_kernel is infallible");
+                    let mut op_kernel = self
+                        .main_kernel
+                        .build_subscope(
+                            polydat::kernel::subcontext::PolydatMatter::builder()
+                                .program(program)
+                                .build()
+                                .expect("program-form matter is infallible"),
+                        )
+                        .expect("program-form subscope from fiber.main_kernel is infallible");
                     // Pre-resolve every scope value's input index
                     // against this op-template kernel's program.
-                    let idx_vec: Vec<Option<usize>> = scope_values.iter()
+                    let idx_vec: Vec<Option<usize>> = scope_values
+                        .iter()
                         .map(|(name, _)| op_kernel.program().find_input(name))
                         .collect();
                     {
                         use polydat::kernel::Dataflow;
-                        for ((name, value), idx_opt) in scope_values.iter()
-                            .zip(idx_vec.iter())
-                        {
+                        for ((name, value), idx_opt) in scope_values.iter().zip(idx_vec.iter()) {
                             if let Some(idx) = idx_opt {
                                 op_kernel.set_wire_idx(*idx, value.clone())
                                     .unwrap_or_else(|e| panic!(
@@ -545,8 +568,12 @@ impl FiberBuilder {
                             }
                         }
                     }
-                    let const_outputs: Vec<String> = op_kernel.program()
-                        .const_outputs().iter().map(|s| s.to_string()).collect();
+                    let const_outputs: Vec<String> = op_kernel
+                        .program()
+                        .const_outputs()
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
                     for init_name in &const_outputs {
                         // Const warmup is best-effort: a const
                         // whose freeze fails here stays dirty
@@ -557,17 +584,22 @@ impl FiberBuilder {
                         // session log so a broken const is
                         // diagnosable before the per-cycle
                         // path trips over it.
-                        if let Err(payload) = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
-                        ) {
+                        if let Err(payload) =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                op_kernel.pull(init_name);
+                            }))
+                        {
                             let msg = payload
-                                .downcast_ref::<&'static str>().map(|s| (*s).to_string())
+                                .downcast_ref::<&'static str>()
+                                .map(|s| (*s).to_string())
                                 .or_else(|| payload.downcast_ref::<String>().cloned())
                                 .unwrap_or_else(|| "<non-string panic payload>".into());
-                            crate::diag!(crate::observer::LogLevel::Warn,
+                            crate::diag!(
+                                crate::observer::LogLevel::Warn,
                                 "const warmup pull '{init_name}' panicked during \
                                  op-template kernel init (deferring to first \
-                                 per-cycle use): {msg}");
+                                 per-cycle use): {msg}"
+                            );
                         }
                     }
                     let side_effecting = op_kernel.program().outputs_with_side_effects();
@@ -587,7 +619,9 @@ impl FiberBuilder {
     /// no canonical kernel (adapters with no Polydat needs); callers
     /// fall back to the `NullWireSource` baseline.
     pub fn per_op_kernel(&self, template_idx: usize) -> Option<&PolydatKernel> {
-        self.per_op_kernels.get(template_idx).and_then(|s| s.as_ref())
+        self.per_op_kernels
+            .get(template_idx)
+            .and_then(|s| s.as_ref())
     }
 
     /// Mutable accessor for the per-fiber kernel slot — used by
@@ -595,7 +629,9 @@ impl FiberBuilder {
     /// for `&mut`-requiring output pulls. Returns `None` when no
     /// canonical kernel was attached for this slot.
     pub fn per_op_kernel_mut(&mut self, template_idx: usize) -> Option<&mut PolydatKernel> {
-        self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut())
+        self.per_op_kernels
+            .get_mut(template_idx)
+            .and_then(|s| s.as_mut())
     }
 
     /// Mutable accessor for this fiber's main kernel — used by
@@ -685,10 +721,11 @@ impl FiberBuilder {
         use polydat::kernel::Dataflow;
         for (name, value) in &item.fields {
             if let Some(idx) = self.main_kernel.program().find_input(name) {
-                self.main_kernel.set_wire_idx(idx, value.clone())
-                    .unwrap_or_else(|e| panic!(
-                        "source item field '{name}' failed typed write: {e}"
-                    ));
+                self.main_kernel
+                    .set_wire_idx(idx, value.clone())
+                    .unwrap_or_else(|e| {
+                        panic!("source item field '{name}' failed typed write: {e}")
+                    });
             }
         }
         // Cell-bound cross-fiber visibility is now substrate-
@@ -727,9 +764,8 @@ impl FiberBuilder {
         // the current value via the cell-aware input path.
         let main_program_ptr = std::sync::Arc::as_ptr(self.main_kernel.program());
         let needs_broadcast = self.per_op_kernels.iter().any(|slot| {
-            slot.as_ref().is_some_and(|k| {
-                std::sync::Arc::as_ptr(k.program()) != main_program_ptr
-            })
+            slot.as_ref()
+                .is_some_and(|k| std::sync::Arc::as_ptr(k.program()) != main_program_ptr)
         });
         if needs_broadcast {
             self.main_kernel.advance_broadcasts();
@@ -749,7 +785,9 @@ impl FiberBuilder {
         // hot path was previously dominated by `find_input`
         // linear scans here. Indices were resolved once at
         // `set_scope_values` time.
-        for ((_name, value), idx_opt) in self.scope_values.iter()
+        for ((_name, value), idx_opt) in self
+            .scope_values
+            .iter()
             .zip(self.scope_value_main_idx.iter())
         {
             if let Some(idx) = idx_opt {
@@ -760,15 +798,15 @@ impl FiberBuilder {
         // from its own program. Re-apply scope values via the
         // pre-resolved per-op index cache populated at
         // `attach_dispenser_kernels` time.
-        for (slot, idx_slot) in self.per_op_kernels.iter_mut()
+        for (slot, idx_slot) in self
+            .per_op_kernels
+            .iter_mut()
             .zip(self.scope_value_per_op_idx.iter())
         {
             if let (Some(kernel), Some(idx_vec)) = (slot, idx_slot) {
                 let n = kernel.program().coord_count();
                 kernel.state().reset_inputs_from(n);
-                for ((_name, value), idx_opt) in self.scope_values.iter()
-                    .zip(idx_vec.iter())
-                {
+                for ((_name, value), idx_opt) in self.scope_values.iter().zip(idx_vec.iter()) {
                     if let Some(idx) = idx_opt {
                         kernel.state().set_input(*idx, value.clone());
                     }
@@ -824,7 +862,11 @@ impl FiberBuilder {
         name: &str,
         value: Value,
     ) -> bool {
-        let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
+        let Some(kernel) = self
+            .per_op_kernels
+            .get_mut(template_idx)
+            .and_then(|s| s.as_mut())
+        else {
             if nbrs_dirty_debug_enabled() && name == "body" {
                 eprintln!("DIRTY: write body template={template_idx} NO_KERNEL");
             }
@@ -835,7 +877,8 @@ impl FiberBuilder {
                 let inputs = kernel.program().input_names();
                 eprintln!(
                     "DIRTY: write body template={template_idx} NO_SLOT in_count={} names={:?}",
-                    inputs.len(), inputs
+                    inputs.len(),
+                    inputs
                 );
             }
             return false;
@@ -875,7 +918,11 @@ impl FiberBuilder {
         template_idx: usize,
     ) -> Result<(), String> {
         let debug = polydat::library::debug_nodes_enabled();
-        let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
+        let Some(kernel) = self
+            .per_op_kernels
+            .get_mut(template_idx)
+            .and_then(|s| s.as_mut())
+        else {
             if debug {
                 crate::observer::log(
                     crate::observer::LogLevel::Debug,
@@ -890,7 +937,9 @@ impl FiberBuilder {
         if debug {
             crate::observer::log(
                 crate::observer::LogLevel::Debug,
-                &format!("commit_op_template_write_throughs_for_idx: idx {template_idx} kernel found"),
+                &format!(
+                    "commit_op_template_write_throughs_for_idx: idx {template_idx} kernel found"
+                ),
             );
         }
         kernel.commit_write_throughs()
@@ -921,7 +970,11 @@ impl FiberBuilder {
             return;
         }
         let names = names.clone();
-        let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
+        let Some(kernel) = self
+            .per_op_kernels
+            .get_mut(template_idx)
+            .and_then(|s| s.as_mut())
+        else {
             return;
         };
         for name in &names {
@@ -960,7 +1013,11 @@ impl FiberBuilder {
         template_idx: usize,
         plan: &crate::fixture::PullPlan,
     ) -> crate::fixture::ResolvedPulls {
-        match self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) {
+        match self
+            .per_op_kernels
+            .get_mut(template_idx)
+            .and_then(|s| s.as_mut())
+        {
             Some(kernel) => {
                 plan.check_program_match(kernel.program(), template_idx);
                 plan.resolve(kernel.state())
@@ -971,20 +1028,27 @@ impl FiberBuilder {
             }
         }
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use polydat::compile::assembly::{PolydatAssembler, WireRef};
-    use polydat::library::hash::Hash;
     use polydat::library::arithmetic::Mod;
+    use polydat::library::hash::Hash;
 
     fn make_kernel() -> PolydatKernel {
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
-        asm.add_node("user_id", Box::new(Mod::new(1_000_000)), vec![WireRef::node("hashed")]);
+        asm.add_node(
+            "hashed",
+            Box::new(Hash::new()),
+            vec![WireRef::input("cycle")],
+        );
+        asm.add_node(
+            "user_id",
+            Box::new(Mod::new(1_000_000)),
+            vec![WireRef::node("hashed")],
+        );
         asm.add_output("user_id", WireRef::node("user_id"));
         asm.add_output("hashed", WireRef::node("hashed"));
         asm.compile().unwrap()
@@ -1015,8 +1079,11 @@ mod tests {
         // Stand up a shared canonical via the public API.
         let workload_src = "input cycle: u64\nfolded := 42\n";
         let canonical_program = polydat::dsl::compile::compile_polydat(workload_src)
-            .expect("compile probe canonical").program().clone();
-        let canonical_kernel: std::sync::Arc<PolydatKernel> = builder.canonical_kernel_for_op("nonexistent");
+            .expect("compile probe canonical")
+            .program()
+            .clone();
+        let canonical_kernel: std::sync::Arc<PolydatKernel> =
+            builder.canonical_kernel_for_op("nonexistent");
         // For this probe we only need the canonical to expose
         // a program; reuse builder's source_kernel program.
         let _ = canonical_program;
@@ -1030,17 +1097,23 @@ mod tests {
                 &'a self,
                 _cycle: u64,
                 _ctx: &'a crate::fixture::ExecCtx<'a>,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<
-                Output = Result<crate::adapter::OpResult, crate::adapter::ExecutionError>
-            > + Send + 'a>> {
-                Box::pin(async move {
-                    Ok(crate::adapter::OpResult::default())
-                })
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<
+                                crate::adapter::OpResult,
+                                crate::adapter::ExecutionError,
+                            >,
+                        > + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move { Ok(crate::adapter::OpResult::default()) })
             }
         }
-        let dispensers: Vec<std::sync::Arc<dyn OpDispenser>> = vec![
-            std::sync::Arc::new(ProbeDispenser(canonical_kernel.clone())),
-        ];
+        let dispensers: Vec<std::sync::Arc<dyn OpDispenser>> = vec![std::sync::Arc::new(
+            ProbeDispenser(canonical_kernel.clone()),
+        )];
 
         let mut fiber_a = builder.create_fiber_builder();
         fiber_a.attach_dispenser_kernels(&dispensers);
@@ -1054,20 +1127,26 @@ mod tests {
         // distinct per-fiber instance, neither of them
         // pointing to the shared canonical kernel.
         assert!(
-            !std::ptr::eq(per_op_a as *const PolydatKernel,
-                          canonical_kernel.as_ref() as *const PolydatKernel),
+            !std::ptr::eq(
+                per_op_a as *const PolydatKernel,
+                canonical_kernel.as_ref() as *const PolydatKernel
+            ),
             "per_op_a must be a distinct per-fiber instance, \
              not the shared canonical",
         );
         assert!(
-            !std::ptr::eq(per_op_b as *const PolydatKernel,
-                          canonical_kernel.as_ref() as *const PolydatKernel),
+            !std::ptr::eq(
+                per_op_b as *const PolydatKernel,
+                canonical_kernel.as_ref() as *const PolydatKernel
+            ),
             "per_op_b must be a distinct per-fiber instance, \
              not the shared canonical",
         );
         assert!(
-            !std::ptr::eq(per_op_a as *const PolydatKernel,
-                          per_op_b as *const PolydatKernel),
+            !std::ptr::eq(
+                per_op_a as *const PolydatKernel,
+                per_op_b as *const PolydatKernel
+            ),
             "fiber A and fiber B must each have their own \
              per-op kernel instance",
         );
@@ -1080,8 +1159,8 @@ mod tests {
     /// buffer rather than re-firing the eval.
     #[test]
     fn init_binding_fires_once_across_many_fibers() {
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         // Counting custom node: bumps a shared counter on every
         // eval call, returns U64(42). Tracks how many times its
@@ -1091,7 +1170,9 @@ mod tests {
             calls: StdArc<AtomicU64>,
         }
         impl polydat::ast::PolydatNode for CountingNode {
-            fn meta(&self) -> &polydat::ast::NodeMeta { &self.meta }
+            fn meta(&self) -> &polydat::ast::NodeMeta {
+                &self.meta
+            }
             fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
                 self.calls.fetch_add(1, Ordering::Relaxed);
                 outputs[0] = Value::U64(42);
@@ -1101,14 +1182,21 @@ mod tests {
         let calls = StdArc::new(AtomicU64::new(0));
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         // Compile-const seed expression — wires empty.
-        asm.add_node("ticks", Box::new(CountingNode {
-            meta: polydat::ast::NodeMeta {
-                name: "ticks".into(),
-                outs: vec![polydat::ast::Port::new("output", polydat::ast::PortType::U64)],
-                ins: vec![],
-            },
-            calls: calls.clone(),
-        }), vec![]);
+        asm.add_node(
+            "ticks",
+            Box::new(CountingNode {
+                meta: polydat::ast::NodeMeta {
+                    name: "ticks".into(),
+                    outs: vec![polydat::ast::Port::new(
+                        "output",
+                        polydat::ast::PortType::U64,
+                    )],
+                    ins: vec![],
+                },
+                calls: calls.clone(),
+            }),
+            vec![],
+        );
         asm.add_output("ticks", WireRef::node("ticks"));
         asm.mark_const_output("ticks");
 
@@ -1136,13 +1224,16 @@ mod tests {
             assert_eq!(pulled, Value::U64(42));
         }
         let after_fibers = calls.load(Ordering::Relaxed);
-        assert_eq!(after_pull, after_fibers,
+        assert_eq!(
+            after_pull, after_fibers,
             "init binding 'ticks' eval must not re-fire across fibers \
-             (eval calls before fibers: {after_pull}, after 32 fibers: {after_fibers})");
+             (eval calls before fibers: {after_pull}, after 32 fibers: {after_fibers})"
+        );
         // Independent: confirm the eval ran at most once during
         // compile-time fold + the activation pull.
-        assert!(after_fibers <= 1,
-            "expected at most one eval across compile fold + activation pull, got {after_fibers}");
+        assert!(
+            after_fibers <= 1,
+            "expected at most one eval across compile fold + activation pull, got {after_fibers}"
+        );
     }
-
 }

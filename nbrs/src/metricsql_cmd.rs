@@ -33,8 +33,7 @@ use nbrs_metricsql::eval::{
     DataSourceError, EvalContext, Matcher, MetricAccess, Series, Vector, evaluate,
 };
 use nbrs_metricsql::runtime::{
-    ContinuousQueryRuntime, QueryHandle, RegisterError, RegisterOptions,
-    SampleFeed, WindowPolicy,
+    ContinuousQueryRuntime, QueryHandle, RegisterError, RegisterOptions, SampleFeed, WindowPolicy,
 };
 
 pub fn query(args: &[String]) {
@@ -47,8 +46,10 @@ pub fn query(args: &[String]) {
         }
     };
     if !parsed.db_path.exists() {
-        eprintln!("nbrs metrics query: db not found at '{}'",
-            parsed.db_path.display());
+        eprintln!(
+            "nbrs metrics query: db not found at '{}'",
+            parsed.db_path.display()
+        );
         std::process::exit(2);
     }
 
@@ -59,7 +60,8 @@ pub fn query(args: &[String]) {
         // SRD-77 — coalesce across executions by default: each series
         // comes from the newest execution that produced it.
         Ok(ds) => ds.with_execution_selection(
-            nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance),
+            nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance,
+        ),
         Err(e) => {
             eprintln!("nbrs metrics query: open db: {e}");
             std::process::exit(2);
@@ -82,7 +84,7 @@ pub fn query(args: &[String]) {
                 eprintln!("nbrs metrics query: probe latest sample: {e}");
                 std::process::exit(2);
             }
-        }
+        },
     };
     let step_ms = parsed.step_ms;
 
@@ -103,8 +105,10 @@ pub fn query(args: &[String]) {
             format!("[{span}ms]")
         } else {
             if let Err(e) = parse_duration_ms(range) {
-                eprintln!("nbrs metrics query: --range: {e} \
-                    (expected a duration like 1m / 30s, or `all`)");
+                eprintln!(
+                    "nbrs metrics query: --range: {e} \
+                    (expected a duration like 1m / 30s, or `all`)"
+                );
                 std::process::exit(2);
             }
             format!("[{range}]")
@@ -134,11 +138,15 @@ pub fn query(args: &[String]) {
     // An explicit `exec_id="N"` the operator typed survives as a
     // normal label matcher.
     let ctx = EvalContext {
-        data: &ds, start_ms: ctx_start, end_ms: ctx_end,
-        step_ms, lookback_ms: instant_lookback,
+        data: &ds,
+        start_ms: ctx_start,
+        end_ms: ctx_end,
+        step_ms,
+        lookback_ms: instant_lookback,
         // CLI-level instant/range query — `@ start()/end()`
         // resolve to the original bounds.
-        query_start_ms: Some(ctx_start), query_end_ms: Some(ctx_end),
+        query_start_ms: Some(ctx_start),
+        query_end_ms: Some(ctx_end),
     };
     // Evaluate each positional independently and merge the results: a
     // single quoted expression is one eval; multiple bare family names
@@ -208,8 +216,7 @@ struct ParsedArgs {
 /// under `sessions/`. Resolving locally works for any path and mutates nothing.
 fn resolve_db(db_flag: Option<PathBuf>, args: &[String]) -> PathBuf {
     db_flag
-        .or_else(|| nbrs_runtime::session::read_session_dir(args)
-            .map(|d| d.join("metrics.db")))
+        .or_else(|| nbrs_runtime::session::read_session_dir(args).map(|d| d.join("metrics.db")))
         .unwrap_or_else(nbrs_runtime::session::latest_metrics_db)
 }
 
@@ -234,14 +241,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
         match a.as_str() {
-            "--db" => { db_path = iter.next().map(PathBuf::from); }
+            "--db" => {
+                db_path = iter.next().map(PathBuf::from);
+            }
             other if other.starts_with("--db=") => {
                 db_path = Some(PathBuf::from(&other[5..]));
             }
             "--at" => {
                 let v = iter.next().ok_or("--at requires a millisecond timestamp")?;
-                anchor_ms = Some(v.parse::<i64>()
-                    .map_err(|e| format!("--at parse: {e}"))?);
+                anchor_ms = Some(v.parse::<i64>().map_err(|e| format!("--at parse: {e}"))?);
             }
             "--lookback" => {
                 let v = iter.next().ok_or("--lookback requires a duration")?;
@@ -254,11 +262,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
                     return Err("--step must be positive".into());
                 }
             }
-            "--all-samples" => { latest_only = false; }
+            "--all-samples" => {
+                latest_only = false;
+            }
             "--range" => {
-                range = Some(iter.next()
-                    .ok_or("--range requires a duration (e.g. 1m) or `all`")?
-                    .to_string());
+                range = Some(
+                    iter.next()
+                        .ok_or("--range requires a duration (e.g. 1m) or `all`")?
+                        .to_string(),
+                );
             }
             other if other.starts_with("--range=") => {
                 range = Some(other["--range=".len()..].to_string());
@@ -269,9 +281,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
             // multiple families — veks completes a flag's value on every
             // occurrence (positionals only complete the first token).
             "--family" => {
-                queries.push(iter.next()
-                    .ok_or("--family requires a metric family name")?
-                    .to_string());
+                queries.push(
+                    iter.next()
+                        .ok_or("--family requires a metric family name")?
+                        .to_string(),
+                );
             }
             other if other.starts_with("--family=") => {
                 queries.push(other["--family=".len()..].to_string());
@@ -285,8 +299,12 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
             }
             // Tolerate the umbrella session flags so the
             // command composes with the global flag set.
-            "--session" | "--session-name" | "--session-path"
-            | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
+            "--session"
+            | "--session-name"
+            | "--session-path"
+            | "--session-reuse"
+            | "--session-keep"
+            | "--session-shelflife" => {
                 let _ = iter.next();
             }
             other if other.starts_with("--session") => {}
@@ -302,12 +320,19 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     }
     if queries.is_empty() {
         return Err("metricsql expression or metric family name(s) required \
-                    (positional argument)".to_string());
+                    (positional argument)"
+            .to_string());
     }
     let db_path = resolve_db(db_path, args);
     Ok(ParsedArgs {
-        db_path, queries, anchor_ms, lookback_ms, step_ms,
-        stale_window_ms, latest_only, range,
+        db_path,
+        queries,
+        anchor_ms,
+        lookback_ms,
+        step_ms,
+        stale_window_ms,
+        latest_only,
+        range,
     })
 }
 
@@ -328,19 +353,24 @@ fn parse_duration_ms(s: &str) -> Result<i64, String> {
         while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
             i += 1;
         }
-        if i == start { return Err(format!("duration {s:?}: expected number")); }
-        let n: f64 = s[start..i].parse().map_err(|e|
-            format!("duration {s:?}: bad number: {e}"))?;
+        if i == start {
+            return Err(format!("duration {s:?}: expected number"));
+        }
+        let n: f64 = s[start..i]
+            .parse()
+            .map_err(|e| format!("duration {s:?}: bad number: {e}"))?;
         let unit_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_alphabetic() { i += 1; }
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
         let unit = &s[unit_start..i];
         let mult = match unit {
             "ms" => 1.0,
-            "s"  => 1_000.0,
-            "m"  => 60_000.0,
-            "h"  => 3_600_000.0,
-            "d"  => 86_400_000.0,
-            ""   => return Err(format!("duration {s:?}: missing unit")),
+            "s" => 1_000.0,
+            "m" => 60_000.0,
+            "h" => 3_600_000.0,
+            "d" => 86_400_000.0,
+            "" => return Err(format!("duration {s:?}: missing unit")),
             other => return Err(format!("duration {s:?}: unknown unit {other:?}")),
         };
         total = total.saturating_add((n * mult) as i64);
@@ -354,14 +384,13 @@ fn parse_duration_ms(s: &str) -> Result<i64, String> {
 fn latest_sample_ts(db: &std::path::Path) -> Result<Option<i64>, String> {
     let conn = rusqlite::Connection::open_with_flags(
         db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ).map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT MAX(timestamp_ms) FROM sample_value",
-        [],
-        |row| row.get::<_, Option<i64>>(0),
-    ).map_err(|e| e.to_string())
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row("SELECT MAX(timestamp_ms) FROM sample_value", [], |row| {
+        row.get::<_, Option<i64>>(0)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// One-shot probe for the db's earliest sample timestamp — the start of
@@ -370,14 +399,13 @@ fn latest_sample_ts(db: &std::path::Path) -> Result<Option<i64>, String> {
 fn earliest_sample_ts(db: &std::path::Path) -> Result<Option<i64>, String> {
     let conn = rusqlite::Connection::open_with_flags(
         db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ).map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT MIN(timestamp_ms) FROM sample_value",
-        [],
-        |row| row.get::<_, Option<i64>>(0),
-    ).map_err(|e| e.to_string())
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row("SELECT MIN(timestamp_ms) FROM sample_value", [], |row| {
+        row.get::<_, Option<i64>>(0)
+    })
+    .map_err(|e| e.to_string())
 }
 
 fn emit(series: &[Series], latest_only: bool) {
@@ -387,7 +415,8 @@ fn emit(series: &[Series], latest_only: bool) {
     }
     // Stable output ordering: by formatted label set so the
     // command is deterministic across runs.
-    let mut rows: Vec<(String, &Series)> = series.iter()
+    let mut rows: Vec<(String, &Series)> = series
+        .iter()
         .map(|s| (format_labels(&s.labels), s))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -400,7 +429,9 @@ fn emit(series: &[Series], latest_only: bool) {
             // Pick the sample with the largest timestamp.
             // Most queries want "what's the value now?"; the
             // window is just there to absorb cadence skew.
-            let latest = s.samples.iter()
+            let latest = s
+                .samples
+                .iter()
                 .max_by_key(|sm| sm.timestamp_ms)
                 .expect("non-empty checked above");
             println!("{labels} @ {} = {}", latest.timestamp_ms, latest.value);
@@ -416,21 +447,29 @@ fn emit(series: &[Series], latest_only: bool) {
 /// out as a leading bare token so output reads like the
 /// metricsql syntax users typed in.
 fn format_labels(labels: &[(String, String)]) -> String {
-    let name = labels.iter().find(|(k, _)| k == "__name__").map(|(_, v)| v.clone());
-    let mut other: Vec<&(String, String)> = labels.iter()
-        .filter(|(k, _)| k != "__name__")
-        .collect();
+    let name = labels
+        .iter()
+        .find(|(k, _)| k == "__name__")
+        .map(|(_, v)| v.clone());
+    let mut other: Vec<&(String, String)> =
+        labels.iter().filter(|(k, _)| k != "__name__").collect();
     other.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = String::new();
-    if let Some(n) = name { out.push_str(&n); }
+    if let Some(n) = name {
+        out.push_str(&n);
+    }
     if !other.is_empty() {
         out.push('{');
         for (i, (k, v)) in other.iter().enumerate() {
-            if i > 0 { out.push(','); }
+            if i > 0 {
+                out.push(',');
+            }
             out.push_str(k);
             out.push_str("=\"");
             for ch in v.chars() {
-                if ch == '"' || ch == '\\' { out.push('\\'); }
+                if ch == '"' || ch == '\\' {
+                    out.push('\\');
+                }
                 out.push(ch);
             }
             out.push('"');
@@ -469,8 +508,10 @@ pub fn watch(args: &[String]) {
         }
     };
     if !parsed.db_path.exists() {
-        eprintln!("nbrs metrics watch: db not found at '{}'",
-            parsed.db_path.display());
+        eprintln!(
+            "nbrs metrics watch: db not found at '{}'",
+            parsed.db_path.display()
+        );
         std::process::exit(2);
     }
     let mut expr = match nbrs_metricsql::parse(&parsed.query) {
@@ -487,12 +528,14 @@ pub fn watch(args: &[String]) {
     // mid-watch would otherwise silently jump the watched
     // execution from under the operator).
     {
-        let session_dir = parsed.db_path.parent()
+        let session_dir = parsed
+            .db_path
+            .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default();
         nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
-        let resolved = nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
-            .specific_id();
+        let resolved =
+            nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir).specific_id();
         nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut expr, resolved);
     }
     let expr = expr;
@@ -526,11 +569,8 @@ pub fn watch(args: &[String]) {
 /// register the user's query. Returns the runtime + the
 /// query handle on success; on streaming compile failure,
 /// returns the reason string for diagnostic display.
-fn try_runtime_engine(parsed: &WatchArgs)
-    -> Result<(ContinuousQueryRuntime, QueryHandle), String>
-{
-    let ds = SqliteDataSource::open(&parsed.db_path)
-        .map_err(|e| format!("open db: {e}"))?;
+fn try_runtime_engine(parsed: &WatchArgs) -> Result<(ContinuousQueryRuntime, QueryHandle), String> {
+    let ds = SqliteDataSource::open(&parsed.db_path).map_err(|e| format!("open db: {e}"))?;
     let feed = SqliteCliFeed {
         source: Box::new(ds),
         db_path: parsed.db_path.clone(),
@@ -544,7 +584,8 @@ fn try_runtime_engine(parsed: &WatchArgs)
         window_policy: WindowPolicy::Lifetime,
         warmup_ms: parsed.warmup_ms,
     };
-    runtime.register_with(&parsed.query, opts)
+    runtime
+        .register_with(&parsed.query, opts)
         .map(|h| (runtime.clone(), h))
         .map_err(|e: RegisterError| e.to_string())
 }
@@ -561,40 +602,48 @@ struct SqliteCliFeed {
 }
 
 impl SampleFeed for SqliteCliFeed {
-    fn fetch_since(&self, matchers: &[Matcher], since_ms: i64, until_ms: i64)
-        -> Result<Vector, DataSourceError>
-    {
+    fn fetch_since(
+        &self,
+        matchers: &[Matcher],
+        since_ms: i64,
+        until_ms: i64,
+    ) -> Result<Vector, DataSourceError> {
         // Mirror PullFeed's exclusive-since → inclusive
         // conversion.
         let start = since_ms.saturating_add(1);
-        if start > until_ms { return Ok(Vector::default()); }
+        if start > until_ms {
+            return Ok(Vector::default());
+        }
         self.source.select_range(matchers, start, until_ms)
     }
 
     fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
-        latest_sample_ts(&self.db_path)
-            .map_err(DataSourceError::new)
+        latest_sample_ts(&self.db_path).map_err(DataSourceError::new)
     }
 }
 
-fn run_runtime_loop(
-    parsed: &WatchArgs,
-    runtime: ContinuousQueryRuntime,
-    handle: QueryHandle,
-) {
+fn run_runtime_loop(parsed: &WatchArgs, runtime: ContinuousQueryRuntime, handle: QueryHandle) {
     // First snapshot is already populated by `register`'s
     // backfill. Render it before sleeping so the user sees
     // data on the first frame.
-    redraw(&parsed.query, &handle.snapshot(),
-        parsed.latest_only, parsed.no_clear);
+    redraw(
+        &parsed.query,
+        &handle.snapshot(),
+        parsed.latest_only,
+        parsed.no_clear,
+    );
     loop {
         std::thread::sleep(std::time::Duration::from_millis(parsed.interval_ms as u64));
         if let Err(e) = runtime.tick() {
             eprintln!("nbrs metrics watch: tick: {e}");
             std::process::exit(2);
         }
-        redraw(&parsed.query, &handle.snapshot(),
-            parsed.latest_only, parsed.no_clear);
+        redraw(
+            &parsed.query,
+            &handle.snapshot(),
+            parsed.latest_only,
+            parsed.no_clear,
+        );
     }
 }
 
@@ -606,13 +655,16 @@ fn run_batch_loop(parsed: &WatchArgs, ds: &SqliteDataSource, expr: &nbrs_metrics
         };
         let start = now - parsed.warmup_ms;
         let ctx = EvalContext {
-            data: ds, start_ms: start, end_ms: now,
-            step_ms: 60_000, lookback_ms: None,
-            query_start_ms: Some(start), query_end_ms: Some(now),
+            data: ds,
+            start_ms: start,
+            end_ms: now,
+            step_ms: 60_000,
+            lookback_ms: None,
+            query_start_ms: Some(start),
+            query_end_ms: Some(now),
         };
         match evaluate(&ctx, expr) {
-            Ok(series) => redraw(&parsed.query, &series,
-                parsed.latest_only, parsed.no_clear),
+            Ok(series) => redraw(&parsed.query, &series, parsed.latest_only, parsed.no_clear),
             Err(e) => {
                 eprintln!("nbrs metrics watch: evaluate: {e}");
                 std::process::exit(2);
@@ -638,14 +690,16 @@ struct WatchArgs {
 fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
     let mut db_path: Option<PathBuf> = None;
     let mut query: Option<String> = None;
-    let mut interval_ms: i64 = 5_000;     // 5 seconds
+    let mut interval_ms: i64 = 5_000; // 5 seconds
     let mut warmup_ms: i64 = 5 * 60_000; // 5 minutes
     let mut latest_only = true;
     let mut no_clear = false;
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
         match a.as_str() {
-            "--db" => { db_path = iter.next().map(PathBuf::from); }
+            "--db" => {
+                db_path = iter.next().map(PathBuf::from);
+            }
             other if other.starts_with("--db=") => {
                 db_path = Some(PathBuf::from(&other[5..]));
             }
@@ -663,10 +717,18 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
                     return Err("--warmup must be non-negative".into());
                 }
             }
-            "--all-samples" => { latest_only = false; }
-            "--no-clear"    => { no_clear = true; }
-            "--session" | "--session-name" | "--session-path"
-            | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
+            "--all-samples" => {
+                latest_only = false;
+            }
+            "--no-clear" => {
+                no_clear = true;
+            }
+            "--session"
+            | "--session-name"
+            | "--session-path"
+            | "--session-reuse"
+            | "--session-keep"
+            | "--session-shelflife" => {
                 let _ = iter.next();
             }
             other if other.starts_with("--session") => {}
@@ -683,7 +745,14 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
     let db_path = resolve_db(db_path, args);
-    Ok(WatchArgs { db_path, query, interval_ms, warmup_ms, latest_only, no_clear })
+    Ok(WatchArgs {
+        db_path,
+        query,
+        interval_ms,
+        warmup_ms,
+        latest_only,
+        no_clear,
+    })
 }
 
 fn redraw(query: &str, series: &[Series], latest_only: bool, no_clear: bool) {
@@ -702,7 +771,9 @@ fn redraw(query: &str, series: &[Series], latest_only: bool, no_clear: bool) {
 
 fn chrono_like_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs() as i64;
     // Avoid a chrono dep — render as `<unix-secs>` so
     // operators can pipe through `date -d @<n>` if they
@@ -813,7 +884,9 @@ mod tests {
     #[test]
     fn arg_parser_picks_up_flags_and_positional() {
         let args: Vec<String> = ["--db", "/tmp/x.db", "--lookback", "5m", "sum(cpu)"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let p = parse_args(&args).unwrap();
         assert_eq!(p.db_path, PathBuf::from("/tmp/x.db"));
         assert_eq!(p.lookback_ms, 300_000);
@@ -824,17 +897,23 @@ mod tests {
     fn arg_parser_collects_multiple_family_positionals() {
         // Multiple bare family names → one query each, merged at eval.
         let args: Vec<String> = ["attempt_total", "result_total", "--range", "all"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let p = parse_args(&args).unwrap();
-        assert_eq!(p.queries,
-            vec!["attempt_total".to_string(), "result_total".to_string()]);
+        assert_eq!(
+            p.queries,
+            vec!["attempt_total".to_string(), "result_total".to_string()]
+        );
         assert_eq!(p.range.as_deref(), Some("all"));
     }
 
     #[test]
     fn arg_parser_rejects_missing_query() {
         let args: Vec<String> = ["--db", "/tmp/x.db"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let err = parse_args(&args).unwrap_err();
         assert!(err.contains("required"));
     }
@@ -842,7 +921,9 @@ mod tests {
     #[test]
     fn watch_args_pick_up_interval_and_warmup() {
         let args: Vec<String> = ["--interval", "10s", "--warmup", "30m", "rate(cpu[1m])"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let p = parse_watch_args(&args).unwrap();
         assert_eq!(p.interval_ms, 10_000);
         assert_eq!(p.warmup_ms, 30 * 60_000);
@@ -854,7 +935,9 @@ mod tests {
     #[test]
     fn watch_args_reject_zero_interval() {
         let args: Vec<String> = ["--interval", "0", "rate(cpu[1m])"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let err = parse_watch_args(&args).unwrap_err();
         assert!(err.contains("--interval"));
     }
@@ -865,22 +948,30 @@ mod tests {
         // evaluated as its own selector, series shown independently —
         // not aggregated), not an error.
         let args: Vec<String> = ["attempt_total", "result_total", "cycles_total"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let p = parse_args(&args).unwrap();
-        assert_eq!(p.queries, vec![
-            "attempt_total".to_string(),
-            "result_total".to_string(),
-            "cycles_total".to_string(),
-        ]);
+        assert_eq!(
+            p.queries,
+            vec![
+                "attempt_total".to_string(),
+                "result_total".to_string(),
+                "cycles_total".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn arg_parser_collects_repeatable_family_flag() {
-        let args: Vec<String> =
-            ["--family", "attempt_total", "--family", "attempt_success"]
-                .iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["--family", "attempt_total", "--family", "attempt_success"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let p = parse_args(&args).unwrap();
-        assert_eq!(p.queries,
-            vec!["attempt_total".to_string(), "attempt_success".to_string()]);
+        assert_eq!(
+            p.queries,
+            vec!["attempt_total".to_string(), "attempt_success".to_string()]
+        );
     }
 }

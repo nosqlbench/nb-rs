@@ -24,14 +24,9 @@
 
 /// Replace `original[range]` with `replacement`. The
 /// ranges either side are preserved byte-for-byte.
-pub fn replace_range(
-    original: &str,
-    range: std::ops::Range<usize>,
-    replacement: &str,
-) -> String {
-    let mut out = String::with_capacity(
-        original.len() + replacement.len() - (range.end - range.start),
-    );
+pub fn replace_range(original: &str, range: std::ops::Range<usize>, replacement: &str) -> String {
+    let mut out =
+        String::with_capacity(original.len() + replacement.len() - (range.end - range.start));
     out.push_str(&original[..range.start]);
     out.push_str(replacement);
     out.push_str(&original[range.end..]);
@@ -42,11 +37,7 @@ pub fn replace_range(
 /// `replace_range(original, offset..offset, new_content)`,
 /// expressed plainly because insertion is the common case
 /// for adding new keys.
-pub fn insert_at(
-    original: &str,
-    offset: usize,
-    new_content: &str,
-) -> String {
+pub fn insert_at(original: &str, offset: usize, new_content: &str) -> String {
     let mut out = String::with_capacity(original.len() + new_content.len());
     out.push_str(&original[..offset]);
     out.push_str(new_content);
@@ -161,7 +152,9 @@ mod tests {
     fn indent_block_replaces_existing_leading_whitespace() {
         let block = "key:\n      already_indented: x\n";
         let out = indent_block(block, 2);
-        assert_eq!(out, "key:\n  already_indented: x\n",
-            "existing leading ws should be replaced, not appended");
+        assert_eq!(
+            out, "key:\n  already_indented: x\n",
+            "existing leading ws should be replaced, not appended"
+        );
     }
 }

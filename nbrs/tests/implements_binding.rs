@@ -51,8 +51,10 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-implements-{tag}-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "nbrs-implements-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         std::fs::write(dir.join("blueprint.yaml"), BLUEPRINT).expect("write blueprint");
         std::fs::write(dir.join("impl.yaml"), IMPL).expect("write impl");
@@ -97,8 +99,11 @@ fn invoking_the_implementation_pulls_and_binds_the_blueprint() {
     let sandbox = Sandbox::new("pull");
     let (stdout, stderr, ok) = sandbox.run(&["workload=impl.yaml"]);
     assert!(ok, "bound run must complete; stderr:\n{stderr}");
-    assert_eq!(ticks(&stdout, "SEARCH k=7"), 3,
-        "blueprint cycles × implementation body; stdout:\n{stdout}");
+    assert_eq!(
+        ticks(&stdout, "SEARCH k=7"),
+        3,
+        "blueprint cycles × implementation body; stdout:\n{stdout}"
+    );
 }
 
 /// `workload=<blueprint> impl=<impl>` — same bound composition
@@ -106,8 +111,7 @@ fn invoking_the_implementation_pulls_and_binds_the_blueprint() {
 #[test]
 fn invoking_the_blueprint_with_impl_binds() {
     let sandbox = Sandbox::new("implparam");
-    let (stdout, stderr, ok) =
-        sandbox.run(&["workload=blueprint.yaml", "impl=impl.yaml"]);
+    let (stdout, stderr, ok) = sandbox.run(&["workload=blueprint.yaml", "impl=impl.yaml"]);
     assert!(ok, "bound run must complete; stderr:\n{stderr}");
     assert_eq!(ticks(&stdout, "SEARCH k=7"), 3, "stdout:\n{stdout}");
 }
@@ -119,8 +123,10 @@ fn unbound_abstract_slot_is_a_load_error() {
     let sandbox = Sandbox::new("unbound");
     let (_, stderr, ok) = sandbox.run(&["workload=blueprint.yaml"]);
     assert!(!ok, "an unbound blueprint must not run");
-    assert!(stderr.contains("probe.search") && stderr.contains("impl="),
-        "the error names the slot and the remedy; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("probe.search") && stderr.contains("impl="),
+        "the error names the slot and the remedy; stderr:\n{stderr}"
+    );
 }
 
 /// An `impl=` whose `implements:` names a DIFFERENT blueprint is
@@ -128,11 +134,11 @@ fn unbound_abstract_slot_is_a_load_error() {
 #[test]
 fn mismatched_implements_target_is_rejected() {
     let sandbox = Sandbox::new("mismatch");
-    std::fs::write(sandbox.dir.join("other.yaml"), BLUEPRINT)
-        .expect("write other blueprint");
-    let (_, stderr, ok) =
-        sandbox.run(&["workload=other.yaml", "impl=impl.yaml"]);
+    std::fs::write(sandbox.dir.join("other.yaml"), BLUEPRINT).expect("write other blueprint");
+    let (_, stderr, ok) = sandbox.run(&["workload=other.yaml", "impl=impl.yaml"]);
     assert!(!ok, "a mismatched implements target must not run");
-    assert!(stderr.contains("implements"),
-        "the error explains the target mismatch; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("implements"),
+        "the error explains the target mismatch; stderr:\n{stderr}"
+    );
 }

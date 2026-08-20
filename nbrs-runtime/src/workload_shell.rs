@@ -181,7 +181,7 @@ impl WorkloadShell {
             *slot = Some(reason.clone());
         }
         if let Ok(mut slot) = self.stop_outcome.lock() {
-            *slot = Some(outcome.clone());   // Outcome no longer Copy (SRD-92 reason field)
+            *slot = Some(outcome.clone()); // Outcome no longer Copy (SRD-92 reason field)
         }
         Some((outcome, reason))
     }
@@ -248,8 +248,7 @@ mod tests {
     /// the declared predicate.
     #[test]
     fn stop_on_error_latches_on_first_failed_child() {
-        let root = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
-            .expect("root kernel");
+        let root = polydat::dsl::compile_polydat("input cycle: u64\nx := 5").expect("root kernel");
         let set = StopConditionSet::build_for_phase(
             &root,
             &[crate::stop_conditions::StopConditionDecl {
@@ -258,8 +257,9 @@ mod tests {
                 reason: None,
                 target: crate::stop_conditions::StopScope::Workload,
                 cancel_ops: false,
-            }])
-            .expect("build set");
+            }],
+        )
+        .expect("build set");
         let shell = WorkloadShell::new(set);
 
         // A successful child does not trip.
@@ -268,10 +268,16 @@ mod tests {
         // The first failed child latches the stop, returning the outcome + reason.
         assert_eq!(
             shell.record_phase(true, 50, 50),
-            Some((Outcome::failed(), "stop_condition: children_failed > 0".to_string())));
+            Some((
+                Outcome::failed(),
+                "stop_condition: children_failed > 0".to_string()
+            ))
+        );
         assert!(shell.should_stop());
-        assert_eq!(shell.stop_reason().as_deref(),
-            Some("stop_condition: children_failed > 0"));
+        assert_eq!(
+            shell.stop_reason().as_deref(),
+            Some("stop_condition: children_failed > 0")
+        );
         // A subsequent finisher sees the latch and reports no fresh trip.
         assert_eq!(shell.record_phase(true, 10, 10), None);
         assert!(shell.should_stop());
@@ -282,8 +288,7 @@ mod tests {
     /// accumulator folds across phases, not per-phase.
     #[test]
     fn aggregate_op_count_trips_across_phases() {
-        let root = polydat::dsl::compile_polydat("input cycle: u64")
-            .expect("root kernel");
+        let root = polydat::dsl::compile_polydat("input cycle: u64").expect("root kernel");
         let set = StopConditionSet::build_for_phase(
             &root,
             &[crate::stop_conditions::StopConditionDecl {
@@ -292,8 +297,9 @@ mod tests {
                 reason: None,
                 target: crate::stop_conditions::StopScope::Workload,
                 cancel_ops: false,
-            }])
-            .expect("build set");
+            }],
+        )
+        .expect("build set");
         let shell = WorkloadShell::new(set);
 
         assert_eq!(shell.record_phase(false, 600, 0), None);
@@ -301,7 +307,11 @@ mod tests {
         // Cumulative op_count is now 1200 > 1000 → trips (graceful stop effect).
         assert_eq!(
             shell.record_phase(false, 600, 0),
-            Some((Outcome::interrupted(), "stop_condition: cycles_total > 1000".to_string())));
+            Some((
+                Outcome::interrupted(),
+                "stop_condition: cycles_total > 1000".to_string()
+            ))
+        );
         assert!(shell.should_stop());
     }
 

@@ -15,8 +15,8 @@
 use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
 use nbrs_workload::verify::{CheckProgress, CheckStatus, WorkloadTiming};
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub fn spec() -> Command {
@@ -61,15 +61,16 @@ fn check_command(args: &[String]) -> Result<(), String> {
         .or_else(|| args.iter().find(|a| !a.contains('=')).cloned())
         .ok_or("usage: nbrs check workload=<file|dir|name>  (or: nbrs check <file|dir|name>)")?;
 
-    let binary = std::env::current_exe()
-        .map_err(|e| format!("cannot locate the nbrs binary: {e}"))?;
+    let binary =
+        std::env::current_exe().map_err(|e| format!("cannot locate the nbrs binary: {e}"))?;
     let sandbox = std::env::temp_dir().join(format!("nbrs-check-{}", std::process::id()));
 
     // Live progress: a TTY-only status line redrawn as each workload starts
     // and finishes. Worker threads in `verify_path` drive it concurrently, so
     // the view is atomic + write-serialized.
     let view = ProgressView::new();
-    let sum = nbrs_workload::verify::verify_target(&binary, &target, &sandbox, &|ev| view.handle(ev));
+    let sum =
+        nbrs_workload::verify::verify_target(&binary, &target, &sandbox, &|ev| view.handle(ev));
     view.clear();
 
     for s in &sum.skipped {
@@ -82,7 +83,11 @@ fn check_command(args: &[String]) -> Result<(), String> {
         } else {
             format!(", {} skipped", sum.skipped.len())
         };
-        println!("✓ {} check{} passed{skip}", sum.passed, if sum.passed == 1 { "" } else { "s" });
+        println!(
+            "✓ {} check{} passed{skip}",
+            sum.passed,
+            if sum.passed == 1 { "" } else { "s" }
+        );
         Ok(())
     } else {
         for f in &sum.failures {
@@ -111,7 +116,12 @@ fn print_timing_report(timings: &[WorkloadTiming]) {
         fmt_dur(wall),
     );
     for t in ranked.into_iter().take(10) {
-        println!("  {:>9}  {} {}", fmt_dur(t.elapsed), status_mark(t.status), t.label);
+        println!(
+            "  {:>9}  {} {}",
+            fmt_dur(t.elapsed),
+            status_mark(t.status),
+            t.label
+        );
     }
 }
 

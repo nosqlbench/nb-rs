@@ -32,7 +32,9 @@ use std::process::Command;
 
 const WORKLOAD: &str = "examples/workloads/metrics/reports_coverage.yaml";
 
-struct SessionDir { path: PathBuf }
+struct SessionDir {
+    path: PathBuf,
+}
 
 impl SessionDir {
     fn new() -> Self {
@@ -41,16 +43,21 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-reports-coverage-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-reports-coverage-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
-        Self { path: parent.join("session") }
+        Self {
+            path: parent.join("session"),
+        }
     }
-    fn parent(&self) -> &Path { self.path.parent().unwrap() }
+    fn parent(&self) -> &Path {
+        self.path.parent().unwrap()
+    }
 }
 
 impl Drop for SessionDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(self.parent()); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.parent());
+    }
 }
 
 /// Run the full two-step pipeline and return the session
@@ -64,7 +71,8 @@ fn run_and_report() -> SessionDir {
     let run_out = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .current_dir(workspace_root)
         .arg("run")
-        .arg("--session-path").arg(&session.path)
+        .arg("--session-path")
+        .arg(&session.path)
         .arg(format!("workload={WORKLOAD}"))
         .arg("scenario=default")
         .output()
@@ -78,10 +86,13 @@ fn run_and_report() -> SessionDir {
     let db = session.path.join("metrics.db");
     let report_out = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .current_dir(workspace_root)
-        .arg("report").arg("all")
+        .arg("report")
+        .arg("all")
         .arg(format!("workload={WORKLOAD}"))
-        .arg("--db").arg(&db)
-        .arg("--session-path").arg(&session.path)
+        .arg("--db")
+        .arg(&db)
+        .arg("--session-path")
+        .arg(&session.path)
         .output()
         .expect("invoke nbrs report all");
     assert!(
@@ -94,8 +105,7 @@ fn run_and_report() -> SessionDir {
 }
 
 fn read_file(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -112,20 +122,30 @@ fn reports_standalone_table_summary_files_exist() {
     let out = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .current_dir(workspace_root)
         .arg("run")
-        .arg("--session-path").arg(&session.path)
+        .arg("--session-path")
+        .arg(&session.path)
         .arg(format!("workload={WORKLOAD}"))
         .arg("scenario=default")
         .output()
         .expect("invoke nbrs run");
-    assert!(out.status.success(), "nbrs run: {}",
-        String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "nbrs run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let default_table = session.path.join("default_table_summary.md");
     let latency_table = session.path.join("latency_table_summary.md");
-    assert!(default_table.exists(),
-        "expected default_table_summary.md at {}", default_table.display());
-    assert!(latency_table.exists(),
-        "expected latency_table_summary.md at {}", latency_table.display());
+    assert!(
+        default_table.exists(),
+        "expected default_table_summary.md at {}",
+        default_table.display()
+    );
+    assert!(
+        latency_table.exists(),
+        "expected latency_table_summary.md at {}",
+        latency_table.display()
+    );
 }
 
 #[test]
@@ -136,9 +156,15 @@ fn reports_standalone_table_has_markdown_table_header() {
     // default columns (Activity, Cycles, Rate, p50, p99, mean).
     let session = run_and_report();
     let content = read_file(&session.path.join("default_table_summary.md"));
-    assert!(content.contains("| Activity"), "missing Activity column: {content}");
-    assert!(content.contains("| Cycles"), "missing Cycles column: {content}");
-    assert!(content.contains("| p50"),    "missing p50 column: {content}");
+    assert!(
+        content.contains("| Activity"),
+        "missing Activity column: {content}"
+    );
+    assert!(
+        content.contains("| Cycles"),
+        "missing Cycles column: {content}"
+    );
+    assert!(content.contains("| p50"), "missing p50 column: {content}");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -151,10 +177,14 @@ fn reports_summary_md_has_run_details_section() {
     // `run_details`.
     let session = run_and_report();
     let content = read_file(&session.path.join("summary.md"));
-    assert!(content.contains("<a id=\"run_details\"></a>"),
-        "missing run_details anchor: {content}");
-    assert!(content.contains("## Run Details"),
-        "missing Run Details heading: {content}");
+    assert!(
+        content.contains("<a id=\"run_details\"></a>"),
+        "missing run_details anchor: {content}"
+    );
+    assert!(
+        content.contains("## Run Details"),
+        "missing Run Details heading: {content}"
+    );
 }
 
 #[test]
@@ -163,13 +193,17 @@ fn reports_text_item_with_label_overrides_heading() {
     // which becomes the section heading (not the canonical name).
     let session = run_and_report();
     let content = read_file(&session.path.join("summary.md"));
-    assert!(content.contains("## Coverage workload overview (text)"),
-        "text label should override default heading: {content}");
+    assert!(
+        content.contains("## Coverage workload overview (text)"),
+        "text label should override default heading: {content}"
+    );
     // The body is emitted verbatim (the literal `overview_intro`
     // identifier survives because the parser doesn't strip the
     // item name from a text body).
-    assert!(content.contains("SRD-46 unified"),
-        "text body content missing: {content}");
+    assert!(
+        content.contains("SRD-46 unified"),
+        "text body content missing: {content}"
+    );
 }
 
 #[test]
@@ -177,10 +211,14 @@ fn reports_default_group_table_anchored_with_figure_number() {
     // `default_table` is the first figure-eligible item → fig 1.
     let session = run_and_report();
     let content = read_file(&session.path.join("summary.md"));
-    assert!(content.contains("<a id=\"default_table\"></a>"),
-        "missing default_table anchor: {content}");
-    assert!(content.contains("## 1. Default table (table)"),
-        "default_table figure heading missing: {content}");
+    assert!(
+        content.contains("<a id=\"default_table\"></a>"),
+        "missing default_table anchor: {content}"
+    );
+    assert!(
+        content.contains("## 1. Default table (table)"),
+        "default_table figure heading missing: {content}"
+    );
 }
 
 #[test]
@@ -189,10 +227,14 @@ fn reports_second_group_renders_as_distinct_section() {
     // confirms multi-group rendering each emits its own section.
     let session = run_and_report();
     let content = read_file(&session.path.join("summary.md"));
-    assert!(content.contains("<a id=\"latency_table\"></a>"),
-        "missing latency_table anchor: {content}");
-    assert!(content.contains("## 2. Latency table (table)"),
-        "latency_table figure heading missing: {content}");
+    assert!(
+        content.contains("<a id=\"latency_table\"></a>"),
+        "missing latency_table anchor: {content}"
+    );
+    assert!(
+        content.contains("## 2. Latency table (table)"),
+        "latency_table figure heading missing: {content}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -205,8 +247,11 @@ fn reports_file_directive_creates_sidecar() {
     // (`text_003`) to write to detail.md, NOT summary.md.
     let session = run_and_report();
     let sidecar = session.path.join("detail.md");
-    assert!(sidecar.exists(),
-        "expected sidecar detail.md at {}", sidecar.display());
+    assert!(
+        sidecar.exists(),
+        "expected sidecar detail.md at {}",
+        sidecar.display()
+    );
 }
 
 #[test]
@@ -215,19 +260,27 @@ fn reports_file_directive_routes_correct_item() {
     // summary.md. `text_003` (declared AFTER) lives in detail.md.
     let session = run_and_report();
     let summary = read_file(&session.path.join("summary.md"));
-    let detail  = read_file(&session.path.join("detail.md"));
+    let detail = read_file(&session.path.join("detail.md"));
 
     // Pre-`file` text section lands in summary.md.
-    assert!(summary.contains("Items above this line live in summary.md."),
-        "pre-file text not in summary.md: {summary}");
-    assert!(!detail.contains("Items above this line live in summary.md."),
-        "pre-file text leaked into detail.md: {detail}");
+    assert!(
+        summary.contains("Items above this line live in summary.md."),
+        "pre-file text not in summary.md: {summary}"
+    );
+    assert!(
+        !detail.contains("Items above this line live in summary.md."),
+        "pre-file text leaked into detail.md: {detail}"
+    );
 
     // Post-`file` text section lands in detail.md.
-    assert!(detail.contains("Items below the `file` directive live in detail.md."),
-        "post-file text not in detail.md: {detail}");
-    assert!(!summary.contains("Items below the `file` directive live in detail.md."),
-        "post-file text leaked into summary.md: {summary}");
+    assert!(
+        detail.contains("Items below the `file` directive live in detail.md."),
+        "post-file text not in detail.md: {detail}"
+    );
+    assert!(
+        !summary.contains("Items below the `file` directive live in detail.md."),
+        "post-file text leaked into summary.md: {summary}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -243,21 +296,33 @@ fn reports_list_surfaces_all_kinds() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .current_dir(workspace_root)
-        .arg("report").arg("list")
+        .arg("report")
+        .arg("list")
         .arg(format!("workload={WORKLOAD}"))
         .output()
         .expect("invoke nbrs report list");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "nbrs report list failed: stderr=\n{}",
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // Expect all six items in the listing — three text, two
     // tables, one file.
-    assert!(stdout.contains("text"),     "text kind missing: {stdout}");
-    assert!(stdout.contains("table"),    "table kind missing: {stdout}");
-    assert!(stdout.contains("file"),     "file kind missing: {stdout}");
-    assert!(stdout.contains("default_table"),  "default_table missing: {stdout}");
-    assert!(stdout.contains("latency_table"),  "latency_table missing: {stdout}");
-    assert!(stdout.contains("detail.md"),      "detail.md (file item) missing: {stdout}");
+    assert!(stdout.contains("text"), "text kind missing: {stdout}");
+    assert!(stdout.contains("table"), "table kind missing: {stdout}");
+    assert!(stdout.contains("file"), "file kind missing: {stdout}");
+    assert!(
+        stdout.contains("default_table"),
+        "default_table missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("latency_table"),
+        "latency_table missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("detail.md"),
+        "detail.md (file item) missing: {stdout}"
+    );
 }

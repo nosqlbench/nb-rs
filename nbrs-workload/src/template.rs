@@ -31,14 +31,14 @@ pub fn expand_templates(source: &str, params: &HashMap<String, String>) -> Strin
         // Look for TEMPLATE( — compare chars, not bytes
         let template_match = i + 9 <= chars.len()
             && chars[i] == 'T'
-            && chars[i+1] == 'E'
-            && chars[i+2] == 'M'
-            && chars[i+3] == 'P'
-            && chars[i+4] == 'L'
-            && chars[i+5] == 'A'
-            && chars[i+6] == 'T'
-            && chars[i+7] == 'E'
-            && chars[i+8] == '(';
+            && chars[i + 1] == 'E'
+            && chars[i + 2] == 'M'
+            && chars[i + 3] == 'P'
+            && chars[i + 4] == 'L'
+            && chars[i + 5] == 'A'
+            && chars[i + 6] == 'T'
+            && chars[i + 7] == 'E'
+            && chars[i + 8] == '(';
 
         if template_match {
             i += 9; // skip "TEMPLATE("
@@ -55,12 +55,16 @@ pub fn expand_templates(source: &str, params: &HashMap<String, String>) -> Strin
                     ')' if !in_quote => depth -= 1,
                     _ => {}
                 }
-                if depth > 0 { i += 1; }
+                if depth > 0 {
+                    i += 1;
+                }
             }
 
             if depth != 0 {
                 // Unclosed TEMPLATE — pass through remaining chars
-                for c in &chars[arg_start - 9..] { result.push(*c); }
+                for c in &chars[arg_start - 9..] {
+                    result.push(*c);
+                }
                 break;
             }
 
@@ -112,7 +116,8 @@ mod tests {
     }
 
     fn expand_with(source: &str, params: &[(&str, &str)]) -> String {
-        let map: HashMap<String, String> = params.iter()
+        let map: HashMap<String, String> = params
+            .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         expand_templates(source, &map)
@@ -120,7 +125,10 @@ mod tests {
 
     #[test]
     fn template_with_default() {
-        assert_eq!(expand("name: TEMPLATE(myname, thedefault)"), "name: thedefault");
+        assert_eq!(
+            expand("name: TEMPLATE(myname, thedefault)"),
+            "name: thedefault"
+        );
     }
 
     #[test]
@@ -144,9 +152,7 @@ mod tests {
     #[test]
     fn template_consistent_resolution() {
         // First occurrence sets default, second uses it
-        let result = expand(
-            "a: TEMPLATE(x, hello)\nb: TEMPLATE(x)"
-        );
+        let result = expand("a: TEMPLATE(x, hello)\nb: TEMPLATE(x)");
         assert_eq!(result, "a: hello\nb: hello");
     }
 
@@ -165,10 +171,7 @@ mod tests {
 
     #[test]
     fn template_multiple_on_one_line() {
-        assert_eq!(
-            expand("TEMPLATE(a, 1) and TEMPLATE(b, 2)"),
-            "1 and 2"
-        );
+        assert_eq!(expand("TEMPLATE(a, 1) and TEMPLATE(b, 2)"), "1 and 2");
     }
 
     #[test]
@@ -186,9 +189,6 @@ bindings:
     #[test]
     fn template_nested_parens() {
         // TEMPLATE arg contains parens (in a function call)
-        assert_eq!(
-            expand("TEMPLATE(expr, ToString())"),
-            "ToString()"
-        );
+        assert_eq!(expand("TEMPLATE(expr, ToString())"), "ToString()");
     }
 }

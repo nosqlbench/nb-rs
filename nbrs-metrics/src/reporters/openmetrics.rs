@@ -19,7 +19,9 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
         let name = sanitize_name(family.name());
         for metric in family.metrics() {
             let label_str = render_labels(metric.labels(), &[]);
-            let Some(point) = metric.point() else { continue };
+            let Some(point) = metric.point() else {
+                continue;
+            };
             match point.value() {
                 MetricValue::Counter(c) => {
                     let name_total = format!("{name}_total");
@@ -41,7 +43,7 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
                         let q_label = if label_str.is_empty() {
                             format!("{{quantile=\"{q}\"}}")
                         } else {
-                            let inner = &label_str[1..label_str.len()-1];
+                            let inner = &label_str[1..label_str.len() - 1];
                             format!("{{{inner},quantile=\"{q}\"}}")
                         };
                         out.push_str(&format!("{name}{q_label} {val_seconds:.9}\n"));
@@ -62,7 +64,7 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
                         let bucket_label = if label_str.is_empty() {
                             format!("{{le=\"{le_str}\"}}")
                         } else {
-                            let inner = &label_str[1..label_str.len()-1];
+                            let inner = &label_str[1..label_str.len() - 1];
                             format!("{{{inner},le=\"{le_str}\"}}")
                         };
                         out.push_str(&format!("{name}_bucket{bucket_label} {count}\n"));
@@ -84,7 +86,7 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
                         let state_label = if label_str.is_empty() {
                             format!("{{{name}=\"{state_name}\"}}")
                         } else {
-                            let inner = &label_str[1..label_str.len()-1];
+                            let inner = &label_str[1..label_str.len() - 1];
                             format!("{{{inner},{name}=\"{state_name}\"}}")
                         };
                         let v = if *active { 1 } else { 0 };
@@ -101,13 +103,20 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
 /// Sanitize a metric name to a valid Prometheus identifier.
 fn sanitize_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == ':' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == ':' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
 /// Render labels as Prometheus format, excluding specified keys.
 fn render_labels(labels: &Labels, exclude: &[&str]) -> String {
-    let pairs: Vec<String> = labels.iter()
+    let pairs: Vec<String> = labels
+        .iter()
         .filter(|(k, _)| !exclude.contains(k))
         .map(|(k, v)| format!("{k}=\"{v}\""))
         .collect();

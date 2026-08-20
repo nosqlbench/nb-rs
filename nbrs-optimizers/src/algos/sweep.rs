@@ -31,7 +31,12 @@ impl Optimizer for Sweep {
         "sweep"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let lists = axis_value_lists(space);
         let n = lists.len();
@@ -61,7 +66,11 @@ impl Optimizer for Sweep {
                 break;
             }
         }
-        let stop = if exhausted { StopReason::Converged } else { StopReason::BudgetExhausted };
+        let stop = if exhausted {
+            StopReason::Converged
+        } else {
+            StopReason::BudgetExhausted
+        };
         ev.into_report(stop)
     }
 }

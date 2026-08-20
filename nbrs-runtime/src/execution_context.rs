@@ -136,7 +136,6 @@ tokio::task_local! {
     static CURRENT_PHASE_START_MS: u64;
 }
 
-
 /// The `exec_id` allocator — SRD-88 axiom A2, the one unavoidable global.
 /// Monotonic per process; the first allocated id is `1`, matching the legacy
 /// single-execution session's `exec_id`.
@@ -181,7 +180,10 @@ pub fn current_channel() -> Option<Arc<dyn crate::output_channel::OutputChannel>
 /// The current execution's scene tree, if scoped AND installed (`None`
 /// otherwise — the caller falls back to the process-global `GLOBAL_TREE`, A1).
 pub fn current_scene_tree() -> Option<Arc<RwLock<SceneTree>>> {
-    EXEC_CTX.try_with(|c| c.scene_tree.load_full()).ok().flatten()
+    EXEC_CTX
+        .try_with(|c| c.scene_tree.load_full())
+        .ok()
+        .flatten()
 }
 
 /// Install `tree` into the current execution's context, returning `true` if a
@@ -285,14 +287,20 @@ mod tests {
     /// THEIR own start rather than whichever ran last.
     #[tokio::test]
     async fn phase_start_is_scoped_and_absent_outside_a_phase() {
-        assert_eq!(current_phase_start_ms(), None,
-            "outside a phase there is no origin to be relative to");
+        assert_eq!(
+            current_phase_start_ms(),
+            None,
+            "outside a phase there is no origin to be relative to"
+        );
         let inside = with_current_phase(1, 111, async { current_phase_start_ms() }).await;
         assert_eq!(inside, Some(111));
         let sibling = with_current_phase(2, 222, async { current_phase_start_ms() }).await;
         assert_eq!(sibling, Some(222));
-        assert_eq!(current_phase_start_ms(), None,
-            "the scope must not leak past the phase body");
+        assert_eq!(
+            current_phase_start_ms(),
+            None,
+            "the scope must not leak past the phase body"
+        );
     }
 
     /// Fibers are spawned tasks, which do NOT inherit task-locals — the phase
@@ -305,8 +313,11 @@ mod tests {
                 .expect("spawned task")
         })
         .await;
-        assert_eq!(got, Some(333),
-            "a propagated fiber must resolve its own phase's origin");
+        assert_eq!(
+            got,
+            Some(333),
+            "a propagated fiber must resolve its own phase's origin"
+        );
     }
 
     #[test]
@@ -340,7 +351,10 @@ mod tests {
         })
         .await;
         assert_eq!(bare, 1, "a bare spawn loses the context (sees the default)");
-        assert_eq!(wrapped, id, "propagate carries the exec_id across the spawn");
+        assert_eq!(
+            wrapped, id,
+            "propagate carries the exec_id across the spawn"
+        );
     }
 
     #[tokio::test]
@@ -369,7 +383,11 @@ mod tests {
         })
         .await;
         assert_eq!(bare, None, "a bare spawn loses the ambient phase");
-        assert_eq!(wrapped, Some(42), "propagate carries the phase node across the spawn");
+        assert_eq!(
+            wrapped,
+            Some(42),
+            "propagate carries the phase node across the spawn"
+        );
     }
 
     #[tokio::test]
@@ -378,11 +396,16 @@ mod tests {
         // execution's exec_id AND its phase node.
         let ctx = ExecutionContext::new();
         let id = ctx.exec_id;
-        let (eid, phase) = scope(ctx, with_current_phase(9, 0, async {
-            tokio::spawn(propagate(async { (current_exec_id(), current_phase_node()) }))
+        let (eid, phase) = scope(
+            ctx,
+            with_current_phase(9, 0, async {
+                tokio::spawn(propagate(async {
+                    (current_exec_id(), current_phase_node())
+                }))
                 .await
                 .unwrap()
-        }))
+            }),
+        )
         .await;
         assert_eq!(eid, id, "propagate carries exec_id");
         assert_eq!(phase, Some(9), "propagate carries the phase node");
@@ -406,7 +429,10 @@ mod tests {
 
         let a = ExecutionContext::new();
         let b = ExecutionContext::new();
-        assert_ne!(a.exec_id, b.exec_id, "concurrent executions get distinct ids");
+        assert_ne!(
+            a.exec_id, b.exec_id,
+            "concurrent executions get distinct ids"
+        );
 
         // Stop A only.
         a.stop.store(true, Ordering::Relaxed);
@@ -425,6 +451,9 @@ mod tests {
 
         assert_eq!(a_id, a.exec_id, "the scoped exec_id resolves to A's");
         assert!(a_stopped, "A observes its own stop inside A's scope");
-        assert!(!b_stopped, "B must NOT see A's stop — executions are isolated");
+        assert!(
+            !b_stopped,
+            "B must NOT see A's stop — executions are isolated"
+        );
     }
 }

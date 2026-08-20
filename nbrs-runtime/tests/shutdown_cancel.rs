@@ -12,10 +12,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use nbrs_metrics::labels::Labels;
 use nbrs_runtime::activity::{Activity, ActivityConfig};
 use nbrs_runtime::adapter::{DriverAdapter, ExecutionError, OpDispenser, OpResult};
 use nbrs_runtime::opseq::{OpSequence, SequencerType};
-use nbrs_metrics::labels::Labels;
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::identity::Identity;
 
@@ -27,18 +27,21 @@ struct HangingAdapter {
 }
 
 impl DriverAdapter for HangingAdapter {
-    fn name(&self) -> &str { "hang" }
+    fn name(&self) -> &str {
+        "hang"
+    }
 
     fn map_op<'a>(
         &'a self,
         _template: &'a nbrs_workload::model::ParsedOp,
         _parent: Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         let dispatched = self.dispatched.clone();
-        Box::pin(async move {
-            Ok(Box::new(HangingDispenser { dispatched }) as Box<dyn OpDispenser>)
-        })
+        Box::pin(
+            async move { Ok(Box::new(HangingDispenser { dispatched }) as Box<dyn OpDispenser>) },
+        )
     }
 }
 
@@ -51,8 +54,9 @@ impl OpDispenser for HangingDispenser {
         &'a self,
         _cycle: u64,
         _ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         self.dispatched.fetch_add(1, Ordering::SeqCst);
         Box::pin(std::future::pending())
     }
@@ -112,9 +116,11 @@ async fn cancel_rung_releases_hung_ops_so_the_drain_completes() {
     // drain completes — WITHOUT this, only a force-exit would end the
     // process, skipping cleanup.
     nbrs_runtime::session_signals::escalate_shutdown(
-        nbrs_runtime::session_signals::ShutdownOrigin::CtrlC);
+        nbrs_runtime::session_signals::ShutdownOrigin::CtrlC,
+    );
     nbrs_runtime::session_signals::escalate_shutdown(
-        nbrs_runtime::session_signals::ShutdownOrigin::CtrlC);
+        nbrs_runtime::session_signals::ShutdownOrigin::CtrlC,
+    );
 
     tokio::time::timeout(std::time::Duration::from_secs(10), run)
         .await
@@ -124,6 +130,14 @@ async fn cancel_rung_releases_hung_ops_so_the_drain_completes() {
     // The cancelled op resolved as a result-level failure (the stack's
     // future was dropped; a synthesised `cancelled` error stood in).
     assert_eq!(metrics.result_total.get(), 1, "one op → one result");
-    assert_eq!(metrics.result_failure.count(), 1, "cancelled = failed result");
-    assert_eq!(dispatched.load(Ordering::SeqCst), 1, "no re-dispatch after cancel");
+    assert_eq!(
+        metrics.result_failure.count(),
+        1,
+        "cancelled = failed result"
+    );
+    assert_eq!(
+        dispatched.load(Ordering::SeqCst),
+        1,
+        "no re-dispatch after cancel"
+    );
 }

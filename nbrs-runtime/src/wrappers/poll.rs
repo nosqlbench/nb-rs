@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
@@ -20,7 +20,9 @@ pub const NAME: WrapperName = WrapperName::new("poll");
 /// for everything else) or a map carrying the full config —
 /// either form turns the wrapper on.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template
         .params
         .get("poll")
@@ -32,11 +34,7 @@ fn describe_assignment(s: WrapperSubject) -> Option<String> {
     let template = s.op()?;
     let poll_val = template.params.get("poll")?;
     let (mode, interval, timeout): (String, u64, u64) = match poll_val {
-        v if v.is_string() => (
-            v.as_str().unwrap().to_string(),
-            1000,
-            300_000,
-        ),
+        v if v.is_string() => (v.as_str().unwrap().to_string(), 1000, 300_000),
         v if v.is_object() => {
             let m = v.as_object().unwrap();
             let mode = m
@@ -44,10 +42,14 @@ fn describe_assignment(s: WrapperSubject) -> Option<String> {
                 .and_then(|x| x.as_str())
                 .unwrap_or("await_empty")
                 .to_string();
-            let interval = m.get("interval_ms")
-                .and_then(crate::wrapper_registrations::json_to_u64).unwrap_or(1000);
-            let timeout = m.get("timeout_ms")
-                .and_then(crate::wrapper_registrations::json_to_u64).unwrap_or(300_000);
+            let interval = m
+                .get("interval_ms")
+                .and_then(crate::wrapper_registrations::json_to_u64)
+                .unwrap_or(1000);
+            let timeout = m
+                .get("timeout_ms")
+                .and_then(crate::wrapper_registrations::json_to_u64)
+                .unwrap_or(300_000);
             (mode, interval, timeout)
         }
         _ => return None,
@@ -177,7 +179,8 @@ pub struct PollingDispenser {
     /// Filled by the metrics wrapper's cascade arm AFTER this
     /// dispenser is built (metrics wraps outside poll), hence the
     /// late-bound swap; empty/`None` when the op has no metrics.
-    iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
+    iteration_gauges:
+        Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
     /// When set, the poll is DONE the first time this predicate reads truthy,
     /// and the row-count window is not consulted.
     ///
@@ -257,9 +260,23 @@ impl PollingDispenser {
         json_path: Option<String>,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         Self::wrap_with_status(
-            inner, poll_interval_ms, timeout_ms, max_error_retries,
-            metric_name, min_rows, max_rows, json_path,
-            None, None, None, None, None, None, None, Vec::new(), false,
+            inner,
+            poll_interval_ms,
+            timeout_ms,
+            max_error_retries,
+            metric_name,
+            min_rows,
+            max_rows,
+            json_path,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            false,
             crate::session_signals::StopView::default(),
         )
     }
@@ -287,7 +304,9 @@ impl PollingDispenser {
         activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
         each_gutter: Option<(crate::wrappers::gutter::GutterKind, String)>,
         gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
-        iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
+        iteration_gauges: Option<
+            Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>,
+        >,
         on_done: Vec<(String, String)>,
         until: bool,
         stop: crate::session_signals::StopView,
@@ -347,8 +366,10 @@ impl PollingDispenser {
                 match crate::wires::substitute_via_wires(t, wires) {
                     Ok(s) => Some(s),
                     Err(e) => {
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "poll.memo: substitution failed for '{t}': {e}");
+                        crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "poll.memo: substitution failed for '{t}': {e}"
+                        );
                         None
                     }
                 }
@@ -384,7 +405,9 @@ impl PollingDispenser {
                 state.store(Some(Arc::new(spec)));
             }
         }
-        if let (Some(metrics), Some(t)) = (&self.activity_metrics, self.progress_template.as_deref()) {
+        if let (Some(metrics), Some(t)) =
+            (&self.activity_metrics, self.progress_template.as_deref())
+        {
             match crate::wires::substitute_via_wires(t, wires) {
                 Ok(s) => match s.trim().parse::<f64>() {
                     // Elapsed rides along so the display can derive the
@@ -392,13 +415,17 @@ impl PollingDispenser {
                     // cycle-based ETA stands still for one long measured op.
                     Ok(f) => metrics.set_progress_override_with_elapsed(f, elapsed_secs),
                     Err(_) => {
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "poll.progress: '{t}' rendered to non-numeric '{s}'");
+                        crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "poll.progress: '{t}' rendered to non-numeric '{s}'"
+                        );
                     }
                 },
                 Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Debug,
-                        "poll.progress: substitution failed for '{t}': {e}");
+                    crate::diag!(
+                        crate::observer::LogLevel::Debug,
+                        "poll.progress: substitution failed for '{t}': {e}"
+                    );
                 }
             }
         }
@@ -426,7 +453,9 @@ impl OpDispenser for PollingDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let start = std::time::Instant::now();
             let mut polls = 0u64;
@@ -441,11 +470,12 @@ impl OpDispenser for PollingDispenser {
             // captured once, but a second execution of the same op would
             // otherwise read back its own decorated text as the base and
             // grow the memo without bound.
-            let base_memo: String = self.memo_state.as_ref()
+            let base_memo: String = self
+                .memo_state
+                .as_ref()
                 .map(|m| strip_measurement_suffix(m.load().as_str()).to_string())
                 .unwrap_or_default();
-            let _progress_clear =
-                ProgressOverrideClear(self.activity_metrics.as_deref());
+            let _progress_clear = ProgressOverrideClear(self.activity_metrics.as_deref());
 
             loop {
                 // Session shutdown: abandon the poll. The cooperative
@@ -458,7 +488,9 @@ impl OpDispenser for PollingDispenser {
                         error_name: "shutdown_cancelled".into(),
                         message: format!(
                             "session stop requested — poll abandoned after {} poll(s), {:.1}s",
-                            polls, start.elapsed().as_secs_f64()),
+                            polls,
+                            start.elapsed().as_secs_f64()
+                        ),
                         retryable: false,
                     }));
                 }
@@ -545,14 +577,15 @@ impl OpDispenser for PollingDispenser {
                 // A workload that never mentions them has no slot, the write
                 // is a no-op, and nothing changes.
                 let elapsed_ms = start.elapsed().as_millis() as u64;
-                ctx.wires.write("poll_elapsed_ms",
-                    polydat::ast::Value::U64(elapsed_ms));
-                ctx.wires.write("poll_count",
-                    polydat::ast::Value::U64(polls));
+                ctx.wires
+                    .write("poll_elapsed_ms", polydat::ast::Value::U64(elapsed_ms));
+                ctx.wires
+                    .write("poll_count", polydat::ast::Value::U64(polls));
                 let is_done = if self.until {
                     match crate::wrappers::condition::holds(
-                        ctx.wires, crate::wrappers::condition::UNTIL_BINDING)
-                    {
+                        ctx.wires,
+                        crate::wrappers::condition::UNTIL_BINDING,
+                    ) {
                         Some(done) => done,
                         None => {
                             return Err(ExecutionError::Op(crate::adapter::AdapterError {
@@ -561,7 +594,8 @@ impl OpDispenser for PollingDispenser {
                                     "poll `until:` predicate did not resolve through \
                                      ctx.wires (binding '{}') — scope synthesis should \
                                      have lowered it into this node's kernel",
-                                    crate::wrappers::condition::UNTIL_BINDING),
+                                    crate::wrappers::condition::UNTIL_BINDING
+                                ),
                                 retryable: false,
                             }));
                         }
@@ -570,7 +604,9 @@ impl OpDispenser for PollingDispenser {
                     row_count >= self.min_rows && row_count <= self.max_rows
                 };
 
-                self.metrics.poll_metric.store(row_count, std::sync::atomic::Ordering::Relaxed);
+                self.metrics
+                    .poll_metric
+                    .store(row_count, std::sync::atomic::Ordering::Relaxed);
 
                 if !is_done {
                     // Per-poll progress goes to the durable
@@ -592,14 +628,20 @@ impl OpDispenser for PollingDispenser {
                     // them (slot-absent writes no-op) and publish the
                     // measured values to the memo + the derived
                     // phase-progress override.
-                    let _ = ctx.wires.write(
-                        "poll_count", polydat::ast::Value::U64(polls));
+                    let _ = ctx
+                        .wires
+                        .write("poll_count", polydat::ast::Value::U64(polls));
                     let _ = ctx.wires.write(
                         "poll_elapsed_ms",
-                        polydat::ast::Value::U64(start.elapsed().as_millis() as u64));
+                        polydat::ast::Value::U64(start.elapsed().as_millis() as u64),
+                    );
                     self.publish_iteration_status(
-                        ctx.wires, &base_memo, row_count, polls,
-                        start.elapsed().as_secs_f64());
+                        ctx.wires,
+                        &base_memo,
+                        row_count,
+                        polls,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
                 if is_done {
                     // The terminating observation is a measurement too, and it
@@ -613,40 +655,54 @@ impl OpDispenser for PollingDispenser {
                     // state a remote view cannot show (see the field docs) — the
                     // terminal captures describe an empty result set, not the
                     // work that just finished.
-                    let _ = ctx.wires.write(
-                        "poll_count", polydat::ast::Value::U64(polls));
+                    let _ = ctx
+                        .wires
+                        .write("poll_count", polydat::ast::Value::U64(polls));
                     let _ = ctx.wires.write(
                         "poll_elapsed_ms",
-                        polydat::ast::Value::U64(start.elapsed().as_millis() as u64));
+                        polydat::ast::Value::U64(start.elapsed().as_millis() as u64),
+                    );
                     for (name, expr) in &self.on_done {
                         match crate::wires::substitute_via_wires(expr, ctx.wires) {
                             Ok(rendered) => match rendered.trim().parse::<f64>() {
                                 Ok(v) => {
-                                    let _ = ctx.wires.write(
-                                        name, polydat::ast::Value::F64(v));
+                                    let _ = ctx.wires.write(name, polydat::ast::Value::F64(v));
                                 }
                                 Err(_) => crate::diag!(
                                     crate::observer::LogLevel::Debug,
                                     "poll.on_done: '{name}: {expr}' rendered to \
-                                     non-numeric '{rendered}'"),
+                                     non-numeric '{rendered}'"
+                                ),
                             },
                             Err(e) => crate::diag!(
                                 crate::observer::LogLevel::Debug,
                                 "poll.on_done: substitution failed for \
-                                 '{name}: {expr}': {e}"),
+                                 '{name}: {expr}': {e}"
+                            ),
                         }
                     }
                     self.publish_iteration_status(
-                        ctx.wires, &base_memo, row_count, polls,
-                        start.elapsed().as_secs_f64());
+                        ctx.wires,
+                        &base_memo,
+                        row_count,
+                        polls,
+                        start.elapsed().as_secs_f64(),
+                    );
                 }
 
                 if is_done {
                     let elapsed = start.elapsed();
                     let elapsed_secs = elapsed.as_secs_f64();
-                    self.metrics.polls_total.fetch_add(polls, std::sync::atomic::Ordering::Relaxed);
-                    self.metrics.poll_elapsed_ms.store(elapsed.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
-                    self.metrics.condition_met.store(1, std::sync::atomic::Ordering::Relaxed);
+                    self.metrics
+                        .polls_total
+                        .fetch_add(polls, std::sync::atomic::Ordering::Relaxed);
+                    self.metrics.poll_elapsed_ms.store(
+                        elapsed.as_millis() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    self.metrics
+                        .condition_met
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
                     let indent = crate::scene_tree::running_phase_indent();
                     let color = crate::observer::use_color();
                     let dim = if color { "\x1b[2m" } else { "" };
@@ -654,17 +710,18 @@ impl OpDispenser for PollingDispenser {
                     let reset = if color { "\x1b[0m" } else { "" };
                     crate::observer::log(
                         crate::observer::LogLevel::Info,
-                        &format!("{indent}{green}poll complete{reset}: {polls} polls {dim}in {elapsed_secs:.1}s{reset}"),
+                        &format!(
+                            "{indent}{green}poll complete{reset}: {polls} polls {dim}in {elapsed_secs:.1}s{reset}"
+                        ),
                     );
                     // Captures land on the per-fiber kernel directly
                     // via ctx.wires.write — wrappers above this layer
                     // see the values through wires.get on the same
                     // cycle. Slot-absent writes silently no-op
                     // (closure-binding economy).
-                    let _ = ctx.wires.write(
-                        "poll_count",
-                        polydat::ast::Value::U64(polls),
-                    );
+                    let _ = ctx
+                        .wires
+                        .write("poll_count", polydat::ast::Value::U64(polls));
                     let _ = ctx.wires.write(
                         "poll_elapsed_ms",
                         polydat::ast::Value::U64(elapsed.as_millis() as u64),
@@ -679,10 +736,7 @@ impl OpDispenser for PollingDispenser {
                     // behaviour, used by e.g. `index_build_time`).
                     if let Some(ref name) = self.metric_name {
                         let value = duration_value_for_metric_name(name, elapsed_secs);
-                        let _ = ctx.wires.write(
-                            name,
-                            polydat::ast::Value::F64(value),
-                        );
+                        let _ = ctx.wires.write(name, polydat::ast::Value::F64(value));
                     }
                     return Ok(OpResult {
                         body: None,
@@ -696,7 +750,8 @@ impl OpDispenser for PollingDispenser {
                         error_name: "poll_timeout".into(),
                         message: format!(
                             "polling timed out after {:.1}s ({} polls). Last result had rows.",
-                            start.elapsed().as_secs_f64(), polls
+                            start.elapsed().as_secs_f64(),
+                            polls
                         ),
                         retryable: false,
                     }));
@@ -707,7 +762,9 @@ impl OpDispenser for PollingDispenser {
             }
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }
 
 /// Map a named metric's elapsed-time value to the numeric value the
@@ -723,13 +780,21 @@ impl OpDispenser for PollingDispenser {
 /// Longest suffixes are tested first so `_ms` doesn't tail-bind
 /// to a more-permissive `_s` rule by accident.
 pub(crate) fn duration_value_for_metric_name(name: &str, elapsed_secs: f64) -> f64 {
-    if name.ends_with("_ns") { elapsed_secs * 1e9 }
-    else if name.ends_with("_us") { elapsed_secs * 1e6 }
-    else if name.ends_with("_ms") { elapsed_secs * 1e3 }
-    else if name.ends_with("_s")  { elapsed_secs }
-    else if name.ends_with("_m")  { elapsed_secs / 60.0 }
-    else if name.ends_with("_h")  { elapsed_secs / 3600.0 }
-    else { elapsed_secs }
+    if name.ends_with("_ns") {
+        elapsed_secs * 1e9
+    } else if name.ends_with("_us") {
+        elapsed_secs * 1e6
+    } else if name.ends_with("_ms") {
+        elapsed_secs * 1e3
+    } else if name.ends_with("_s") {
+        elapsed_secs
+    } else if name.ends_with("_m") {
+        elapsed_secs / 60.0
+    } else if name.ends_with("_h") {
+        elapsed_secs / 3600.0
+    } else {
+        elapsed_secs
+    }
 }
 
 /// Drill into a JSON tree via JSON-Pointer path (RFC 6901, e.g.
@@ -746,17 +811,24 @@ pub(crate) fn duration_value_for_metric_name(name: &str, elapsed_secs: f64) -> f
 /// An empty path string addresses the root, matching
 /// `serde_json::Value::pointer("")`'s contract.
 pub(crate) fn count_from_json_pointer(json: &serde_json::Value, path: &str) -> u64 {
-    let Some(v) = json.pointer(path) else { return 0 };
+    let Some(v) = json.pointer(path) else {
+        return 0;
+    };
     match v {
         serde_json::Value::Array(a) => a.len() as u64,
-        serde_json::Value::Number(n) => {
-            n.as_u64()
-                .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
-                .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
-                .unwrap_or(0)
-        }
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
+            .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
+            .unwrap_or(0),
         serde_json::Value::Object(_) => 1,
-        serde_json::Value::Bool(b) => if *b { 1 } else { 0 },
+        serde_json::Value::Bool(b) => {
+            if *b {
+                1
+            } else {
+                0
+            }
+        }
         serde_json::Value::String(s) if s.is_empty() => 0,
         serde_json::Value::String(_) => 1,
         serde_json::Value::Null => 0,
@@ -828,19 +900,22 @@ mod on_done_config_tests {
     #[test]
     fn numeric_and_string_values_both_read() {
         let got = parse_on_done(Some(&cfg(
-            r#"{"on_done":{"completion_ratio":1.0,"progress":"total"}}"#)));
-        assert_eq!(got, vec![
-            ("completion_ratio".to_string(), "1.0".to_string()),
-            ("progress".to_string(), "total".to_string()),
-        ]);
+            r#"{"on_done":{"completion_ratio":1.0,"progress":"total"}}"#,
+        )));
+        assert_eq!(
+            got,
+            vec![
+                ("completion_ratio".to_string(), "1.0".to_string()),
+                ("progress".to_string(), "total".to_string()),
+            ]
+        );
     }
 
     /// Deterministic order: two entries must be applied the same way on every
     /// run, so a later write shadowing an earlier one is reproducible.
     #[test]
     fn entries_are_ordered_by_key() {
-        let got = parse_on_done(Some(&cfg(
-            r#"{"on_done":{"z":1,"a":2,"m":3}}"#)));
+        let got = parse_on_done(Some(&cfg(r#"{"on_done":{"z":1,"a":2,"m":3}}"#)));
         let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["a", "m", "z"]);
     }
@@ -855,8 +930,7 @@ mod status_publish_tests {
     struct RatioWire(f64);
     impl crate::wires::WireSource for RatioWire {
         fn get(&self, name: &str) -> Option<polydat::ast::Value> {
-            (name == "completion_ratio")
-                .then(|| polydat::ast::Value::F64(self.0))
+            (name == "completion_ratio").then(|| polydat::ast::Value::F64(self.0))
         }
         fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::once("completion_ratio".to_string()))
@@ -875,8 +949,15 @@ mod status_publish_tests {
                 &'a self,
                 _cycle: u64,
                 _ctx: &'a crate::fixture::ExecCtx<'a>,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-                Box::pin(async move { Ok(OpResult { body: None, skipped: false }) })
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+            > {
+                Box::pin(async move {
+                    Ok(OpResult {
+                        body: None,
+                        skipped: false,
+                    })
+                })
             }
         }
         PollingDispenser {
@@ -907,9 +988,11 @@ mod status_publish_tests {
     struct MapWires(std::sync::Mutex<std::collections::HashMap<String, polydat::ast::Value>>);
     impl MapWires {
         fn new(seed: &[(&str, f64)]) -> Self {
-            Self(std::sync::Mutex::new(seed.iter()
-                .map(|(k, v)| (k.to_string(), polydat::ast::Value::F64(*v)))
-                .collect()))
+            Self(std::sync::Mutex::new(
+                seed.iter()
+                    .map(|(k, v)| (k.to_string(), polydat::ast::Value::F64(*v)))
+                    .collect(),
+            ))
         }
     }
     impl crate::wires::WireSource for MapWires {
@@ -934,7 +1017,9 @@ mod status_publish_tests {
         let pulls = crate::fixture::ResolvedPulls::empty();
         let ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, wires);
         let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_time().build().expect("test runtime");
+            .enable_time()
+            .build()
+            .expect("test runtime");
         rt.block_on(d.execute(0, &ctx)).expect("poll completes");
     }
 
@@ -947,16 +1032,18 @@ mod status_publish_tests {
         let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
         let metrics = test_metrics();
         let mut d = dispenser_with_status(None, None, &memo, &metrics);
-        let (slot, gauge) = crate::wrappers::metrics::test_gauge_slot(
-            "completion", "completion_ratio");
-        d.iteration_gauges = Some(Arc::new(
-            arc_swap::ArcSwapOption::from_pointee(vec![slot])));
+        let (slot, gauge) =
+            crate::wrappers::metrics::test_gauge_slot("completion", "completion_ratio");
+        d.iteration_gauges = Some(Arc::new(arc_swap::ArcSwapOption::from_pointee(vec![slot])));
         let wires = MapWires::new(&[("completion_ratio", 0.42)]);
 
         run_to_done(&d, &wires);
 
-        assert_eq!(gauge.get(), 0.42,
-            "the terminating poll's measurement must reach the gauge");
+        assert_eq!(
+            gauge.get(),
+            0.42,
+            "the terminating poll's measurement must reach the gauge"
+        );
     }
 
     /// A remote view of in-flight work cannot show the finished item — it is
@@ -967,18 +1054,20 @@ mod status_publish_tests {
         let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
         let metrics = test_metrics();
         let mut d = dispenser_with_status(None, None, &memo, &metrics);
-        let (slot, gauge) = crate::wrappers::metrics::test_gauge_slot(
-            "completion", "completion_ratio");
-        d.iteration_gauges = Some(Arc::new(
-            arc_swap::ArcSwapOption::from_pointee(vec![slot])));
+        let (slot, gauge) =
+            crate::wrappers::metrics::test_gauge_slot("completion", "completion_ratio");
+        d.iteration_gauges = Some(Arc::new(arc_swap::ArcSwapOption::from_pointee(vec![slot])));
         d.on_done = vec![("completion_ratio".into(), "1.0".into())];
         // The last value the view ever showed: 42% done, then it vanished.
         let wires = MapWires::new(&[("completion_ratio", 0.42)]);
 
         run_to_done(&d, &wires);
 
-        assert_eq!(gauge.get(), 1.0,
-            "on_done must override the stale in-flight value");
+        assert_eq!(
+            gauge.get(),
+            1.0,
+            "on_done must override the stale in-flight value"
+        );
     }
 
     /// Idempotence: these publishes are sets, not accumulates, so the same
@@ -990,10 +1079,9 @@ mod status_publish_tests {
         let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
         let metrics = test_metrics();
         let mut d = dispenser_with_status(None, None, &memo, &metrics);
-        let (slot, gauge) = crate::wrappers::metrics::test_gauge_slot(
-            "completion", "completion_ratio");
-        d.iteration_gauges = Some(Arc::new(
-            arc_swap::ArcSwapOption::from_pointee(vec![slot])));
+        let (slot, gauge) =
+            crate::wrappers::metrics::test_gauge_slot("completion", "completion_ratio");
+        d.iteration_gauges = Some(Arc::new(arc_swap::ArcSwapOption::from_pointee(vec![slot])));
         d.on_done = vec![("completion_ratio".into(), "1.0".into())];
         let wires = MapWires::new(&[("completion_ratio", 0.42)]);
 
@@ -1003,15 +1091,21 @@ mod status_publish_tests {
         run_to_done(&d, &wires);
         let second = gauge.get();
 
-        assert_eq!(first, second,
-            "a repeated terminal publish must not shift the value");
-        assert_eq!(*memo_after_first, *memo.load_full(),
-            "a repeated terminal publish must not accumulate into the memo");
+        assert_eq!(
+            first, second,
+            "a repeated terminal publish must not shift the value"
+        );
+        assert_eq!(
+            *memo_after_first,
+            *memo.load_full(),
+            "a repeated terminal publish must not accumulate into the memo"
+        );
     }
 
     fn test_metrics() -> Arc<crate::activity::ActivityMetrics> {
         Arc::new(crate::activity::ActivityMetrics::new(
-            &nbrs_metrics::labels::Labels::default()))
+            &nbrs_metrics::labels::Labels::default(),
+        ))
     }
 
     #[test]
@@ -1019,12 +1113,18 @@ mod status_publish_tests {
         let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
         let metrics = test_metrics();
         let d = dispenser_with_status(
-            Some("ratio {completion_ratio}"), Some("{completion_ratio}"),
-            &memo, &metrics);
+            Some("ratio {completion_ratio}"),
+            Some("{completion_ratio}"),
+            &memo,
+            &metrics,
+        );
         let wires = RatioWire(0.42);
         d.publish_iteration_status(&wires, "base", 1, 3, 15.0);
-        assert_eq!(metrics.progress_override(), Some(0.42),
-            "progress template must publish the derived override");
+        assert_eq!(
+            metrics.progress_override(),
+            Some(0.42),
+            "progress template must publish the derived override"
+        );
         assert_eq!(memo.load().as_str(), "ratio 0.42");
     }
 
@@ -1035,10 +1135,16 @@ mod status_publish_tests {
         let d = dispenser_with_status(None, None, &memo, &metrics);
         let wires = RatioWire(0.9);
         d.publish_iteration_status(&wires, "waiting", 4, 7, 33.0);
-        assert!(memo.load().contains("measured 4 row(s)"),
-            "default memo must carry the measurement: {}", memo.load());
-        assert_eq!(metrics.progress_override(), None,
-            "no progress template -> no override");
+        assert!(
+            memo.load().contains("measured 4 row(s)"),
+            "default memo must carry the measurement: {}",
+            memo.load()
+        );
+        assert_eq!(
+            metrics.progress_override(),
+            None,
+            "no progress template -> no override"
+        );
     }
 
     #[test]
@@ -1054,28 +1160,44 @@ mod status_publish_tests {
         let gutter_state: Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>> =
             Arc::new(arc_swap::ArcSwapOption::empty());
         let mut d = dispenser_with_status(None, None, &memo, &metrics);
-        d.each_gutter = Some((crate::wrappers::gutter::GutterKind::Text,
-            "ratio {completion_ratio}".into()));
+        d.each_gutter = Some((
+            crate::wrappers::gutter::GutterKind::Text,
+            "ratio {completion_ratio}".into(),
+        ));
         d.gutter_state = Some(gutter_state.clone());
 
         d.publish_iteration_status(&RatioWire(0.25), "waiting", 4, 1, 5.0);
-        assert_eq!(gutter_state.load().as_deref(),
-            Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.25".into())),
-            "first iteration publishes the rendered during form");
+        assert_eq!(
+            gutter_state.load().as_deref(),
+            Some(&crate::wrappers::gutter::GutterSpec::Text(
+                "ratio 0.25".into()
+            )),
+            "first iteration publishes the rendered during form"
+        );
 
         // Next iteration's wires supersede the cell.
         d.publish_iteration_status(&RatioWire(0.75), "waiting", 2, 2, 10.0);
-        assert_eq!(gutter_state.load().as_deref(),
-            Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.75".into())),
-            "each iteration refreshes the cell");
+        assert_eq!(
+            gutter_state.load().as_deref(),
+            Some(&crate::wrappers::gutter::GutterSpec::Text(
+                "ratio 0.75".into()
+            )),
+            "each iteration refreshes the cell"
+        );
 
         // A failed substitution must leave the last good value.
-        d.each_gutter = Some((crate::wrappers::gutter::GutterKind::Spark,
-            "{no_such_wire}".into()));
+        d.each_gutter = Some((
+            crate::wrappers::gutter::GutterKind::Spark,
+            "{no_such_wire}".into(),
+        ));
         d.publish_iteration_status(&RatioWire(0.9), "waiting", 1, 3, 15.0);
-        assert_eq!(gutter_state.load().as_deref(),
-            Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.75".into())),
-            "render failure must not clobber the cell");
+        assert_eq!(
+            gutter_state.load().as_deref(),
+            Some(&crate::wrappers::gutter::GutterSpec::Text(
+                "ratio 0.75".into()
+            )),
+            "render failure must not clobber the cell"
+        );
     }
 }
 
@@ -1087,19 +1209,25 @@ mod poll_wire_tests {
     /// and exactly what an operator saw during a 1m28s drain.
     #[test]
     fn until_memo_does_not_quote_the_unused_row_window() {
-        let src = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
-            .expect("read own source");
-        let until_arm = src.find("waiting on `until:` (not yet satisfied)")
+        let src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
+                .expect("read own source");
+        let until_arm = src
+            .find("waiting on `until:` (not yet satisfied)")
             .expect("the until: memo arm must exist");
-        let window_arm = src.find("measured {row_count} row(s) [target")
+        let window_arm = src
+            .find("measured {row_count} row(s) [target")
             .expect("the row-window memo arm must exist");
-        assert!(until_arm < window_arm,
+        assert!(
+            until_arm < window_arm,
             "the until: arm must be the FIRST branch, so a declared condition \
-             never falls through to the row-window text");
+             never falls through to the row-window text"
+        );
         // And the two must be distinct branches of one `if self.until`.
-        assert!(src.contains("if self.until {"),
-            "the memo must branch on whether an until: was declared");
+        assert!(
+            src.contains("if self.until {"),
+            "the memo must branch on whether an until: was declared"
+        );
     }
 
     /// `poll_elapsed_ms` and `poll_count` must be WRITTEN before the predicate
@@ -1110,17 +1238,23 @@ mod poll_wire_tests {
     /// late would leave the first evaluation reading 0 forever.
     #[test]
     fn poll_progress_wires_are_published_before_the_predicate() {
-        let src = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
-            .expect("read own source");
-        let write_at = src.find("ctx.wires.write(\"poll_elapsed_ms\"")
+        let src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
+                .expect("read own source");
+        let write_at = src
+            .find("ctx.wires.write(\"poll_elapsed_ms\"")
             .expect("poll_elapsed_ms must be published");
-        let predicate_at = src.find("let is_done = if self.until {")
+        let predicate_at = src
+            .find("let is_done = if self.until {")
             .expect("predicate evaluation site");
-        assert!(write_at < predicate_at,
+        assert!(
+            write_at < predicate_at,
             "the poll-progress wires must be written BEFORE the until: predicate \
-             is evaluated, or a self-bounding condition reads a stale 0");
-        assert!(src.contains("ctx.wires.write(\"poll_count\""),
-            "poll_count must be published alongside poll_elapsed_ms");
+             is evaluated, or a self-bounding condition reads a stale 0"
+        );
+        assert!(
+            src.contains("ctx.wires.write(\"poll_count\""),
+            "poll_count must be published alongside poll_elapsed_ms"
+        );
     }
 }

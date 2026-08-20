@@ -45,15 +45,15 @@ fn staircase_failures_resume_correctly() {
     // state. Forward slashes: the path lands inside a polydat
     // string literal in the workload, where Windows `\` separators
     // would read as escape sequences.
-    let statefile_str = statefile.to_str().expect("non-utf8 tempdir")
+    let statefile_str = statefile
+        .to_str()
+        .expect("non-utf8 tempdir")
         .replace('\\', "/");
-    let canonical = std::fs::read_to_string(
-        workspace_path("examples/workloads/diagnostics/resume_test.yaml"),
-    ).expect("read canonical workload");
-    let body = canonical.replace(
-        "/tmp/nbrs_resume_test.seq",
-        &statefile_str,
-    );
+    let canonical = std::fs::read_to_string(workspace_path(
+        "examples/workloads/diagnostics/resume_test.yaml",
+    ))
+    .expect("read canonical workload");
+    let body = canonical.replace("/tmp/nbrs_resume_test.seq", &statefile_str);
     std::fs::write(&workload_path, body).expect("write workload");
 
     let run_with = |resume: Option<&PathBuf>| {
@@ -65,12 +65,8 @@ fn staircase_failures_resume_correctly() {
         // sequence cache before each run.
         // The cache key must match the node's path argument
         // verbatim — the forward-slash form spliced above.
-        nbrs_adapter_testkit::polydat_fixtures::clear_sequence_cache_for(
-            &statefile_str,
-        );
-        let mut args = vec![
-            format!("workload={}", workload_path.display()),
-        ];
+        nbrs_adapter_testkit::polydat_fixtures::clear_sequence_cache_for(&statefile_str);
+        let mut args = vec![format!("workload={}", workload_path.display())];
         if let Some(prior) = resume {
             args.push(format!("resume={}", prior.display()));
         }
@@ -90,12 +86,21 @@ fn staircase_failures_resume_correctly() {
     let cp_path = session_dir.join("checkpoint.jsonl");
     let saved1 = storage::read(&cp_path).expect("read 1").expect("present 1");
     assert_eq!(saved1.invocation, 1);
-    assert_eq!(find_phase(&saved1, "phase1").status, PhaseStatus::Failed,
-        "run 1: phase1 should fail at cycle 10");
-    assert_eq!(find_phase(&saved1, "phase2").status, PhaseStatus::Pending,
-        "run 1: phase2 should not have started (cascade :stop)");
-    assert_eq!(find_phase(&saved1, "phase3").status, PhaseStatus::Pending,
-        "run 1: phase3 should not have started");
+    assert_eq!(
+        find_phase(&saved1, "phase1").status,
+        PhaseStatus::Failed,
+        "run 1: phase1 should fail at cycle 10"
+    );
+    assert_eq!(
+        find_phase(&saved1, "phase2").status,
+        PhaseStatus::Pending,
+        "run 1: phase2 should not have started (cascade :stop)"
+    );
+    assert_eq!(
+        find_phase(&saved1, "phase3").status,
+        PhaseStatus::Pending,
+        "run 1: phase3 should not have started"
+    );
     let session_id = saved1.session.clone();
 
     // -------------------------------------------------------------
@@ -105,12 +110,21 @@ fn staircase_failures_resume_correctly() {
     let saved2 = storage::read(&cp_path).expect("read 2").expect("present 2");
     assert_eq!(saved2.invocation, 2);
     assert_eq!(saved2.session, session_id, "session id must be preserved");
-    assert_eq!(find_phase(&saved2, "phase1").status, PhaseStatus::Completed,
-        "run 2: phase1 should rerun and succeed (cap=50, threshold=51)");
-    assert_eq!(find_phase(&saved2, "phase2").status, PhaseStatus::Failed,
-        "run 2: phase2 should fail at cycle 51");
-    assert_eq!(find_phase(&saved2, "phase3").status, PhaseStatus::Pending,
-        "run 2: phase3 should not have started");
+    assert_eq!(
+        find_phase(&saved2, "phase1").status,
+        PhaseStatus::Completed,
+        "run 2: phase1 should rerun and succeed (cap=50, threshold=51)"
+    );
+    assert_eq!(
+        find_phase(&saved2, "phase2").status,
+        PhaseStatus::Failed,
+        "run 2: phase2 should fail at cycle 51"
+    );
+    assert_eq!(
+        find_phase(&saved2, "phase3").status,
+        PhaseStatus::Pending,
+        "run 2: phase3 should not have started"
+    );
 
     // -------------------------------------------------------------
     // Run 3: threshold=101. phase1 skips (Completed), phase2 reruns
@@ -126,8 +140,10 @@ fn staircase_failures_resume_correctly() {
     // run-2 value (no re-execution).
     let p1_dur_2 = find_phase(&saved2, "phase1").duration_secs;
     let p1_dur_3 = find_phase(&saved3, "phase1").duration_secs;
-    assert_eq!(p1_dur_2, p1_dur_3,
-        "phase1 was Skipped on run 3; its duration must equal run 2's");
+    assert_eq!(
+        p1_dur_2, p1_dur_3,
+        "phase1 was Skipped on run 3; its duration must equal run 2's"
+    );
 
     // -------------------------------------------------------------
     // Run 4: threshold=999. phase3 reruns + succeeds. All Completed.
@@ -137,11 +153,16 @@ fn staircase_failures_resume_correctly() {
     assert_eq!(saved4.invocation, 4);
     assert_eq!(find_phase(&saved4, "phase1").status, PhaseStatus::Completed);
     assert_eq!(find_phase(&saved4, "phase2").status, PhaseStatus::Completed);
-    assert_eq!(find_phase(&saved4, "phase3").status, PhaseStatus::Completed,
-        "run 4: phase3 should succeed (cap=150, threshold=999)");
+    assert_eq!(
+        find_phase(&saved4, "phase3").status,
+        PhaseStatus::Completed,
+        "run 4: phase3 should succeed (cap=150, threshold=999)"
+    );
     let p1_dur_4 = find_phase(&saved4, "phase1").duration_secs;
-    assert_eq!(p1_dur_2, p1_dur_4,
-        "phase1 was Skipped through runs 3+4; its duration must still match run 2's");
+    assert_eq!(
+        p1_dur_2, p1_dur_4,
+        "phase1 was Skipped through runs 3+4; its duration must still match run 2's"
+    );
 }
 
 // ---------------------------------------------------------------
@@ -167,7 +188,9 @@ fn run_args(args: &[String]) {
 
 fn tempdir(prefix: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let d = std::env::temp_dir().join(format!("{prefix}-{n:x}"));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -181,24 +204,33 @@ fn in_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
     std::env::set_current_dir(dir).unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     std::env::set_current_dir(prev).unwrap();
-    if let Err(e) = result { std::panic::resume_unwind(e); }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
 }
 
 fn read_logs_latest(dir: &std::path::Path) -> PathBuf {
     let latest = dir.join("sessions").join("latest");
     let target = std::fs::read_link(&latest)
         .unwrap_or_else(|_| panic!("sessions/latest missing in {}", dir.display()));
-    if target.is_absolute() { target }
-    else { dir.join("sessions").join(target) }
+    if target.is_absolute() {
+        target
+    } else {
+        dir.join("sessions").join(target)
+    }
 }
 
 fn find_phase<'a>(cp: &'a Checkpoint, name: &str) -> &'a nbrs_runtime::checkpoint::PhaseEntry {
     use nbrs_runtime::checkpoint::PathSegment;
-    cp.phases.iter().find(|e| {
-        e.identity.yaml_path.iter().any(|seg| {
-            matches!(seg, PathSegment::Phase(n) if n == name)
+    cp.phases
+        .iter()
+        .find(|e| {
+            e.identity
+                .yaml_path
+                .iter()
+                .any(|seg| matches!(seg, PathSegment::Phase(n) if n == name))
         })
-    }).unwrap_or_else(|| panic!("phase {name} not in checkpoint"))
+        .unwrap_or_else(|| panic!("phase {name} not in checkpoint"))
 }
 
 /// Resolve a path relative to the workspace root (where

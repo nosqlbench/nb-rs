@@ -53,17 +53,32 @@ pub struct Observation {
 impl Observation {
     /// A feasible observation with the given value and zero recorded cost.
     pub fn value(v: f64) -> Self {
-        Self { value: v, feasible: true, cost: 0.0, metrics: Vec::new() }
+        Self {
+            value: v,
+            feasible: true,
+            cost: 0.0,
+            metrics: Vec::new(),
+        }
     }
 
     /// A feasible observation carrying its evaluation cost.
     pub fn valued(v: f64, cost: f64) -> Self {
-        Self { value: v, feasible: true, cost, metrics: Vec::new() }
+        Self {
+            value: v,
+            feasible: true,
+            cost,
+            metrics: Vec::new(),
+        }
     }
 
     /// An infeasible observation (the point is a feasibility penalty).
     pub fn infeasible() -> Self {
-        Self { value: f64::NEG_INFINITY, feasible: false, cost: 0.0, metrics: Vec::new() }
+        Self {
+            value: f64::NEG_INFINITY,
+            feasible: false,
+            cost: 0.0,
+            metrics: Vec::new(),
+        }
     }
 }
 
@@ -81,11 +96,19 @@ pub struct Budget {
 
 impl Budget {
     pub fn evals(max_evals: usize) -> Self {
-        Self { max_evals, max_seconds: None, seed: 0x9E37_79B9_7F4A_7C15 }
+        Self {
+            max_evals,
+            max_seconds: None,
+            seed: 0x9E37_79B9_7F4A_7C15,
+        }
     }
 
     pub fn seeded(max_evals: usize, seed: u64) -> Self {
-        Self { max_evals, max_seconds: None, seed }
+        Self {
+            max_evals,
+            max_seconds: None,
+            seed,
+        }
     }
 }
 
@@ -138,12 +161,8 @@ pub trait Optimizer {
 
     /// Run the search. Implementations should respect `budget.max_evals`
     /// by checking [`Eval::budget_left`] in their loops.
-    fn optimize(
-        &mut self,
-        space: &SearchSpace,
-        obj: &mut dyn Objective,
-        budget: &Budget,
-    ) -> Report;
+    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget)
+    -> Report;
 }
 
 /// Shared evaluation harness for optimizer implementations. Realizes raw
@@ -219,7 +238,11 @@ impl<'a> Eval<'a> {
 
     /// Seal with explicit axis rankings (screening optimizers).
     pub fn into_report_with_axes(self, stop: StopReason, ranked_axes: Vec<AxisImpact>) -> Report {
-        let stop = if self.any_feasible { stop } else { StopReason::NoFeasiblePoint };
+        let stop = if self.any_feasible {
+            stop
+        } else {
+            StopReason::NoFeasiblePoint
+        };
         Report {
             best: self.best,
             best_value: self.best_value,

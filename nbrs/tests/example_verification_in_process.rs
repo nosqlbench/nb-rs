@@ -19,8 +19,8 @@ use std::sync::Arc;
 use nbrs_runtime::concurrent::HeadlessObserver;
 use nbrs_runtime::observer::RunObserver;
 use nbrs_runtime::output_channel::{CaptureChannel, OutputChannel};
-use nbrs_runtime::runner::{run_executions, ExecutionSpec};
-use nbrs_workload::verify::{check_case_output, VerifyCase};
+use nbrs_runtime::runner::{ExecutionSpec, run_executions};
+use nbrs_workload::verify::{VerifyCase, check_case_output};
 
 struct TempDir {
     path: PathBuf,
@@ -47,8 +47,10 @@ impl Drop for TempDir {
 async fn concurrent_executions_capture_their_own_output_and_pass_their_checks() {
     let tmp = TempDir::new();
     let session = tmp.path.join("s");
-    let session_args: Vec<String> =
-        vec!["--session-path".into(), session.to_string_lossy().into_owned()];
+    let session_args: Vec<String> = vec![
+        "--session-path".into(),
+        session.to_string_lossy().into_owned(),
+    ];
 
     // Three executions, each emitting a DISTINCT op-output marker. Each gets its
     // own CaptureChannel — kept here so we can read what it captured.
@@ -57,7 +59,11 @@ async fn concurrent_executions_capture_their_own_output_and_pass_their_checks() 
         (0..n).map(|_| Arc::new(CaptureChannel::new())).collect();
     let specs: Vec<ExecutionSpec> = (0..n)
         .map(|i| ExecutionSpec {
-            args: vec![format!("op=ex{i}-{{cycle}}"), "cycles=3".into(), "adapter=stdout".into()],
+            args: vec![
+                format!("op=ex{i}-{{cycle}}"),
+                "cycles=3".into(),
+                "adapter=stdout".into(),
+            ],
             observer: Arc::new(HeadlessObserver::new()) as Arc<dyn RunObserver>,
             channel: Some(captures[i].clone() as Arc<dyn OutputChannel>),
         })
@@ -69,18 +75,26 @@ async fn concurrent_executions_capture_their_own_output_and_pass_their_checks() 
     assert_eq!(results.len(), n);
 
     for i in 0..n {
-        assert!(results[i].is_ok(), "execution {i} errored: {:?}", results[i]);
+        assert!(
+            results[i].is_ok(),
+            "execution {i} errored: {:?}",
+            results[i]
+        );
         let combined = captures[i].op_lines().join("\n");
 
         // Per-execution capture isolation: execution i captured ITS OWN op
         // output (`exi-…`) and NONE of its siblings' — proving op stdout routes
         // to the execution's own channel, not the shared process fd.
-        assert!(combined.contains(&format!("ex{i}-0")),
-            "execution {i} should capture its own op output; got: {combined:?}");
+        assert!(
+            combined.contains(&format!("ex{i}-0")),
+            "execution {i} should capture its own op output; got: {combined:?}"
+        );
         for j in 0..n {
             if j != i {
-                assert!(!combined.contains(&format!("ex{j}-")),
-                    "execution {i} must NOT capture sibling ex{j}'s output: {combined:?}");
+                assert!(
+                    !combined.contains(&format!("ex{j}-")),
+                    "execution {i} must NOT capture sibling ex{j}'s output: {combined:?}"
+                );
             }
         }
 

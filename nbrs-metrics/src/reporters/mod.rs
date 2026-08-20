@@ -4,13 +4,13 @@
 //! Metric reporters.
 
 pub mod console;
-pub mod openmetrics;
-pub mod openmetrics_parse;
 pub mod csv;
 pub mod metrics_log;
+pub mod openmetrics;
+pub mod openmetrics_parse;
 pub mod per_instance;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+pub mod summary;
 #[cfg(feature = "victoriametrics")]
 pub mod victoriametrics;
-pub mod summary;

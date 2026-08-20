@@ -61,28 +61,86 @@ const DEJAVU_SANS: &[u8] = include_bytes!("DejaVuSans.ttf");
 /// misclassified as a positional DSL spec and rewrite `opts`.
 pub(crate) const FLAGS_TAKING_VALUE: &[&str] = &[
     // Plot-specific
-    "--metric", "--x", "--x1", "--reduce", "--series", "--filter", "--agg",
-    "--db", "--output", "--name", "--label", "--palette",
-    "--line", "--line-width", "--marker", "--marker-size",
-    "--figure-num", "--title", "--xlabel", "--ylabel",
-    "--x-scale", "--y-scale", "--width", "--height", "--scale",
-    "--x-min", "--x-max", "--y-min", "--y-max", "--legend",
-    "--y", "--y1",
+    "--metric",
+    "--x",
+    "--x1",
+    "--reduce",
+    "--series",
+    "--filter",
+    "--agg",
+    "--db",
+    "--output",
+    "--name",
+    "--label",
+    "--palette",
+    "--line",
+    "--line-width",
+    "--marker",
+    "--marker-size",
+    "--figure-num",
+    "--title",
+    "--xlabel",
+    "--ylabel",
+    "--x-scale",
+    "--y-scale",
+    "--width",
+    "--height",
+    "--scale",
+    "--x-min",
+    "--x-max",
+    "--y-min",
+    "--y-max",
+    "--legend",
+    "--y",
+    "--y1",
     "--y-legend",
-    "--y1-label", "--y1-legend", "--y1-min", "--y1-max", "--y1-scale", "--y1-ticks", "--y1-range",
-    "--y2", "--y2-label", "--y2-min", "--y2-max", "--y2-scale",
-    "--y3", "--y3-label", "--y3-min", "--y3-max", "--y3-scale", "--y3-ticks", "--y3-range",
-    "--y4", "--y4-label", "--y4-min", "--y4-max", "--y4-scale", "--y4-ticks", "--y4-range",
+    "--y1-label",
+    "--y1-legend",
+    "--y1-min",
+    "--y1-max",
+    "--y1-scale",
+    "--y1-ticks",
+    "--y1-range",
+    "--y2",
+    "--y2-label",
+    "--y2-min",
+    "--y2-max",
+    "--y2-scale",
+    "--y3",
+    "--y3-label",
+    "--y3-min",
+    "--y3-max",
+    "--y3-scale",
+    "--y3-ticks",
+    "--y3-range",
+    "--y4",
+    "--y4-label",
+    "--y4-min",
+    "--y4-max",
+    "--y4-scale",
+    "--y4-ticks",
+    "--y4-range",
     "--style",
-    "--x-ticks", "--y-ticks", "--y2-ticks",
-    "--x-range", "--y-range", "--y2-range",
-    "--csv-also", "--report", "--update-markdown",
+    "--x-ticks",
+    "--y-ticks",
+    "--y2-ticks",
+    "--x-range",
+    "--y-range",
+    "--y2-range",
+    "--csv-also",
+    "--report",
+    "--update-markdown",
     "--add-to-markdown",
     // Global flags consumed at startup but still appearing in
     // argv when plot's parser walks them.
-    "--session", "--session-name", "--session-path",
-    "--session-reuse", "--session-keep", "--session-shelflife",
-    "--resume", "--polydat-lib",
+    "--session",
+    "--session-name",
+    "--session-path",
+    "--session-reuse",
+    "--session-keep",
+    "--session-shelflife",
+    "--resume",
+    "--polydat-lib",
 ];
 
 /// Register the bundled font with plotters' ab_glyph backend.
@@ -163,7 +221,8 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
         let mut bare: Vec<String> = Vec::new();
         for item in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             if let Some((k, p)) = item.split_once('~') {
-                opts.filters.push((k.trim().to_string(), format!("~{}", p.trim())));
+                opts.filters
+                    .push((k.trim().to_string(), format!("~{}", p.trim())));
             } else {
                 bare.push(item.to_string());
             }
@@ -188,7 +247,8 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
     // metricsql isn't sliced apart by the `;`-separator pass
     // below. We extract them by line index, then drop those
     // lines before joining.
-    let lines_vec: Vec<&str> = cleaned.lines()
+    let lines_vec: Vec<&str> = cleaned
+        .lines()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
@@ -200,7 +260,8 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
         if t.eq_ignore_ascii_case("auto") || t.is_empty() {
             return Ok(None);
         }
-        t.parse().map(Some)
+        t.parse()
+            .map(Some)
             .map_err(|_| format!("axis bound '{t}' must be a number or `auto`"))
     };
     let mut residual_lines: Vec<String> = Vec::new();
@@ -262,8 +323,11 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // vary along the curve) are kept on the row but
             // don't split into separate lines.
             opts.series_labels.clear();
-            for k in rest.trim_matches(|c| c == '[' || c == ']')
-                .split(',').map(str::trim).filter(|s| !s.is_empty())
+            for k in rest
+                .trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             {
                 opts.series_labels.push(k.to_string());
             }
@@ -300,14 +364,13 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // (x, y) samples; `last` takes the most recent
             // timestamp pair; `none` keeps every paired
             // sample. Only meaningful with paired `x1:`/`y1:`.
-            opts.reduce = Some(parse_reduce_op(rest)
-                .map_err(|e| format!("reduce: {e}"))?);
+            opts.reduce = Some(parse_reduce_op(rest).map_err(|e| format!("reduce: {e}"))?);
         } else if let Some(rest) = line.strip_prefix("executions:").map(str::trim) {
             // How metric instances are selected across executions in
             // a (refined) session: `latest-per-instance` (default),
             // `all`, `latest`, or a specific `<exec_id>`.
-            opts.execution_selection = parse_execution_selection(rest)
-                .map_err(|e| format!("executions: {e}"))?;
+            opts.execution_selection =
+                parse_execution_selection(rest).map_err(|e| format!("executions: {e}"))?;
         } else if let Some(rest) = line.strip_prefix("point-label1:").map(str::trim) {
             // Per-point text annotation source:
             //   * `*`        → Vary (auto-discover labels
@@ -327,8 +390,8 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
                 // third positional element).
                 opts.point_label1 = None;
             } else {
-                opts.point_label1 = Some(parse_point_label_spec(rest)
-                    .map_err(|e| format!("point-label1: {e}"))?);
+                opts.point_label1 =
+                    Some(parse_point_label_spec(rest).map_err(|e| format!("point-label1: {e}"))?);
             }
         } else if let Some(rest) = line.strip_prefix("x:").map(str::trim) {
             opts.x_label = Some(rest.to_string());
@@ -356,10 +419,7 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // see SRD-98 followup). Routes through
             // `apply_axis_directive` so the existing y2
             // axis-tracker checks fire.
-            apply_axis_directive(
-                &mut opts, &mut axis_seen, 2, "label",
-                strip_quotes(rest),
-            )?;
+            apply_axis_directive(&mut opts, &mut axis_seen, 2, "label", strip_quotes(rest))?;
         } else if let Some(rest) = line.strip_prefix("y-datapoints:").map(str::trim) {
             opts.datapoints_mode = DatapointsMode::from_keyword(rest)?;
         } else if let Some(rest) = line.strip_prefix("y-side:").map(str::trim) {
@@ -369,9 +429,7 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // axis that doesn't carry its own override.
             let v = rest.to_ascii_lowercase();
             if v != "left" && v != "right" {
-                return Err(format!(
-                    "y-side: expected `left` or `right`, got `{rest}`"
-                ));
+                return Err(format!("y-side: expected `left` or `right`, got `{rest}`"));
             }
             opts.secondary_side_default = Some(v);
         } else if line.starts_with("y-label:")
@@ -414,8 +472,11 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // axis number, sub-directive name (`""` for the
             // bare query), and the value bytes after `:`.
             apply_axis_directive(
-                &mut opts, &mut axis_seen,
-                parsed.axis_num, parsed.sub, parsed.value,
+                &mut opts,
+                &mut axis_seen,
+                parsed.axis_num,
+                parsed.sub,
+                parsed.value,
             )?;
         } else if let Some(rest) = line.strip_prefix("legend:").map(str::trim) {
             opts.legend = Some(rest.to_string());
@@ -424,7 +485,8 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
         } else if let Some(rest) = line.strip_prefix("x-range:").map(str::trim) {
             axis_seen.note(AxisKey::X, AxisRole::Range, "x-range")?;
             let (lo, hi) = parse_range_spec(rest)?;
-            opts.x_min = lo; opts.x_max = hi;
+            opts.x_min = lo;
+            opts.x_max = hi;
         } else if let Some(rest) = line.strip_prefix("y-ranges:").map(str::trim) {
             // Plural form: positional array of ranges, one
             // per declared y-axis. Recorded for deferred
@@ -436,7 +498,9 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             deferred_y_legends = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("y-labels:").map(str::trim) {
             deferred_y_labels = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("style ").map(str::trim)
+        } else if let Some(rest) = line
+            .strip_prefix("style ")
+            .map(str::trim)
             .or_else(|| line.strip_prefix("style:").map(str::trim))
         {
             // Per-series style override: `style key=value:directives`
@@ -444,8 +508,8 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // separators are accepted: `style phase=…:line=…`
             // (legacy space form) and `style: phase=…:line=…`
             // (uniform `name: value` form).
-            opts.series_overrides.push(parse_style_override(rest)
-                .map_err(|e| format!("style '{rest}': {e}"))?);
+            opts.series_overrides
+                .push(parse_style_override(rest).map_err(|e| format!("style '{rest}': {e}"))?);
         } else if apply_kv_directive(&mut opts, line)? {
             // Generic `name: value` (or `name = value`) directive
             // applied — fall through to the next line. Covers
@@ -524,9 +588,11 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             }
         } else if let Some(rest) = directive.strip_prefix("where ") {
             for filter in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                let (k, v) = filter.split_once('=')
+                let (k, v) = filter
+                    .split_once('=')
                     .ok_or_else(|| format!("where filter '{filter}' must be <key>=<value>"))?;
-                opts.filters.push((k.trim().to_string(), v.trim().to_string()));
+                opts.filters
+                    .push((k.trim().to_string(), v.trim().to_string()));
             }
         } else if let Some(v) = directive.strip_prefix("agg=") {
             opts.agg = v.trim().to_string();
@@ -556,22 +622,38 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
                         Some((s, w)) => (s, Some(w)),
                         None => (by_rest, None),
                     };
-                    for k in series_text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    for k in series_text
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
                         opts.series_labels.push(k.to_string());
                     }
                     if let Some(where_rest) = where_text {
-                        for f in where_rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                            let (k, v) = f.split_once('=')
-                                .ok_or_else(|| format!("where filter '{f}' must be <key>=<value>"))?;
-                            opts.filters.push((k.trim().to_string(), v.trim().to_string()));
+                        for f in where_rest
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            let (k, v) = f.split_once('=').ok_or_else(|| {
+                                format!("where filter '{f}' must be <key>=<value>")
+                            })?;
+                            opts.filters
+                                .push((k.trim().to_string(), v.trim().to_string()));
                         }
                     }
                 } else if let Some((x_part, where_rest)) = after_over.split_once(" where ") {
                     parse_over(x_part, &mut opts);
-                    for f in where_rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                        let (k, v) = f.split_once('=')
+                    for f in where_rest
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let (k, v) = f
+                            .split_once('=')
                             .ok_or_else(|| format!("where filter '{f}' must be <key>=<value>"))?;
-                        opts.filters.push((k.trim().to_string(), v.trim().to_string()));
+                        opts.filters
+                            .push((k.trim().to_string(), v.trim().to_string()));
                     }
                 } else {
                     parse_over(after_over, &mut opts);
@@ -609,10 +691,13 @@ fn apply_kv_directive(opts: &mut PlotMetricsOpts, line: &str) -> Result<bool, St
     let key = raw_key.trim();
     let value = raw_value.trim();
     let parse_u32 = |v: &str, name: &str| -> Result<u32, String> {
-        v.parse::<u32>().map_err(|_| format!("{name} must be a positive integer, got '{v}'"))
+        v.parse::<u32>()
+            .map_err(|_| format!("{name} must be a positive integer, got '{v}'"))
     };
     let parse_f32_pos = |v: &str, name: &str| -> Result<f32, String> {
-        let n: f32 = v.parse().map_err(|_| format!("{name} must be a positive number, got '{v}'"))?;
+        let n: f32 = v
+            .parse()
+            .map_err(|_| format!("{name} must be a positive number, got '{v}'"))?;
         if !(n.is_finite() && n > 0.0) {
             return Err(format!("{name} must be a positive number, got '{v}'"));
         }
@@ -622,29 +707,29 @@ fn apply_kv_directive(opts: &mut PlotMetricsOpts, line: &str) -> Result<bool, St
         // Render dimensions + density / style multipliers.
         // `scale`        → pixel-density (canvas × scale, same visual layout).
         // `style-scale`  → element-relative size (fonts/strokes/markers within canvas).
-        "width"        => opts.width  = parse_u32(value, "width")?,
-        "height"       => opts.height = parse_u32(value, "height")?,
-        "scale"        => opts.scale  = Some(parse_f32_pos(value, "scale")?),
-        "style-scale"  => opts.style_scale = Some(parse_f32_pos(value, "style-scale")?),
+        "width" => opts.width = parse_u32(value, "width")?,
+        "height" => opts.height = parse_u32(value, "height")?,
+        "scale" => opts.scale = Some(parse_f32_pos(value, "scale")?),
+        "style-scale" => opts.style_scale = Some(parse_f32_pos(value, "style-scale")?),
 
         // Titles / labels (unquoted-friendly).
-        "title"        => opts.title  = Some(strip_quotes(value).to_string()),
-        "label"        => opts.label  = Some(strip_quotes(value).to_string()),
-        "xlabel"       => opts.xlabel = Some(strip_quotes(value).to_string()),
-        "ylabel"       => opts.ylabel = Some(strip_quotes(value).to_string()),
+        "title" => opts.title = Some(strip_quotes(value).to_string()),
+        "label" => opts.label = Some(strip_quotes(value).to_string()),
+        "xlabel" => opts.xlabel = Some(strip_quotes(value).to_string()),
+        "ylabel" => opts.ylabel = Some(strip_quotes(value).to_string()),
 
         // Scale-mode pin. Hyphenated to disambiguate from the
         // render-density `scale:` multiplier above.
-        "x-scale"      => opts.xscale = value.to_string(),
-        "y-scale"      => opts.yscale = value.to_string(),
+        "x-scale" => opts.xscale = value.to_string(),
+        "y-scale" => opts.yscale = value.to_string(),
 
         // Aggregator + style cascade.
-        "agg"          => opts.agg    = value.to_string(),
-        "palette"      => opts.palette = Some(value.to_string()),
-        "line"         => opts.line    = Some(value.to_string()),
-        "line-width"   => opts.line_width = Some(parse_f32_pos(value, "line-width")?),
-        "marker"       => opts.marker  = Some(value.to_string()),
-        "marker-size"  => opts.marker_size = Some(parse_f32_pos(value, "marker-size")?),
+        "agg" => opts.agg = value.to_string(),
+        "palette" => opts.palette = Some(value.to_string()),
+        "line" => opts.line = Some(value.to_string()),
+        "line-width" => opts.line_width = Some(parse_f32_pos(value, "line-width")?),
+        "marker" => opts.marker = Some(value.to_string()),
+        "marker-size" => opts.marker_size = Some(parse_f32_pos(value, "marker-size")?),
 
         _ => return Ok(false),
     }
@@ -1008,12 +1093,22 @@ enum TickSpec {
 /// primary y-axis); `y1*` directives also resolve to Y so
 /// `y` and `y1` refer to the same logical axis (SRD-65).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum AxisKey { X, Y, Y2, Y3, Y4 }
+enum AxisKey {
+    X,
+    Y,
+    Y2,
+    Y3,
+    Y4,
+}
 
 /// What aspect of an axis a directive set. `Range` is
 /// mutually exclusive with `Min`/`Max` on the same axis.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum AxisRole { Range, Min, Max }
+enum AxisRole {
+    Range,
+    Min,
+    Max,
+}
 
 /// `y-datapoints:` mode — how (or whether) to draw the
 /// numeric value alongside each plotted point.
@@ -1077,7 +1172,8 @@ impl AxisDirectiveTracker {
     fn note_owned(&mut self, axis: AxisKey, role: AxisRole, name: String) -> Result<(), String> {
         // Conflict with the opposite kind on the same axis.
         let conflict = match role {
-            AxisRole::Range => [AxisRole::Min, AxisRole::Max].iter()
+            AxisRole::Range => [AxisRole::Min, AxisRole::Max]
+                .iter()
                 .find_map(|r| self.seen.get(&(axis, *r)).cloned()),
             AxisRole::Min | AxisRole::Max => self.seen.get(&(axis, AxisRole::Range)).cloned(),
         };
@@ -1145,9 +1241,13 @@ struct ParsedAxisDirective<'a> {
 fn cli_axis_flag_match(flag: &str) -> Option<(usize, &str)> {
     let stripped = flag.strip_prefix("--")?;
     let bytes = stripped.as_bytes();
-    if bytes.first().copied() != Some(b'y') { return None; }
+    if bytes.first().copied() != Some(b'y') {
+        return None;
+    }
     let digit = bytes.get(1).copied()?;
-    if !(b'1'..=b'4').contains(&digit) { return None; }
+    if !(b'1'..=b'4').contains(&digit) {
+        return None;
+    }
     let axis_num = (digit - b'0') as usize;
     let after = &stripped[2..];
     if after.is_empty() {
@@ -1167,9 +1267,13 @@ fn cli_axis_flag_match(flag: &str) -> Option<(usize, &str)> {
 /// through `opts.query`.
 fn parse_y_axis_directive(line: &str) -> Option<ParsedAxisDirective<'_>> {
     let bytes = line.as_bytes();
-    if bytes.first().copied() != Some(b'y') { return None; }
+    if bytes.first().copied() != Some(b'y') {
+        return None;
+    }
     let digit = bytes.get(1).copied()?;
-    if !(b'1'..=b'4').contains(&digit) { return None; }
+    if !(b'1'..=b'4').contains(&digit) {
+        return None;
+    }
     let axis_num = (digit - b'0') as usize;
     let after = &line[2..];
     let (sub, value): (&str, &str) = if let Some(rest) = after.strip_prefix(':') {
@@ -1183,7 +1287,11 @@ fn parse_y_axis_directive(line: &str) -> Option<ParsedAxisDirective<'_>> {
     } else {
         return None;
     };
-    Some(ParsedAxisDirective { axis_num, sub, value })
+    Some(ParsedAxisDirective {
+        axis_num,
+        sub,
+        value,
+    })
 }
 
 /// Write one `yN[-sub]:value` directive into the
@@ -1207,16 +1315,24 @@ fn apply_axis_directive(
         2 => AxisKey::Y2,
         3 => AxisKey::Y3,
         4 => AxisKey::Y4,
-        _ => return Err(format!(
-            "axis index y{axis_num} is out of range — SRD-65 supports y..y4"
-        )),
+        _ => {
+            return Err(format!(
+                "axis index y{axis_num} is out of range — SRD-65 supports y..y4"
+            ));
+        }
     };
     let prefix = format!("y{axis_num}");
     let axis = opts.ensure_secondary_axis(axis_num)?;
     match sub {
-        "" => { axis.query = Some(value.to_string()); }
-        "label" => { axis.label = Some(strip_quotes(value).to_string()); }
-        "legend" => { axis.legend_format = Some(strip_quotes(value).to_string()); }
+        "" => {
+            axis.query = Some(value.to_string());
+        }
+        "label" => {
+            axis.label = Some(strip_quotes(value).to_string());
+        }
+        "legend" => {
+            axis.legend_format = Some(strip_quotes(value).to_string());
+        }
         "side" => {
             let v = value.trim().to_ascii_lowercase();
             if v != "left" && v != "right" {
@@ -1234,19 +1350,24 @@ fn apply_axis_directive(
             axis_seen.note_owned(axis_key, AxisRole::Max, format!("{prefix}-max"))?;
             axis.max = parse_axis_bound_value(value)?;
         }
-        "scale" => { axis.scale = value.to_string(); }
-        "ticks" => { axis.ticks = parse_tick_spec(value); }
+        "scale" => {
+            axis.scale = value.to_string();
+        }
+        "ticks" => {
+            axis.ticks = parse_tick_spec(value);
+        }
         "range" => {
             axis_seen.note_owned(axis_key, AxisRole::Range, format!("{prefix}-range"))?;
-            let (lo, hi) = parse_range_spec(value)
-                .map_err(|e| format!("--{prefix}-range: {e}"))?;
+            let (lo, hi) = parse_range_spec(value).map_err(|e| format!("--{prefix}-range: {e}"))?;
             axis.min = lo;
             axis.max = hi;
         }
-        other => return Err(format!(
-            "unknown {prefix} sub-directive `{prefix}-{other}` — accepted: \
+        other => {
+            return Err(format!(
+                "unknown {prefix} sub-directive `{prefix}-{other}` — accepted: \
              label, legend, side, min, max, scale, ticks, range"
-        )),
+            ));
+        }
     }
     Ok(())
 }
@@ -1265,9 +1386,15 @@ fn apply_primary_axis_directive(
     value: &str,
 ) -> Result<(), String> {
     match sub {
-        "" => { opts.query = Some(value.to_string()); }
-        "label" => { opts.ylabel = Some(strip_quotes(value).to_string()); }
-        "legend" => { opts.y_legend_format = Some(strip_quotes(value).to_string()); }
+        "" => {
+            opts.query = Some(value.to_string());
+        }
+        "label" => {
+            opts.ylabel = Some(strip_quotes(value).to_string());
+        }
+        "legend" => {
+            opts.y_legend_format = Some(strip_quotes(value).to_string());
+        }
         "min" => {
             axis_seen.note(AxisKey::Y, AxisRole::Min, "y1-min")?;
             opts.y_min = parse_axis_bound_value(value)?;
@@ -1276,12 +1403,15 @@ fn apply_primary_axis_directive(
             axis_seen.note(AxisKey::Y, AxisRole::Max, "y1-max")?;
             opts.y_max = parse_axis_bound_value(value)?;
         }
-        "scale" => { opts.yscale = value.to_string(); }
-        "ticks" => { opts.y_ticks = parse_tick_spec(value); }
+        "scale" => {
+            opts.yscale = value.to_string();
+        }
+        "ticks" => {
+            opts.y_ticks = parse_tick_spec(value);
+        }
         "range" => {
             axis_seen.note(AxisKey::Y, AxisRole::Range, "y1-range")?;
-            let (lo, hi) = parse_range_spec(value)
-                .map_err(|e| format!("--y1-range: {e}"))?;
+            let (lo, hi) = parse_range_spec(value).map_err(|e| format!("--y1-range: {e}"))?;
             opts.y_min = lo;
             opts.y_max = hi;
         }
@@ -1290,14 +1420,17 @@ fn apply_primary_axis_directive(
         // operator who wrote `y1-side: right` sees the
         // unsupported nature of the request rather than
         // a silent acceptance.
-        "side" => return Err(
-            "y1-side: axis 1 always renders on the left; \
-             use `yN-side: left` on a secondary axis instead".to_string()
-        ),
-        other => return Err(format!(
-            "unknown y1 sub-directive `y1-{other}` — accepted: \
+        "side" => {
+            return Err("y1-side: axis 1 always renders on the left; \
+             use `yN-side: left` on a secondary axis instead"
+                .to_string());
+        }
+        other => {
+            return Err(format!(
+                "unknown y1 sub-directive `y1-{other}` — accepted: \
              label, legend, min, max, scale, ticks, range"
-        )),
+            ));
+        }
     }
     Ok(())
 }
@@ -1445,28 +1578,38 @@ fn format_point_label(
             "x" => format_x(point.x),
             "y" => format_datapoint(point.y),
             "n" => point.count.to_string(),
-            other => point.labels.get(other)
+            other => point
+                .labels
+                .get(other)
                 .cloned()
                 .unwrap_or_else(|| "(unset)".to_string()),
         }
     };
     let format_kvs = |names: &[&String]| -> String {
-        names.iter()
+        names
+            .iter()
             .map(|k| format!("{}={}", k, value_for(k.as_str())))
-            .collect::<Vec<_>>().join(", ")
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     match spec {
         PointLabelSpec::Vary => {
-            let mut keys: Vec<&String> = point.labels.keys()
+            let mut keys: Vec<&String> = point
+                .labels
+                .keys()
                 .filter(|k| !series_labels.iter().any(|s| s == *k))
                 .filter(|k| k.as_str() != "__name__")
                 .collect();
-            if keys.is_empty() { return String::new(); }
+            if keys.is_empty() {
+                return String::new();
+            }
             keys.sort();
             format_kvs(&keys)
         }
         PointLabelSpec::Explicit(names) => {
-            if names.is_empty() { return String::new(); }
+            if names.is_empty() {
+                return String::new();
+            }
             let refs: Vec<&String> = names.iter().collect();
             format_kvs(&refs)
         }
@@ -1497,8 +1640,8 @@ enum ReduceOp {
 fn parse_reduce_op(s: &str) -> Result<ReduceOp, String> {
     match s.trim() {
         "avg" | "mean" => Ok(ReduceOp::Avg),
-        "last"         => Ok(ReduceOp::Last),
-        "none"         => Ok(ReduceOp::None),
+        "last" => Ok(ReduceOp::Last),
+        "none" => Ok(ReduceOp::None),
         other => Err(format!(
             "unknown reduce op `{other}` (expected: avg, last, none)"
         )),
@@ -1517,10 +1660,15 @@ pub(crate) fn parse_execution_selection(
         "latest-per-instance" | "per-instance" | "" => Ok(ExecutionSelection::LatestPerInstance),
         "all" => Ok(ExecutionSelection::All),
         "latest" => Ok(ExecutionSelection::Latest),
-        other => other.parse::<u64>().map(ExecutionSelection::Specific).map_err(|_| format!(
-            "unknown execution selection `{other}` (expected: \
+        other => other
+            .parse::<u64>()
+            .map(ExecutionSelection::Specific)
+            .map_err(|_| {
+                format!(
+                    "unknown execution selection `{other}` (expected: \
              latest-per-instance, all, latest, or an execution id)"
-        )),
+                )
+            }),
     }
 }
 
@@ -1649,7 +1797,10 @@ fn try_decompose_compact_pair(value: &str) -> Option<CompactPair> {
     // verbatim, only requiring 2-or-3 top-level args.
     if let Some(open) = value.find('(') {
         let fn_name = &value[..open];
-        if !fn_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !fn_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             return None;
         }
         let tail = &value[open..];
@@ -1688,11 +1839,14 @@ fn split_balanced(s: &str, open: char, close: char) -> Option<(&str, &str)> {
     let s = s.trim_start();
     let mut chars = s.char_indices();
     let (first_i, first_c) = chars.next()?;
-    if first_c != open { return None; }
+    if first_c != open {
+        return None;
+    }
     let mut depth = 1i32;
     for (i, c) in chars {
-        if c == open { depth += 1; }
-        else if c == close {
+        if c == open {
+            depth += 1;
+        } else if c == close {
             depth -= 1;
             if depth == 0 {
                 return Some((&s[first_i + 1..i], &s[i + 1..]));
@@ -1819,9 +1973,13 @@ fn natural_str_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             // raw run length so `01` sorts before `1` only
             // if everything else matches.
             let a_start = i;
-            while i < ab.len() && ab[i].is_ascii_digit() { i += 1; }
+            while i < ab.len() && ab[i].is_ascii_digit() {
+                i += 1;
+            }
             let b_start = j;
-            while j < bb.len() && bb[j].is_ascii_digit() { j += 1; }
+            while j < bb.len() && bb[j].is_ascii_digit() {
+                j += 1;
+            }
             let a_run = &ab[a_start..i];
             let b_run = &bb[b_start..j];
             let a_trim = trim_leading_zeros(a_run);
@@ -1891,11 +2049,11 @@ fn expand_legend_template(
 /// Parse `"k1=v1, k2=v2, …"` (the format produced by
 /// `series_tuple_key`) back into a label HashMap. Used
 /// at draw time to feed `expand_legend_template`.
-fn parse_series_key_to_labels(
-    series_key: &str,
-) -> std::collections::HashMap<String, String> {
+fn parse_series_key_to_labels(series_key: &str) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
-    if series_key.is_empty() { return out; }
+    if series_key.is_empty() {
+        return out;
+    }
     for piece in series_key.split(", ") {
         if let Some((k, v)) = piece.split_once('=') {
             out.insert(k.trim().to_string(), v.trim().to_string());
@@ -1912,7 +2070,8 @@ fn parse_axis_bound_value(s: &str) -> Result<Option<f64>, String> {
     if t.eq_ignore_ascii_case("auto") || t.is_empty() {
         return Ok(None);
     }
-    t.parse().map(Some)
+    t.parse()
+        .map(Some)
         .map_err(|_| format!("axis bound '{t}' must be a number or `auto`"))
 }
 
@@ -1924,11 +2083,10 @@ fn parse_axis_bound_value(s: &str) -> Result<Option<f64>, String> {
 /// commas tolerated.
 fn split_array_value(s: &str) -> Result<Vec<String>, String> {
     let trimmed = s.trim();
-    let inner = trimmed.strip_prefix('[')
+    let inner = trimmed
+        .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
-        .ok_or_else(|| format!(
-            "expected `[...]` array, got `{trimmed}`"
-        ))?;
+        .ok_or_else(|| format!("expected `[...]` array, got `{trimmed}`"))?;
     let mut out = Vec::new();
     let mut depth: i32 = 0;
     let mut current = String::new();
@@ -1936,23 +2094,38 @@ fn split_array_value(s: &str) -> Result<Vec<String>, String> {
     for c in inner.chars() {
         if let Some(q) = in_quote {
             current.push(c);
-            if c == q { in_quote = None; }
+            if c == q {
+                in_quote = None;
+            }
             continue;
         }
         match c {
-            '"' | '\'' => { in_quote = Some(c); current.push(c); }
-            '[' | '(' => { depth += 1; current.push(c); }
-            ']' | ')' => { depth -= 1; current.push(c); }
+            '"' | '\'' => {
+                in_quote = Some(c);
+                current.push(c);
+            }
+            '[' | '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                current.push(c);
+            }
             ',' if depth == 0 => {
                 let item = current.trim().to_string();
-                if !item.is_empty() { out.push(item); }
+                if !item.is_empty() {
+                    out.push(item);
+                }
                 current.clear();
             }
             _ => current.push(c),
         }
     }
     let last = current.trim();
-    if !last.is_empty() { out.push(last.to_string()); }
+    if !last.is_empty() {
+        out.push(last.to_string());
+    }
     Ok(out)
 }
 
@@ -1974,8 +2147,7 @@ fn apply_y_plural_ranges(
     axis_seen: &mut AxisDirectiveTracker,
     value: &str,
 ) -> Result<(), String> {
-    let items = split_array_value(value)
-        .map_err(|e| format!("y-ranges: {e}"))?;
+    let items = split_array_value(value).map_err(|e| format!("y-ranges: {e}"))?;
     if items.is_empty() {
         return Err("y-ranges: empty array".to_string());
     }
@@ -1984,19 +2156,22 @@ fn apply_y_plural_ranges(
         return Err(format!(
             "y-ranges: {} entries supplied but only {} y-axis(es) declared \
              (declare yN: queries first or trim the array)",
-            items.len(), max_axes,
+            items.len(),
+            max_axes,
         ));
     }
     // Pre-parse so an invalid range error references the
     // original index rather than the broadcast position.
-    let parsed: Vec<(Option<f64>, Option<f64>)> = items.iter().enumerate()
-        .map(|(i, item)| parse_range_spec(item)
-            .map_err(|e| format!("y-ranges[{i}]: {e}")))
+    let parsed: Vec<(Option<f64>, Option<f64>)> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| parse_range_spec(item).map_err(|e| format!("y-ranges[{i}]: {e}")))
         .collect::<Result<_, _>>()?;
     for axis_idx in 0..max_axes {
         // Fan-out: explicit entry when present, otherwise
         // the last entry repeats.
-        let src = parsed.get(axis_idx)
+        let src = parsed
+            .get(axis_idx)
             .copied()
             .unwrap_or_else(|| *parsed.last().unwrap());
         let (lo, hi) = src;
@@ -2007,7 +2182,8 @@ fn apply_y_plural_ranges(
         };
         if axis_idx == 0 {
             axis_seen.note_owned(AxisKey::Y, AxisRole::Range, label)?;
-            opts.y_min = lo; opts.y_max = hi;
+            opts.y_min = lo;
+            opts.y_max = hi;
         } else {
             let axis_num = axis_idx + 1;
             let key = match axis_num {
@@ -2030,17 +2206,14 @@ fn apply_y_plural_ranges(
 /// (`yN-legend`). Quoted strings have their outer quotes
 /// stripped so `["oracle [profile]", PVS, overscan]` works
 /// uniformly.
-fn apply_y_plural_legends(
-    opts: &mut PlotMetricsOpts,
-    value: &str,
-) -> Result<(), String> {
-    let items = split_array_value(value)
-        .map_err(|e| format!("y-legends: {e}"))?;
+fn apply_y_plural_legends(opts: &mut PlotMetricsOpts, value: &str) -> Result<(), String> {
+    let items = split_array_value(value).map_err(|e| format!("y-legends: {e}"))?;
     let max_axes = 1 + opts.secondary_axes.len();
     if items.len() > max_axes {
         return Err(format!(
             "y-legends: {} entries supplied but only {} y-axis(es) declared",
-            items.len(), max_axes,
+            items.len(),
+            max_axes,
         ));
     }
     for (i, item) in items.iter().enumerate() {
@@ -2067,8 +2240,7 @@ fn apply_y_plural_labels(
     _axis_seen: &mut AxisDirectiveTracker,
     value: &str,
 ) -> Result<(), String> {
-    let items = split_array_value(value)
-        .map_err(|e| format!("y-labels: {e}"))?;
+    let items = split_array_value(value).map_err(|e| format!("y-labels: {e}"))?;
     if items.len() > 2 {
         return Err(format!(
             "y-labels: at most 2 entries (left, right); got {}",
@@ -2110,12 +2282,17 @@ fn parse_range_spec(s: &str) -> Result<(Option<f64>, Option<f64>), String> {
         return Ok((None, None));
     }
     let parse_endpoint = |p: &str| -> Result<Option<f64>, String> {
-        if p.is_empty() { return Ok(None); }
-        p.parse::<f64>().map(Some)
+        if p.is_empty() {
+            return Ok(None);
+        }
+        p.parse::<f64>()
+            .map(Some)
             .map_err(|_| format!("range endpoint '{p}' is not a number"))
     };
     // Bracketed forms: `(a, b)` or `[a, b]` — split on comma.
-    let inner = trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+    let inner = trimmed
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
         .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')));
     if let Some(inner) = inner {
         let mut parts = inner.splitn(2, ',');
@@ -2150,18 +2327,22 @@ fn parse_range_spec(s: &str) -> Result<(Option<f64>, Option<f64>), String> {
 ///   problem.
 fn parse_tick_spec(s: &str) -> TickSpec {
     let trimmed = s.trim();
-    if trimmed.is_empty() { return TickSpec::None; }
-    if trimmed.eq_ignore_ascii_case("auto") { return TickSpec::Auto; }
+    if trimmed.is_empty() {
+        return TickSpec::None;
+    }
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return TickSpec::Auto;
+    }
     // Numeric-list sniff: every comma-split fragment must
     // parse as f64. Empty fragments (trailing comma) are OK
     // and dropped.
-    let parts: Vec<&str> = trimmed.split(',')
-        .map(str::trim).filter(|p| !p.is_empty()).collect();
-    if !parts.is_empty()
-        && parts.iter().all(|p| p.parse::<f64>().is_ok())
-    {
-        return TickSpec::Literal(parts.iter()
-            .map(|p| p.parse::<f64>().unwrap()).collect());
+    let parts: Vec<&str> = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !parts.is_empty() && parts.iter().all(|p| p.parse::<f64>().is_ok()) {
+        return TickSpec::Literal(parts.iter().map(|p| p.parse::<f64>().unwrap()).collect());
     }
     TickSpec::Query(trimmed.to_string())
 }
@@ -2251,9 +2432,7 @@ impl PlotMetricsOpts {
     /// secondary axes (2..=N). Auto-grows `secondary_axes`
     /// to cover up to `axis_num`, naming each new entry
     /// `yN`. Returns an error past the SRD-65 cap (`y4`).
-    fn ensure_secondary_axis(&mut self, axis_num: usize)
-        -> Result<&mut AxisOpts, String>
-    {
+    fn ensure_secondary_axis(&mut self, axis_num: usize) -> Result<&mut AxisOpts, String> {
         const MAX_AXES: usize = 4;
         if !(2..=MAX_AXES).contains(&axis_num) {
             return Err(format!(
@@ -2361,8 +2540,7 @@ pub fn plot_metrics_command(args: &[String]) {
 /// `plot_metrics_command` only sees the per-invocation
 /// args slice — not the global runner context.
 fn is_strict_mode(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--strict")
-        || std::env::var("NBRS_STRICT").is_ok()
+    args.iter().any(|a| a == "--strict") || std::env::var("NBRS_STRICT").is_ok()
 }
 
 /// Strip the [`PLOT_NO_DATA_PREFIX`] sentinel from an
@@ -2380,9 +2558,8 @@ pub fn strip_no_data_prefix(msg: &str) -> String {
 /// surface in a rendered chart.
 pub(crate) fn metric_name_from_query(q: &str) -> Option<String> {
     const SKIP: &[&str] = &[
-        "avg", "mean", "sum", "min", "max", "count", "rate",
-        "p50", "p90", "p95", "p99", "by", "without", "topk",
-        "bottomk", "stddev", "quantile",
+        "avg", "mean", "sum", "min", "max", "count", "rate", "p50", "p90", "p95", "p99", "by",
+        "without", "topk", "bottomk", "stddev", "quantile",
     ];
     let mut token = String::new();
     let mut chars = q.chars().peekable();
@@ -2392,9 +2569,7 @@ pub(crate) fn metric_name_from_query(q: &str) -> Option<String> {
             let boundary = !matches!(chars.peek(),
                 Some(n) if n.is_alphanumeric() || *n == '_');
             if boundary {
-                if !SKIP.contains(&token.as_str())
-                    && !token.chars().all(|c| c.is_ascii_digit())
-                {
+                if !SKIP.contains(&token.as_str()) && !token.chars().all(|c| c.is_ascii_digit()) {
                     return Some(token);
                 }
                 token.clear();
@@ -2449,19 +2624,24 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     // expression itself is the metric; pull a synthetic name
     // out of it (or fall back to "result") so the rest of the
     // pipeline doesn't need to special-case the query path.
-    let synthetic_metric = opts.query.as_ref().map(|q| {
-        // Extract the METRIC identifier from the expression —
-        // `avg(recall_at_10_mean)` → "recall_at_10_mean", not the
-        // aggregation function. Best-effort; user can pin via
-        // `--metric` to override.
-        metric_name_from_query(q)
-            .unwrap_or_else(|| q.chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect::<String>())
-    }).filter(|s| !s.is_empty());
-    let metric_owned: String = opts.metric.clone()
-        .or(synthetic_metric)
-        .ok_or_else(|| "--metric <pattern> is required (or pass `--y <metricsql>` / a positional spec)".to_string())?;
+    let synthetic_metric = opts
+        .query
+        .as_ref()
+        .map(|q| {
+            // Extract the METRIC identifier from the expression —
+            // `avg(recall_at_10_mean)` → "recall_at_10_mean", not the
+            // aggregation function. Best-effort; user can pin via
+            // `--metric` to override.
+            metric_name_from_query(q).unwrap_or_else(|| {
+                q.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+        })
+        .filter(|s| !s.is_empty());
+    let metric_owned: String = opts.metric.clone().or(synthetic_metric).ok_or_else(|| {
+        "--metric <pattern> is required (or pass `--y <metricsql>` / a positional spec)".to_string()
+    })?;
     let metric = metric_owned.as_str();
     // Three x-axis paths:
     //   1. `x1: <metricsql>` paired with `y1: <metricsql>` —
@@ -2483,11 +2663,9 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     } else if let Some(s) = opts.x_label.as_deref() {
         s.to_string()
     } else {
-        return Err(
-            "--x <label_key> is required (or `--x1 <metricsql>` for \
+        return Err("--x <label_key> is required (or `--x1 <metricsql>` for \
              paired-coordinate mode, or `over <label>` in the positional spec)"
-                .to_string()
-        );
+            .to_string());
     };
     let x_label = x_label_owned.as_str();
 
@@ -2546,11 +2724,19 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         let xq = opts.x_query.as_deref().unwrap();
         let yq = opts.query.as_deref().unwrap();
         let reduce = opts.reduce.unwrap_or(ReduceOp::Avg);
-        series_labels = opts.series_labels.iter()
+        series_labels = opts
+            .series_labels
+            .iter()
             .filter(|s| s.as_str() != "*")
-            .cloned().collect();
+            .cloned()
+            .collect();
         aggregated = pair_xy_coordinates(
-            &query_db, xq, yq, &series_labels, reduce, opts.execution_selection,
+            &query_db,
+            xq,
+            yq,
+            &series_labels,
+            reduce,
+            opts.execution_selection,
         )?;
         if aggregated.is_empty() {
             return Err(format!(
@@ -2564,28 +2750,43 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         rows = if let Some(q) = opts.query.as_deref() {
             let r = rows_via_metricsql(&query_db, q, opts.execution_selection)
                 .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?;
-            eprintln!("plot: y1 query against '{}': `{q}` → {} row(s)",
-                query_db.display(), r.len());
+            eprintln!(
+                "plot: y1 query against '{}': `{q}` → {} row(s)",
+                query_db.display(),
+                r.len()
+            );
             r
         } else {
             let r = query_rows(&query_db, metric, &opts.filters)
                 .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?;
-            eprintln!("plot: y1 legacy SQL against '{}' for metric '{metric}' → {} row(s)",
-                query_db.display(), r.len());
+            eprintln!(
+                "plot: y1 legacy SQL against '{}' for metric '{metric}' → {} row(s)",
+                query_db.display(),
+                r.len()
+            );
             r
         };
         if rows.is_empty() {
             let mut msg = if let Some(q) = opts.query.as_deref() {
-                format!("metricsql query returned no series in '{}': `{q}`",
-                    db_path.display())
+                format!(
+                    "metricsql query returned no series in '{}': `{q}`",
+                    db_path.display()
+                )
             } else {
-                format!("no matching rows in '{}' for metric '{metric}'",
-                    db_path.display())
+                format!(
+                    "no matching rows in '{}' for metric '{metric}'",
+                    db_path.display()
+                )
             };
             if !opts.filters.is_empty() && opts.query.is_none() {
-                msg.push_str(&format!(" with filters {}",
-                    opts.filters.iter().map(|(k, v)| format!("{k}={v}"))
-                        .collect::<Vec<_>>().join(", ")));
+                msg.push_str(&format!(
+                    " with filters {}",
+                    opts.filters
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
             return Err(format!("{PLOT_NO_DATA_PREFIX}{msg}"));
         }
@@ -2624,10 +2825,12 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         // first as a representative, same way the y
         // aggregator collapses many samples into one mean).
         let bucket_labels = collect_bucket_labels(&rows, x_label, &series_labels);
-        aggregated = series.iter()
+        aggregated = series
+            .iter()
             .map(|(sname, by_x)| {
                 let labels_for_series = bucket_labels.get(sname);
-                let mut points: Vec<PlotPoint> = by_x.iter()
+                let mut points: Vec<PlotPoint> = by_x
+                    .iter()
                     .map(|(xk, ys)| PlotPoint {
                         x: xk.0,
                         y: aggregate(&opts.agg, ys),
@@ -2638,8 +2841,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
                             .unwrap_or_default(),
                     })
                     .collect();
-                points.sort_by(|a, b| a.x.partial_cmp(&b.x)
-                    .unwrap_or(std::cmp::Ordering::Equal));
+                points.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
                 (sname.clone(), points)
             })
             .collect();
@@ -2647,15 +2849,20 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
 
     // --verbose: dump the aggregation table to stderr.
     if opts.verbose {
-        emit_verbose_table(&aggregated, x_label,
-            &series_labels, &opts.agg);
+        emit_verbose_table(&aggregated, x_label, &series_labels, &opts.agg);
     }
 
     // --csv-also: write the same data as CSV.
     if let Some(csv_path) = opts.csv_also.as_ref() {
-        write_csv(csv_path, &aggregated, x_label,
-            &series_labels, metric, &opts.agg)
-            .map_err(|e| format!("failed to write CSV '{}': {e}", csv_path.display()))?;
+        write_csv(
+            csv_path,
+            &aggregated,
+            x_label,
+            &series_labels,
+            metric,
+            &opts.agg,
+        )
+        .map_err(|e| format!("failed to write CSV '{}': {e}", csv_path.display()))?;
         eprintln!("csv:  {}", csv_path.display());
     }
 
@@ -2665,7 +2872,8 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     //    Pass `--output …svg` for vector output (also works,
     //    same code path picks the SVG backend by extension).
     let out_path = opts.output.clone().unwrap_or_else(|| {
-        let dir = db_path.parent()
+        let dir = db_path
+            .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         let safe_metric = sanitize_filename(metric);
@@ -2683,13 +2891,21 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     for axis in &opts.secondary_axes {
         let q = match axis.query.as_deref() {
             Some(q) => q,
-            None => continue,  // shouldn't happen post-validate, but safe
+            None => continue, // shouldn't happen post-validate, but safe
         };
-        let rows2 = rows_via_metricsql(&query_db, q, opts.execution_selection)
-            .map_err(|e| format!("{} metricsql failed against '{}': {e}",
-                axis.name, query_db.display()))?;
-        eprintln!("plot: {} query against '{}': `{q}` → {} row(s)",
-            axis.name, query_db.display(), rows2.len());
+        let rows2 = rows_via_metricsql(&query_db, q, opts.execution_selection).map_err(|e| {
+            format!(
+                "{} metricsql failed against '{}': {e}",
+                axis.name,
+                query_db.display()
+            )
+        })?;
+        eprintln!(
+            "plot: {} query against '{}': `{q}` → {} row(s)",
+            axis.name,
+            query_db.display(),
+            rows2.len()
+        );
         // Empty-result handling: instead of failing the whole
         // plot when one secondary axis has no rows yet, mark
         // the axis as "pending" and continue. The renderer
@@ -2699,10 +2915,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         // the right behaviour for live plotting against an
         // ongoing run where some phases haven't started yet.
         if rows2.is_empty() {
-            eprintln!(
-                "plot: {} → no data yet — marking pending",
-                axis.name,
-            );
+            eprintln!("plot: {} → no data yet — marking pending", axis.name,);
             secondary_resolved.push(ResolvedSecondaryAxis {
                 name: axis.name.clone(),
                 cfg: axis.clone(),
@@ -2737,12 +2950,13 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
             });
             continue;
         }
-        let axis_bucket_labels =
-            collect_bucket_labels(&rows2, x_label, &axis_series_labels);
-        let series: BTreeMap<String, Vec<PlotPoint>> = buckets.iter()
+        let axis_bucket_labels = collect_bucket_labels(&rows2, x_label, &axis_series_labels);
+        let series: BTreeMap<String, Vec<PlotPoint>> = buckets
+            .iter()
             .map(|(sname, by_x)| {
                 let labels_for_series = axis_bucket_labels.get(sname);
-                let mut points: Vec<PlotPoint> = by_x.iter()
+                let mut points: Vec<PlotPoint> = by_x
+                    .iter()
                     .map(|(xk, ys)| PlotPoint {
                         x: xk.0,
                         y: aggregate(&opts.agg, ys),
@@ -2753,17 +2967,23 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
                             .unwrap_or_default(),
                     })
                     .collect();
-                points.sort_by(|a, b|
-                    a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+                points.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
                 (sname.clone(), points)
             })
             .collect();
         let total_pts: usize = series.values().map(|v| v.len()).sum();
-        eprintln!("plot: {} → {} series, {} point(s)",
-            axis.name, series.len(), total_pts);
+        eprintln!(
+            "plot: {} → {} series, {} point(s)",
+            axis.name,
+            series.len(),
+            total_pts
+        );
         let ticks = resolve_tick_spec(
             &axis.ticks,
-            &TickSource::Rows { rows: &rows2, x_label },
+            &TickSource::Rows {
+                rows: &rows2,
+                x_label,
+            },
             &query_db,
             TickAxis::YValue,
         )?;
@@ -2792,24 +3012,46 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     let primary_tick_source = if paired_mode {
         TickSource::Aggregated { agg: &aggregated }
     } else {
-        TickSource::Rows { rows: &rows, x_label }
+        TickSource::Rows {
+            rows: &rows,
+            x_label,
+        }
     };
     let x_ticks_resolved = resolve_tick_spec(
-        &opts.x_ticks, &primary_tick_source, &query_db, TickAxis::XLabel,
+        &opts.x_ticks,
+        &primary_tick_source,
+        &query_db,
+        TickAxis::XLabel,
     )?;
     let y_ticks_resolved = resolve_tick_spec(
-        &opts.y_ticks, &primary_tick_source, &query_db, TickAxis::YValue,
+        &opts.y_ticks,
+        &primary_tick_source,
+        &query_db,
+        TickAxis::YValue,
     )?;
 
     // 4. Render.
-    render_plot(&aggregated, &secondary_resolved, &opts, x_label, metric, &out_path,
-        &x_ticks_resolved, &y_ticks_resolved, &series_labels)
-        .map_err(|e| format!("render failed: {e}"))?;
+    render_plot(
+        &aggregated,
+        &secondary_resolved,
+        &opts,
+        x_label,
+        metric,
+        &out_path,
+        &x_ticks_resolved,
+        &y_ticks_resolved,
+        &series_labels,
+    )
+    .map_err(|e| format!("render failed: {e}"))?;
 
     let total_points: usize = aggregated.values().map(|v| v.len()).sum();
     let series_count = aggregated.len();
-    eprintln!("plot: {} ({} series, {} points)",
-        out_path.display(), series_count, total_points);
+    eprintln!(
+        "plot: {} ({} series, {} points)",
+        out_path.display(),
+        series_count,
+        total_points
+    );
 
     // Upsert into the framing markdown report (default
     // `<db_dir>/summary.md`) unless `--no-report` /
@@ -2818,17 +3060,21 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     // same name update the same section in place.
     if !opts.report_disabled {
         let report_path = opts.report.clone().unwrap_or_else(|| {
-            let dir = db_path.parent()
+            let dir = db_path
+                .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
             dir.join("summary.md")
         });
-        let stem = out_path.file_stem()
+        let stem = out_path
+            .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "plot".into());
         let anchor_name = stem.strip_prefix("plot_").unwrap_or(&stem).to_string();
         let body = crate::report::image_section_body(&report_path, &out_path);
-        let label = opts.label.clone()
+        let label = opts
+            .label
+            .clone()
             .unwrap_or_else(|| crate::report::prettify_name(&anchor_name));
         let heading_display = match opts.figure_num {
             Some(n) => format!("{n}. {label} (plot)"),
@@ -2842,10 +3088,14 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
             opts.report_mode,
         ) {
             Ok(true) => eprintln!("report: {}", report_path.display()),
-            Ok(false) => eprintln!("report: {} (skipped — section exists, --add-to-markdown mode)",
-                report_path.display()),
-            Err(e) => eprintln!("warning: failed to update report '{}': {e}",
-                report_path.display()),
+            Ok(false) => eprintln!(
+                "report: {} (skipped — section exists, --add-to-markdown mode)",
+                report_path.display()
+            ),
+            Err(e) => eprintln!(
+                "warning: failed to update report '{}': {e}",
+                report_path.display()
+            ),
         }
     }
     Ok(())
@@ -2900,8 +3150,7 @@ fn peel_stored_mode(args: &[String]) -> Option<StoredArgs> {
             other if other.starts_with("workload=") => {
                 let path = other.trim_start_matches("workload=");
                 workload = Some(PathBuf::from(
-                    crate::cli::resolve_workload_path(path)
-                        .unwrap_or_else(|| path.to_string()),
+                    crate::cli::resolve_workload_path(path).unwrap_or_else(|| path.to_string()),
                 ));
             }
             _ => {
@@ -2910,42 +3159,54 @@ fn peel_stored_mode(args: &[String]) -> Option<StoredArgs> {
         }
     }
     if target.is_some() || bare_all {
-        Some(StoredArgs { target, db, workload, extra })
+        Some(StoredArgs {
+            target,
+            db,
+            workload,
+            extra,
+        })
     } else {
         None
     }
 }
 
 fn run_stored(stored: StoredArgs) {
-    let db_path = stored.db.clone().unwrap_or_else(
-        nbrs_runtime::session::latest_metrics_db);
+    let db_path = stored
+        .db
+        .clone()
+        .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     if !db_path.exists() {
-        eprintln!("nbrs plot: metrics db not found at '{}'.",
-            db_path.display());
+        eprintln!(
+            "nbrs plot: metrics db not found at '{}'.",
+            db_path.display()
+        );
         std::process::exit(1);
     }
     // Source the spec list: `workload=<path>` wins (use the
     // workload's `plot:` block); otherwise use the metrics
     // db's `session_metadata` table.
-    let stored_specs: Vec<(String, String)> = match load_plot_specs(
-        stored.workload.as_deref(),
-        Some(&db_path),
-    ) {
-        Ok(specs) => specs,
-        Err(e) => {
-            match &stored.workload {
-                Some(path) => eprintln!("nbrs plot: workload '{}': {e}", path.display()),
-                None => eprintln!("nbrs plot: {e}"),
+    let stored_specs: Vec<(String, String)> =
+        match load_plot_specs(stored.workload.as_deref(), Some(&db_path)) {
+            Ok(specs) => specs,
+            Err(e) => {
+                match &stored.workload {
+                    Some(path) => eprintln!("nbrs plot: workload '{}': {e}", path.display()),
+                    None => eprintln!("nbrs plot: {e}"),
+                }
+                std::process::exit(1);
             }
-            std::process::exit(1);
-        }
-    };
+        };
     if stored_specs.is_empty() {
         match &stored.workload {
-            Some(path) => eprintln!("nbrs plot: workload '{}' has no `plot:` entries.",
-                path.display()),
+            Some(path) => eprintln!(
+                "nbrs plot: workload '{}' has no `plot:` entries.",
+                path.display()
+            ),
             None => {
-                eprintln!("nbrs plot: '{}' has no stored named plots.", db_path.display());
+                eprintln!(
+                    "nbrs plot: '{}' has no stored named plots.",
+                    db_path.display()
+                );
                 eprintln!();
                 eprintln!("Use `nbrs plot \"<spec>\"` for an ad-hoc plot, define");
                 eprintln!("a `plot:` block in a workload YAML, or pass");
@@ -2957,11 +3218,15 @@ fn run_stored(stored: StoredArgs) {
     let to_render: Vec<(String, String)> = match stored.target {
         Some(name) => {
             let Some(spec) = stored_specs.iter().find(|(n, _)| n == &name) else {
-                eprintln!("nbrs plot: no stored plot named '{name}' in '{}'",
-                    db_path.display());
+                eprintln!(
+                    "nbrs plot: no stored plot named '{name}' in '{}'",
+                    db_path.display()
+                );
                 eprintln!();
                 eprintln!("Available:");
-                for (n, _) in &stored_specs { eprintln!("  {n}"); }
+                for (n, _) in &stored_specs {
+                    eprintln!("  {n}");
+                }
                 std::process::exit(1);
             };
             vec![spec.clone()]
@@ -2969,9 +3234,16 @@ fn run_stored(stored: StoredArgs) {
         None => stored_specs,
     };
     let multi = to_render.len() > 1;
-    if multi && stored.extra.iter().any(|a| a == "--output" || a.starts_with("--output=")) {
-        eprintln!("warning: --output is ignored when rendering multiple stored plots; \
-                   per-name filenames are derived from each plot's name.");
+    if multi
+        && stored
+            .extra
+            .iter()
+            .any(|a| a == "--output" || a.starts_with("--output="))
+    {
+        eprintln!(
+            "warning: --output is ignored when rendering multiple stored plots; \
+                   per-name filenames are derived from each plot's name."
+        );
     }
     let mut any_failed = false;
     for (name, spec) in to_render {
@@ -2994,7 +3266,9 @@ fn run_stored(stored: StoredArgs) {
             child_args.push("--output".into());
             child_args.push(out_path.to_string_lossy().into_owned());
         } else {
-            for a in &stored.extra { child_args.push(a.clone()); }
+            for a in &stored.extra {
+                child_args.push(a.clone());
+            }
         }
         eprintln!("--- plot '{name}' ---");
         // Recurse into the normal direct path. We can't actually
@@ -3014,38 +3288,45 @@ fn run_stored(stored: StoredArgs) {
             any_failed = true;
         }
     }
-    if any_failed { std::process::exit(1); }
+    if any_failed {
+        std::process::exit(1);
+    }
 }
 
 /// Result-returning sibling of [`run_stored`] used by
 /// `nbrs report all`. Same logic, but errors bubble up
 /// instead of `process::exit`-ing.
 fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
-    let db_path = stored.db.clone().unwrap_or_else(
-        nbrs_runtime::session::latest_metrics_db);
+    let db_path = stored
+        .db
+        .clone()
+        .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     if !db_path.exists() {
         return Err(format!("metrics db not found at '{}'", db_path.display()));
     }
-    let stored_specs: Vec<(String, String)> = load_plot_specs(
-        stored.workload.as_deref(),
-        Some(&db_path),
-    ).map_err(|e| match &stored.workload {
-        Some(path) => format!("workload '{}': {e}", path.display()),
-        None => e,
-    })?;
+    let stored_specs: Vec<(String, String)> =
+        load_plot_specs(stored.workload.as_deref(), Some(&db_path)).map_err(|e| {
+            match &stored.workload {
+                Some(path) => format!("workload '{}': {e}", path.display()),
+                None => e,
+            }
+        })?;
     if stored_specs.is_empty() {
         return match &stored.workload {
             Some(path) => Err(format!(
-                "workload '{}' has no `plot:` entries", path.display())),
-            None => Err(format!(
-                "'{}' has no stored named plots", db_path.display())),
+                "workload '{}' has no `plot:` entries",
+                path.display()
+            )),
+            None => Err(format!("'{}' has no stored named plots", db_path.display())),
         };
     }
     let to_render: Vec<(String, String)> = match stored.target {
         Some(name) => {
             let Some(spec) = stored_specs.iter().find(|(n, _)| n == &name) else {
                 return Err(format!(
-                    "no stored plot named '{name}' in '{}'", db_path.display()));
+                    "no stored plot named '{name}' in '{}'",
+                    db_path.display()
+                ));
             };
             vec![spec.clone()]
         }
@@ -3064,7 +3345,9 @@ fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
         // overwrites the first in both file and section.
         let mut output_overridden = false;
         for a in &stored.extra {
-            if a == "--output" || a.starts_with("--output=") { output_overridden = true; }
+            if a == "--output" || a.starts_with("--output=") {
+                output_overridden = true;
+            }
             child_args.push(a.clone());
         }
         if !output_overridden {
@@ -3075,7 +3358,10 @@ fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
         eprintln!("--- plot '{name}' ---");
         let opts = match parse_args(&child_args) {
             Ok(o) => o,
-            Err(e) => { last_err = Some(format!("'{name}': {e}")); continue; }
+            Err(e) => {
+                last_err = Some(format!("'{name}': {e}"));
+                continue;
+            }
         };
         if let Err(e) = render_one(opts) {
             last_err = Some(format!("'{name}': {e}"));
@@ -3092,7 +3378,9 @@ fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
 /// when the db is missing, unreadable, or has none — completion
 /// callers expect best-effort, not hard errors.
 pub fn list_stored_plot_names(db_path: &Path) -> Vec<String> {
-    if !db_path.exists() { return Vec::new(); }
+    if !db_path.exists() {
+        return Vec::new();
+    }
     load_plot_specs(None, Some(db_path))
         .map(|s| s.into_iter().map(|(n, _)| n).collect())
         .unwrap_or_default()
@@ -3116,7 +3404,9 @@ pub fn metric_for_plot_name(
     name: &str,
 ) -> Option<String> {
     let find = |wp: Option<&Path>, dbp: Option<&Path>| -> Option<String> {
-        load_plot_specs(wp, dbp).ok()?.into_iter()
+        load_plot_specs(wp, dbp)
+            .ok()?
+            .into_iter()
             .find_map(|(n, s)| if n == name { Some(s) } else { None })
     };
     let spec = workload_path
@@ -3134,11 +3424,15 @@ pub fn metric_for_plot_name(
 /// Empty Vec on any error — completion is best-effort and never
 /// panics.
 pub fn list_metric_families(db_path: &Path) -> Vec<String> {
-    if !db_path.exists() { return Vec::new(); }
-    let Ok(conn) = rusqlite::Connection::open(db_path) else { return Vec::new(); };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT name FROM metric_family ORDER BY name"
-    ) else { return Vec::new(); };
+    if !db_path.exists() {
+        return Vec::new();
+    }
+    let Ok(conn) = rusqlite::Connection::open(db_path) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT name FROM metric_family ORDER BY name") else {
+        return Vec::new();
+    };
     let Ok(iter) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
         return Vec::new();
     };
@@ -3150,8 +3444,12 @@ pub fn list_metric_families(db_path: &Path) -> Vec<String> {
 /// before `{`). Empty Vec on any error — completion is best-
 /// effort.
 pub fn list_label_keys(db_path: &Path, metric_pattern: Option<&str>) -> Vec<String> {
-    if !db_path.exists() { return Vec::new(); }
-    let Ok(conn) = rusqlite::Connection::open(db_path) else { return Vec::new(); };
+    if !db_path.exists() {
+        return Vec::new();
+    }
+    let Ok(conn) = rusqlite::Connection::open(db_path) else {
+        return Vec::new();
+    };
     let (sql, glob) = match metric_pattern {
         Some(m) => (
             "SELECT DISTINCT spec FROM metric_instance WHERE spec GLOB ?1",
@@ -3159,7 +3457,9 @@ pub fn list_label_keys(db_path: &Path, metric_pattern: Option<&str>) -> Vec<Stri
         ),
         None => ("SELECT DISTINCT spec FROM metric_instance", None),
     };
-    let Ok(mut stmt) = conn.prepare(sql) else { return Vec::new(); };
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Vec::new();
+    };
     let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut absorb = |spec: String| {
         for k in parse_labels(&spec).into_keys() {
@@ -3168,10 +3468,14 @@ pub fn list_label_keys(db_path: &Path, metric_pattern: Option<&str>) -> Vec<Stri
     };
     if let Some(g) = glob {
         if let Ok(iter) = stmt.query_map([g], |row| row.get::<_, String>(0)) {
-            for s in iter.flatten() { absorb(s); }
+            for s in iter.flatten() {
+                absorb(s);
+            }
         }
     } else if let Ok(iter) = stmt.query_map([], |row| row.get::<_, String>(0)) {
-        for s in iter.flatten() { absorb(s); }
+        for s in iter.flatten() {
+            absorb(s);
+        }
     }
     keys.into_iter().collect()
 }
@@ -3192,7 +3496,8 @@ fn load_plot_specs(
 }
 
 fn derive_stored_output_path(db_path: &Path, name: &str) -> PathBuf {
-    let dir = db_path.parent()
+    let dir = db_path
+        .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     // Naming convention: `<name>_plot.<ext>`. Default
@@ -3201,7 +3506,8 @@ fn derive_stored_output_path(db_path: &Path, name: &str) -> PathBuf {
     // the `_plot` suffix inserted before the extension.
     let p = PathBuf::from(name);
     if let Some(ext) = p.extension() {
-        let stem = p.file_stem()
+        let stem = p
+            .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| name.to_string());
         let ext_s = ext.to_string_lossy();
@@ -3279,7 +3585,10 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
         let a = &args[i];
         if let Some(stripped) = a.strip_prefix("--") {
             // `--flag=value` consumes itself only.
-            if stripped.contains('=') { i += 1; continue; }
+            if stripped.contains('=') {
+                i += 1;
+                continue;
+            }
             // `--flag` followed by a value the parser will read
             // — skip both. `--verbose` and similar bool flags
             // don't take a value, so leave `i+1` for the next
@@ -3302,7 +3611,9 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
     let mut axis_seen = AxisDirectiveTracker::default();
     while let Some(a) = iter.next() {
         let next = |it: &mut std::iter::Peekable<std::slice::Iter<String>>, flag: &str| {
-            it.next().cloned().ok_or_else(|| format!("--{flag} requires a value"))
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("--{flag} requires a value"))
         };
         match a.as_str() {
             "--metric" => opts.metric = Some(next(&mut iter, "metric")?),
@@ -3317,7 +3628,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             }
             "--filter" => {
                 let f = next(&mut iter, "filter")?;
-                let (k, v) = f.split_once('=')
+                let (k, v) = f
+                    .split_once('=')
                     .ok_or_else(|| format!("--filter expects <key>=<value>, got '{f}'"))?;
                 opts.filters.push((k.to_string(), v.to_string()));
             }
@@ -3336,24 +3648,46 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             "--label" => opts.label = Some(next(&mut iter, "label")?),
             "--palette" => opts.palette = Some(next(&mut iter, "palette")?),
             "--line" => opts.line = Some(next(&mut iter, "line")?),
-            "--line-width" => opts.line_width = Some(next(&mut iter, "line-width")?
-                .parse().map_err(|_| "--line-width must be a number".to_string())?),
+            "--line-width" => {
+                opts.line_width = Some(
+                    next(&mut iter, "line-width")?
+                        .parse()
+                        .map_err(|_| "--line-width must be a number".to_string())?,
+                )
+            }
             "--marker" => opts.marker = Some(next(&mut iter, "marker")?),
-            "--marker-size" => opts.marker_size = Some(next(&mut iter, "marker-size")?
-                .parse().map_err(|_| "--marker-size must be a number".to_string())?),
-            "--figure-num" => opts.figure_num = Some(next(&mut iter, "figure-num")?
-                .parse().map_err(|_| "--figure-num must be a positive integer".to_string())?),
+            "--marker-size" => {
+                opts.marker_size = Some(
+                    next(&mut iter, "marker-size")?
+                        .parse()
+                        .map_err(|_| "--marker-size must be a number".to_string())?,
+                )
+            }
+            "--figure-num" => {
+                opts.figure_num = Some(
+                    next(&mut iter, "figure-num")?
+                        .parse()
+                        .map_err(|_| "--figure-num must be a positive integer".to_string())?,
+                )
+            }
             "--xlabel" => opts.xlabel = Some(next(&mut iter, "xlabel")?),
             "--ylabel" => opts.ylabel = Some(next(&mut iter, "ylabel")?),
             "--x-scale" => opts.xscale = next(&mut iter, "x-scale")?,
             "--y-scale" => opts.yscale = next(&mut iter, "y-scale")?,
-            "--width" => opts.width = next(&mut iter, "width")?
-                .parse().map_err(|_| "--width must be a positive integer".to_string())?,
-            "--height" => opts.height = next(&mut iter, "height")?
-                .parse().map_err(|_| "--height must be a positive integer".to_string())?,
+            "--width" => {
+                opts.width = next(&mut iter, "width")?
+                    .parse()
+                    .map_err(|_| "--width must be a positive integer".to_string())?
+            }
+            "--height" => {
+                opts.height = next(&mut iter, "height")?
+                    .parse()
+                    .map_err(|_| "--height must be a positive integer".to_string())?
+            }
             "--scale" => {
                 let v: f32 = next(&mut iter, "scale")?
-                    .parse().map_err(|_| "--scale must be a positive number".to_string())?;
+                    .parse()
+                    .map_err(|_| "--scale must be a positive number".to_string())?;
                 if !(v.is_finite() && v > 0.0) {
                     return Err("--scale must be a positive number".into());
                 }
@@ -3361,7 +3695,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             }
             "--style-scale" => {
                 let v: f32 = next(&mut iter, "style-scale")?
-                    .parse().map_err(|_| "--style-scale must be a positive number".to_string())?;
+                    .parse()
+                    .map_err(|_| "--style-scale must be a positive number".to_string())?;
                 if !(v.is_finite() && v > 0.0) {
                     return Err("--style-scale must be a positive number".into());
                 }
@@ -3369,23 +3704,35 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             }
             "--x-min" => {
                 axis_seen.note(AxisKey::X, AxisRole::Min, "--x-min")?;
-                opts.x_min = Some(next(&mut iter, "x-min")?
-                    .parse().map_err(|_| "--x-min must be a number".to_string())?);
+                opts.x_min = Some(
+                    next(&mut iter, "x-min")?
+                        .parse()
+                        .map_err(|_| "--x-min must be a number".to_string())?,
+                );
             }
             "--x-max" => {
                 axis_seen.note(AxisKey::X, AxisRole::Max, "--x-max")?;
-                opts.x_max = Some(next(&mut iter, "x-max")?
-                    .parse().map_err(|_| "--x-max must be a number".to_string())?);
+                opts.x_max = Some(
+                    next(&mut iter, "x-max")?
+                        .parse()
+                        .map_err(|_| "--x-max must be a number".to_string())?,
+                );
             }
             "--y-min" => {
                 axis_seen.note(AxisKey::Y, AxisRole::Min, "--y-min")?;
-                opts.y_min = Some(next(&mut iter, "y-min")?
-                    .parse().map_err(|_| "--y-min must be a number".to_string())?);
+                opts.y_min = Some(
+                    next(&mut iter, "y-min")?
+                        .parse()
+                        .map_err(|_| "--y-min must be a number".to_string())?,
+                );
             }
             "--y-max" => {
                 axis_seen.note(AxisKey::Y, AxisRole::Max, "--y-max")?;
-                opts.y_max = Some(next(&mut iter, "y-max")?
-                    .parse().map_err(|_| "--y-max must be a number".to_string())?);
+                opts.y_max = Some(
+                    next(&mut iter, "y-max")?
+                        .parse()
+                        .map_err(|_| "--y-max must be a number".to_string())?,
+                );
             }
             "--legend" => opts.legend = Some(next(&mut iter, "legend")?),
             // `--y` and `--y1*` flags both target axis 1
@@ -3394,7 +3741,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             // order is operator-driven; the body parser does.
             "--y" | "--y1" => opts.query = Some(next(&mut iter, "y")?),
             "--y-legend" | "--y1-legend" => {
-                opts.y_legend_format = Some(strip_quotes(&next(&mut iter, "y-legend")?).to_string());
+                opts.y_legend_format =
+                    Some(strip_quotes(&next(&mut iter, "y-legend")?).to_string());
             }
             "--y1-label" => opts.ylabel = Some(next(&mut iter, "y1-label")?),
             "--y1-min" => {
@@ -3411,7 +3759,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 axis_seen.note(AxisKey::Y, AxisRole::Range, "--y1-range")?;
                 let (lo, hi) = parse_range_spec(&next(&mut iter, "y1-range")?)
                     .map_err(|e| format!("--y1-range: {e}"))?;
-                opts.y_min = lo; opts.y_max = hi;
+                opts.y_min = lo;
+                opts.y_max = hi;
             }
             // y2/y3/y4 flag families dispatch through the
             // shared `apply_axis_directive` helper — same
@@ -3426,34 +3775,42 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             }
             "--style" => {
                 let v = next(&mut iter, "style")?;
-                opts.series_overrides.push(parse_style_override(&v)
-                    .map_err(|e| format!("--style '{v}': {e}"))?);
+                opts.series_overrides
+                    .push(parse_style_override(&v).map_err(|e| format!("--style '{v}': {e}"))?);
             }
-            "--x-ticks"  => opts.x_ticks  = parse_tick_spec(&next(&mut iter, "x-ticks")?),
-            "--y-ticks"  => opts.y_ticks  = parse_tick_spec(&next(&mut iter, "y-ticks")?),
-            "--x-range"  => {
+            "--x-ticks" => opts.x_ticks = parse_tick_spec(&next(&mut iter, "x-ticks")?),
+            "--y-ticks" => opts.y_ticks = parse_tick_spec(&next(&mut iter, "y-ticks")?),
+            "--x-range" => {
                 axis_seen.note(AxisKey::X, AxisRole::Range, "--x-range")?;
                 let (lo, hi) = parse_range_spec(&next(&mut iter, "x-range")?)
                     .map_err(|e| format!("--x-range: {e}"))?;
-                opts.x_min = lo; opts.x_max = hi;
+                opts.x_min = lo;
+                opts.x_max = hi;
             }
-            "--y-range"  => {
+            "--y-range" => {
                 axis_seen.note(AxisKey::Y, AxisRole::Range, "--y-range")?;
                 let (lo, hi) = parse_range_spec(&next(&mut iter, "y-range")?)
                     .map_err(|e| format!("--y-range: {e}"))?;
-                opts.y_min = lo; opts.y_max = hi;
+                opts.y_min = lo;
+                opts.y_max = hi;
             }
             "--verbose" | "-v" => opts.verbose = true,
             // Session flags are resolved ABOVE via `read_session_dir` (which sets
             // `opts.db`), and SRD-15 strict mode is read separately. This arm only
             // has to keep them from being mistaken for a positional spec, so it
             // accepts and skips the value.
-            "--session" | "--session-name" | "--session-path"
-            | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
+            "--session"
+            | "--session-name"
+            | "--session-path"
+            | "--session-reuse"
+            | "--session-keep"
+            | "--session-shelflife" => {
                 let _ = iter.next();
             }
             "--strict" | "--no-prompt" | "--resume-latest" | "--force-retry-failed" => {}
-            "--resume" | "--polydat-lib" => { let _ = iter.next(); }
+            "--resume" | "--polydat-lib" => {
+                let _ = iter.next();
+            }
             "--csv-also" => opts.csv_also = Some(PathBuf::from(next(&mut iter, "csv-also")?)),
             "--report" | "--update-markdown" => {
                 let v = next(&mut iter, "report")?;
@@ -3489,8 +3846,9 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                             }
                         }
                         "filter" => {
-                            let (fk, fv) = v.split_once('=')
-                                .ok_or_else(|| format!("--filter expects <key>=<value>, got '{v}'"))?;
+                            let (fk, fv) = v.split_once('=').ok_or_else(|| {
+                                format!("--filter expects <key>=<value>, got '{v}'")
+                            })?;
                             opts.filters.push((fk.to_string(), fv.to_string()));
                         }
                         "agg" => opts.agg = v.to_string(),
@@ -3508,12 +3866,19 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                         "ylabel" => opts.ylabel = Some(v.to_string()),
                         "x-scale" => opts.xscale = v.to_string(),
                         "y-scale" => opts.yscale = v.to_string(),
-                        "width" => opts.width = v.parse()
-                            .map_err(|_| "--width must be a positive integer".to_string())?,
-                        "height" => opts.height = v.parse()
-                            .map_err(|_| "--height must be a positive integer".to_string())?,
+                        "width" => {
+                            opts.width = v
+                                .parse()
+                                .map_err(|_| "--width must be a positive integer".to_string())?
+                        }
+                        "height" => {
+                            opts.height = v
+                                .parse()
+                                .map_err(|_| "--height must be a positive integer".to_string())?
+                        }
                         "scale" => {
-                            let value: f32 = v.parse()
+                            let value: f32 = v
+                                .parse()
                                 .map_err(|_| "scale must be a positive number".to_string())?;
                             if !(value.is_finite() && value > 0.0) {
                                 return Err("scale must be a positive number".into());
@@ -3521,7 +3886,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                             opts.scale = Some(value);
                         }
                         "style-scale" => {
-                            let value: f32 = v.parse()
+                            let value: f32 = v
+                                .parse()
                                 .map_err(|_| "style-scale must be a positive number".to_string())?;
                             if !(value.is_finite() && value > 0.0) {
                                 return Err("style-scale must be a positive number".into());
@@ -3530,23 +3896,31 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                         }
                         "x-min" => {
                             axis_seen.note(AxisKey::X, AxisRole::Min, "--x-min")?;
-                            opts.x_min = Some(v.parse()
-                                .map_err(|_| "--x-min must be a number".to_string())?);
+                            opts.x_min = Some(
+                                v.parse()
+                                    .map_err(|_| "--x-min must be a number".to_string())?,
+                            );
                         }
                         "x-max" => {
                             axis_seen.note(AxisKey::X, AxisRole::Max, "--x-max")?;
-                            opts.x_max = Some(v.parse()
-                                .map_err(|_| "--x-max must be a number".to_string())?);
+                            opts.x_max = Some(
+                                v.parse()
+                                    .map_err(|_| "--x-max must be a number".to_string())?,
+                            );
                         }
                         "y-min" => {
                             axis_seen.note(AxisKey::Y, AxisRole::Min, "--y-min")?;
-                            opts.y_min = Some(v.parse()
-                                .map_err(|_| "--y-min must be a number".to_string())?);
+                            opts.y_min = Some(
+                                v.parse()
+                                    .map_err(|_| "--y-min must be a number".to_string())?,
+                            );
                         }
                         "y-max" => {
                             axis_seen.note(AxisKey::Y, AxisRole::Max, "--y-max")?;
-                            opts.y_max = Some(v.parse()
-                                .map_err(|_| "--y-max must be a number".to_string())?);
+                            opts.y_max = Some(
+                                v.parse()
+                                    .map_err(|_| "--y-max must be a number".to_string())?,
+                            );
                         }
                         "legend" => opts.legend = Some(v.to_string()),
                         "y" | "y1" => opts.query = Some(v.to_string()),
@@ -3566,27 +3940,29 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                         "y1-ticks" => opts.y_ticks = parse_tick_spec(v),
                         "y1-range" => {
                             axis_seen.note(AxisKey::Y, AxisRole::Range, "--y1-range")?;
-                            let (lo, hi) = parse_range_spec(v)
-                                .map_err(|e| format!("--y1-range: {e}"))?;
-                            opts.y_min = lo; opts.y_max = hi;
+                            let (lo, hi) =
+                                parse_range_spec(v).map_err(|e| format!("--y1-range: {e}"))?;
+                            opts.y_min = lo;
+                            opts.y_max = hi;
                         }
                         "style" => opts.series_overrides.push(
-                            parse_style_override(v)
-                                .map_err(|e| format!("--style '{v}': {e}"))?
+                            parse_style_override(v).map_err(|e| format!("--style '{v}': {e}"))?,
                         ),
-                        "x-ticks"  => opts.x_ticks  = parse_tick_spec(v),
-                        "y-ticks"  => opts.y_ticks  = parse_tick_spec(v),
-                        "x-range"  => {
+                        "x-ticks" => opts.x_ticks = parse_tick_spec(v),
+                        "y-ticks" => opts.y_ticks = parse_tick_spec(v),
+                        "x-range" => {
                             axis_seen.note(AxisKey::X, AxisRole::Range, "--x-range")?;
-                            let (lo, hi) = parse_range_spec(v)
-                                .map_err(|e| format!("--x-range: {e}"))?;
-                            opts.x_min = lo; opts.x_max = hi;
+                            let (lo, hi) =
+                                parse_range_spec(v).map_err(|e| format!("--x-range: {e}"))?;
+                            opts.x_min = lo;
+                            opts.x_max = hi;
                         }
-                        "y-range"  => {
+                        "y-range" => {
                             axis_seen.note(AxisKey::Y, AxisRole::Range, "--y-range")?;
-                            let (lo, hi) = parse_range_spec(v)
-                                .map_err(|e| format!("--y-range: {e}"))?;
-                            opts.y_min = lo; opts.y_max = hi;
+                            let (lo, hi) =
+                                parse_range_spec(v).map_err(|e| format!("--y-range: {e}"))?;
+                            opts.y_min = lo;
+                            opts.y_max = hi;
                         }
                         "csv-also" => opts.csv_also = Some(PathBuf::from(v)),
                         "report" | "update-markdown" => {
@@ -3613,17 +3989,21 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                             let full = format!("--{key}");
                             if let Some((axis_num, sub)) = cli_axis_flag_match(&full) {
                                 apply_axis_directive(
-                                    &mut opts, &mut axis_seen,
-                                    axis_num, sub, v.trim(),
+                                    &mut opts,
+                                    &mut axis_seen,
+                                    axis_num,
+                                    sub,
+                                    v.trim(),
                                 )?;
                             } else {
                                 return Err(format!("unknown option: {other}"));
                             }
                         }
                     }
-                } else if matches!(other, "--strict" | "--no-prompt"
-                    | "--resume-latest" | "--force-retry-failed")
-                    || other.starts_with("--session")
+                } else if matches!(
+                    other,
+                    "--strict" | "--no-prompt" | "--resume-latest" | "--force-retry-failed"
+                ) || other.starts_with("--session")
                     || other.starts_with("--polydat-lib=")
                     || other.starts_with("--resume=")
                 {
@@ -3681,8 +4061,7 @@ fn series_via_metricsql(
     let ds = SqliteDataSource::open(db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?
         .with_execution_selection(selection);
-    let parsed = nbrs_metricsql::parse(expr)
-        .map_err(|e| format!("parse metricsql: {e}"))?;
+    let parsed = nbrs_metricsql::parse(expr).map_err(|e| format!("parse metricsql: {e}"))?;
     let (start_ms, end_ms) = match latest_sample_window(db_path) {
         Some((s, e)) => (s, e),
         None => return Ok(Vec::new()),
@@ -3696,8 +4075,7 @@ fn series_via_metricsql(
         query_start_ms: Some(start_ms),
         query_end_ms: Some(end_ms),
     };
-    evaluate(&ctx, &parsed)
-        .map_err(|e| format!("evaluate metricsql: {e}"))
+    evaluate(&ctx, &parsed).map_err(|e| format!("evaluate metricsql: {e}"))
 }
 
 fn rows_via_metricsql(
@@ -3713,8 +4091,7 @@ fn rows_via_metricsql(
     let ds = SqliteDataSource::open(db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?
         .with_execution_selection(selection);
-    let parsed = nbrs_metricsql::parse(expr)
-        .map_err(|e| format!("parse metricsql: {e}"))?;
+    let parsed = nbrs_metricsql::parse(expr).map_err(|e| format!("parse metricsql: {e}"))?;
     // Anchor at the latest sample timestamp in the db so the
     // instant query picks up the freshest values. Lookback
     // covers cadence skew (counters and summaries land within
@@ -3733,21 +4110,22 @@ fn rows_via_metricsql(
         query_start_ms: Some(start_ms),
         query_end_ms: Some(end_ms),
     };
-    let series = evaluate(&ctx, &parsed)
-        .map_err(|e| format!("evaluate metricsql: {e}"))?;
+    let series = evaluate(&ctx, &parsed).map_err(|e| format!("evaluate metricsql: {e}"))?;
     let mut rows: Vec<DbRow> = Vec::new();
     for s in series {
-        let labels: std::collections::HashMap<String, String> = s.labels.iter()
+        let labels: std::collections::HashMap<String, String> = s
+            .labels
+            .iter()
             .filter(|(k, _)| k != "__name__")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let name = s.labels.iter()
+        let name = s
+            .labels
+            .iter()
             .find(|(k, _)| k == "__name__")
             .map(|(_, v)| v.clone())
             .unwrap_or_else(|| "result".into());
-        let label_pairs: Vec<String> = labels.iter()
-            .map(|(k, v)| format!("{k}=\"{v}\""))
-            .collect();
+        let label_pairs: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
         let spec = if label_pairs.is_empty() {
             name.clone()
         } else {
@@ -3770,13 +4148,17 @@ fn rows_via_metricsql(
 /// no samples.
 fn latest_sample_window(db_path: &Path) -> Option<(i64, i64)> {
     let conn = rusqlite::Connection::open(db_path).ok()?;
-    let (min_ts, max_ts): (i64, i64) = conn.query_row(
-        "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) \
+    let (min_ts, max_ts): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) \
          FROM sample_value",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).ok()?;
-    if max_ts == 0 { return None; }
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()?;
+    if max_ts == 0 {
+        return None;
+    }
     Some((min_ts, max_ts))
 }
 
@@ -3790,28 +4172,31 @@ fn query_rows(
     filters: &[(String, String)],
 ) -> Result<Vec<DbRow>, String> {
     use rusqlite::Connection;
-    let conn = Connection::open(db_path)
-        .map_err(|e| format!("open db: {e}"))?;
+    let conn = Connection::open(db_path).map_err(|e| format!("open db: {e}"))?;
 
     // The metric family is the prefix before `{`. Use SQLite's
     // GLOB to match `<metric>{*}` exactly so `recall@10.mean`
     // doesn't accidentally match `recall@100.mean`.
     let pattern = format!("{metric_pattern}{{*}}");
-    let mut stmt = conn.prepare(
-        "SELECT mi.spec, sv.mean \
+    let mut stmt = conn
+        .prepare(
+            "SELECT mi.spec, sv.mean \
          FROM sample_value sv \
          JOIN metric_instance mi ON sv.instance_id = mi.id \
          WHERE mi.spec GLOB ?1",
-    ).map_err(|e| format!("prepare: {e}"))?;
+        )
+        .map_err(|e| format!("prepare: {e}"))?;
 
     let mut rows = Vec::new();
-    let iter = stmt.query_map([pattern], |r| {
-        Ok(DbRow {
-            spec: r.get::<_, String>(0)?,
-            mean: r.get::<_, Option<f64>>(1)?,
-            labels: std::collections::HashMap::new(),
+    let iter = stmt
+        .query_map([pattern], |r| {
+            Ok(DbRow {
+                spec: r.get::<_, String>(0)?,
+                mean: r.get::<_, Option<f64>>(1)?,
+                labels: std::collections::HashMap::new(),
+            })
         })
-    }).map_err(|e| format!("query_map: {e}"))?;
+        .map_err(|e| format!("query_map: {e}"))?;
     for row in iter.flatten() {
         let mut row = row;
         row.labels = parse_labels(&row.spec);
@@ -3821,13 +4206,16 @@ fn query_rows(
         // wildcards aren't a thing yet — `~x` matches any
         // value that contains `x` as a substring.
         if !filters.iter().all(|(k, v)| {
-            row.labels.get(k).map(|x| {
-                if let Some(pat) = v.strip_prefix('~') {
-                    x.contains(pat)
-                } else {
-                    x == v
-                }
-            }).unwrap_or(false)
+            row.labels
+                .get(k)
+                .map(|x| {
+                    if let Some(pat) = v.strip_prefix('~') {
+                        x.contains(pat)
+                    } else {
+                        x == v
+                    }
+                })
+                .unwrap_or(false)
         }) {
             continue;
         }
@@ -3840,9 +4228,15 @@ fn query_rows(
 /// a key→value map.
 fn parse_labels(spec: &str) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
-    let Some(open) = spec.find('{') else { return out; };
-    let Some(close) = spec.rfind('}') else { return out; };
-    if close <= open + 1 { return out; }
+    let Some(open) = spec.find('{') else {
+        return out;
+    };
+    let Some(close) = spec.rfind('}') else {
+        return out;
+    };
+    if close <= open + 1 {
+        return out;
+    }
     let body = &spec[open + 1..close];
     // Split on commas at depth 0; values are quoted.
     let mut depth = 0;
@@ -3874,8 +4268,11 @@ fn parse_labels(spec: &str) -> std::collections::HashMap<String, String> {
 /// paths; a single path yields one. Trims whitespace; empty
 /// fragments are dropped silently (so `,,` = "no extra db").
 fn split_db_arg(raw: &str) -> Vec<String> {
-    raw.split(',').map(str::trim).filter(|s| !s.is_empty())
-        .map(|s| s.to_string()).collect()
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Wraps an f64 so it can be a BTreeMap key. NaN compares equal to
@@ -3884,7 +4281,9 @@ fn split_db_arg(raw: &str) -> Vec<String> {
 #[derive(Debug, Clone, Copy)]
 struct F64Key(f64);
 impl PartialEq for F64Key {
-    fn eq(&self, other: &Self) -> bool { self.0.to_bits() == other.0.to_bits() }
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
 }
 impl Eq for F64Key {}
 impl PartialOrd for F64Key {
@@ -3894,7 +4293,9 @@ impl PartialOrd for F64Key {
 }
 impl Ord for F64Key {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.partial_cmp(&other.0).unwrap_or(std::cmp::Ordering::Equal)
+        self.0
+            .partial_cmp(&other.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -3940,7 +4341,8 @@ fn pair_xy_coordinates(
     use std::collections::HashMap;
     type LabelKey = Vec<(String, String)>;
     fn key_for(labels: &[(String, String)]) -> LabelKey {
-        let mut k: LabelKey = labels.iter()
+        let mut k: LabelKey = labels
+            .iter()
             .filter(|(k, _)| *k != "__name__")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -3950,10 +4352,16 @@ fn pair_xy_coordinates(
 
     let x_series = series_via_metricsql(db_path, x_query, selection)?;
     let y_series = series_via_metricsql(db_path, y_query, selection)?;
-    eprintln!("plot: x1 query against '{}': `{x_query}` → {} series",
-        db_path.display(), x_series.len());
-    eprintln!("plot: y1 query against '{}': `{y_query}` → {} series",
-        db_path.display(), y_series.len());
+    eprintln!(
+        "plot: x1 query against '{}': `{x_query}` → {} series",
+        db_path.display(),
+        x_series.len()
+    );
+    eprintln!(
+        "plot: y1 query against '{}': `{y_query}` → {} series",
+        db_path.display(),
+        y_series.len()
+    );
 
     // Cadence-tolerance bucket for the timestamp join.
     // Counters and summaries from the cadence reporter land
@@ -4006,13 +4414,19 @@ fn pair_xy_coordinates(
             y_only += 1;
             continue;
         };
-        let y_vals: Vec<(i64, f64)> = s.samples.iter()
+        let y_vals: Vec<(i64, f64)> = s
+            .samples
+            .iter()
             .filter(|sm| sm.value.is_finite())
             .map(|sm| (sm.timestamp_ms, sm.value))
             .collect();
-        if y_vals.is_empty() { continue; }
+        if y_vals.is_empty() {
+            continue;
+        }
 
-        let labels_map: std::collections::HashMap<String, String> = s.labels.iter()
+        let labels_map: std::collections::HashMap<String, String> = s
+            .labels
+            .iter()
             .filter(|(k, _)| k != "__name__")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -4030,55 +4444,73 @@ fn pair_xy_coordinates(
         let reduced: Vec<PlotPoint> = match reduce {
             ReduceOp::Avg => {
                 let xs: Vec<f64> = x_ts_map.values().copied().collect();
-                if xs.is_empty() { continue; }
+                if xs.is_empty() {
+                    continue;
+                }
                 let x_mean = xs.iter().sum::<f64>() / xs.len() as f64;
                 let y_mean = y_vals.iter().map(|(_, v)| *v).sum::<f64>() / y_vals.len() as f64;
                 vec![PlotPoint {
-                    x: x_mean, y: y_mean, count: y_vals.len(),
+                    x: x_mean,
+                    y: y_mean,
+                    count: y_vals.len(),
                     labels: labels_map.clone(),
                 }]
             }
             ReduceOp::Last => {
-                let Some(x_last) = x_ts_map.iter()
-                    .max_by_key(|(ts, _)| **ts).map(|(_, v)| *v) else { continue };
+                let Some(x_last) = x_ts_map.iter().max_by_key(|(ts, _)| **ts).map(|(_, v)| *v)
+                else {
+                    continue;
+                };
                 let (_, y_last) = *y_vals.iter().max_by_key(|(ts, _)| *ts).unwrap();
                 vec![PlotPoint {
-                    x: x_last, y: y_last, count: y_vals.len(),
+                    x: x_last,
+                    y: y_last,
+                    count: y_vals.len(),
                     labels: labels_map.clone(),
                 }]
             }
             ReduceOp::None => {
-                let mut pairs: Vec<(i64, f64, f64)> = y_vals.iter()
-                    .filter_map(|(ts, yv)| x_ts_map.get(&bucket_ts(*ts))
-                        .map(|xv| (*ts, *xv, *yv)))
+                let mut pairs: Vec<(i64, f64, f64)> = y_vals
+                    .iter()
+                    .filter_map(|(ts, yv)| x_ts_map.get(&bucket_ts(*ts)).map(|xv| (*ts, *xv, *yv)))
                     .collect();
-                if pairs.is_empty() { continue; }
+                if pairs.is_empty() {
+                    continue;
+                }
                 pairs.sort_by_key(|(ts, _, _)| *ts);
-                pairs.iter()
+                pairs
+                    .iter()
                     .map(|(_, x, y)| PlotPoint {
-                        x: *x, y: *y, count: 1,
+                        x: *x,
+                        y: *y,
+                        count: 1,
                         labels: labels_map.clone(),
-                    }).collect()
+                    })
+                    .collect()
             }
         };
 
         let series_key = series_tuple_key(&labels_map, series_labels);
-        let tuple_repr = key.iter()
+        let tuple_repr = key
+            .iter()
             .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>().join(", ");
+            .collect::<Vec<_>>()
+            .join(", ");
         diag_rows.push((
             tuple_repr,
             reduced.iter().map(|p| (p.x, p.y, p.count)).collect(),
         ));
         let entry = out.entry(series_key).or_default();
         total_points += reduced.len();
-        for p in reduced { entry.push(p); }
+        for p in reduced {
+            entry.push(p);
+        }
         paired_tuples += 1;
     }
 
     let x_tuples: std::collections::HashSet<LabelKey> = x_by_tuple.keys().cloned().collect();
-    let y_tuples: std::collections::HashSet<LabelKey> = y_series.iter()
-        .map(|s| key_for(&s.labels)).collect();
+    let y_tuples: std::collections::HashSet<LabelKey> =
+        y_series.iter().map(|s| key_for(&s.labels)).collect();
     let x_only = x_tuples.difference(&y_tuples).count();
     eprintln!(
         "plot: paired {paired_tuples} tuple(s) → {total_points} point(s); \
@@ -4099,8 +4531,7 @@ fn pair_xy_coordinates(
     // connectors. Series order itself is sorted later in
     // render_plot via natural_str_cmp.
     for pts in out.values_mut() {
-        pts.sort_by(|a, b| a.x.partial_cmp(&b.x)
-            .unwrap_or(std::cmp::Ordering::Equal));
+        pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     }
     Ok(out)
 }
@@ -4112,9 +4543,15 @@ fn bucket_rows(
 ) -> BTreeMap<String, BTreeMap<F64Key, Vec<f64>>> {
     let mut out: BTreeMap<String, BTreeMap<F64Key, Vec<f64>>> = BTreeMap::new();
     for row in rows {
-        let Some(x_str) = row.labels.get(x_label) else { continue; };
-        let Ok(x_val) = x_str.parse::<f64>() else { continue; };
-        let Some(y_val) = row.mean else { continue; };
+        let Some(x_str) = row.labels.get(x_label) else {
+            continue;
+        };
+        let Ok(x_val) = x_str.parse::<f64>() else {
+            continue;
+        };
+        let Some(y_val) = row.mean else {
+            continue;
+        };
         let series_key = series_tuple_key(&row.labels, series_labels);
         out.entry(series_key)
             .or_default()
@@ -4140,12 +4577,18 @@ fn collect_bucket_labels(
     x_label: &str,
     series_labels: &[String],
 ) -> BTreeMap<String, BTreeMap<F64Key, std::collections::HashMap<String, String>>> {
-    let mut out: BTreeMap<String, BTreeMap<F64Key, std::collections::HashMap<String, String>>>
-        = BTreeMap::new();
+    let mut out: BTreeMap<String, BTreeMap<F64Key, std::collections::HashMap<String, String>>> =
+        BTreeMap::new();
     for row in rows {
-        let Some(x_str) = row.labels.get(x_label) else { continue; };
-        let Ok(x_val) = x_str.parse::<f64>() else { continue; };
-        if row.mean.is_none() { continue; }
+        let Some(x_str) = row.labels.get(x_label) else {
+            continue;
+        };
+        let Ok(x_val) = x_str.parse::<f64>() else {
+            continue;
+        };
+        if row.mean.is_none() {
+            continue;
+        }
         let series_key = series_tuple_key(&row.labels, series_labels);
         out.entry(series_key)
             .or_default()
@@ -4168,9 +4611,13 @@ fn series_tuple_key(
     if series_labels.is_empty() {
         return String::new();
     }
-    series_labels.iter()
+    series_labels
+        .iter()
         .map(|k| {
-            let v = labels.get(k).cloned().unwrap_or_else(|| "(unset)".to_string());
+            let v = labels
+                .get(k)
+                .cloned()
+                .unwrap_or_else(|| "(unset)".to_string());
             format!("{k}={v}")
         })
         .collect::<Vec<_>>()
@@ -4207,7 +4654,9 @@ fn auto_detect_series_labels(rows: &[DbRow], x_label: &str) -> Vec<String> {
     let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in rows {
         for k in row.labels.keys() {
-            if k == x_label { continue; }
+            if k == x_label {
+                continue;
+            }
             keys.insert(k.clone());
         }
     }
@@ -4217,7 +4666,9 @@ fn auto_detect_series_labels(rows: &[DbRow], x_label: &str) -> Vec<String> {
 }
 
 fn aggregate(name: &str, vals: &[f64]) -> f64 {
-    if vals.is_empty() { return f64::NAN; }
+    if vals.is_empty() {
+        return f64::NAN;
+    }
     match name {
         "mean" => vals.iter().sum::<f64>() / vals.len() as f64,
         "min" => vals.iter().cloned().fold(f64::INFINITY, f64::min),
@@ -4236,10 +4687,12 @@ fn percentile(vals: &[f64], p: f64) -> f64 {
 }
 
 fn sanitize_filename(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.' => c,
-        _ => '_',
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.' => c,
+            _ => '_',
+        })
+        .collect()
 }
 
 /// Project a value `v` from a secondary axis's coordinate
@@ -4253,22 +4706,34 @@ fn sanitize_filename(s: &str) -> String {
 /// side independently.
 fn project_value(
     v: f64,
-    from: &std::ops::Range<f64>, from_log: bool,
-    to: &std::ops::Range<f64>, to_log: bool,
+    from: &std::ops::Range<f64>,
+    from_log: bool,
+    to: &std::ops::Range<f64>,
+    to_log: bool,
 ) -> f64 {
     let normalize = |x: f64, lo: f64, hi: f64, log: bool| -> f64 {
         if log && x > 0.0 && lo > 0.0 && hi > 0.0 {
             let l_lo = lo.ln();
             let l_hi = hi.ln();
-            if l_hi == l_lo { 0.0 } else { (x.ln() - l_lo) / (l_hi - l_lo) }
-        } else if hi == lo { 0.0 } else { (x - lo) / (hi - lo) }
+            if l_hi == l_lo {
+                0.0
+            } else {
+                (x.ln() - l_lo) / (l_hi - l_lo)
+            }
+        } else if hi == lo {
+            0.0
+        } else {
+            (x - lo) / (hi - lo)
+        }
     };
     let denormalize = |t: f64, lo: f64, hi: f64, log: bool| -> f64 {
         if log && lo > 0.0 && hi > 0.0 {
             let l_lo = lo.ln();
             let l_hi = hi.ln();
             (l_lo + t * (l_hi - l_lo)).exp()
-        } else { lo + t * (hi - lo) }
+        } else {
+            lo + t * (hi - lo)
+        }
     };
     let t = normalize(v, from.start, from.end, from_log);
     denormalize(t, to.start, to.end, to_log)
@@ -4329,10 +4794,12 @@ fn render_plot(
     series_labels: &[String],
 ) -> Result<(), String> {
     if let Some(parent) = out_path.parent()
-        && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create output dir '{}': {e}", parent.display()))?;
-        }
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create output dir '{}': {e}", parent.display()))?;
+    }
 
     // Compute axis ranges across all series — primary first,
     // then every secondary axis. X is shared across all axes
@@ -4344,17 +4811,27 @@ fn render_plot(
     for points in series.values() {
         for p in points {
             if p.x.is_finite() {
-                if p.x < x_min { x_min = p.x; }
-                if p.x > x_max { x_max = p.x; }
+                if p.x < x_min {
+                    x_min = p.x;
+                }
+                if p.x > x_max {
+                    x_max = p.x;
+                }
             }
             if p.y.is_finite() {
-                if p.y < y_min { y_min = p.y; }
-                if p.y > y_max { y_max = p.y; }
+                if p.y < y_min {
+                    y_min = p.y;
+                }
+                if p.y > y_max {
+                    y_max = p.y;
+                }
             }
         }
     }
     if !x_min.is_finite() || !x_max.is_finite() || !y_min.is_finite() || !y_max.is_finite() {
-        return Err(format!("{PLOT_NO_DATA_PREFIX}no finite (x, y) points to plot"));
+        return Err(format!(
+            "{PLOT_NO_DATA_PREFIX}no finite (x, y) points to plot"
+        ));
     }
 
     // Per-secondary-axis data extents. We compute these in a
@@ -4375,12 +4852,20 @@ fn render_plot(
         for points in axis.series.values() {
             for p in points {
                 if p.x.is_finite() {
-                    if p.x < x_min { x_min = p.x; }
-                    if p.x > x_max { x_max = p.x; }
+                    if p.x < x_min {
+                        x_min = p.x;
+                    }
+                    if p.x > x_max {
+                        x_max = p.x;
+                    }
                 }
                 if p.y.is_finite() {
-                    if p.y < a_min { a_min = p.y; }
-                    if p.y > a_max { a_max = p.y; }
+                    if p.y < a_min {
+                        a_min = p.y;
+                    }
+                    if p.y > a_max {
+                        a_max = p.y;
+                    }
                 }
             }
         }
@@ -4408,7 +4893,9 @@ fn render_plot(
         if want_auto {
             if !ticks.is_empty() {
                 matches!(detect_scale_from_ticks(ticks), DetectedScale::Log)
-            } else { false }
+            } else {
+                false
+            }
         } else {
             user.eq_ignore_ascii_case("log")
         }
@@ -4419,10 +4906,18 @@ fn render_plot(
     // Padding helper closures. Reused across primary and
     // every secondary axis — no per-axis branching.
     let pad_lo = |min: f64, max: f64, log: bool| -> f64 {
-        if log && min > 0.0 { min / 1.05 } else { min - ((max - min) * 0.05).max(1e-9) }
+        if log && min > 0.0 {
+            min / 1.05
+        } else {
+            min - ((max - min) * 0.05).max(1e-9)
+        }
     };
     let pad_hi = |min: f64, max: f64, log: bool| -> f64 {
-        if log && max > 0.0 { max * 1.05 } else { max + ((max - min) * 0.05).max(1e-9) }
+        if log && max > 0.0 {
+            max * 1.05
+        } else {
+            max + ((max - min) * 0.05).max(1e-9)
+        }
     };
     let x_lo = opts.x_min.unwrap_or_else(|| pad_lo(x_min, x_max, x_log));
     let x_hi = opts.x_max.unwrap_or_else(|| pad_hi(x_min, x_max, x_log));
@@ -4435,12 +4930,18 @@ fn render_plot(
     // the snap on that side. `log` is handled by the renderer
     // (axis-type switch) rather than by range expansion.
     let (x_lo, x_hi) = scale_snap(
-        x_lo, x_hi, &opts.xscale,
-        opts.x_min.is_some(), opts.x_max.is_some(),
+        x_lo,
+        x_hi,
+        &opts.xscale,
+        opts.x_min.is_some(),
+        opts.x_max.is_some(),
     );
     let (y_lo, y_hi) = scale_snap(
-        y_lo, y_hi, &opts.yscale,
-        opts.y_min.is_some(), opts.y_max.is_some(),
+        y_lo,
+        y_hi,
+        &opts.yscale,
+        opts.y_min.is_some(),
+        opts.y_max.is_some(),
     );
 
     let x_range = x_lo..x_hi;
@@ -4454,40 +4955,59 @@ fn render_plot(
         range: std::ops::Range<f64>,
         is_log: bool,
     }
-    let derived: Vec<AxisDerived> = secondary.iter().enumerate().map(|(i, axis)| {
-        let (a_min, a_max) = sec_extents[i];
-        let is_log = resolve_scale(&axis.cfg.scale, &axis.ticks);
-        let lo = axis.cfg.min.unwrap_or_else(|| pad_lo(a_min, a_max, is_log));
-        let hi = axis.cfg.max.unwrap_or_else(|| pad_hi(a_min, a_max, is_log));
-        let (lo, hi) = scale_snap(
-            lo, hi, &axis.cfg.scale,
-            axis.cfg.min.is_some(), axis.cfg.max.is_some(),
-        );
-        // Right-rail title resolution order:
-        //   1. Explicit `yN-label:` / `yr-label:` (axis 2) /
-        //      `--yN-label` → `axis.cfg.label`. Operator-
-        //      supplied verbatim.
-        //   2. `yN-legend:` template, IF it has no `[name]`
-        //      placeholders. A static template like
-        //      `y2-legend: "pvs"` reads naturally as both
-        //      the legend label and the axis title.
-        //   3. Synthesise from the query's leading
-        //      identifier (legacy fallback).
-        //   4. Axis name (`y2`, `y3`, …) as last resort.
-        let label = axis.cfg.label.clone().unwrap_or_else(|| {
-            if let Some(template) = axis.cfg.legend_format.as_deref()
-                && !template.contains('[') {
+    let derived: Vec<AxisDerived> = secondary
+        .iter()
+        .enumerate()
+        .map(|(i, axis)| {
+            let (a_min, a_max) = sec_extents[i];
+            let is_log = resolve_scale(&axis.cfg.scale, &axis.ticks);
+            let lo = axis.cfg.min.unwrap_or_else(|| pad_lo(a_min, a_max, is_log));
+            let hi = axis.cfg.max.unwrap_or_else(|| pad_hi(a_min, a_max, is_log));
+            let (lo, hi) = scale_snap(
+                lo,
+                hi,
+                &axis.cfg.scale,
+                axis.cfg.min.is_some(),
+                axis.cfg.max.is_some(),
+            );
+            // Right-rail title resolution order:
+            //   1. Explicit `yN-label:` / `yr-label:` (axis 2) /
+            //      `--yN-label` → `axis.cfg.label`. Operator-
+            //      supplied verbatim.
+            //   2. `yN-legend:` template, IF it has no `[name]`
+            //      placeholders. A static template like
+            //      `y2-legend: "pvs"` reads naturally as both
+            //      the legend label and the axis title.
+            //   3. Synthesise from the query's leading
+            //      identifier (legacy fallback).
+            //   4. Axis name (`y2`, `y3`, …) as last resort.
+            let label = axis.cfg.label.clone().unwrap_or_else(|| {
+                if let Some(template) = axis.cfg.legend_format.as_deref()
+                    && !template.contains('[')
+                {
                     return template.to_string();
                 }
-            axis.cfg.query.as_deref()
-                .map(|q| q.chars().take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect::<String>())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| axis.name.clone())
-        });
-        AxisDerived { label, range: lo..hi, is_log }
-    }).collect();
-    let rendered_secondary: Vec<RenderedAxis<'_>> = secondary.iter().enumerate()
+                axis.cfg
+                    .query
+                    .as_deref()
+                    .map(|q| {
+                        q.chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect::<String>()
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| axis.name.clone())
+            });
+            AxisDerived {
+                label,
+                range: lo..hi,
+                is_log,
+            }
+        })
+        .collect();
+    let rendered_secondary: Vec<RenderedAxis<'_>> = secondary
+        .iter()
+        .enumerate()
         .map(|(i, axis)| RenderedAxis {
             name: &axis.name,
             label: derived[i].label.clone(),
@@ -4503,7 +5023,10 @@ fn render_plot(
             // primary coord (left). Authors who want a
             // y2-rail layout opt in via `y-side: right` (for
             // every axis) or `y2-side: right` (just one).
-            side: axis.cfg.side.as_deref()
+            side: axis
+                .cfg
+                .side
+                .as_deref()
                 .or(opts.secondary_side_default.as_deref())
                 .unwrap_or("left"),
         })
@@ -4519,7 +5042,9 @@ fn render_plot(
     //      caption and heading match by default.
     //   3. Synthesised `<metric> vs <x>` fallback for plots
     //      with neither directive set.
-    let title = opts.title.clone()
+    let title = opts
+        .title
+        .clone()
         .or_else(|| opts.label.clone())
         .unwrap_or_else(|| {
             let filter_summary = if opts.filters.is_empty() {
@@ -4527,9 +5052,11 @@ fn render_plot(
             } else {
                 format!(
                     " [{}]",
-                    opts.filters.iter()
+                    opts.filters
+                        .iter()
                         .map(|(k, v)| format!("{k}={v}"))
-                        .collect::<Vec<_>>().join(", "),
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 )
             };
             format!("{metric} vs {x_label}{filter_summary}")
@@ -4540,7 +5067,8 @@ fn render_plot(
         // the honest default axis title is the X QUERY's metric
         // name — the placeholder must never reach the render.
         if x_label == "__x_value__" {
-            opts.x_query.as_deref()
+            opts.x_query
+                .as_deref()
                 .and_then(metric_name_from_query)
                 .unwrap_or_else(|| "x".to_string())
         } else {
@@ -4559,17 +5087,23 @@ fn render_plot(
     //      title.
     //   3. The metric name (`metric` arg to render_plot) —
     //      legacy fallback.
-    let y_axis = opts.ylabel.clone()
-        .or_else(|| opts.y_legend_format.as_deref()
-            .filter(|t| !t.contains('['))
-            .map(|t| t.to_string()))
+    let y_axis = opts
+        .ylabel
+        .clone()
+        .or_else(|| {
+            opts.y_legend_format
+                .as_deref()
+                .filter(|t| !t.contains('['))
+                .map(|t| t.to_string())
+        })
         .unwrap_or_else(|| metric.to_string());
 
     // Pick the backend by output extension. SVG is the default
     // hermetic path; PNG goes through the bitmap backend (which
     // needs system fonts to render text labels — fails fast with
     // a clear error if they're missing).
-    let is_svg = out_path.extension()
+    let is_svg = out_path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.eq_ignore_ascii_case("svg"))
         .unwrap_or(false);
@@ -4581,19 +5115,42 @@ fn render_plot(
     // format whether the chart has 1, 2, 3, or 4 axes.
     let log_label = |is_log: bool| if is_log { "log" } else { "linear" };
     let src = |user: &str, ticks: &[f64]| -> String {
-        if !user.is_empty() { format!("`{user}`") }
-        else if ticks.is_empty() { "default linear (no ticks for auto-detect)".to_string() }
-        else { format!("auto-detect on {} tick(s)", ticks.len()) }
+        if !user.is_empty() {
+            format!("`{user}`")
+        } else if ticks.is_empty() {
+            "default linear (no ticks for auto-detect)".to_string()
+        } else {
+            format!("auto-detect on {} tick(s)", ticks.len())
+        }
     };
-    eprintln!("scale: xscale={} (from {}) ticks={:?}",
-        log_label(x_log), src(&opts.xscale, x_ticks), x_ticks);
-    eprintln!("scale: y1scale={} (from {}) ticks={:?}",
-        log_label(y_log), src(&opts.yscale, y_ticks), y_ticks);
+    eprintln!(
+        "scale: xscale={} (from {}) ticks={:?}",
+        log_label(x_log),
+        src(&opts.xscale, x_ticks),
+        x_ticks
+    );
+    eprintln!(
+        "scale: y1scale={} (from {}) ticks={:?}",
+        log_label(y_log),
+        src(&opts.yscale, y_ticks),
+        y_ticks
+    );
     for axis in &rendered_secondary {
-        eprintln!("scale: {}scale={} (from {}) ticks={:?}",
-            axis.name, log_label(axis.is_log),
-            src(&secondary.iter().find(|a| a.name == axis.name).unwrap().cfg.scale, axis.ticks),
-            axis.ticks);
+        eprintln!(
+            "scale: {}scale={} (from {}) ticks={:?}",
+            axis.name,
+            log_label(axis.is_log),
+            src(
+                &secondary
+                    .iter()
+                    .find(|a| a.name == axis.name)
+                    .unwrap()
+                    .cfg
+                    .scale,
+                axis.ticks
+            ),
+            axis.ticks
+        );
     }
 
     // Two orthogonal scale knobs:
@@ -4623,37 +5180,69 @@ fn render_plot(
 
     if is_svg {
         let root = SVGBackend::new(out_path, (render_w, render_h)).into_drawing_area();
-        draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
-            x_range, y_range, metric,
-            opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size,
-            opts.color_label.as_deref(), opts.shape_label.as_deref(),
-            legend_spec, legend_explicit,
+        draw_chart(
+            &root,
+            series,
+            &rendered_secondary,
+            &title,
+            &x_axis,
+            &y_axis,
+            x_range,
+            y_range,
+            metric,
+            opts.palette.as_deref(),
+            opts.line.as_deref(),
+            opts.line_width,
+            opts.marker.as_deref(),
+            opts.marker_size,
+            opts.color_label.as_deref(),
+            opts.shape_label.as_deref(),
+            legend_spec,
+            legend_explicit,
             &opts.series_overrides,
-            x_log, y_log,
-            x_ticks, y_ticks,
+            x_log,
+            y_log,
+            x_ticks,
+            y_ticks,
             opts.y_legend_format.as_deref(),
             opts.datapoints_mode,
             opts.point_label1.as_ref(),
             series_labels,
-            element_scale)?;
+            element_scale,
+        )?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
         let root = BitMapBackend::new(out_path, (render_w, render_h)).into_drawing_area();
-        draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
-            x_range, y_range, metric,
-            opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size,
-            opts.color_label.as_deref(), opts.shape_label.as_deref(),
-            legend_spec, legend_explicit,
+        draw_chart(
+            &root,
+            series,
+            &rendered_secondary,
+            &title,
+            &x_axis,
+            &y_axis,
+            x_range,
+            y_range,
+            metric,
+            opts.palette.as_deref(),
+            opts.line.as_deref(),
+            opts.line_width,
+            opts.marker.as_deref(),
+            opts.marker_size,
+            opts.color_label.as_deref(),
+            opts.shape_label.as_deref(),
+            legend_spec,
+            legend_explicit,
             &opts.series_overrides,
-            x_log, y_log,
-            x_ticks, y_ticks,
+            x_log,
+            y_log,
+            x_ticks,
+            y_ticks,
             opts.y_legend_format.as_deref(),
             opts.datapoints_mode,
             opts.point_label1.as_ref(),
             series_labels,
-            element_scale)?;
+            element_scale,
+        )?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
@@ -4692,29 +5281,48 @@ enum LegendSpec {
 ///     can't contain `:` here).
 ///   - directive list — whitespace-separated `k=v` pairs.
 fn parse_style_override(s: &str) -> Result<PlotStyleOverride, String> {
-    let (head, rest) = s.split_once(':').ok_or_else(|| format!(
-        "value '{s}' must be 'key=value:<directives>'"))?;
-    let (key, value) = head.split_once('=').ok_or_else(|| format!(
-        "head '{head}' must be 'key=value'"))?;
+    let (head, rest) = s
+        .split_once(':')
+        .ok_or_else(|| format!("value '{s}' must be 'key=value:<directives>'"))?;
+    let (key, value) = head
+        .split_once('=')
+        .ok_or_else(|| format!("head '{head}' must be 'key=value'"))?;
     let mut o = PlotStyleOverride {
         key: key.trim().to_string(),
-        value: value.trim().trim_matches('"').trim_matches('\'').to_string(),
-        palette: None, line: None, width: None,
-        marker: None, size: None, color: None,
+        value: value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string(),
+        palette: None,
+        line: None,
+        width: None,
+        marker: None,
+        size: None,
+        color: None,
     };
     for tok in rest.split_whitespace() {
-        let (k, v) = tok.split_once('=').ok_or_else(|| format!(
-            "directive '{tok}' must be key=value"))?;
+        let (k, v) = tok
+            .split_once('=')
+            .ok_or_else(|| format!("directive '{tok}' must be key=value"))?;
         let v = v.trim().trim_matches('"').trim_matches('\'');
         match k {
             "palette" => o.palette = Some(v.to_string()),
-            "line"    => o.line    = Some(v.to_string()),
-            "width"   => o.width   = Some(v.parse()
-                .map_err(|_| format!("style width '{v}' must be a number"))?),
-            "marker"  => o.marker  = Some(v.to_string()),
-            "size"    => o.size    = Some(v.parse()
-                .map_err(|_| format!("style size '{v}' must be a number"))?),
-            "color"   => o.color   = Some(v.to_string()),
+            "line" => o.line = Some(v.to_string()),
+            "width" => {
+                o.width = Some(
+                    v.parse()
+                        .map_err(|_| format!("style width '{v}' must be a number"))?,
+                )
+            }
+            "marker" => o.marker = Some(v.to_string()),
+            "size" => {
+                o.size = Some(
+                    v.parse()
+                        .map_err(|_| format!("style size '{v}' must be a number"))?,
+                )
+            }
+            "color" => o.color = Some(v.to_string()),
             other => return Err(format!("unknown style key '{other}'")),
         }
     }
@@ -4778,7 +5386,10 @@ impl F64Axis {
         } else {
             F64CoordKind::Linear(range.into())
         };
-        Self { kind, explicit_ticks: ticks }
+        Self {
+            kind,
+            explicit_ticks: ticks,
+        }
     }
 }
 
@@ -4830,13 +5441,20 @@ impl plotters::coord::ranged1d::ValueFormatter<f64> for F64Axis {
         // 6 significant digits, then trim trailing zeros and
         // a dangling decimal point.
         let mag = value.abs();
-        let digits_after_decimal: i32 = if mag == 0.0 { 0 }
-            else { 5 - mag.log10().floor() as i32 };
+        let digits_after_decimal: i32 = if mag == 0.0 {
+            0
+        } else {
+            5 - mag.log10().floor() as i32
+        };
         let digits_after_decimal = digits_after_decimal.clamp(0, 12) as usize;
         let mut s = format!("{value:.*}", digits_after_decimal);
         if s.contains('.') {
-            while s.ends_with('0') { s.pop(); }
-            if s.ends_with('.') { s.pop(); }
+            while s.ends_with('0') {
+                s.pop();
+            }
+            if s.ends_with('.') {
+                s.pop();
+            }
         }
         s
     }
@@ -4873,35 +5491,35 @@ enum TickSource<'a> {
     /// of the already-aggregated points. Used by paired
     /// plots where the x-axis values don't come from a
     /// label.
-    Aggregated { agg: &'a BTreeMap<String, Vec<PlotPoint>> },
+    Aggregated {
+        agg: &'a BTreeMap<String, Vec<PlotPoint>>,
+    },
 }
 
 impl<'a> TickSource<'a> {
     fn extract_axis_values(&self, axis: TickAxis) -> Vec<f64> {
         let mut out: Vec<f64> = Vec::new();
         match self {
-            TickSource::Rows { rows, x_label } => {
-                match axis {
-                    TickAxis::XLabel => {
-                        for r in *rows {
-                            if let Some(v) = r.labels.get(*x_label)
-                                && let Ok(n) = v.parse::<f64>()
-                            {
-                                out.push(n);
-                            }
-                        }
-                    }
-                    TickAxis::YValue => {
-                        for r in *rows {
-                            if let Some(m) = r.mean
-                                && m.is_finite()
-                            {
-                                out.push(m);
-                            }
+            TickSource::Rows { rows, x_label } => match axis {
+                TickAxis::XLabel => {
+                    for r in *rows {
+                        if let Some(v) = r.labels.get(*x_label)
+                            && let Ok(n) = v.parse::<f64>()
+                        {
+                            out.push(n);
                         }
                     }
                 }
-            }
+                TickAxis::YValue => {
+                    for r in *rows {
+                        if let Some(m) = r.mean
+                            && m.is_finite()
+                        {
+                            out.push(m);
+                        }
+                    }
+                }
+            },
             TickSource::Aggregated { agg } => {
                 for pts in agg.values() {
                     for p in pts {
@@ -4955,26 +5573,35 @@ fn resolve_tick_spec(
             Ok(sorted)
         }
         TickSpec::Auto => {
-            if source.is_empty() { return Ok(Vec::new()); }
+            if source.is_empty() {
+                return Ok(Vec::new());
+            }
             Ok(source.extract_axis_values(axis))
         }
         TickSpec::Query(expr) => {
             // Tick values define an axis range; use the default
             // per-instance-latest selection.
             let rows = rows_via_metricsql(
-                query_db, expr,
+                query_db,
+                expr,
                 nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance,
             )
-                .map_err(|e| format!(
+            .map_err(|e| {
+                format!(
                     "tick metricsql `{expr}` against '{}': {e}",
-                    query_db.display()))?;
+                    query_db.display()
+                )
+            })?;
             // For `Query` specs the source is the explicit
             // metricsql result; reuse the Rows extractor with
             // a transient TickSource.
-            let transient = TickSource::Rows { rows: &rows, x_label: match source {
-                TickSource::Rows { x_label, .. } => x_label,
-                TickSource::Aggregated { .. } => "__x_value__",
-            } };
+            let transient = TickSource::Rows {
+                rows: &rows,
+                x_label: match source {
+                    TickSource::Rows { x_label, .. } => x_label,
+                    TickSource::Aggregated { .. } => "__x_value__",
+                },
+            };
             Ok(transient.extract_axis_values(axis))
         }
     }
@@ -5002,34 +5629,42 @@ fn resolve_tick_spec(
 /// ratios → Log.
 /// `[1, 5, 7, 12]` → neither fits → Linear (default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DetectedScale { Linear, Log }
+enum DetectedScale {
+    Linear,
+    Log,
+}
 
 fn detect_scale_from_ticks(ticks: &[f64]) -> DetectedScale {
-    let mut v: Vec<f64> = ticks.iter()
-        .copied().filter(|x| x.is_finite()).collect();
+    let mut v: Vec<f64> = ticks.iter().copied().filter(|x| x.is_finite()).collect();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
-    if v.len() < 3 { return DetectedScale::Linear; }
+    if v.len() < 3 {
+        return DetectedScale::Linear;
+    }
     // Linear residual.
     let deltas: Vec<f64> = v.windows(2).map(|w| w[1] - w[0]).collect();
     let mean_delta: f64 = deltas.iter().sum::<f64>() / deltas.len() as f64;
     let linear_residual = if mean_delta.abs() > 0.0 {
-        let var = deltas.iter()
-            .map(|d| (d - mean_delta).powi(2))
-            .sum::<f64>() / deltas.len() as f64;
+        let var =
+            deltas.iter().map(|d| (d - mean_delta).powi(2)).sum::<f64>() / deltas.len() as f64;
         var.sqrt() / mean_delta.abs()
-    } else { f64::INFINITY };
+    } else {
+        f64::INFINITY
+    };
     // Log residual — requires all-positive.
     let log_residual = if v.iter().all(|&x| x > 0.0) {
         let ratios: Vec<f64> = v.windows(2).map(|w| w[1] / w[0]).collect();
         let mean_ratio: f64 = ratios.iter().sum::<f64>() / ratios.len() as f64;
         if mean_ratio > 0.0 {
-            let var = ratios.iter()
-                .map(|r| (r - mean_ratio).powi(2))
-                .sum::<f64>() / ratios.len() as f64;
+            let var =
+                ratios.iter().map(|r| (r - mean_ratio).powi(2)).sum::<f64>() / ratios.len() as f64;
             var.sqrt() / mean_ratio
-        } else { f64::INFINITY }
-    } else { f64::INFINITY };
+        } else {
+            f64::INFINITY
+        }
+    } else {
+        f64::INFINITY
+    };
     const THRESHOLD: f64 = 0.05;
     if log_residual < linear_residual && log_residual < THRESHOLD {
         DetectedScale::Log
@@ -5044,7 +5679,9 @@ fn detect_scale_from_ticks(ticks: &[f64]) -> DetectedScale {
 /// per-series override `color=…` field.
 fn parse_hex_color_for_override(s: &str) -> Option<plotters::style::RGBColor> {
     let s = s.strip_prefix('#').unwrap_or(s);
-    if s.len() != 6 { return None; }
+    if s.len() != 6 {
+        return None;
+    }
     let r = u8::from_str_radix(&s[0..2], 16).ok()?;
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
@@ -5080,23 +5717,29 @@ fn style_override_matches(o: &PlotStyleOverride, series_name: &str) -> bool {
 /// - `linear` / `log` / unknown / empty: pass through. (`log`
 ///   is handled by an axis-type switch elsewhere; the range
 ///   stays as-is for the log-scale builder to interpret.)
-fn scale_snap(lo: f64, hi: f64, scale: &str, pinned_lo: bool, pinned_hi: bool)
-    -> (f64, f64)
-{
+fn scale_snap(lo: f64, hi: f64, scale: &str, pinned_lo: bool, pinned_hi: bool) -> (f64, f64) {
     fn snap_dec_lo(v: f64) -> f64 {
-        if v <= 0.0 { return v; }
+        if v <= 0.0 {
+            return v;
+        }
         10f64.powi(v.log10().floor() as i32)
     }
     fn snap_dec_hi(v: f64) -> f64 {
-        if v <= 0.0 { return v; }
+        if v <= 0.0 {
+            return v;
+        }
         10f64.powi(v.log10().ceil() as i32)
     }
     fn snap_bin_lo(v: f64) -> f64 {
-        if v <= 0.0 { return v; }
+        if v <= 0.0 {
+            return v;
+        }
         2f64.powi(v.log2().floor() as i32)
     }
     fn snap_bin_hi(v: f64) -> f64 {
-        if v <= 0.0 { return v; }
+        if v <= 0.0 {
+            return v;
+        }
         2f64.powi(v.log2().ceil() as i32)
     }
 
@@ -5131,32 +5774,32 @@ fn parse_legend_spec(arg: Option<&str>) -> Result<LegendSpec, String> {
     let pos = match key.as_str() {
         "none" | "off" | "hide" => return Ok(LegendSpec::Suppressed),
         // Long form
-        "top-left"     | "upper-left"     => SeriesLabelPosition::UpperLeft,
-        "top"          | "top-center"     | "upper" | "upper-center"
-                                          => SeriesLabelPosition::UpperMiddle,
-        "top-right"    | "upper-right"    => SeriesLabelPosition::UpperRight,
-        "left"         | "middle-left"    => SeriesLabelPosition::MiddleLeft,
-        "center"       | "middle"         => SeriesLabelPosition::MiddleMiddle,
-        "right"        | "middle-right"   => SeriesLabelPosition::MiddleRight,
-        "bottom-left"  | "lower-left"     => SeriesLabelPosition::LowerLeft,
-        "bottom"       | "bottom-center"  | "lower" | "lower-center"
-                                          => SeriesLabelPosition::LowerMiddle,
-        "bottom-right" | "lower-right"    => SeriesLabelPosition::LowerRight,
+        "top-left" | "upper-left" => SeriesLabelPosition::UpperLeft,
+        "top" | "top-center" | "upper" | "upper-center" => SeriesLabelPosition::UpperMiddle,
+        "top-right" | "upper-right" => SeriesLabelPosition::UpperRight,
+        "left" | "middle-left" => SeriesLabelPosition::MiddleLeft,
+        "center" | "middle" => SeriesLabelPosition::MiddleMiddle,
+        "right" | "middle-right" => SeriesLabelPosition::MiddleRight,
+        "bottom-left" | "lower-left" => SeriesLabelPosition::LowerLeft,
+        "bottom" | "bottom-center" | "lower" | "lower-center" => SeriesLabelPosition::LowerMiddle,
+        "bottom-right" | "lower-right" => SeriesLabelPosition::LowerRight,
         // Single / two-letter shortcodes
         "tl" | "ul" => SeriesLabelPosition::UpperLeft,
-        "t"  | "tc" | "uc" | "u" => SeriesLabelPosition::UpperMiddle,
+        "t" | "tc" | "uc" | "u" => SeriesLabelPosition::UpperMiddle,
         "tr" | "ur" => SeriesLabelPosition::UpperRight,
-        "l"  | "ml" | "cl" => SeriesLabelPosition::MiddleLeft,
-        "c"  | "m"  | "mm" | "mc" => SeriesLabelPosition::MiddleMiddle,
-        "r"  | "mr" | "cr" => SeriesLabelPosition::MiddleRight,
+        "l" | "ml" | "cl" => SeriesLabelPosition::MiddleLeft,
+        "c" | "m" | "mm" | "mc" => SeriesLabelPosition::MiddleMiddle,
+        "r" | "mr" | "cr" => SeriesLabelPosition::MiddleRight,
         "bl" | "ll" => SeriesLabelPosition::LowerLeft,
-        "b"  | "bc" | "lc" => SeriesLabelPosition::LowerMiddle,
+        "b" | "bc" | "lc" => SeriesLabelPosition::LowerMiddle,
         "br" | "lr" => SeriesLabelPosition::LowerRight,
-        other => return Err(format!(
-            "--legend: unknown position '{other}' (try: top-left, top, \
+        other => {
+            return Err(format!(
+                "--legend: unknown position '{other}' (try: top-left, top, \
              top-right, left, center, right, bottom-left, bottom, \
              bottom-right; shortcodes tl/t/tr/l/c/r/bl/b/br; or `none` to suppress)"
-        )),
+            ));
+        }
     };
     Ok(LegendSpec::Position(pos))
 }
@@ -5169,14 +5812,24 @@ fn datapoint_label_indices(ys: &[f64], mode: DatapointsMode) -> Vec<usize> {
         DatapointsMode::None => Vec::new(),
         DatapointsMode::Inline | DatapointsMode::Callouts => (0..ys.len()).collect(),
         DatapointsMode::Extremes => {
-            if ys.is_empty() { return Vec::new(); }
+            if ys.is_empty() {
+                return Vec::new();
+            }
             let mut min_i = 0;
             let mut max_i = 0;
             for (i, &y) in ys.iter().enumerate() {
-                if y < ys[min_i] { min_i = i; }
-                if y > ys[max_i] { max_i = i; }
+                if y < ys[min_i] {
+                    min_i = i;
+                }
+                if y > ys[max_i] {
+                    max_i = i;
+                }
             }
-            if min_i == max_i { vec![min_i] } else { vec![min_i, max_i] }
+            if min_i == max_i {
+                vec![min_i]
+            } else {
+                vec![min_i, max_i]
+            }
         }
     }
 }
@@ -5215,23 +5868,43 @@ fn marker_poly(shape: &str, c: (i32, i32), s: i32) -> Vec<(i32, i32)> {
     let (cx, cy) = c;
     match shape {
         "none" => vec![],
-        "square" => vec![(cx - s, cy - s), (cx + s, cy - s), (cx + s, cy + s), (cx - s, cy + s)],
+        "square" => vec![
+            (cx - s, cy - s),
+            (cx + s, cy - s),
+            (cx + s, cy + s),
+            (cx - s, cy + s),
+        ],
         "triangle" => vec![(cx, cy - s), (cx + s, cy + s), (cx - s, cy + s)],
         "diamond" => vec![(cx, cy - s), (cx + s, cy), (cx, cy + s), (cx - s, cy)],
         "plus" | "cross" => {
             let t = (s / 2).max(1);
             vec![
-                (cx - t, cy - s), (cx + t, cy - s), (cx + t, cy - t), (cx + s, cy - t),
-                (cx + s, cy + t), (cx + t, cy + t), (cx + t, cy + s), (cx - t, cy + s),
-                (cx - t, cy + t), (cx - s, cy + t), (cx - s, cy - t), (cx - t, cy - t),
+                (cx - t, cy - s),
+                (cx + t, cy - s),
+                (cx + t, cy - t),
+                (cx + s, cy - t),
+                (cx + s, cy + t),
+                (cx + t, cy + t),
+                (cx + t, cy + s),
+                (cx - t, cy + s),
+                (cx - t, cy + t),
+                (cx - s, cy + t),
+                (cx - s, cy - t),
+                (cx - t, cy - t),
             ]
         }
         // circle → regular octagon (h ≈ 0.7·s), a round-enough key glyph.
         _ => {
             let h = (s * 7) / 10;
             vec![
-                (cx + s, cy), (cx + h, cy + h), (cx, cy + s), (cx - h, cy + h),
-                (cx - s, cy), (cx - h, cy - h), (cx, cy - s), (cx + h, cy - h),
+                (cx + s, cy),
+                (cx + h, cy + h),
+                (cx, cy + s),
+                (cx - h, cy + h),
+                (cx - s, cy),
+                (cx - h, cy - h),
+                (cx, cy - s),
+                (cx + h, cy - h),
             ]
         }
     }
@@ -5291,15 +5964,9 @@ where
     // Sizing helpers — round every logical pixel value by the
     // density multiplier. Kept as closures so the call sites
     // below read cleanly (`fz(24)` instead of an inline mul).
-    let fz = |base: i32| -> i32 {
-        ((base as f32) * scale).round().max(1.0) as i32
-    };
-    let stroke = |base: f32| -> u32 {
-        ((base * scale).round().max(1.0)) as u32
-    };
-    let msize = |base: i32| -> i32 {
-        ((base as f32) * scale).round().max(1.0) as i32
-    };
+    let fz = |base: i32| -> i32 { ((base as f32) * scale).round().max(1.0) as i32 };
+    let stroke = |base: f32| -> u32 { ((base * scale).round().max(1.0)) as u32 };
+    let msize = |base: i32| -> i32 { ((base as f32) * scale).round().max(1.0) as i32 };
 
     // Right-rail allowance grows by 70px per secondary axis
     // declared. Plotters' `set_secondary_coord` natively
@@ -5349,7 +6016,8 @@ where
         .map_err(|e| format!("build chart: {e}"))?
         .set_secondary_coord(secondary_x, secondary_y2);
 
-    chart.configure_mesh()
+    chart
+        .configure_mesh()
         .x_desc(x_axis)
         .y_desc(y_axis)
         .label_style(("sans-serif", fz(14)))
@@ -5366,7 +6034,8 @@ where
     if let Some(a2) = secondary.first()
         && a2.side == "right"
     {
-        chart.configure_secondary_axes()
+        chart
+            .configure_secondary_axes()
             .y_desc(&a2.label)
             .label_style(("sans-serif", fz(14)))
             .axis_desc_style(("sans-serif", fz(16)))
@@ -5401,28 +6070,30 @@ where
     // of a compact channel legend drawn after the loop.
     let channel_mode = color_label.is_some() || shape_label.is_some();
     let distinct_label_values = |label: &str| -> Vec<String> {
-        let mut vals: Vec<String> = series.keys()
+        let mut vals: Vec<String> = series
+            .keys()
             .filter_map(|k| parse_series_key_to_labels(k).get(label).cloned())
             .collect::<std::collections::BTreeSet<_>>()
-            .into_iter().collect();
+            .into_iter()
+            .collect();
         vals.sort_by(|a, b| natural_str_cmp(a, b));
         vals
     };
-    let color_values: Vec<String> =
-        color_label.map(distinct_label_values).unwrap_or_default();
-    let shape_values: Vec<String> =
-        shape_label.map(distinct_label_values).unwrap_or_default();
+    let color_values: Vec<String> = color_label.map(distinct_label_values).unwrap_or_default();
+    let shape_values: Vec<String> = shape_label.map(distinct_label_values).unwrap_or_default();
 
     for (idx, (series_name, points)) in series_sorted.into_iter().enumerate() {
         // Find the first matching per-series style override (if
         // any). Fields the override sets win over the cascade
         // default; fields it leaves `None` fall through.
-        let ov = series_overrides.iter()
+        let ov = series_overrides
+            .iter()
             .find(|o| style_override_matches(o, series_name));
         // Per-series palette — palette override would re-pick
         // a different ordinal from a different palette, so we
         // resolve up-front rather than mid-loop.
-        let series_palette = ov.and_then(|o| o.palette.as_deref())
+        let series_palette = ov
+            .and_then(|o| o.palette.as_deref())
             .map(|s| crate::palette::resolve_or_default(Some(s)))
             .unwrap_or(palette);
         // Channel ordinals (`color:` / `shape:`): the position of this
@@ -5430,18 +6101,23 @@ where
         // series sharing the value share the hue / shape.
         let series_labels_map = (channel_mode || y_legend_format.is_some())
             .then(|| parse_series_key_to_labels(series_name));
-        let channel_color_idx = color_label.zip(series_labels_map.as_ref())
+        let channel_color_idx = color_label
+            .zip(series_labels_map.as_ref())
             .and_then(|(cl, m)| m.get(cl))
             .and_then(|val| color_values.iter().position(|x| x == val));
-        let channel_shape = shape_label.zip(series_labels_map.as_ref())
+        let channel_shape = shape_label
+            .zip(series_labels_map.as_ref())
             .and_then(|(sl, m)| m.get(sl))
             .and_then(|val| shape_values.iter().position(|x| x == val))
             .map(crate::palette::series_marker);
-        let color = ov.and_then(|o| o.color.as_deref())
+        let color = ov
+            .and_then(|o| o.color.as_deref())
             .and_then(parse_hex_color_for_override)
-            .unwrap_or_else(|| crate::palette::series_color(
-                series_palette, channel_color_idx.unwrap_or(idx)));
-        let stroke_width = ov.and_then(|o| o.width)
+            .unwrap_or_else(|| {
+                crate::palette::series_color(series_palette, channel_color_idx.unwrap_or(idx))
+            });
+        let stroke_width = ov
+            .and_then(|o| o.width)
             .map(|w| stroke(w.max(0.0)))
             .unwrap_or(default_stroke);
         let line_kind = ov.and_then(|o| o.line.as_deref()).unwrap_or(default_line);
@@ -5450,7 +6126,11 @@ where
         // wins; then the `shape:` channel; then `marker: auto` (cycle a
         // distinct shape per series); else the single default marker.
         let marker_kind = if let Some(m) = ov_marker {
-            if m == "auto" { crate::palette::series_marker(idx) } else { m }
+            if m == "auto" {
+                crate::palette::series_marker(idx)
+            } else {
+                m
+            }
         } else if let Some(shape) = channel_shape {
             shape
         } else if default_marker == "auto" {
@@ -5462,7 +6142,8 @@ where
         // outlive the borrow of any per-series override), so the
         // legend key carries this series' marker shape.
         let marker_for_legend = marker_kind.to_string();
-        let m_size = ov.and_then(|o| o.size)
+        let m_size = ov
+            .and_then(|o| o.size)
             .map(|s| msize(s.max(0.0) as i32))
             .unwrap_or(default_m_size);
 
@@ -5495,21 +6176,29 @@ where
                 let swatch_len = fz(20);
                 let swatch_dash = fz(4) as u32;
                 let swatch_gap = fz(4) as u32;
-                let anno = chart.draw_series(plotters::series::DashedLineSeries::new(
-                    xy_pts.iter().cloned(), dash, gap, color.stroke_width(stroke_width),
-                ))
-                .map_err(|e| format!("draw dashed line: {e}"))?;
+                let anno = chart
+                    .draw_series(plotters::series::DashedLineSeries::new(
+                        xy_pts.iter().cloned(),
+                        dash,
+                        gap,
+                        color.stroke_width(stroke_width),
+                    ))
+                    .map_err(|e| format!("draw dashed line: {e}"))?;
                 if register_series_label {
                     anno.label(series_label_for_legend.clone())
-                    .legend(move |(x, y)| {
-                        EmptyElement::at((x, y))
-                            + plotters::element::DashedPathElement::new(
-                                vec![(0, 0), (swatch_len, 0)], swatch_dash, swatch_gap,
-                                color.stroke_width(stroke_width))
-                            + Polygon::new(
-                                marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
-                                color.filled())
-                    });
+                        .legend(move |(x, y)| {
+                            EmptyElement::at((x, y))
+                                + plotters::element::DashedPathElement::new(
+                                    vec![(0, 0), (swatch_len, 0)],
+                                    swatch_dash,
+                                    swatch_gap,
+                                    color.stroke_width(stroke_width),
+                                )
+                                + Polygon::new(
+                                    marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
+                                    color.filled(),
+                                )
+                        });
                 }
             }
             "dotted" => {
@@ -5518,38 +6207,52 @@ where
                 let swatch_len = fz(20);
                 let swatch_dash = fz(2) as u32;
                 let swatch_gap = fz(3) as u32;
-                let anno = chart.draw_series(plotters::series::DashedLineSeries::new(
-                    xy_pts.iter().cloned(), dash, gap, color.stroke_width(stroke_width),
-                ))
-                .map_err(|e| format!("draw dotted line: {e}"))?;
+                let anno = chart
+                    .draw_series(plotters::series::DashedLineSeries::new(
+                        xy_pts.iter().cloned(),
+                        dash,
+                        gap,
+                        color.stroke_width(stroke_width),
+                    ))
+                    .map_err(|e| format!("draw dotted line: {e}"))?;
                 if register_series_label {
                     anno.label(series_label_for_legend.clone())
-                    .legend(move |(x, y)| {
-                        EmptyElement::at((x, y))
-                            + plotters::element::DashedPathElement::new(
-                                vec![(0, 0), (swatch_len, 0)], swatch_dash, swatch_gap,
-                                color.stroke_width(stroke_width))
-                            + Polygon::new(
-                                marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
-                                color.filled())
-                    });
+                        .legend(move |(x, y)| {
+                            EmptyElement::at((x, y))
+                                + plotters::element::DashedPathElement::new(
+                                    vec![(0, 0), (swatch_len, 0)],
+                                    swatch_dash,
+                                    swatch_gap,
+                                    color.stroke_width(stroke_width),
+                                )
+                                + Polygon::new(
+                                    marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
+                                    color.filled(),
+                                )
+                        });
                 }
             }
             _ => {
                 let swatch_len = fz(20);
-                let anno = chart.draw_series(LineSeries::new(
-                    xy_pts.iter().cloned(), color.stroke_width(stroke_width)))
+                let anno = chart
+                    .draw_series(LineSeries::new(
+                        xy_pts.iter().cloned(),
+                        color.stroke_width(stroke_width),
+                    ))
                     .map_err(|e| format!("draw line: {e}"))?;
                 if register_series_label {
                     anno.label(series_label_for_legend.clone())
-                    .legend(move |(x, y)| {
-                        EmptyElement::at((x, y))
-                            + PathElement::new(vec![(0, 0), (swatch_len, 0)],
-                                color.stroke_width(stroke_width))
-                            + Polygon::new(
-                                marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
-                                color.filled())
-                    });
+                        .legend(move |(x, y)| {
+                            EmptyElement::at((x, y))
+                                + PathElement::new(
+                                    vec![(0, 0), (swatch_len, 0)],
+                                    color.stroke_width(stroke_width),
+                                )
+                                + Polygon::new(
+                                    marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
+                                    color.filled(),
+                                )
+                        });
                 }
             }
         }
@@ -5560,8 +6263,12 @@ where
         match marker_kind {
             "none" => {}
             "circle" => {
-                chart.draw_series(xy_pts.iter()
-                    .map(|p| Circle::new(*p, m_size, color.filled())))
+                chart
+                    .draw_series(
+                        xy_pts
+                            .iter()
+                            .map(|p| Circle::new(*p, m_size, color.filled())),
+                    )
                     .map_err(|e| format!("draw circles: {e}"))?;
             }
             "square" => {
@@ -5572,45 +6279,63 @@ where
                 // with the value units — fatal on a narrow axis (e.g.
                 // recall ∈ [0.93, 1.0], where a ±3-*unit* square fills
                 // the whole chart).
-                chart.draw_series(xy_pts.iter().map(|p| {
-                    EmptyElement::at(*p)
-                        + Polygon::new(marker_poly("square", (0, 0), m_size), color.filled())
-                })).map_err(|e| format!("draw squares: {e}"))?;
+                chart
+                    .draw_series(xy_pts.iter().map(|p| {
+                        EmptyElement::at(*p)
+                            + Polygon::new(marker_poly("square", (0, 0), m_size), color.filled())
+                    }))
+                    .map_err(|e| format!("draw squares: {e}"))?;
             }
             "triangle" => {
-                chart.draw_series(xy_pts.iter()
-                    .map(|p| TriangleMarker::new(*p, m_size, color.filled())))
+                chart
+                    .draw_series(
+                        xy_pts
+                            .iter()
+                            .map(|p| TriangleMarker::new(*p, m_size, color.filled())),
+                    )
                     .map_err(|e| format!("draw triangles: {e}"))?;
             }
             "diamond" => {
-                chart.draw_series(xy_pts.iter().map(|p| {
-                    EmptyElement::at(*p)
-                        + Polygon::new(marker_poly("diamond", (0, 0), m_size), color.filled())
-                })).map_err(|e| format!("draw diamonds: {e}"))?;
+                chart
+                    .draw_series(xy_pts.iter().map(|p| {
+                        EmptyElement::at(*p)
+                            + Polygon::new(marker_poly("diamond", (0, 0), m_size), color.filled())
+                    }))
+                    .map_err(|e| format!("draw diamonds: {e}"))?;
             }
             "plus" => {
-                chart.draw_series(xy_pts.iter()
-                    .map(|p| Cross::new(*p, m_size, color.stroke_width(stroke_width))))
+                chart
+                    .draw_series(
+                        xy_pts
+                            .iter()
+                            .map(|p| Cross::new(*p, m_size, color.stroke_width(stroke_width))),
+                    )
                     .map_err(|e| format!("draw plus: {e}"))?;
             }
             "cross" => {
                 let off = m_size;
-                chart.draw_series(xy_pts.iter().flat_map(|p| {
-                    let sw = color.stroke_width(stroke_width);
-                    // Two backend-pixel strokes anchored at the data
-                    // point (see `square` for why pixel-space, not data).
-                    [
-                        EmptyElement::at(*p)
-                            + PathElement::new(vec![(-off, -off), (off, off)], sw),
-                        EmptyElement::at(*p)
-                            + PathElement::new(vec![(-off, off), (off, -off)], sw),
-                    ]
-                })).map_err(|e| format!("draw crosses: {e}"))?;
+                chart
+                    .draw_series(xy_pts.iter().flat_map(|p| {
+                        let sw = color.stroke_width(stroke_width);
+                        // Two backend-pixel strokes anchored at the data
+                        // point (see `square` for why pixel-space, not data).
+                        [
+                            EmptyElement::at(*p)
+                                + PathElement::new(vec![(-off, -off), (off, off)], sw),
+                            EmptyElement::at(*p)
+                                + PathElement::new(vec![(-off, off), (off, -off)], sw),
+                        ]
+                    }))
+                    .map_err(|e| format!("draw crosses: {e}"))?;
             }
             other => {
                 eprintln!("warning: unknown marker '{other}'; falling back to circle");
-                chart.draw_series(xy_pts.iter()
-                    .map(|p| Circle::new(*p, m_size, color.filled())))
+                chart
+                    .draw_series(
+                        xy_pts
+                            .iter()
+                            .map(|p| Circle::new(*p, m_size, color.filled())),
+                    )
                     .map_err(|e| format!("draw circles: {e}"))?;
             }
         }
@@ -5625,10 +6350,12 @@ where
         );
         if !label_idxs.is_empty() {
             let style = ("sans-serif", fz(11)).into_font().color(&color);
-            chart.draw_series(label_idxs.into_iter().map(|i| {
-                let p = &points[i];
-                Text::new(format_datapoint(p.y), (p.x, p.y), style.clone())
-            })).map_err(|e| format!("draw datapoint labels: {e}"))?;
+            chart
+                .draw_series(label_idxs.into_iter().map(|i| {
+                    let p = &points[i];
+                    Text::new(format_datapoint(p.y), (p.x, p.y), style.clone())
+                }))
+                .map_err(|e| format!("draw datapoint labels: {e}"))?;
         }
 
         // point-label1: — per-point textual annotation drawn
@@ -5644,18 +6371,24 @@ where
             // clear of the y-datapoint inline labels, which
             // plotters draws with the default top-left
             // anchor and end up below-right of the point.
-            use plotters::style::text_anchor::{Pos, HPos, VPos};
-            let style = ("sans-serif", fz(10)).into_font()
+            use plotters::style::text_anchor::{HPos, Pos, VPos};
+            let style = ("sans-serif", fz(10))
+                .into_font()
                 .color(&color.mix(0.85))
                 .pos(Pos::new(HPos::Center, VPos::Bottom));
-            let annotated: Vec<_> = points.iter()
+            let annotated: Vec<_> = points
+                .iter()
                 .map(|p| (p, format_point_label(p, spec, series_labels)))
                 .filter(|(_, txt)| !txt.is_empty())
                 .collect();
             if !annotated.is_empty() {
-                chart.draw_series(annotated.into_iter().map(|(p, txt)| {
-                    Text::new(txt, (p.x, p.y), style.clone())
-                })).map_err(|e| format!("draw point labels: {e}"))?;
+                chart
+                    .draw_series(
+                        annotated
+                            .into_iter()
+                            .map(|(p, txt)| Text::new(txt, (p.x, p.y), style.clone())),
+                    )
+                    .map_err(|e| format!("draw point labels: {e}"))?;
             }
         }
     }
@@ -5675,30 +6408,41 @@ where
             for (i, val) in color_values.iter().enumerate() {
                 let col = crate::palette::series_color(palette, i);
                 let label = format!("{clabel}={val}");
-                chart.draw_series(LineSeries::new(
-                    Vec::<(f64, f64)>::new().into_iter(),
-                    col.stroke_width(default_stroke)))
+                chart
+                    .draw_series(LineSeries::new(
+                        Vec::<(f64, f64)>::new().into_iter(),
+                        col.stroke_width(default_stroke),
+                    ))
                     .map_err(|e| format!("draw color-channel legend: {e}"))?
                     .label(label)
-                    .legend(move |(x, y)| EmptyElement::at((x, y))
-                        + PathElement::new(vec![(0, 0), (swatch_len, 0)],
-                            col.stroke_width(default_stroke))
-                        + Circle::new((swatch_len / 2, 0), default_m_size, col.filled()));
+                    .legend(move |(x, y)| {
+                        EmptyElement::at((x, y))
+                            + PathElement::new(
+                                vec![(0, 0), (swatch_len, 0)],
+                                col.stroke_width(default_stroke),
+                            )
+                            + Circle::new((swatch_len / 2, 0), default_m_size, col.filled())
+                    });
             }
         }
         if let Some(slabel) = shape_label {
             for (i, val) in shape_values.iter().enumerate() {
                 let shape = crate::palette::series_marker(i).to_string();
                 let label = format!("{slabel}={val}");
-                chart.draw_series(LineSeries::new(
-                    Vec::<(f64, f64)>::new().into_iter(),
-                    neutral.stroke_width(default_stroke)))
+                chart
+                    .draw_series(LineSeries::new(
+                        Vec::<(f64, f64)>::new().into_iter(),
+                        neutral.stroke_width(default_stroke),
+                    ))
                     .map_err(|e| format!("draw shape-channel legend: {e}"))?
                     .label(label)
-                    .legend(move |(x, y)| EmptyElement::at((x, y))
-                        + Polygon::new(
-                            marker_poly(&shape, (swatch_len / 2, 0), default_m_size),
-                            neutral.filled()));
+                    .legend(move |(x, y)| {
+                        EmptyElement::at((x, y))
+                            + Polygon::new(
+                                marker_poly(&shape, (swatch_len / 2, 0), default_m_size),
+                                neutral.filled(),
+                            )
+                    });
             }
         }
     }
@@ -5738,8 +6482,7 @@ where
         // `test_oracles`) haven't started producing rows
         // yet.
         if axis.pending {
-            let placeholder_color =
-                plotters::style::RGBColor(160, 160, 160).mix(0.6);
+            let placeholder_color = plotters::style::RGBColor(160, 160, 160).mix(0.6);
             // Use the operator-supplied `yN-legend` template
             // when set (mirrors the non-pending path: an
             // explicit template owns the full legend label,
@@ -5764,14 +6507,19 @@ where
             let empty: Vec<(f64, f64)> = Vec::new();
             let swatch_stroke = stroke(1.0);
             let swatch_len = fz(20);
-            chart.draw_series(LineSeries::new(empty.into_iter(),
-                placeholder_color.stroke_width(swatch_stroke)))
-                .map_err(|e| format!(
-                    "draw {} pending placeholder: {e}", axis.name))?
+            chart
+                .draw_series(LineSeries::new(
+                    empty.into_iter(),
+                    placeholder_color.stroke_width(swatch_stroke),
+                ))
+                .map_err(|e| format!("draw {} pending placeholder: {e}", axis.name))?
                 .label(label)
-                .legend(move |(x, y)| PathElement::new(
-                    vec![(x, y), (x + swatch_len, y)],
-                    placeholder_color.stroke_width(swatch_stroke).filled()));
+                .legend(move |(x, y)| {
+                    PathElement::new(
+                        vec![(x, y), (x + swatch_len, y)],
+                        placeholder_color.stroke_width(swatch_stroke).filled(),
+                    )
+                });
             continue;
         }
         // Side-driven coord routing (SRD-65 followup —
@@ -5820,26 +6568,37 @@ where
         // Same natural-numeric ordering as the primary axis;
         // keeps secondary-axis legend rows aligned with
         // primary in workloads that share x-discriminants.
-        let mut axis_series_sorted: Vec<(&String, &Vec<PlotPoint>)> =
-            axis.series.iter().collect();
+        let mut axis_series_sorted: Vec<(&String, &Vec<PlotPoint>)> = axis.series.iter().collect();
         axis_series_sorted.sort_by(|(a, _), (b, _)| natural_str_cmp(a, b));
         for (i, (series_name, points)) in axis_series_sorted.into_iter().enumerate() {
-            let ov = series_overrides.iter()
+            let ov = series_overrides
+                .iter()
                 .find(|o| style_override_matches(o, series_name));
-            let series_palette = ov.and_then(|o| o.palette.as_deref())
+            let series_palette = ov
+                .and_then(|o| o.palette.as_deref())
                 .map(|s| crate::palette::resolve_or_default(Some(s)))
                 .unwrap_or(palette);
-            let color = ov.and_then(|o| o.color.as_deref())
+            let color = ov
+                .and_then(|o| o.color.as_deref())
                 .and_then(parse_hex_color_for_override)
-                .unwrap_or_else(|| crate::palette::series_color(series_palette, palette_offset + i));
-            let stroke_width = ov.and_then(|o| o.width)
+                .unwrap_or_else(|| {
+                    crate::palette::series_color(series_palette, palette_offset + i)
+                });
+            let stroke_width = ov
+                .and_then(|o| o.width)
                 .map(|w| w.max(0.0) as u32)
                 .unwrap_or(default_stroke);
-            let cascade_line = if default_line == "solid" { "dashed" } else { default_line };
+            let cascade_line = if default_line == "solid" {
+                "dashed"
+            } else {
+                default_line
+            };
             let line_kind = ov.and_then(|o| o.line.as_deref()).unwrap_or(cascade_line);
-            let marker_kind = ov.and_then(|o| o.marker.as_deref())
+            let marker_kind = ov
+                .and_then(|o| o.marker.as_deref())
                 .unwrap_or(default_marker);
-            let m_size = ov.and_then(|o| o.size)
+            let m_size = ov
+                .and_then(|o| o.size)
                 .map(|s| s.max(0.0) as i32)
                 .unwrap_or(default_m_size);
 
@@ -5874,10 +6633,12 @@ where
             macro_rules! draw_into {
                 ($drawable:expr, $err:expr) => {{
                     if target_secondary {
-                        chart.draw_secondary_series($drawable)
+                        chart
+                            .draw_secondary_series($drawable)
                             .map_err(|e| format!("{}: {e}", $err))?
                     } else {
-                        chart.draw_series($drawable)
+                        chart
+                            .draw_series($drawable)
                             .map_err(|e| format!("{}: {e}", $err))?
                     }
                 }};
@@ -5891,15 +6652,21 @@ where
                     let swatch_dash = fz(4) as u32;
                     let swatch_gap = fz(4) as u32;
                     let line = plotters::series::DashedLineSeries::new(
-                        projected_pts.iter().cloned(), dash, gap,
+                        projected_pts.iter().cloned(),
+                        dash,
+                        gap,
                         color.stroke_width(stroke_width),
                     );
-                    draw_into!(line,
-                        format!("draw {} dashed line", axis.name))
+                    draw_into!(line, format!("draw {} dashed line", axis.name))
                         .label(label.clone())
-                        .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                            vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
-                            color.stroke_width(stroke_width)));
+                        .legend(move |(x, y)| {
+                            plotters::element::DashedPathElement::new(
+                                vec![(x, y), (x + swatch_len, y)],
+                                swatch_dash,
+                                swatch_gap,
+                                color.stroke_width(stroke_width),
+                            )
+                        });
                 }
                 "dotted" => {
                     let dash = fz(2) as u32;
@@ -5908,36 +6675,47 @@ where
                     let swatch_dash = fz(2) as u32;
                     let swatch_gap = fz(3) as u32;
                     let line = plotters::series::DashedLineSeries::new(
-                        projected_pts.iter().cloned(), dash, gap,
+                        projected_pts.iter().cloned(),
+                        dash,
+                        gap,
                         color.stroke_width(stroke_width),
                     );
-                    draw_into!(line,
-                        format!("draw {} dotted line", axis.name))
+                    draw_into!(line, format!("draw {} dotted line", axis.name))
                         .label(label.clone())
-                        .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                            vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
-                            color.stroke_width(stroke_width)));
+                        .legend(move |(x, y)| {
+                            plotters::element::DashedPathElement::new(
+                                vec![(x, y), (x + swatch_len, y)],
+                                swatch_dash,
+                                swatch_gap,
+                                color.stroke_width(stroke_width),
+                            )
+                        });
                 }
                 _ => {
                     let swatch_len = fz(20);
                     let line = LineSeries::new(
                         projected_pts.iter().cloned(),
-                        color.stroke_width(stroke_width));
-                    draw_into!(line,
-                        format!("draw {} line", axis.name))
+                        color.stroke_width(stroke_width),
+                    );
+                    draw_into!(line, format!("draw {} line", axis.name))
                         .label(label.clone())
-                        .legend(move |(x, y)| PathElement::new(
-                            vec![(x, y), (x + swatch_len, y)],
-                            color.stroke_width(stroke_width)));
+                        .legend(move |(x, y)| {
+                            PathElement::new(
+                                vec![(x, y), (x + swatch_len, y)],
+                                color.stroke_width(stroke_width),
+                            )
+                        });
                 }
             }
             match marker_kind {
                 "none" => {}
                 "circle" => {
                     draw_into!(
-                        projected_pts.iter()
+                        projected_pts
+                            .iter()
                             .map(|p| Circle::new(*p, m_size, color.filled())),
-                        format!("draw {} circles", axis.name));
+                        format!("draw {} circles", axis.name)
+                    );
                 }
                 "square" => {
                     let off = m_size as f64;
@@ -5948,32 +6726,45 @@ where
                                 color.filled(),
                             )
                         }),
-                        format!("draw {} squares", axis.name));
+                        format!("draw {} squares", axis.name)
+                    );
                 }
                 "triangle" => {
                     draw_into!(
-                        projected_pts.iter()
-                            .map(|p| TriangleMarker::new(*p, m_size, color.filled())),
-                        format!("draw {} triangles", axis.name));
+                        projected_pts.iter().map(|p| TriangleMarker::new(
+                            *p,
+                            m_size,
+                            color.filled()
+                        )),
+                        format!("draw {} triangles", axis.name)
+                    );
                 }
                 "diamond" => {
                     let off = m_size as f64;
                     draw_into!(
                         projected_pts.iter().map(|p| {
-                            Polygon::new(vec![
-                                (p.0, p.1 - off),
-                                (p.0 + off, p.1),
-                                (p.0, p.1 + off),
-                                (p.0 - off, p.1),
-                            ], color.filled())
+                            Polygon::new(
+                                vec![
+                                    (p.0, p.1 - off),
+                                    (p.0 + off, p.1),
+                                    (p.0, p.1 + off),
+                                    (p.0 - off, p.1),
+                                ],
+                                color.filled(),
+                            )
                         }),
-                        format!("draw {} diamonds", axis.name));
+                        format!("draw {} diamonds", axis.name)
+                    );
                 }
                 "plus" => {
                     draw_into!(
-                        projected_pts.iter()
-                            .map(|p| Cross::new(*p, m_size, color.stroke_width(stroke_width))),
-                        format!("draw {} plus", axis.name));
+                        projected_pts.iter().map(|p| Cross::new(
+                            *p,
+                            m_size,
+                            color.stroke_width(stroke_width)
+                        )),
+                        format!("draw {} plus", axis.name)
+                    );
                 }
                 "cross" => {
                     let off = m_size as f64;
@@ -5981,22 +6772,30 @@ where
                         projected_pts.iter().flat_map(|p| {
                             let p = *p;
                             [
-                                PathElement::new(vec![
-                                    (p.0 - off, p.1 - off), (p.0 + off, p.1 + off),
-                                ], color.stroke_width(stroke_width)),
-                                PathElement::new(vec![
-                                    (p.0 - off, p.1 + off), (p.0 + off, p.1 - off),
-                                ], color.stroke_width(stroke_width)),
+                                PathElement::new(
+                                    vec![(p.0 - off, p.1 - off), (p.0 + off, p.1 + off)],
+                                    color.stroke_width(stroke_width),
+                                ),
+                                PathElement::new(
+                                    vec![(p.0 - off, p.1 + off), (p.0 + off, p.1 - off)],
+                                    color.stroke_width(stroke_width),
+                                ),
                             ]
                         }),
-                        format!("draw {} crosses", axis.name));
+                        format!("draw {} crosses", axis.name)
+                    );
                 }
                 other => {
-                    eprintln!("warning: unknown {} marker '{other}'; falling back to circle", axis.name);
+                    eprintln!(
+                        "warning: unknown {} marker '{other}'; falling back to circle",
+                        axis.name
+                    );
                     draw_into!(
-                        projected_pts.iter()
+                        projected_pts
+                            .iter()
                             .map(|p| Circle::new(*p, m_size, color.filled())),
-                        format!("draw {} circles", axis.name));
+                        format!("draw {} circles", axis.name)
+                    );
                 }
             }
             // y-datapoints — numeric labels for the
@@ -6008,17 +6807,18 @@ where
             let label_idxs = datapoint_label_indices(&original_ys, datapoints_mode);
             if !label_idxs.is_empty() {
                 let style = ("sans-serif", fz(11)).into_font().color(&color);
-                let labels: Vec<_> = label_idxs.into_iter().map(|i| {
-                    let (x, _) = projected_pts[i];
-                    let y_proj = projected_pts[i].1;
-                    Text::new(
-                        format_datapoint(original_ys[i]),
-                        (x, y_proj),
-                        style.clone(),
-                    )
-                }).collect();
-                draw_into!(labels.into_iter(),
-                    format!("draw {} datapoint labels", axis.name));
+                let labels: Vec<_> = label_idxs
+                    .into_iter()
+                    .map(|i| {
+                        let (x, _) = projected_pts[i];
+                        let y_proj = projected_pts[i].1;
+                        Text::new(format_datapoint(original_ys[i]), (x, y_proj), style.clone())
+                    })
+                    .collect();
+                draw_into!(
+                    labels.into_iter(),
+                    format!("draw {} datapoint labels", axis.name)
+                );
             }
 
             // point-label1: also surfaces on secondary axes,
@@ -6030,22 +6830,29 @@ where
             // the label sits above the marker, clear of the
             // y-datapoint numeric label.
             if let Some(spec) = point_label {
-                use plotters::style::text_anchor::{Pos, HPos, VPos};
-                let style = ("sans-serif", fz(10)).into_font()
+                use plotters::style::text_anchor::{HPos, Pos, VPos};
+                let style = ("sans-serif", fz(10))
+                    .into_font()
                     .color(&color.mix(0.85))
                     .pos(Pos::new(HPos::Center, VPos::Bottom));
-                let annotated: Vec<_> = points.iter()
+                let annotated: Vec<_> = points
+                    .iter()
                     .enumerate()
                     .map(|(i, p)| (i, p, format_point_label(p, spec, series_labels)))
                     .filter(|(_, _, txt)| !txt.is_empty())
                     .collect();
                 if !annotated.is_empty() {
-                    let labels: Vec<_> = annotated.into_iter().map(|(i, _, txt)| {
-                        let (x, y_proj) = projected_pts[i];
-                        Text::new(txt, (x, y_proj), style.clone())
-                    }).collect();
-                    draw_into!(labels.into_iter(),
-                        format!("draw {} point labels", axis.name));
+                    let labels: Vec<_> = annotated
+                        .into_iter()
+                        .map(|(i, _, txt)| {
+                            let (x, y_proj) = projected_pts[i];
+                            Text::new(txt, (x, y_proj), style.clone())
+                        })
+                        .collect();
+                    draw_into!(
+                        labels.into_iter(),
+                        format!("draw {} point labels", axis.name)
+                    );
                 }
             }
         }
@@ -6064,20 +6871,22 @@ where
     //
     // `LegendSpec::Suppressed` (`--legend none|off|hide`) skips
     // unconditionally.
-    let auto_show = series.len() + y2_count > 1
-        || series.keys().any(|k| !k.is_empty())
-        || y2_count > 0;
+    let auto_show =
+        series.len() + y2_count > 1 || series.keys().any(|k| !k.is_empty()) || y2_count > 0;
     let force_show = matches!(legend_spec, LegendSpec::Position(_)) && legend_explicit;
-    if (auto_show || force_show) && matches!(legend_spec, LegendSpec::Position(_))
-        && let LegendSpec::Position(position) = legend_spec {
-            chart.configure_series_labels()
-                .background_style(WHITE.mix(0.85))
-                .border_style(BLACK)
-                .label_font(("sans-serif", fz(14)))
-                .position(position)
-                .draw()
-                .map_err(|e| format!("draw legend: {e}"))?;
-        }
+    if (auto_show || force_show)
+        && matches!(legend_spec, LegendSpec::Position(_))
+        && let LegendSpec::Position(position) = legend_spec
+    {
+        chart
+            .configure_series_labels()
+            .background_style(WHITE.mix(0.85))
+            .border_style(BLACK)
+            .label_font(("sans-serif", fz(14)))
+            .position(position)
+            .draw()
+            .map_err(|e| format!("draw legend: {e}"))?;
+    }
 
     Ok(())
 }
@@ -6163,10 +6972,12 @@ fn write_csv(
     agg_name: &str,
 ) -> Result<(), String> {
     if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create output dir '{}': {e}", parent.display()))?;
-        }
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create output dir '{}': {e}", parent.display()))?;
+    }
     let mut out = String::new();
     if series_labels.is_empty() {
         out.push_str(&format!("{x_label},n_rows,{agg_name}({metric})\n"));
@@ -6176,10 +6987,14 @@ fn write_csv(
             }
         }
     } else {
-        let header_keys: String = series_labels.iter()
+        let header_keys: String = series_labels
+            .iter()
             .map(|k| csv_escape(k))
-            .collect::<Vec<_>>().join(",");
-        out.push_str(&format!("{header_keys},{x_label},n_rows,{agg_name}({metric})\n"));
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&format!(
+            "{header_keys},{x_label},n_rows,{agg_name}({metric})\n"
+        ));
         for (sname, pts) in aggregated {
             // Reconstruct the per-key values from the joined
             // tuple key (`k1=v1, k2=v2, …`). Reconstruction is
@@ -6187,8 +7002,7 @@ fn write_csv(
             // emits the keys in `series_labels` order.
             let values = parse_tuple_key(sname, series_labels);
             for p in pts {
-                let cells: Vec<String> = values.iter()
-                    .map(|s| csv_escape(s)).collect();
+                let cells: Vec<String> = values.iter().map(|s| csv_escape(s)).collect();
                 out.push_str(&format!(
                     "{},{},{},{:.6}\n",
                     cells.join(","),
@@ -6199,8 +7013,7 @@ fn write_csv(
             }
         }
     }
-    std::fs::write(path, out)
-        .map_err(|e| format!("write csv: {e}"))?;
+    std::fs::write(path, out).map_err(|e| format!("write csv: {e}"))?;
     Ok(())
 }
 
@@ -6234,9 +7047,7 @@ fn csv_escape(s: &str) -> String {
 /// directive (`mean recall@10 over limit` ≡
 /// `recall@10.mean over limit`). Lower-case only — directive
 /// parsing is case-sensitive.
-const AGG_PREFIXES: &[&str] = &[
-    "mean", "min", "max", "p50", "p99", "p999", "sum", "count",
-];
+const AGG_PREFIXES: &[&str] = &["mean", "min", "max", "p50", "p99", "p999", "sum", "count"];
 
 /// If `directive` starts with one of the aggregator keywords
 /// followed by whitespace, return `(agg, rest_after_agg)`.
@@ -6244,7 +7055,8 @@ fn strip_agg_prefix(directive: &str) -> Option<(&str, &str)> {
     for agg in AGG_PREFIXES {
         if let Some(rest) = directive.strip_prefix(agg)
             && let Some(c) = rest.chars().next()
-            && c.is_whitespace() {
+            && c.is_whitespace()
+        {
             return Some((agg, rest.trim_start()));
         }
     }
@@ -6258,10 +7070,14 @@ fn strip_agg_prefix(directive: &str) -> Option<(&str, &str)> {
 fn parse_function_agg(directive: &str) -> Option<(&str, &str, &str)> {
     let open = directive.find('(')?;
     let agg = directive[..open].trim();
-    if !AGG_PREFIXES.contains(&agg) { return None; }
+    if !AGG_PREFIXES.contains(&agg) {
+        return None;
+    }
     let close_rel = directive[open + 1..].find(')')?;
     let metric = directive[open + 1..open + 1 + close_rel].trim();
-    if metric.is_empty() { return None; }
+    if metric.is_empty() {
+        return None;
+    }
     let after = directive[open + 1 + close_rel + 1..].trim();
     Some((agg, metric, after))
 }
@@ -6278,27 +7094,43 @@ fn strip_line_comments(s: &str) -> String {
         let mut cut: Option<usize> = None;
         for (i, ch) in line.char_indices() {
             match quote {
-                Some(q) if ch == q => { quote = None; prev_ws = false; }
-                Some(_) => { prev_ws = false; }
-                None => match ch {
-                    '"' | '\'' => { quote = Some(ch); prev_ws = false; }
-                    '#' if prev_ws => { cut = Some(i); break; }
-                    c if c.is_whitespace() => { prev_ws = true; }
-                    _ => { prev_ws = false; }
+                Some(q) if ch == q => {
+                    quote = None;
+                    prev_ws = false;
                 }
+                Some(_) => {
+                    prev_ws = false;
+                }
+                None => match ch {
+                    '"' | '\'' => {
+                        quote = Some(ch);
+                        prev_ws = false;
+                    }
+                    '#' if prev_ws => {
+                        cut = Some(i);
+                        break;
+                    }
+                    c if c.is_whitespace() => {
+                        prev_ws = true;
+                    }
+                    _ => {
+                        prev_ws = false;
+                    }
+                },
             }
         }
         match cut {
             Some(idx) => {
                 out.push_str(&line[..idx]);
-                if line.ends_with('\n') { out.push('\n'); }
+                if line.ends_with('\n') {
+                    out.push('\n');
+                }
             }
             None => out.push_str(line),
         }
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -6325,14 +7157,30 @@ mod tests {
         }
         let conn = rusqlite::Connection::open(&db).unwrap();
         // Executions first (metric_instance FKs to them).
-        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) \
-                      VALUES ('s',1,'run',0)", []).unwrap();
-        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) \
-                      VALUES ('s',2,'refine',0)", []).unwrap();
-        conn.execute("INSERT INTO metric_family (name,type) VALUES ('recall_mean','gauge')", [])
+        conn.execute(
+            "INSERT INTO executions (session,exec_id,verb,started_at_nanos) \
+                      VALUES ('s',1,'run',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO executions (session,exec_id,verb,started_at_nanos) \
+                      VALUES ('s',2,'refine',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO metric_family (name,type) VALUES ('recall_mean','gauge')",
+            [],
+        )
+        .unwrap();
+        let fam: i64 = conn
+            .query_row(
+                "SELECT id FROM metric_family WHERE name='recall_mean'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        let fam: i64 = conn.query_row(
-            "SELECT id FROM metric_family WHERE name='recall_mean'", [], |r| r.get(0)).unwrap();
         let insert = |exec: i64, limit: &str, ts: i64, mean: f64| {
             // Canonical spec + instance_label rows the same way the
             // writer does: every label (incl. exec_id/session) is an
@@ -6344,24 +7192,44 @@ mod tests {
                 ("session".to_string(), "s".to_string()),
             ];
             labels.sort();
-            let body: String = labels.iter()
-                .map(|(k, v)| format!("{k}=\"{v}\"")).collect::<Vec<_>>().join(",");
+            let body: String = labels
+                .iter()
+                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(",");
             let spec = format!("recall_mean{{{body}}}");
             conn.execute(
                 "INSERT INTO metric_instance (family_id, spec, session, exec_id) \
-                 VALUES (?1,?2,'s',?3)", params![fam, spec, exec]).unwrap();
-            let iid: i64 = conn.query_row(
-                "SELECT id FROM metric_instance WHERE spec=?1", params![spec], |r| r.get(0)).unwrap();
+                 VALUES (?1,?2,'s',?3)",
+                params![fam, spec, exec],
+            )
+            .unwrap();
+            let iid: i64 = conn
+                .query_row(
+                    "SELECT id FROM metric_instance WHERE spec=?1",
+                    params![spec],
+                    |r| r.get(0),
+                )
+                .unwrap();
             conn.execute(
                 "INSERT INTO instance_label (instance_id,key,value) \
-                 VALUES (?1,'__name__','recall_mean')", params![iid]).unwrap();
+                 VALUES (?1,'__name__','recall_mean')",
+                params![iid],
+            )
+            .unwrap();
             for (k, v) in &labels {
-                conn.execute("INSERT INTO instance_label (instance_id,key,value) VALUES (?1,?2,?3)",
-                    params![iid, k, v]).unwrap();
+                conn.execute(
+                    "INSERT INTO instance_label (instance_id,key,value) VALUES (?1,?2,?3)",
+                    params![iid, k, v],
+                )
+                .unwrap();
             }
             conn.execute(
                 "INSERT INTO sample_value (instance_id,timestamp_ms,interval_ms,mean) \
-                 VALUES (?1,?2,0,?3)", params![iid, ts, mean]).unwrap();
+                 VALUES (?1,?2,0,?3)",
+                params![iid, ts, mean],
+            )
+            .unwrap();
         };
         let t1 = 1_000_000_i64;
         let t2 = t1 + 3_600_000; // +1h, well outside the instant-query lookback
@@ -6369,10 +7237,17 @@ mod tests {
         insert(2, "50", t2, 0.90);
         drop(conn);
 
-        let series = series_via_metricsql(&db, "recall_mean", ExecutionSelection::LatestPerInstance)
-            .expect("series_via_metricsql");
-        let limits: std::collections::BTreeSet<String> = series.iter()
-            .flat_map(|s| s.labels.iter().filter(|(k, _)| k == "limit").map(|(_, v)| v.clone()))
+        let series =
+            series_via_metricsql(&db, "recall_mean", ExecutionSelection::LatestPerInstance)
+                .expect("series_via_metricsql");
+        let limits: std::collections::BTreeSet<String> = series
+            .iter()
+            .flat_map(|s| {
+                s.labels
+                    .iter()
+                    .filter(|(k, _)| k == "limit")
+                    .map(|(_, v)| v.clone())
+            })
             .collect();
         assert!(
             limits.contains("25") && limits.contains("50"),
@@ -6394,18 +7269,38 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("metrics.db");
         let _ = std::fs::remove_file(&db);
-        { let _ = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap(); }
+        {
+            let _ = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+        }
         let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) VALUES ('s',1,'run',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO executions (session,exec_id,verb,started_at_nanos) VALUES ('s',1,'run',0)",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) VALUES ('s',2,'refine',0)", []).unwrap();
         for (fam, ty) in [("cycles_total", "counter"), ("recall_mean", "gauge")] {
-            conn.execute("INSERT INTO metric_family (name,type) VALUES (?1,?2)", params![fam, ty]).unwrap();
+            conn.execute(
+                "INSERT INTO metric_family (name,type) VALUES (?1,?2)",
+                params![fam, ty],
+            )
+            .unwrap();
         }
         let fam_id = |name: &str| -> i64 {
-            conn.query_row("SELECT id FROM metric_family WHERE name=?1", params![name], |r| r.get(0)).unwrap()
+            conn.query_row(
+                "SELECT id FROM metric_family WHERE name=?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         // insert(family, value_col, exec, limit, ts, value/count)
-        let insert = |fam: &str, exec: i64, limit: &str, ts: i64, count: Option<i64>, mean: Option<f64>| {
+        let insert = |fam: &str,
+                      exec: i64,
+                      limit: &str,
+                      ts: i64,
+                      count: Option<i64>,
+                      mean: Option<f64>| {
             let mut labels = vec![
                 ("exec_id".to_string(), exec.to_string()),
                 ("limit".to_string(), limit.to_string()),
@@ -6413,14 +7308,32 @@ mod tests {
                 ("session".to_string(), "s".to_string()),
             ];
             labels.sort();
-            let body: String = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect::<Vec<_>>().join(",");
+            let body: String = labels
+                .iter()
+                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(",");
             let spec = format!("{fam}{{{body}}}");
             conn.execute("INSERT INTO metric_instance (family_id, spec, session, exec_id) VALUES (?1,?2,'s',?3)",
                 params![fam_id(fam), spec, exec]).unwrap();
-            let iid: i64 = conn.query_row("SELECT id FROM metric_instance WHERE spec=?1", params![spec], |r| r.get(0)).unwrap();
-            conn.execute("INSERT INTO instance_label (instance_id,key,value) VALUES (?1,'__name__',?2)", params![iid, fam]).unwrap();
+            let iid: i64 = conn
+                .query_row(
+                    "SELECT id FROM metric_instance WHERE spec=?1",
+                    params![spec],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO instance_label (instance_id,key,value) VALUES (?1,'__name__',?2)",
+                params![iid, fam],
+            )
+            .unwrap();
             for (k, v) in &labels {
-                conn.execute("INSERT INTO instance_label (instance_id,key,value) VALUES (?1,?2,?3)", params![iid, k, v]).unwrap();
+                conn.execute(
+                    "INSERT INTO instance_label (instance_id,key,value) VALUES (?1,?2,?3)",
+                    params![iid, k, v],
+                )
+                .unwrap();
             }
             conn.execute("INSERT INTO sample_value (instance_id,timestamp_ms,interval_ms,count,mean) VALUES (?1,?2,1000,?3,?4)",
                 params![iid, ts, count, mean]).unwrap();
@@ -6440,11 +7353,14 @@ mod tests {
             &["limit".to_string()],
             ReduceOp::Avg,
             ExecutionSelection::LatestPerInstance,
-        ).expect("pair_xy_coordinates");
+        )
+        .expect("pair_xy_coordinates");
         let n_points: usize = pts.values().map(|v| v.len()).sum();
-        assert_eq!(n_points, 2,
+        assert_eq!(
+            n_points, 2,
             "paired plot must have a point for each execution's instance \
-             (limit=25 from exec 1, limit=50 from exec 2); got {n_points}: {pts:?}");
+             (limit=25 from exec 1, limit=50 from exec 2); got {n_points}: {pts:?}"
+        );
     }
 
     #[test]
@@ -6457,8 +7373,12 @@ mod tests {
         let opts = parse_args(&[
             "mean recall_mean over limit".to_string(),
             "--db".to_string(),
-            std::env::temp_dir().join("nonexistent.db").to_string_lossy().into_owned(),
-        ]).expect("parse_args");
+            std::env::temp_dir()
+                .join("nonexistent.db")
+                .to_string_lossy()
+                .into_owned(),
+        ])
+        .expect("parse_args");
         assert_eq!(
             opts.execution_selection,
             ExecutionSelection::LatestPerInstance,
@@ -6477,9 +7397,9 @@ mod tests {
         // execution (3) yields an EMPTY plot — the reported bug.
         // Per-instance-latest coalesces from exec 2.
         use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use std::time::{Duration, Instant};
 
         let dir = std::env::temp_dir().join("nbrs_latest_empty_exec_test");
@@ -6488,8 +7408,7 @@ mod tests {
         let _ = std::fs::remove_file(&db);
 
         {
-            let mut reporter =
-                nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+            let mut reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
             for (exec, verb) in [(1u64, "run"), (2, "refine"), (3, "refine")] {
                 reporter.insert_execution_start("s", exec, verb, None, 0, "", "");
             }
@@ -6504,7 +7423,9 @@ mod tests {
                 let mut snap = MetricSet::new(Duration::from_secs(1));
                 snap.insert_gauge(
                     family,
-                    Labels::of("session", "s").with("exec_id", exec).with("k", "10"),
+                    Labels::of("session", "s")
+                        .with("exec_id", exec)
+                        .with("k", "10"),
                     value,
                     Instant::now(),
                 );
@@ -6518,17 +7439,26 @@ mod tests {
         let pinned_to_latest =
             series_via_metricsql(&db, "recall_mean{exec_id=\"3\"}", ExecutionSelection::All)
                 .expect("series_via_metricsql");
-        assert!(pinned_to_latest.is_empty(),
-            "global-latest exec (3) has no recall_mean → empty (the reported bug)");
+        assert!(
+            pinned_to_latest.is_empty(),
+            "global-latest exec (3) has no recall_mean → empty (the reported bug)"
+        );
 
         // The fix: per-instance-latest coalesces from exec 2.
         let coalesced =
             series_via_metricsql(&db, "recall_mean", ExecutionSelection::LatestPerInstance)
                 .expect("series_via_metricsql");
-        assert_eq!(coalesced.len(), 1,
-            "per-instance-latest finds recall from the newest exec that has it");
         assert_eq!(
-            coalesced[0].labels.iter().find(|(k, _)| k == "exec_id").map(|(_, v)| v.as_str()),
+            coalesced.len(),
+            1,
+            "per-instance-latest finds recall from the newest exec that has it"
+        );
+        assert_eq!(
+            coalesced[0]
+                .labels
+                .iter()
+                .find(|(k, _)| k == "exec_id")
+                .map(|(_, v)| v.as_str()),
             Some("2"),
             "coalesced recall comes from exec 2 (exec 3 had none)"
         );
@@ -6545,9 +7475,9 @@ mod tests {
         // — the one thing the earlier paired test didn't model. The
         // plot MUST still produce a point for the in-flight execution.
         use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use rusqlite::params;
         use std::time::{Duration, Instant};
 
@@ -6556,8 +7486,7 @@ mod tests {
         let db = dir.join("metrics.db");
         let _ = std::fs::remove_file(&db);
         {
-            let mut reporter =
-                nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+            let mut reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
             reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             // No disposition update for exec 3 → in-flight (NULL).
             reporter.insert_execution_start("s", 3, "refine", None, 0, "", "");
@@ -6595,7 +7524,8 @@ mod tests {
                       JOIN metric_family f ON f.id=mi.family_id \
                       WHERE mi.exec_id=?2 AND f.name=?3)",
                     params![ts, exec, fam],
-                ).unwrap();
+                )
+                .unwrap();
             };
             upd("cycles_total", 1, 1_000_000);
             upd("recall_mean", 1, 1_000_000);
@@ -6610,11 +7540,14 @@ mod tests {
             &["k".to_string()],
             ReduceOp::Avg,
             ExecutionSelection::LatestPerInstance,
-        ).expect("pair_xy_coordinates");
+        )
+        .expect("pair_xy_coordinates");
         let n: usize = pts.values().map(|v| v.len()).sum();
-        assert_eq!(n, 2,
+        assert_eq!(
+            n, 2,
             "both the completed (k=10) and the in-flight (k=20) executions must \
-             plot a point, despite the in-flight cadence skew; got {n}: {pts:?}");
+             plot a point, despite the in-flight cadence skew; got {n}: {pts:?}"
+        );
     }
 
     #[test]
@@ -6627,10 +7560,10 @@ mod tests {
         // no recall_mean yet (an in-flight query cell mid-run) is the
         // ONLY thing that legitimately drops.
         use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
-        
+
         use std::time::{Duration, Instant};
 
         let dir = std::env::temp_dir().join("nbrs_multicombo_test");
@@ -6640,24 +7573,26 @@ mod tests {
 
         // (rerank, pruning, exec_id, has_recall)
         let combos: &[(&str, &str, &str, bool)] = &[
-            ("rerank_def", "pruning_def", "1", true),   // complete (exec 1)
-            ("rerank_lim", "pruning_def", "1", true),   // complete (exec 1)
-            ("rerank_def", "pruning_off", "1", true),   // complete (exec 1)
-            ("rerank_def", "pruning_def", "2", true),   // re-run in-flight (exec 2)
-            ("rerank_lim", "pruning_off", "2", false),  // in-flight, recall not done yet
+            ("rerank_def", "pruning_def", "1", true), // complete (exec 1)
+            ("rerank_lim", "pruning_def", "1", true), // complete (exec 1)
+            ("rerank_def", "pruning_off", "1", true), // complete (exec 1)
+            ("rerank_def", "pruning_def", "2", true), // re-run in-flight (exec 2)
+            ("rerank_lim", "pruning_off", "2", false), // in-flight, recall not done yet
         ];
         {
-            let mut reporter =
-                nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+            let mut reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
             reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             reporter.insert_execution_start("s", 2, "refine", None, 0, "", ""); // in-flight
             for (rerank, pruning, exec, has_recall) in combos {
-                let base = || Labels::of("session", "s")
-                    .with("exec_id", *exec)
-                    .with("phase", "pvs_query_sweep")
-                    .with("rerank_k_strategy", *rerank)
-                    .with("pruning_strategy", *pruning)
-                    .with("k", "10").with("limit", "50");
+                let base = || {
+                    Labels::of("session", "s")
+                        .with("exec_id", *exec)
+                        .with("phase", "pvs_query_sweep")
+                        .with("rerank_k_strategy", *rerank)
+                        .with("pruning_strategy", *pruning)
+                        .with("k", "10")
+                        .with("limit", "50")
+                };
                 let mut c = MetricSet::new(Duration::from_secs(1));
                 c.insert_counter("cycles_total", base(), 100, Instant::now());
                 reporter.report(&c);
@@ -6673,12 +7608,19 @@ mod tests {
         // its recall_mean.
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
-            conn.execute("UPDATE sample_value SET timestamp_ms = instance_id * 1000", []).unwrap();
+            conn.execute(
+                "UPDATE sample_value SET timestamp_ms = instance_id * 1000",
+                [],
+            )
+            .unwrap();
             conn.execute(
                 "UPDATE sample_value SET timestamp_ms = timestamp_ms + 9000000 \
                  WHERE instance_id IN (SELECT mi.id FROM metric_instance mi \
                    JOIN metric_family f ON f.id=mi.family_id \
-                   WHERE mi.exec_id=2 AND f.name='cycles_total')", []).unwrap();
+                   WHERE mi.exec_id=2 AND f.name='cycles_total')",
+                [],
+            )
+            .unwrap();
         }
 
         let pts = pair_xy_coordinates(
@@ -6690,9 +7632,11 @@ mod tests {
             ExecutionSelection::LatestPerInstance,
         ).expect("pair_xy_coordinates");
         let n: usize = pts.values().map(|v| v.len()).sum();
-        assert_eq!(n, 3,
+        assert_eq!(
+            n, 3,
             "the 3 combos with both metrics must plot ((def,def) re-run, (lim,def), \
-             (def,off)); only the in-flight recall-less (lim,off) drops. got {n}: {pts:?}");
+             (def,off)); only the in-flight recall-less (lim,off) drops. got {n}: {pts:?}"
+        );
     }
 
     #[test]
@@ -6705,10 +7649,10 @@ mod tests {
         // metricsql query must yield SEVERAL series, and the paired
         // plot must produce one point per strategy combo.
         use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use nbrs_metrics::reporters::sqlite::SqliteReporter;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use std::time::{Duration, Instant};
 
         let dir = std::env::temp_dir().join("nbrs_several_series_test");
@@ -6718,15 +7662,16 @@ mod tests {
 
         // Doesn't capture `reporter` — takes it per call, so no borrow
         // conflict with the nested loops.
-        let report_metric = |reporter: &mut SqliteReporter, counter: bool, labels: Labels, c: u64, r: f64| {
-            let mut snap = MetricSet::new(Duration::from_secs(1));
-            if counter {
-                snap.insert_counter("cycles_total", labels, c, Instant::now());
-            } else {
-                snap.insert_gauge("recall_mean", labels, r, Instant::now());
-            }
-            reporter.report(&snap);
-        };
+        let report_metric =
+            |reporter: &mut SqliteReporter, counter: bool, labels: Labels, c: u64, r: f64| {
+                let mut snap = MetricSet::new(Duration::from_secs(1));
+                if counter {
+                    snap.insert_counter("cycles_total", labels, c, Instant::now());
+                } else {
+                    snap.insert_gauge("recall_mean", labels, r, Instant::now());
+                }
+                reporter.report(&snap);
+            };
 
         let reranks = ["rerank_def", "rerank_lim"];
         let prunings = ["pruning_def", "pruning_off"];
@@ -6736,10 +7681,14 @@ mod tests {
             reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             reporter.insert_execution_start("s", 2, "refine", None, 0, "", "");
             let cell = |exec: &str, rr: &str, pr: &str, sm: &str| {
-                Labels::of("session", "s").with("exec_id", exec)
+                Labels::of("session", "s")
+                    .with("exec_id", exec)
                     .with("phase", "pvs_query_sweep")
-                    .with("rerank_k_strategy", rr).with("pruning_strategy", pr)
-                    .with("k", "10").with("limit", "50").with("sm", sm)
+                    .with("rerank_k_strategy", rr)
+                    .with("pruning_strategy", pr)
+                    .with("k", "10")
+                    .with("limit", "50")
+                    .with("sm", sm)
             };
             // exec 1: every strategy x sm combo, both metrics.
             for rr in reranks {
@@ -6751,13 +7700,32 @@ mod tests {
                 }
             }
             // exec 2 (in-flight): re-run one combo with newer recall.
-            report_metric(&mut reporter, true, cell("2", "rerank_def", "pruning_def", "OTHER"), 200, 0.0);
-            report_metric(&mut reporter, false, cell("2", "rerank_def", "pruning_def", "OTHER"), 0, 0.95);
+            report_metric(
+                &mut reporter,
+                true,
+                cell("2", "rerank_def", "pruning_def", "OTHER"),
+                200,
+                0.0,
+            );
+            report_metric(
+                &mut reporter,
+                false,
+                cell("2", "rerank_def", "pruning_def", "OTHER"),
+                0,
+                0.95,
+            );
             // A non-query phase the `phase=~"pvs_query_sweep"` filter
             // must exclude (cycles only, no recall).
-            report_metric(&mut reporter, true,
-                Labels::of("session", "s").with("exec_id", "1").with("phase", "fknn_rampup").with("k", "10"),
-                999, 0.0);
+            report_metric(
+                &mut reporter,
+                true,
+                Labels::of("session", "s")
+                    .with("exec_id", "1")
+                    .with("phase", "fknn_rampup")
+                    .with("k", "10"),
+                999,
+                0.0,
+            );
             reporter.flush();
         }
 
@@ -6768,29 +7736,55 @@ mod tests {
 
         // Each query yields one series per strategy combo (averaged
         // over sm), 4 total — and the non-query phase is excluded.
-        let x_series = series_via_metricsql(&db, x_q, ExecutionSelection::LatestPerInstance)
-            .expect("x query");
-        let y_series = series_via_metricsql(&db, y_q, ExecutionSelection::LatestPerInstance)
-            .expect("y query");
-        assert_eq!(x_series.len(), 4,
+        let x_series =
+            series_via_metricsql(&db, x_q, ExecutionSelection::LatestPerInstance).expect("x query");
+        let y_series =
+            series_via_metricsql(&db, y_q, ExecutionSelection::LatestPerInstance).expect("y query");
+        assert_eq!(
+            x_series.len(),
+            4,
             "x query must produce 4 series (rerank x pruning), got {}: {:?}",
             x_series.len(),
-            x_series.iter().map(|s| s.labels.clone()).collect::<Vec<_>>());
-        assert_eq!(y_series.len(), 4,
-            "y query must produce 4 series, got {}", y_series.len());
+            x_series
+                .iter()
+                .map(|s| s.labels.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            y_series.len(),
+            4,
+            "y query must produce 4 series, got {}",
+            y_series.len()
+        );
         assert!(
-            x_series.iter().all(|s| !s.labels.iter().any(|(k, v)| k == "phase" && v == "fknn_rampup")),
-            "the non-query phase must be filtered out");
+            x_series.iter().all(|s| !s
+                .labels
+                .iter()
+                .any(|(k, v)| k == "phase" && v == "fknn_rampup")),
+            "the non-query phase must be filtered out"
+        );
 
         // The paired plot must produce one point per strategy combo.
         let pts = pair_xy_coordinates(
-            &db, x_q, y_q,
-            &["rerank_k_strategy".to_string(), "pruning_strategy".to_string(), "k".to_string()],
-            ReduceOp::Avg, ExecutionSelection::LatestPerInstance,
-        ).expect("pair_xy_coordinates");
-        assert_eq!(pts.len(), 4,
+            &db,
+            x_q,
+            y_q,
+            &[
+                "rerank_k_strategy".to_string(),
+                "pruning_strategy".to_string(),
+                "k".to_string(),
+            ],
+            ReduceOp::Avg,
+            ExecutionSelection::LatestPerInstance,
+        )
+        .expect("pair_xy_coordinates");
+        assert_eq!(
+            pts.len(),
+            4,
             "several series expected (one per strategy combo); got {}: {:?}",
-            pts.len(), pts.keys().collect::<Vec<_>>());
+            pts.len(),
+            pts.keys().collect::<Vec<_>>()
+        );
         let total: usize = pts.values().map(|v| v.len()).sum();
         assert_eq!(total, 4, "one point per strategy combo; got {total}");
     }
@@ -6814,15 +7808,23 @@ mod tests {
         // TMPDIR sandbox — not your real `sessions/latest`. So prefer
         // an explicit `NBRS_TEST_DB=...`, then the cwd-relative
         // `sessions/latest` / `logs/latest`, then the default.
-        let db = std::env::var("NBRS_TEST_DB").ok()
+        let db = std::env::var("NBRS_TEST_DB")
+            .ok()
             .map(std::path::PathBuf::from)
             .filter(|p| p.exists())
-            .or_else(|| ["sessions/latest/metrics.db", "logs/latest/metrics.db"]
-                .iter().map(std::path::PathBuf::from).find(|p| p.exists()))
+            .or_else(|| {
+                ["sessions/latest/metrics.db", "logs/latest/metrics.db"]
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .find(|p| p.exists())
+            })
             .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
         if !db.exists() {
-            eprintln!("no session db found (tried NBRS_TEST_DB, sessions/latest, \
-                       logs/latest, default {}) — nothing to check", db.display());
+            eprintln!(
+                "no session db found (tried NBRS_TEST_DB, sessions/latest, \
+                       logs/latest, default {}) — nothing to check",
+                db.display()
+            );
             return;
         }
         eprintln!("checking queries against {}", db.display());
@@ -6834,7 +7836,9 @@ mod tests {
             let s = series_via_metricsql(&db, q, ExecutionSelection::LatestPerInstance)
                 .unwrap_or_default();
             eprintln!("{label}: `{q}` → {} series", s.len());
-            for ser in s.iter().take(12) { eprintln!("    {:?}", ser.labels); }
+            for ser in s.iter().take(12) {
+                eprintln!("    {:?}", ser.labels);
+            }
             s.len()
         };
         let nx = dump("x (cycles_total_rate)", x_q);
@@ -6842,9 +7846,12 @@ mod tests {
 
         // What dimensions does recall_mean ACTUALLY carry? (across all
         // executions, so an empty result truly means "no recall".)
-        let raw = series_via_metricsql(&db, "recall_mean", ExecutionSelection::All)
-            .unwrap_or_default();
-        eprintln!("raw recall_mean (all executions) → {} series; sample labels:", raw.len());
+        let raw =
+            series_via_metricsql(&db, "recall_mean", ExecutionSelection::All).unwrap_or_default();
+        eprintln!(
+            "raw recall_mean (all executions) → {} series; sample labels:",
+            raw.len()
+        );
         for ser in raw.iter().take(5) {
             let mut keys: Vec<&str> = ser.labels.iter().map(|(k, _)| k.as_str()).collect();
             keys.sort();
@@ -6852,14 +7859,18 @@ mod tests {
         }
 
         if !raw.is_empty() {
-            assert!(ny > 0,
+            assert!(
+                ny > 0,
                 "recall_mean has {} series but the by-(rerank_k_strategy,pruning_strategy,k,limit) \
                  query produced 0 — your recall_mean instances are missing one of those grouping \
                  labels (or their phase != 'pvs_query_sweep'). See the printed keys above.",
-                raw.len());
-            assert!(nx > 0,
+                raw.len()
+            );
+            assert!(
+                nx > 0,
                 "recall_mean produced series but cycles_total_rate produced 0 — \
-                 the qps axis has no data for those phases.");
+                 the qps axis has no data for those phases."
+            );
         }
     }
 
@@ -6888,28 +7899,58 @@ mod tests {
             let root = BitMapBackend::new(&out, (480, 320)).into_drawing_area();
             let mut series: BTreeMap<String, Vec<PlotPoint>> = BTreeMap::new();
             for (name, base) in [("alpha", 1.0), ("beta", 2.0), ("gamma", 3.0)] {
-                series.insert(name.to_string(), (0..4).map(|i| PlotPoint {
-                    x: i as f64,
-                    y: base + i as f64 * 0.1,
-                    count: 1,
-                    labels: std::collections::HashMap::new(),
-                }).collect());
+                series.insert(
+                    name.to_string(),
+                    (0..4)
+                        .map(|i| PlotPoint {
+                            x: i as f64,
+                            y: base + i as f64 * 0.1,
+                            count: 1,
+                            labels: std::collections::HashMap::new(),
+                        })
+                        .collect(),
+                );
             }
             let res = draw_chart(
-                &root, &series, &[], "title", "x", "y",
-                0.0..3.0, 0.0..4.0, "metric",
-                None, None, None, Some("auto"), None,
-                None, None,
-                LegendSpec::Position(SeriesLabelPosition::UpperRight), false,
-                &[], false, false, &[], &[], None,
-                DatapointsMode::None, None, &[], 1.0,
+                &root,
+                &series,
+                &[],
+                "title",
+                "x",
+                "y",
+                0.0..3.0,
+                0.0..4.0,
+                "metric",
+                None,
+                None,
+                None,
+                Some("auto"),
+                None,
+                None,
+                None,
+                LegendSpec::Position(SeriesLabelPosition::UpperRight),
+                false,
+                &[],
+                false,
+                false,
+                &[],
+                &[],
+                None,
+                DatapointsMode::None,
+                None,
+                &[],
+                1.0,
             );
             assert!(res.is_ok(), "marker:auto render failed: {res:?}");
             root.present().expect("present chart");
         }
         assert!(
-            std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false),
-            "expected a non-empty PNG at {}", out.display());
+            std::fs::metadata(&out)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false),
+            "expected a non-empty PNG at {}",
+            out.display()
+        );
         let _ = std::fs::remove_file(&out);
     }
 
@@ -6917,9 +7958,9 @@ mod tests {
     fn color_and_shape_channel_directives_parse() {
         // `color:` / `shape:` set the channel labels; `off`/`none`
         // clear them back to legacy per-series-index styling.
-        let opts = parse_spec(
-            "x over y\nseries: a,b\ncolor: rerank_k_strategy\nshape: pruning_strategy")
-            .unwrap();
+        let opts =
+            parse_spec("x over y\nseries: a,b\ncolor: rerank_k_strategy\nshape: pruning_strategy")
+                .unwrap();
         assert_eq!(opts.color_label.as_deref(), Some("rerank_k_strategy"));
         assert_eq!(opts.shape_label.as_deref(), Some("pruning_strategy"));
         let opts = parse_spec("x over y\ncolor: off\nshape: none").unwrap();
@@ -6944,30 +7985,60 @@ mod tests {
             for rerank in ["rerank_def", "rerank_lim"] {
                 for pruning in ["pruning_def", "pruning_off"] {
                     let key = format!("rerank={rerank}, pruning={pruning}");
-                    series.insert(key, (0..4).map(|i| PlotPoint {
-                        x: 70.0 + i as f64,
-                        // Narrow range near 1.0 — the bug's trigger.
-                        y: 0.94 + i as f64 * 0.01,
-                        count: 1,
-                        labels: std::collections::HashMap::new(),
-                    }).collect());
+                    series.insert(
+                        key,
+                        (0..4)
+                            .map(|i| PlotPoint {
+                                x: 70.0 + i as f64,
+                                // Narrow range near 1.0 — the bug's trigger.
+                                y: 0.94 + i as f64 * 0.01,
+                                count: 1,
+                                labels: std::collections::HashMap::new(),
+                            })
+                            .collect(),
+                    );
                 }
             }
             let res = draw_chart(
-                &root, &series, &[], "title", "x", "y",
-                65.0..75.0, 0.93..1.0, "metric",
-                None, None, None, None, None,
-                Some("rerank"), Some("pruning"),
-                LegendSpec::Position(SeriesLabelPosition::LowerRight), false,
-                &[], false, false, &[], &[], None,
-                DatapointsMode::None, None, &["rerank".into(), "pruning".into()], 1.0,
+                &root,
+                &series,
+                &[],
+                "title",
+                "x",
+                "y",
+                65.0..75.0,
+                0.93..1.0,
+                "metric",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("rerank"),
+                Some("pruning"),
+                LegendSpec::Position(SeriesLabelPosition::LowerRight),
+                false,
+                &[],
+                false,
+                false,
+                &[],
+                &[],
+                None,
+                DatapointsMode::None,
+                None,
+                &["rerank".into(), "pruning".into()],
+                1.0,
             );
             assert!(res.is_ok(), "channel render failed: {res:?}");
             root.present().expect("present chart");
         }
         assert!(
-            std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false),
-            "expected a non-empty PNG at {}", out.display());
+            std::fs::metadata(&out)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false),
+            "expected a non-empty PNG at {}",
+            out.display()
+        );
         let _ = std::fs::remove_file(&out);
     }
 
@@ -6983,14 +8054,15 @@ mod tests {
     fn function_agg_with_substring_filter() {
         // From SRD-46 example workload: function-call agg form,
         // multi-key `over` with `~` substring filter on profile.
-        let opts = parse_spec(
-            "mean(recall) over profile~label,limit where k=1"
-        ).unwrap();
+        let opts = parse_spec("mean(recall) over profile~label,limit where k=1").unwrap();
         assert_eq!(opts.metric.as_deref(), Some("recall.mean"));
         assert_eq!(opts.x_label.as_deref(), Some("limit"));
         // `profile~label` becomes a substring filter.
-        assert!(opts.filters.contains(&("profile".into(), "~label".into())),
-            "filters: {:?}", opts.filters);
+        assert!(
+            opts.filters.contains(&("profile".into(), "~label".into())),
+            "filters: {:?}",
+            opts.filters
+        );
         // `where k=1` is a regular exact filter.
         assert!(opts.filters.contains(&("k".into(), "1".into())));
     }
@@ -7036,8 +8108,10 @@ mod tests {
         let opts = parse_spec(spec).unwrap();
         assert_eq!(opts.query.as_deref(), Some("avg(recall_mean) by (limit)"));
         assert_eq!(opts.x_label.as_deref(), Some("limit"));
-        assert!(opts.series_labels.is_empty(),
-            "auto-detect — no explicit partition directive");
+        assert!(
+            opts.series_labels.is_empty(),
+            "auto-detect — no explicit partition directive"
+        );
         // y2 family routes through `secondary_axes[0]` (the
         // first secondary axis) per SRD-65.
         assert_eq!(opts.secondary_axes.len(), 1);
@@ -7138,10 +8212,7 @@ mod tests {
         assert_eq!(natural_str_cmp("k=10", "k=100"), Ordering::Less);
         // Tuples: numeric segment + non-numeric tail.
         assert_eq!(
-            natural_str_cmp(
-                "k=10, optimize_for=recall",
-                "k=100, optimize_for=recall",
-            ),
+            natural_str_cmp("k=10, optimize_for=recall", "k=100, optimize_for=recall",),
             Ordering::Less,
         );
         // Equal strings.
@@ -7159,12 +8230,15 @@ mod tests {
             "k=2, optimize_for=recall",
         ];
         ks.sort_by(|a, b| natural_str_cmp(a, b));
-        assert_eq!(ks, vec![
-            "k=1, optimize_for=recall",
-            "k=2, optimize_for=recall",
-            "k=10, optimize_for=recall",
-            "k=100, optimize_for=recall",
-        ]);
+        assert_eq!(
+            ks,
+            vec![
+                "k=1, optimize_for=recall",
+                "k=2, optimize_for=recall",
+                "k=10, optimize_for=recall",
+                "k=100, optimize_for=recall",
+            ]
+        );
     }
 
     #[test]
@@ -7186,33 +8260,44 @@ mod tests {
         // Form B: paren-wrapped bare metric names → avg
         // implied.
         let p = try_decompose_compact_pair(
-            "(cycles_total_rate,cycles_servicetime_mean){phase=~\".*query\"} by (phase,limit)"
-        ).expect("should decompose form B");
-        assert_eq!(p.x_query,
-            "avg(cycles_total_rate{phase=~\".*query\"}) by (phase,limit)");
-        assert_eq!(p.y_query,
-            "avg(cycles_servicetime_mean{phase=~\".*query\"}) by (phase,limit)");
+            "(cycles_total_rate,cycles_servicetime_mean){phase=~\".*query\"} by (phase,limit)",
+        )
+        .expect("should decompose form B");
+        assert_eq!(
+            p.x_query,
+            "avg(cycles_total_rate{phase=~\".*query\"}) by (phase,limit)"
+        );
+        assert_eq!(
+            p.y_query,
+            "avg(cycles_servicetime_mean{phase=~\".*query\"}) by (phase,limit)"
+        );
     }
 
     #[test]
     fn compact_pair_form_c_explicit_outer_fn() {
         // Form C: outer aggregation wraps the metric pair.
         let p = try_decompose_compact_pair(
-            "avg(cycles_total_rate,cycles_servicetime_mean){phase=~\".*query\"} by (phase,limit)"
-        ).expect("should decompose form C");
-        assert_eq!(p.x_query,
-            "avg(cycles_total_rate{phase=~\".*query\"}) by (phase,limit)");
-        assert_eq!(p.y_query,
-            "avg(cycles_servicetime_mean{phase=~\".*query\"}) by (phase,limit)");
+            "avg(cycles_total_rate,cycles_servicetime_mean){phase=~\".*query\"} by (phase,limit)",
+        )
+        .expect("should decompose form C");
+        assert_eq!(
+            p.x_query,
+            "avg(cycles_total_rate{phase=~\".*query\"}) by (phase,limit)"
+        );
+        assert_eq!(
+            p.y_query,
+            "avg(cycles_servicetime_mean{phase=~\".*query\"}) by (phase,limit)"
+        );
     }
 
     #[test]
     fn compact_pair_returns_none_for_plain_query() {
         // Single-metric queries pass through unchanged —
         // operator wants this exact text as the y query.
-        assert!(try_decompose_compact_pair(
-            "avg(recall_mean{phase=\"ann_query\"}) by (k,limit)"
-        ).is_none());
+        assert!(
+            try_decompose_compact_pair("avg(recall_mean{phase=\"ann_query\"}) by (k,limit)")
+                .is_none()
+        );
         assert!(try_decompose_compact_pair("recall_mean").is_none());
     }
 
@@ -7220,8 +8305,9 @@ mod tests {
     fn compact_pair_form_b_with_vary_point_label() {
         // Form B + `*` in third position → Vary spec.
         let p = try_decompose_compact_pair(
-            "(cycles_total_rate, recall_mean, *){phase=~\".*query\"} by (phase,k,limit)"
-        ).expect("should decompose form B + point-label");
+            "(cycles_total_rate, recall_mean, *){phase=~\".*query\"} by (phase,k,limit)",
+        )
+        .expect("should decompose form B + point-label");
         assert!(p.x_query.contains("cycles_total_rate"));
         assert!(p.y_query.contains("recall_mean"));
         assert!(matches!(p.point_label, Some(PointLabelSpec::Vary)));
@@ -7231,11 +8317,11 @@ mod tests {
     fn compact_pair_form_b_with_explicit_point_label() {
         // Form B + single label name → Explicit(["limit"]).
         let p = try_decompose_compact_pair(
-            "(cycles_total_rate, recall_mean, limit){phase=~\".*query\"} by (phase,k,limit)"
-        ).expect("should decompose form B + label");
+            "(cycles_total_rate, recall_mean, limit){phase=~\".*query\"} by (phase,k,limit)",
+        )
+        .expect("should decompose form B + label");
         match p.point_label {
-            Some(PointLabelSpec::Explicit(ref v)) =>
-                assert_eq!(v, &["limit".to_string()]),
+            Some(PointLabelSpec::Explicit(ref v)) => assert_eq!(v, &["limit".to_string()]),
             other => panic!("expected Explicit(['limit']), got {other:?}"),
         }
     }
@@ -7244,8 +8330,9 @@ mod tests {
     fn compact_pair_form_c_with_point_label() {
         // Form C + third positional → carries through.
         let p = try_decompose_compact_pair(
-            "avg(cycles_total_rate, recall_mean, *){phase=~\".*query\"} by (phase,limit)"
-        ).expect("should decompose form C + point-label");
+            "avg(cycles_total_rate, recall_mean, *){phase=~\".*query\"} by (phase,limit)",
+        )
+        .expect("should decompose form C + point-label");
         assert!(matches!(p.point_label, Some(PointLabelSpec::Vary)));
     }
 
@@ -7254,33 +8341,34 @@ mod tests {
         // Form A's third element is a `{labels}` filter,
         // NOT a point-label spec. Must continue to parse as
         // Form A (no point-label).
-        let p = try_decompose_compact_pair(
-            "(avg(a),avg(b),{phase=~\".*query\"}) by (phase,limit)"
-        ).expect("Form A still parses");
+        let p = try_decompose_compact_pair("(avg(a),avg(b),{phase=~\".*query\"}) by (phase,limit)")
+            .expect("Form A still parses");
         assert!(p.point_label.is_none());
     }
 
     #[test]
     fn parse_point_label_spec_accepts_star_and_lists() {
-        assert!(matches!(parse_point_label_spec("*"),
-            Ok(PointLabelSpec::Vary)));
+        assert!(matches!(
+            parse_point_label_spec("*"),
+            Ok(PointLabelSpec::Vary)
+        ));
         match parse_point_label_spec("limit") {
-            Ok(PointLabelSpec::Explicit(v)) =>
-                assert_eq!(v, vec!["limit".to_string()]),
+            Ok(PointLabelSpec::Explicit(v)) => assert_eq!(v, vec!["limit".to_string()]),
             other => panic!("expected Explicit, got {other:?}"),
         }
         match parse_point_label_spec("k,limit,phase") {
-            Ok(PointLabelSpec::Explicit(v)) =>
-                assert_eq!(v, vec![
-                    "k".to_string(), "limit".to_string(), "phase".to_string()
-                ]),
+            Ok(PointLabelSpec::Explicit(v)) => assert_eq!(
+                v,
+                vec!["k".to_string(), "limit".to_string(), "phase".to_string()]
+            ),
             other => panic!("expected Explicit, got {other:?}"),
         }
         // Bracketed list parses the same — convenience for
         // YAML readers used to `[a, b]` shapes.
         match parse_point_label_spec("[a,b]") {
-            Ok(PointLabelSpec::Explicit(v)) =>
-                assert_eq!(v, vec!["a".to_string(), "b".to_string()]),
+            Ok(PointLabelSpec::Explicit(v)) => {
+                assert_eq!(v, vec!["a".to_string(), "b".to_string()])
+            }
             other => panic!("expected Explicit, got {other:?}"),
         }
     }
@@ -7298,12 +8386,18 @@ mod tests {
         labels.insert("phase".to_string(), "ann_query".to_string());
         labels.insert("k".to_string(), "10".to_string());
         labels.insert("limit".to_string(), "100".to_string());
-        let p = PlotPoint { x: 1.0, y: 0.95, count: 1, labels };
+        let p = PlotPoint {
+            x: 1.0,
+            y: 0.95,
+            count: 1,
+            labels,
+        };
         // series_labels = [phase, k] → vary surfaces just
         // `limit`. Key prefix is preserved so the operator
         // always knows which label they're reading.
         let s = format_point_label(
-            &p, &PointLabelSpec::Vary,
+            &p,
+            &PointLabelSpec::Vary,
             &["phase".to_string(), "k".to_string()],
         );
         assert_eq!(s, "limit=100");
@@ -7316,11 +8410,13 @@ mod tests {
         labels.insert("k".to_string(), "10".to_string());
         labels.insert("limit".to_string(), "100".to_string());
         labels.insert("model".to_string(), "v2".to_string());
-        let p = PlotPoint { x: 1.0, y: 0.95, count: 1, labels };
-        let s = format_point_label(
-            &p, &PointLabelSpec::Vary,
-            &["phase".to_string()],
-        );
+        let p = PlotPoint {
+            x: 1.0,
+            y: 0.95,
+            count: 1,
+            labels,
+        };
+        let s = format_point_label(&p, &PointLabelSpec::Vary, &["phase".to_string()]);
         assert_eq!(s, "k=10, limit=100, model=v2");
     }
 
@@ -7329,9 +8425,15 @@ mod tests {
         let mut labels = std::collections::HashMap::new();
         labels.insert("limit".to_string(), "200".to_string());
         labels.insert("k".to_string(), "10".to_string());
-        let p = PlotPoint { x: 1.0, y: 0.5, count: 1, labels };
+        let p = PlotPoint {
+            x: 1.0,
+            y: 0.5,
+            count: 1,
+            labels,
+        };
         let s = format_point_label(
-            &p, &PointLabelSpec::Explicit(vec!["limit".to_string()]),
+            &p,
+            &PointLabelSpec::Explicit(vec!["limit".to_string()]),
             &[],
         );
         // Single-label projection still includes the key
@@ -7346,11 +8448,15 @@ mod tests {
         let mut labels = std::collections::HashMap::new();
         labels.insert("limit".to_string(), "200".to_string());
         labels.insert("k".to_string(), "10".to_string());
-        let p = PlotPoint { x: 1.0, y: 0.5, count: 1, labels };
+        let p = PlotPoint {
+            x: 1.0,
+            y: 0.5,
+            count: 1,
+            labels,
+        };
         let s = format_point_label(
-            &p, &PointLabelSpec::Explicit(vec![
-                "k".to_string(), "limit".to_string()
-            ]),
+            &p,
+            &PointLabelSpec::Explicit(vec!["k".to_string(), "limit".to_string()]),
             &[],
         );
         assert_eq!(s, "k=10, limit=200");
@@ -7359,11 +8465,14 @@ mod tests {
     #[test]
     fn format_point_label_missing_label_renders_unset() {
         let p = PlotPoint {
-            x: 1.0, y: 0.5, count: 1,
+            x: 1.0,
+            y: 0.5,
+            count: 1,
             labels: std::collections::HashMap::new(),
         };
         let s = format_point_label(
-            &p, &PointLabelSpec::Explicit(vec!["limit".to_string()]),
+            &p,
+            &PointLabelSpec::Explicit(vec!["limit".to_string()]),
             &[],
         );
         assert_eq!(s, "limit=(unset)");
@@ -7378,11 +8487,14 @@ mod tests {
         let mut labels = std::collections::HashMap::new();
         labels.insert("limit".to_string(), "200".to_string());
         let p = PlotPoint {
-            x: 816.5, y: 0.8718, count: 24,
+            x: 816.5,
+            y: 0.8718,
+            count: 24,
             labels,
         };
         let s = format_point_label(
-            &p, &PointLabelSpec::Explicit(vec![
+            &p,
+            &PointLabelSpec::Explicit(vec![
                 "limit".to_string(),
                 "x".to_string(),
                 "y".to_string(),
@@ -7397,13 +8509,12 @@ mod tests {
     fn format_point_label_x_token_alone_works() {
         // Single-token `x` renders the formatted x value.
         let p = PlotPoint {
-            x: 1234.0, y: 0.5, count: 1,
+            x: 1234.0,
+            y: 0.5,
+            count: 1,
             labels: std::collections::HashMap::new(),
         };
-        let s = format_point_label(
-            &p, &PointLabelSpec::Explicit(vec!["x".to_string()]),
-            &[],
-        );
+        let s = format_point_label(&p, &PointLabelSpec::Explicit(vec!["x".to_string()]), &[]);
         // 1234.0 has zero fractional part → integer form.
         assert_eq!(s, "x=1234");
     }
@@ -7468,10 +8579,7 @@ mod tests {
 
     #[test]
     fn split_array_value_simple() {
-        assert_eq!(
-            split_array_value("[a, b, c]").unwrap(),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(split_array_value("[a, b, c]").unwrap(), vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -7506,7 +8614,10 @@ mod tests {
         let opts = parse_spec(spec).unwrap();
         assert_eq!(opts.y_legend_format.as_deref(), Some("oracle [profile]"));
         assert_eq!(opts.secondary_axes[0].legend_format.as_deref(), Some("PVS"));
-        assert_eq!(opts.secondary_axes[1].legend_format.as_deref(), Some("overscan"));
+        assert_eq!(
+            opts.secondary_axes[1].legend_format.as_deref(),
+            Some("overscan")
+        );
     }
 
     #[test]
@@ -7559,7 +8670,10 @@ mod tests {
         for opts in [&opts_a, &opts_b] {
             assert_eq!(opts.y_legend_format.as_deref(), Some("oracle"));
             assert_eq!(opts.secondary_axes[0].legend_format.as_deref(), Some("PVS"));
-            assert_eq!(opts.secondary_axes[1].legend_format.as_deref(), Some("overscan"));
+            assert_eq!(
+                opts.secondary_axes[1].legend_format.as_deref(),
+                Some("overscan")
+            );
             assert_eq!(opts.y_min, Some(0.0));
             assert_eq!(opts.y_max, Some(1.0));
             assert_eq!(opts.ylabel.as_deref(), Some("recall"));
@@ -7683,11 +8797,12 @@ mod tests {
 
     #[test]
     fn spec_multi_key_by() {
-        let opts = parse_spec(
-            "recall@10.mean over limit by k,optimize_for where phase=ann_query"
-        ).unwrap();
-        assert_eq!(opts.series_labels,
-            vec!["k".to_string(), "optimize_for".to_string()]);
+        let opts = parse_spec("recall@10.mean over limit by k,optimize_for where phase=ann_query")
+            .unwrap();
+        assert_eq!(
+            opts.series_labels,
+            vec!["k".to_string(), "optimize_for".to_string()]
+        );
         assert_eq!(opts.x_label.as_deref(), Some("limit"));
     }
 
@@ -7699,11 +8814,15 @@ mod tests {
 
     #[test]
     fn spec_multi_key_with_spaces() {
-        let opts = parse_spec(
-            "recall@10.mean over limit by k, optimize_for ,phase"
-        ).unwrap();
-        assert_eq!(opts.series_labels,
-            vec!["k".to_string(), "optimize_for".to_string(), "phase".to_string()]);
+        let opts = parse_spec("recall@10.mean over limit by k, optimize_for ,phase").unwrap();
+        assert_eq!(
+            opts.series_labels,
+            vec![
+                "k".to_string(),
+                "optimize_for".to_string(),
+                "phase".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -7714,16 +8833,20 @@ mod tests {
             ("profile".to_string(), "label_03".to_string()),
         ]);
         let series = vec!["k".to_string(), "optimize_for".to_string()];
-        assert_eq!(series_tuple_key(&labels, &series), "k=10, optimize_for=RECALL");
+        assert_eq!(
+            series_tuple_key(&labels, &series),
+            "k=10, optimize_for=RECALL"
+        );
     }
 
     #[test]
     fn series_tuple_key_handles_missing_label() {
-        let labels = std::collections::HashMap::from([
-            ("k".to_string(), "10".to_string()),
-        ]);
+        let labels = std::collections::HashMap::from([("k".to_string(), "10".to_string())]);
         let series = vec!["k".to_string(), "optimize_for".to_string()];
-        assert_eq!(series_tuple_key(&labels, &series), "k=10, optimize_for=(unset)");
+        assert_eq!(
+            series_tuple_key(&labels, &series),
+            "k=10, optimize_for=(unset)"
+        );
     }
 
     fn row(spec: &str, mean: f64) -> DbRow {
@@ -7783,7 +8906,8 @@ mod tests {
         ];
         let buckets = bucket_rows(&rows, "limit", &[]);
         let cell = &buckets[""];
-        let series_pts: Vec<f64> = cell.values()
+        let series_pts: Vec<f64> = cell
+            .values()
             .map(|samples| aggregate("mean", samples))
             .collect();
         assert_eq!(series_pts.len(), 1);
@@ -7803,8 +8927,14 @@ mod tests {
         let cell = &buckets[""];
         let m_at_10 = aggregate("mean", &cell[&F64Key(10.0)]);
         let m_at_20 = aggregate("mean", &cell[&F64Key(20.0)]);
-        assert!((m_at_10 - 0.85).abs() < 1e-9, "expected 0.85, got {m_at_10}");
-        assert!((m_at_20 - 0.95).abs() < 1e-9, "expected 0.95, got {m_at_20}");
+        assert!(
+            (m_at_10 - 0.85).abs() < 1e-9,
+            "expected 0.85, got {m_at_10}"
+        );
+        assert!(
+            (m_at_20 - 0.95).abs() < 1e-9,
+            "expected 0.95, got {m_at_20}"
+        );
     }
 
     #[test]
@@ -7812,22 +8942,44 @@ mod tests {
         // Two distinct (k, optimize_for) tuples; means computed
         // separately within each tuple.
         let rows = vec![
-            row("recall{k=\"10\",optimize_for=\"RECALL\",profile=\"a\",limit=\"10\"}", 0.90),
-            row("recall{k=\"10\",optimize_for=\"RECALL\",profile=\"b\",limit=\"10\"}", 0.92),
-            row("recall{k=\"100\",optimize_for=\"LATENCY\",profile=\"a\",limit=\"10\"}", 0.70),
-            row("recall{k=\"100\",optimize_for=\"LATENCY\",profile=\"b\",limit=\"10\"}", 0.74),
+            row(
+                "recall{k=\"10\",optimize_for=\"RECALL\",profile=\"a\",limit=\"10\"}",
+                0.90,
+            ),
+            row(
+                "recall{k=\"10\",optimize_for=\"RECALL\",profile=\"b\",limit=\"10\"}",
+                0.92,
+            ),
+            row(
+                "recall{k=\"100\",optimize_for=\"LATENCY\",profile=\"a\",limit=\"10\"}",
+                0.70,
+            ),
+            row(
+                "recall{k=\"100\",optimize_for=\"LATENCY\",profile=\"b\",limit=\"10\"}",
+                0.74,
+            ),
         ];
         let series = vec!["k".to_string(), "optimize_for".to_string()];
         let buckets = bucket_rows(&rows, "limit", &series);
-        assert_eq!(buckets.len(), 2,
-            "expected 2 series tuples, got {}: {:?}", buckets.len(),
-            buckets.keys().collect::<Vec<_>>());
+        assert_eq!(
+            buckets.len(),
+            2,
+            "expected 2 series tuples, got {}: {:?}",
+            buckets.len(),
+            buckets.keys().collect::<Vec<_>>()
+        );
         let recall_series = &buckets["k=10, optimize_for=RECALL"];
         let latency_series = &buckets["k=100, optimize_for=LATENCY"];
         let m_recall = aggregate("mean", &recall_series[&F64Key(10.0)]);
         let m_latency = aggregate("mean", &latency_series[&F64Key(10.0)]);
-        assert!((m_recall - 0.91).abs() < 1e-9, "RECALL mean {m_recall} ≠ 0.91");
-        assert!((m_latency - 0.72).abs() < 1e-9, "LATENCY mean {m_latency} ≠ 0.72");
+        assert!(
+            (m_recall - 0.91).abs() < 1e-9,
+            "RECALL mean {m_recall} ≠ 0.91"
+        );
+        assert!(
+            (m_latency - 0.72).abs() < 1e-9,
+            "LATENCY mean {m_latency} ≠ 0.72"
+        );
     }
 
     #[test]
@@ -7858,9 +9010,18 @@ mod tests {
             }
         }
         let rows = vec![
-            row("recall{k=\"10\",optimize_for=\"RECALL\",limit=\"10\",profile=\"a\"}", 0.9),
-            row("recall{k=\"10\",optimize_for=\"LATENCY\",limit=\"10\",profile=\"a\"}", 0.8),
-            row("recall{k=\"100\",optimize_for=\"RECALL\",limit=\"10\",profile=\"a\"}", 0.7),
+            row(
+                "recall{k=\"10\",optimize_for=\"RECALL\",limit=\"10\",profile=\"a\"}",
+                0.9,
+            ),
+            row(
+                "recall{k=\"10\",optimize_for=\"LATENCY\",limit=\"10\",profile=\"a\"}",
+                0.8,
+            ),
+            row(
+                "recall{k=\"100\",optimize_for=\"RECALL\",limit=\"10\",profile=\"a\"}",
+                0.7,
+            ),
         ];
         // Discriminator policy: every non-x, non-session
         // label is kept regardless of cardinality. `limit`
@@ -7871,7 +9032,11 @@ mod tests {
         let auto = auto_detect_series_labels(&rows, "limit");
         assert_eq!(
             auto,
-            vec!["k".to_string(), "optimize_for".to_string(), "profile".to_string()]
+            vec![
+                "k".to_string(),
+                "optimize_for".to_string(),
+                "profile".to_string()
+            ]
         );
     }
 
@@ -7880,7 +9045,10 @@ mod tests {
         let opts = parse_spec("recall@10.mean over limit where k=10, phase=ann_query").unwrap();
         assert_eq!(opts.filters.len(), 2);
         assert_eq!(opts.filters[0], ("k".to_string(), "10".to_string()));
-        assert_eq!(opts.filters[1], ("phase".to_string(), "ann_query".to_string()));
+        assert_eq!(
+            opts.filters[1],
+            ("phase".to_string(), "ann_query".to_string())
+        );
     }
 
     #[test]
@@ -7927,33 +9095,54 @@ mod tests {
     #[test]
     fn detect_scale_pure_powers_of_two_is_log() {
         let ticks = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
-        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Log));
+        assert!(matches!(
+            detect_scale_from_ticks(&ticks),
+            DetectedScale::Log
+        ));
     }
 
     #[test]
     fn detect_scale_pure_powers_of_ten_is_log() {
         let ticks = [10.0, 100.0, 1000.0, 10000.0];
-        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Log));
+        assert!(matches!(
+            detect_scale_from_ticks(&ticks),
+            DetectedScale::Log
+        ));
     }
 
     #[test]
     fn detect_scale_arithmetic_progression_is_linear() {
         let ticks = [10.0, 20.0, 30.0, 40.0, 50.0];
-        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Linear));
+        assert!(matches!(
+            detect_scale_from_ticks(&ticks),
+            DetectedScale::Linear
+        ));
     }
 
     #[test]
     fn detect_scale_too_few_points_is_linear() {
         // 0 / 1 / 2 ticks → linear (not enough signal to call log).
-        assert!(matches!(detect_scale_from_ticks(&[]), DetectedScale::Linear));
-        assert!(matches!(detect_scale_from_ticks(&[5.0]), DetectedScale::Linear));
-        assert!(matches!(detect_scale_from_ticks(&[1.0, 2.0]), DetectedScale::Linear));
+        assert!(matches!(
+            detect_scale_from_ticks(&[]),
+            DetectedScale::Linear
+        ));
+        assert!(matches!(
+            detect_scale_from_ticks(&[5.0]),
+            DetectedScale::Linear
+        ));
+        assert!(matches!(
+            detect_scale_from_ticks(&[1.0, 2.0]),
+            DetectedScale::Linear
+        ));
     }
 
     #[test]
     fn detect_scale_unsorted_input_handled_like_sorted() {
         let ticks = [32.0, 1.0, 8.0, 4.0, 16.0, 2.0];
-        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Log));
+        assert!(matches!(
+            detect_scale_from_ticks(&ticks),
+            DetectedScale::Log
+        ));
     }
 
     // -- parse_tick_spec --------------------------------------
@@ -8001,8 +9190,14 @@ mod tests {
 
     #[test]
     fn parse_range_spec_rust_form() {
-        assert_eq!(parse_range_spec("0..100").unwrap(), (Some(0.0), Some(100.0)));
-        assert_eq!(parse_range_spec("0.5..1.0").unwrap(), (Some(0.5), Some(1.0)));
+        assert_eq!(
+            parse_range_spec("0..100").unwrap(),
+            (Some(0.0), Some(100.0))
+        );
+        assert_eq!(
+            parse_range_spec("0.5..1.0").unwrap(),
+            (Some(0.5), Some(1.0))
+        );
     }
 
     #[test]
@@ -8013,14 +9208,26 @@ mod tests {
 
     #[test]
     fn parse_range_spec_tuple_form() {
-        assert_eq!(parse_range_spec("(0,100)").unwrap(), (Some(0.0), Some(100.0)));
-        assert_eq!(parse_range_spec("(0.5, 1.0)").unwrap(), (Some(0.5), Some(1.0)));
+        assert_eq!(
+            parse_range_spec("(0,100)").unwrap(),
+            (Some(0.0), Some(100.0))
+        );
+        assert_eq!(
+            parse_range_spec("(0.5, 1.0)").unwrap(),
+            (Some(0.5), Some(1.0))
+        );
     }
 
     #[test]
     fn parse_range_spec_bracket_form() {
-        assert_eq!(parse_range_spec("[0,100]").unwrap(), (Some(0.0), Some(100.0)));
-        assert_eq!(parse_range_spec("[0.75, 1.0]").unwrap(), (Some(0.75), Some(1.0)));
+        assert_eq!(
+            parse_range_spec("[0,100]").unwrap(),
+            (Some(0.0), Some(100.0))
+        );
+        assert_eq!(
+            parse_range_spec("[0.75, 1.0]").unwrap(),
+            (Some(0.75), Some(1.0))
+        );
         // Open-ended brackets should also work.
         assert_eq!(parse_range_spec("[,100]").unwrap(), (None, Some(100.0)));
         assert_eq!(parse_range_spec("[5,]").unwrap(), (Some(5.0), None));
@@ -8124,7 +9331,10 @@ mod tests {
         // reasonable hint).
         let ax = F64Axis::new(0.0..10.0, false, Vec::new());
         let kp = ax.key_points(5usize);
-        assert!(!kp.is_empty(), "expected default linear picker to produce ticks");
+        assert!(
+            !kp.is_empty(),
+            "expected default linear picker to produce ticks"
+        );
     }
 
     #[test]
@@ -8154,14 +9364,22 @@ mod metric_name_tests {
 
     #[test]
     fn extracts_the_metric_not_the_aggregation() {
-        assert_eq!(metric_name_from_query("avg(recall_mean{k=\"10\"}) by (conc)").as_deref(),
-            Some("recall_mean"));
-        assert_eq!(metric_name_from_query("avg(cycles_total_rate) by (phase)").as_deref(),
-            Some("cycles_total_rate"));
-        assert_eq!(metric_name_from_query("sum(min(work_ms))").as_deref(),
-            Some("work_ms"));
-        assert_eq!(metric_name_from_query("avg(p99(x)) / 1000000").as_deref(),
-            Some("x"));
+        assert_eq!(
+            metric_name_from_query("avg(recall_mean{k=\"10\"}) by (conc)").as_deref(),
+            Some("recall_mean")
+        );
+        assert_eq!(
+            metric_name_from_query("avg(cycles_total_rate) by (phase)").as_deref(),
+            Some("cycles_total_rate")
+        );
+        assert_eq!(
+            metric_name_from_query("sum(min(work_ms))").as_deref(),
+            Some("work_ms")
+        );
+        assert_eq!(
+            metric_name_from_query("avg(p99(x)) / 1000000").as_deref(),
+            Some("x")
+        );
         assert_eq!(metric_name_from_query("avg(sum(count()))"), None);
     }
 }

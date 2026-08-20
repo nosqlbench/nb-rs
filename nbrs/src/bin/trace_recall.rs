@@ -38,10 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vectordata::{
-    TestDataGroup,
-    catalog::resolver::Catalog,
-    catalog::sources::CatalogSources,
-    open_facet_typed,
+    TestDataGroup, catalog::resolver::Catalog, catalog::sources::CatalogSources, open_facet_typed,
 };
 
 fn main() -> ExitCode {
@@ -56,7 +53,10 @@ fn main() -> ExitCode {
     let predicates: Option<Vec<u8>> = match cfg.dataset.as_deref() {
         Some(spec) => match load_predicates_via_catalog(spec) {
             Ok(v) => {
-                println!("predicates: {} u8 values via catalog dataset '{spec}'", v.len());
+                println!(
+                    "predicates: {} u8 values via catalog dataset '{spec}'",
+                    v.len()
+                );
                 Some(v)
             }
             Err(e) => {
@@ -101,9 +101,7 @@ fn parse_args() -> Result<Config, String> {
                 ));
             }
             "--dataset" => {
-                dataset = Some(
-                    it.next().ok_or("--dataset requires a value")?.clone(),
-                );
+                dataset = Some(it.next().ok_or("--dataset requires a value")?.clone());
             }
             "--help" | "-h" => {
                 eprintln!(
@@ -118,7 +116,10 @@ fn parse_args() -> Result<Config, String> {
     if trace_files.is_empty() {
         return Err("at least one --trace-file required".into());
     }
-    Ok(Config { trace_files, dataset })
+    Ok(Config {
+        trace_files,
+        dataset,
+    })
 }
 
 /// Load `metadata_predicates` as a `Vec<u8>` through the
@@ -127,16 +128,21 @@ fn parse_args() -> Result<Config, String> {
 /// what the PVS run consumed for `predicate_value_at(...)`.
 fn load_predicates_via_catalog(spec: &str) -> Result<Vec<u8>, String> {
     let catalog = Catalog::of(&CatalogSources::new().configure_default());
-    let group: TestDataGroup = catalog.open(spec)
+    let group: TestDataGroup = catalog
+        .open(spec)
         .map_err(|e| format!("catalog open '{spec}': {e}"))?;
     // Try each profile until one exposes `metadata_predicates`
     // (the catalog projects shared base facets onto profiles).
     for p in group.profile_names() {
-        let Some(view) = group.generic_view(&p) else { continue };
+        let Some(view) = group.generic_view(&p) else {
+            continue;
+        };
         if let Ok(reader) = open_facet_typed::<u8>(&view, "metadata_predicates") {
             let n = reader.count();
             let mut out = Vec::with_capacity(n);
-            for i in 0..n { out.push(reader.get_native(i)); }
+            for i in 0..n {
+                out.push(reader.get_native(i));
+            }
             return Ok(out);
         }
     }
@@ -156,7 +162,9 @@ fn analyse(path: &Path, predicates: Option<&[u8]>) -> Result<(), String> {
 
     for line in reader.lines() {
         let line = line.map_err(|e| format!("read: {e}"))?;
-        if !line.contains("event=relevancy.score") { continue; }
+        if !line.contains("event=relevancy.score") {
+            continue;
+        }
         let cycle = match extract_field(&line, "cycle=") {
             Some(s) => s.parse::<u64>().map_err(|e| format!("cycle parse: {e}"))?,
             None => continue,
@@ -211,4 +219,3 @@ fn extract_field(line: &str, key: &str) -> Option<String> {
         .unwrap_or(after.len());
     Some(after[..end].to_string())
 }
-

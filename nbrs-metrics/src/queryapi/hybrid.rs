@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{MetricAccess, Matcher, QueryError, Sample, Series, Vector};
+use super::{Matcher, MetricAccess, QueryError, Sample, Series, Vector};
 
 /// A horizon-advertising backend: the oldest sample-time it still holds, in
 /// Unix-ms. `None` ⇒ unbounded (covers back as far as the query asks) — the
@@ -51,16 +51,24 @@ impl Tier {
         access: Arc<dyn MetricAccess>,
         earliest_ms: Arc<dyn Fn() -> Option<i64> + Send + Sync>,
     ) -> Self {
-        Self { access, earliest_ms }
+        Self {
+            access,
+            earliest_ms,
+        }
     }
 
     /// A tier that covers back as far as any query asks (a durable tail such as
     /// sqlite) — always serves the older remainder.
     pub fn unbounded(access: Arc<dyn MetricAccess>) -> Self {
-        Self { access, earliest_ms: Arc::new(|| None) }
+        Self {
+            access,
+            earliest_ms: Arc::new(|| None),
+        }
     }
 
-    fn earliest(&self) -> Option<i64> { (self.earliest_ms)() }
+    fn earliest(&self) -> Option<i64> {
+        (self.earliest_ms)()
+    }
 }
 
 /// Composite read backend over an ordered tier list (finest first).
@@ -94,7 +102,9 @@ impl MetricAccess for HybridStore {
             let earliest = tier.earliest();
             // Skip a tier whose data begins after the window — it intersects
             // nothing in `[start, end]`.
-            if let Some(e) = earliest && e > end_ms {
+            if let Some(e) = earliest
+                && e > end_ms
+            {
                 continue;
             }
             chosen.push(tier);
@@ -113,12 +123,14 @@ impl MetricAccess for HybridStore {
                     let handles: Vec<_> = many
                         .iter()
                         .map(|tier| {
-                            scope.spawn(move || {
-                                tier.access.select_range(matchers, start_ms, end_ms)
-                            })
+                            scope
+                                .spawn(move || tier.access.select_range(matchers, start_ms, end_ms))
                         })
                         .collect();
-                    handles.into_iter().map(|h| h.join().expect("tier query panicked")).collect()
+                    handles
+                        .into_iter()
+                        .map(|h| h.join().expect("tier query panicked"))
+                        .collect()
                 });
                 collected.into_iter().collect::<Result<Vec<_>, _>>()?
             }
@@ -184,11 +196,20 @@ mod tests {
     fn series(name: &str, pts: &[(i64, f64)]) -> Series {
         Series {
             labels: vec![("__name__".to_string(), name.to_string())],
-            samples: pts.iter().map(|&(t, v)| Sample { timestamp_ms: t, value: v }).collect(),
+            samples: pts
+                .iter()
+                .map(|&(t, v)| Sample {
+                    timestamp_ms: t,
+                    value: v,
+                })
+                .collect(),
         }
     }
 
-    struct Stub { out: Vector, calls: Arc<AtomicUsize> }
+    struct Stub {
+        out: Vector,
+        calls: Arc<AtomicUsize>,
+    }
     impl MetricAccess for Stub {
         fn select_range(&self, _: &[Matcher], _: i64, _: i64) -> Result<Vector, QueryError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -199,7 +220,10 @@ mod tests {
     fn tier(out: Vector, earliest: Option<i64>) -> (Tier, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let t = Tier::new(
-            Arc::new(Stub { out, calls: calls.clone() }),
+            Arc::new(Stub {
+                out,
+                calls: calls.clone(),
+            }),
             Arc::new(move || earliest),
         );
         (t, calls)
@@ -209,33 +233,61 @@ mod tests {
     fn one_tier_covers_query_no_lower_tier_queried() {
         // mem reaches back to t=0; query [100,200] is covered by mem alone.
         let (mem, mem_calls) = tier(
-            Vector::new(vec![series("ops", &[(100, 1.0), (150, 2.0), (200, 3.0)])]), Some(0));
+            Vector::new(vec![series("ops", &[(100, 1.0), (150, 2.0), (200, 3.0)])]),
+            Some(0),
+        );
         let (cold, cold_calls) = tier(Vector::new(vec![series("ops", &[(100, 1.0)])]), None);
         let store = HybridStore::new(vec![mem, cold]);
 
         let v = store.select_range(&[], 100, 200).unwrap();
         assert_eq!(mem_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(cold_calls.load(Ordering::SeqCst), 0, "cold not consulted when mem covers the query");
+        assert_eq!(
+            cold_calls.load(Ordering::SeqCst),
+            0,
+            "cold not consulted when mem covers the query"
+        );
         assert_eq!(v.series()[0].samples.len(), 3);
     }
 
     #[test]
     fn spill_stitches_cold_tail_under_mem_recent() {
         // mem only holds from t=150; query [0,300] needs the older tail from cold.
-        let (mem, _) = tier(Vector::new(vec![series("ops", &[(150, 5.0), (300, 7.0)])]), Some(150));
+        let (mem, _) = tier(
+            Vector::new(vec![series("ops", &[(150, 5.0), (300, 7.0)])]),
+            Some(150),
+        );
         let (cold, cold_calls) = tier(
-            Vector::new(vec![series("ops", &[(0, 1.0), (100, 2.0), (150, 5.0), (300, 7.0)])]), None);
+            Vector::new(vec![series(
+                "ops",
+                &[(0, 1.0), (100, 2.0), (150, 5.0), (300, 7.0)],
+            )]),
+            None,
+        );
         let store = HybridStore::new(vec![mem, cold]);
 
         let v = store.select_range(&[], 0, 300).unwrap();
-        assert_eq!(cold_calls.load(Ordering::SeqCst), 1, "cold consulted for the older tail");
+        assert_eq!(
+            cold_calls.load(Ordering::SeqCst),
+            1,
+            "cold consulted for the older tail"
+        );
         let s = &v.series()[0];
         let ts: Vec<i64> = s.samples.iter().map(|x| x.timestamp_ms).collect();
         // cold's 150 & 300 (>= mem edge 150) dropped as overlap; 0 & 100 kept;
         // then mem's 150 & 300 — one smooth timeline, no double-count at 150.
         assert_eq!(ts, vec![0, 100, 150, 300]);
-        assert_eq!(s.samples.iter().filter(|x| x.timestamp_ms == 150).count(), 1);
-        assert_eq!(s.samples.iter().find(|x| x.timestamp_ms == 150).unwrap().value, 5.0);
+        assert_eq!(
+            s.samples.iter().filter(|x| x.timestamp_ms == 150).count(),
+            1
+        );
+        assert_eq!(
+            s.samples
+                .iter()
+                .find(|x| x.timestamp_ms == 150)
+                .unwrap()
+                .value,
+            5.0
+        );
     }
 
     #[test]
@@ -243,11 +295,18 @@ mod tests {
         // Query an OLD window [0,100]; mem only holds from t=500 (after the
         // window) → mem skipped, cold serves it.
         let (mem, mem_calls) = tier(Vector::new(vec![series("ops", &[(500, 9.0)])]), Some(500));
-        let (cold, cold_calls) = tier(Vector::new(vec![series("ops", &[(0, 1.0), (100, 2.0)])]), None);
+        let (cold, cold_calls) = tier(
+            Vector::new(vec![series("ops", &[(0, 1.0), (100, 2.0)])]),
+            None,
+        );
         let store = HybridStore::new(vec![mem, cold]);
 
         let v = store.select_range(&[], 0, 100).unwrap();
-        assert_eq!(mem_calls.load(Ordering::SeqCst), 0, "mem has no data in the window — skipped");
+        assert_eq!(
+            mem_calls.load(Ordering::SeqCst),
+            0,
+            "mem has no data in the window — skipped"
+        );
         assert_eq!(cold_calls.load(Ordering::SeqCst), 1);
         assert_eq!(v.series()[0].samples.len(), 2);
     }
@@ -256,13 +315,21 @@ mod tests {
     fn series_only_in_cold_survives_the_union() {
         let (mem, _) = tier(Vector::new(vec![series("ops", &[(150, 5.0)])]), Some(150));
         let (cold, _) = tier(
-            Vector::new(vec![series("ops", &[(150, 5.0)]), series("errors", &[(0, 9.0), (100, 9.0)])]), None);
+            Vector::new(vec![
+                series("ops", &[(150, 5.0)]),
+                series("errors", &[(0, 9.0), (100, 9.0)]),
+            ]),
+            None,
+        );
         let store = HybridStore::new(vec![mem, cold]);
 
         let v = store.select_range(&[], 0, 200).unwrap();
         assert_eq!(v.len(), 2);
-        let errors = v.series().iter()
-            .find(|s| s.labels.iter().any(|(_, v)| v == "errors")).unwrap();
+        let errors = v
+            .series()
+            .iter()
+            .find(|s| s.labels.iter().any(|(_, v)| v == "errors"))
+            .unwrap();
         assert_eq!(errors.samples.len(), 2);
     }
 }

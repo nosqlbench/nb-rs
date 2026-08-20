@@ -130,7 +130,9 @@ fn metricsql(
     query: Const<&str>,
     #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
 ) -> Arc<serde_json::Value> {
-    read_value(parsed, "metricsql", Shape::General).as_json_arc().clone()
+    read_value(parsed, "metricsql", Shape::General)
+        .as_json_arc()
+        .clone()
 }
 
 /// Evaluate a MetricsQL query → f64 (single value). Intrinsically
@@ -156,7 +158,9 @@ fn metricsql_vector(
     query: Const<&str>,
     #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
 ) -> Vec<f64> {
-    read_value(parsed, "metricsql_vector", Shape::Vector).as_vec_f64().to_vec()
+    read_value(parsed, "metricsql_vector", Shape::Vector)
+        .as_vec_f64()
+        .to_vec()
 }
 
 /// Evaluate a MetricsQL query → VecF64 (windowed series). Intrinsically
@@ -169,7 +173,9 @@ fn metricsql_window(
     query: Const<&str>,
     #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
 ) -> Vec<f64> {
-    read_value(parsed, "metricsql_window", Shape::Window).as_vec_f64().to_vec()
+    read_value(parsed, "metricsql_window", Shape::Window)
+        .as_vec_f64()
+        .to_vec()
 }
 
 #[cfg(test)]
@@ -202,7 +208,10 @@ mod tests {
         // The macro's inventory registration makes the node findable by name
         // when polydat compiles a program that uses it.
         let k = compile_polydat("score := metricsql_scalar(\"up\")");
-        assert!(k.is_ok(), "metricsql_scalar should be a registered node: {k:?}");
+        assert!(
+            k.is_ok(),
+            "metricsql_scalar should be a registered node: {k:?}"
+        );
     }
 
     #[test]

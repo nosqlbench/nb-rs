@@ -41,8 +41,8 @@
 //! [`TuiSinkHandle::join_and_take_yield`] which joins the App
 //! thread and returns the App's `yielded_to_terminal` flag.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -102,14 +102,22 @@ impl TuiSink {
 
 impl DisplaySink for TuiSink {
     fn start(self: Box<Self>, inputs: DisplayInputs) -> Box<dyn SinkHandle> {
-        let DisplayInputs { state, frame_rx: _, metrics_query: _ } = inputs;
+        let DisplayInputs {
+            state,
+            frame_rx: _,
+            metrics_query: _,
+        } = inputs;
         // The trait surface carries `frame_rx` / `metrics_query`
         // through `DisplayInputs`, but TuiSink owns its own
         // (collected at construction by the supervisor) because
         // the broker subscription has to happen *before*
         // `start` so the receiver outlives multiple toggles.
         // The trait fields are ignored here.
-        let TuiSink { frame_rx, metrics_query, sync } = *self;
+        let TuiSink {
+            frame_rx,
+            metrics_query,
+            sync,
+        } = *self;
         let frame_rx = frame_rx.expect("TuiSink must be constructed with frame_rx");
 
         let external_quit_for_thread = sync.external_quit.clone();
@@ -154,5 +162,7 @@ impl SinkHandle for TuiSinkHandle {
         }
     }
 
-    fn owns_terminal(&self) -> bool { true }
+    fn owns_terminal(&self) -> bool {
+        true
+    }
 }

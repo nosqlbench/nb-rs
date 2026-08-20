@@ -44,27 +44,37 @@ pub fn parse_time_ms(s: &str) -> Result<u64, String> {
         }
         if i == start {
             return Err(format!(
-                "time value {s:?}: expected a number before the unit"));
+                "time value {s:?}: expected a number before the unit"
+            ));
         }
-        let n: f64 = s[start..i].parse()
+        let n: f64 = s[start..i]
+            .parse()
             .map_err(|e| format!("time value {s:?}: bad number: {e}"))?;
         if !n.is_finite() || n < 0.0 {
             return Err(format!("time value {s:?}: must be non-negative"));
         }
         let unit_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_alphabetic() { i += 1; }
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
         let unit = &s[unit_start..i];
         let mult = match unit {
             "ms" => 1.0,
-            "s"  => 1_000.0,
-            "m"  => 60_000.0,
-            "h"  => 3_600_000.0,
-            "d"  => 86_400_000.0,
-            "" => return Err(format!(
-                "time value {s:?}: missing unit (use ms/s/m/h/d, \
-                 or a bare number for seconds)")),
-            other => return Err(format!(
-                "time value {s:?}: unknown unit {other:?} (use ms/s/m/h/d)")),
+            "s" => 1_000.0,
+            "m" => 60_000.0,
+            "h" => 3_600_000.0,
+            "d" => 86_400_000.0,
+            "" => {
+                return Err(format!(
+                    "time value {s:?}: missing unit (use ms/s/m/h/d, \
+                 or a bare number for seconds)"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "time value {s:?}: unknown unit {other:?} (use ms/s/m/h/d)"
+                ));
+            }
         };
         total_ms += n * mult;
     }

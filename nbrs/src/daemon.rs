@@ -39,8 +39,11 @@ pub fn web_command(args: &[String]) {
             let _ = stop_daemon();
             if !anchor.args.is_empty() {
                 let exe = std::env::current_exe().unwrap_or_else(|_| "nbrs".into());
-                eprintln!("nbrs web: restarting with: {} {}", exe.display(),
-                    anchor.args.join(" "));
+                eprintln!(
+                    "nbrs web: restarting with: {} {}",
+                    exe.display(),
+                    anchor.args.join(" ")
+                );
                 let status = std::process::Command::new(&exe)
                     .args(&anchor.args)
                     .status()
@@ -57,8 +60,10 @@ pub fn web_command(args: &[String]) {
             if procs.is_empty() {
                 eprintln!("nbrs web: no running instance found, starting fresh");
             } else {
-                eprintln!("nbrs web: no anchor file, but found {} running nbrs web process(es):",
-                    procs.len());
+                eprintln!(
+                    "nbrs web: no anchor file, but found {} running nbrs web process(es):",
+                    procs.len()
+                );
                 for p in &procs {
                     eprintln!("  pid {} — {}", p.pid, p.cmdline);
                 }
@@ -85,20 +90,30 @@ pub fn web_command(args: &[String]) {
     for a in args.iter().filter(|a| a.starts_with("--")) {
         let key = a.split('=').next().unwrap_or(a);
         if !known_flags.contains(&key) && key != "--bind" && key != "--port" {
-            eprintln!("warning: unrecognized option '{a}' (known: --daemon, --stop, --restart, --bind=, --port=)");
+            eprintln!(
+                "warning: unrecognized option '{a}' (known: --daemon, --stop, --restart, --bind=, --port=)"
+            );
         }
     }
 
-    let bind_raw = args.iter()
-        .find_map(|a| a.strip_prefix("bind=").or_else(|| a.strip_prefix("--bind=")))
+    let bind_raw = args
+        .iter()
+        .find_map(|a| {
+            a.strip_prefix("bind=")
+                .or_else(|| a.strip_prefix("--bind="))
+        })
         .unwrap_or("0.0.0.0");
-    let port_raw = args.iter()
-        .find_map(|a| a.strip_prefix("port=").or_else(|| a.strip_prefix("--port=")));
+    let port_raw = args.iter().find_map(|a| {
+        a.strip_prefix("port=")
+            .or_else(|| a.strip_prefix("--port="))
+    });
 
     // Parse bind flexibly: accept bare IP, host:port, or full URL
     let (bind, port) = cli::parse_bind_address(bind_raw, port_raw);
-    let addr: SocketAddr = format!("{bind}:{port}").parse()
-        .unwrap_or_else(|e| { eprintln!("error: invalid bind address '{bind}:{port}': {e}"); std::process::exit(1); });
+    let addr: SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| {
+        eprintln!("error: invalid bind address '{bind}:{port}': {e}");
+        std::process::exit(1);
+    });
 
     // Clean up stale anchor if the recorded PID is dead.
     cleanup_stale_anchor();
@@ -120,7 +135,8 @@ pub fn web_command(args: &[String]) {
 
     // Write anchor file so `nbrs run` in this directory auto-discovers us.
     // Save the full "web ..." args (excluding --restart) for --restart.
-    let saved_args: Vec<String> = std::env::args().skip(1)
+    let saved_args: Vec<String> = std::env::args()
+        .skip(1)
         .filter(|a| a != "--restart")
         .collect();
     write_anchor(&addr, &saved_args);
@@ -156,7 +172,10 @@ impl WebAnchor {
     /// The OpenMetrics push URL for this instance.
     #[allow(dead_code)]
     pub fn push_url(&self) -> String {
-        format!("http://{}:{}/api/v1/import/prometheus", self.host, self.port)
+        format!(
+            "http://{}:{}/api/v1/import/prometheus",
+            self.host, self.port
+        )
     }
 }
 
@@ -188,9 +207,10 @@ pub fn write_anchor(addr: &SocketAddr, args: &[String]) {
         args: args.to_vec(),
     };
     if let Ok(json) = serde_json::to_string_pretty(&anchor)
-        && let Err(e) = fs::write(anchor_path(), &json) {
-            eprintln!("warning: failed to write daemon anchor file: {e}");
-        }
+        && let Err(e) = fs::write(anchor_path(), &json)
+    {
+        eprintln!("warning: failed to write daemon anchor file: {e}");
+    }
 }
 
 /// Remove the anchor file on shutdown.
@@ -310,7 +330,8 @@ pub fn discover_web_instance() -> Option<String> {
 pub fn daemonize() -> Result<(), String> {
     Err("--daemon is not supported on this platform; \
          run `nbrs web` in a separate terminal or under a \
-         service wrapper instead".into())
+         service wrapper instead"
+        .into())
 }
 
 #[cfg(unix)]
@@ -364,7 +385,10 @@ pub fn cleanup_stale_anchor() {
     if let Some(anchor) = read_anchor() {
         let alive = pid_alive(anchor.pid);
         if !alive {
-            eprintln!("nbrs web: cleaning up stale anchor (pid {} no longer running)", anchor.pid);
+            eprintln!(
+                "nbrs web: cleaning up stale anchor (pid {} no longer running)",
+                anchor.pid
+            );
             remove_anchor();
         }
     }
@@ -406,7 +430,10 @@ pub fn check_port_available(addr: &SocketAddr) -> Result<(), String> {
                     msg.push_str("\n  → try a different port with port=<N>");
                 } else {
                     for p in &procs {
-                        msg.push_str(&format!("\n  → found nbrs web process: pid {} — {}", p.pid, p.cmdline));
+                        msg.push_str(&format!(
+                            "\n  → found nbrs web process: pid {} — {}",
+                            p.pid, p.cmdline
+                        ));
                     }
                     msg.push_str("\n  → use 'nbrs web --restart' to kill and restart");
                 }
@@ -438,15 +465,24 @@ pub fn find_nbrs_web_processes() -> Vec<NbrsWebProcess> {
 
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(pid_str) = name.to_str() else { continue };
-        let Ok(pid) = pid_str.parse::<u32>() else { continue };
-        if pid == my_pid { continue; }
+        let Some(pid_str) = name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        if pid == my_pid {
+            continue;
+        }
 
         let cmdline_path = entry.path().join("cmdline");
-        let Ok(raw) = fs::read(&cmdline_path) else { continue };
+        let Ok(raw) = fs::read(&cmdline_path) else {
+            continue;
+        };
 
         // /proc/*/cmdline uses NUL separators between args.
-        let cmdline: String = raw.iter()
+        let cmdline: String = raw
+            .iter()
             .map(|&b| if b == 0 { ' ' } else { b as char })
             .collect::<String>()
             .trim()
@@ -515,7 +551,9 @@ pub fn kill_pid(pid: u32) -> Result<(), String> {
     #[cfg(unix)]
     if pid_alive(pid) {
         eprintln!("nbrs web: pid {pid} still alive after SIGTERM, sending SIGKILL");
-        unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     Ok(())
@@ -524,22 +562,33 @@ pub fn kill_pid(pid: u32) -> Result<(), String> {
 /// Stop a running daemon by reading the PID file and sending SIGTERM.
 pub fn stop_daemon() -> Result<(), String> {
     let path = pid_file_path();
-    let pid_str = fs::read_to_string(&path)
-        .map_err(|_| format!("no running daemon found (no PID file at {})", path.display()))?;
-    let pid: i32 = pid_str.trim().parse()
+    let pid_str = fs::read_to_string(&path).map_err(|_| {
+        format!(
+            "no running daemon found (no PID file at {})",
+            path.display()
+        )
+    })?;
+    let pid: i32 = pid_str
+        .trim()
+        .parse()
         .map_err(|_| "invalid PID file contents".to_string())?;
 
     // Verify the process exists and is an nbrs process.
     let cmdline_path = format!("/proc/{pid}/cmdline");
     if let Ok(cmdline) = fs::read_to_string(&cmdline_path)
-        && !cmdline.contains("nbrs") {
-            let _ = fs::remove_file(&path);
-            return Err(format!("PID {pid} is not an nbrs process — stale PID file removed"));
-        }
+        && !cmdline.contains("nbrs")
+    {
+        let _ = fs::remove_file(&path);
+        return Err(format!(
+            "PID {pid} is not an nbrs process — stale PID file removed"
+        ));
+    }
 
     if !signal_terminate(pid as u32) {
         let _ = fs::remove_file(&path);
-        return Err(format!("failed to signal PID {pid} — stale PID file removed"));
+        return Err(format!(
+            "failed to signal PID {pid} — stale PID file removed"
+        ));
     }
 
     // Wait briefly for the process to exit.
@@ -558,8 +607,9 @@ pub fn stop_daemon() -> Result<(), String> {
 /// expects argv[0] == "web" (it's invoked via `daemon::web_command(&args)`
 /// not `&args[1..]`), so route raw to keep the contract.
 pub fn spec() -> crate::cli_spec::Command {
-    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
-        Level, ParsedCommand, ValueProvider};
+    use crate::cli_spec::{
+        Arity, Category, Command, Flag, Handler, Level, ParsedCommand, ValueProvider,
+    };
     fn handle(p: ParsedCommand) -> Result<(), String> {
         // web_command expects argv with `web` as argv[0].
         let mut argv: Vec<String> = vec!["web".into()];
@@ -574,33 +624,47 @@ pub fn spec() -> crate::cli_spec::Command {
         level: Level::FullSurface,
         flags: vec![
             Flag {
-                long: "--bind", short: None, aliases: &[],
+                long: "--bind",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::bind_addr_provider),
                 help: "Bind address (e.g. 127.0.0.1).",
                 repeatable: false,
             },
             Flag {
-                long: "--port", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::None,
+                long: "--port",
+                short: None,
+                aliases: &[],
+                arity: Arity::Value,
+                value: ValueProvider::None,
                 help: "Listen port.",
                 repeatable: false,
             },
             Flag {
-                long: "--daemon", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--daemon",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Detach as a background daemon.",
                 repeatable: false,
             },
             Flag {
-                long: "--stop", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--stop",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Stop a running daemon.",
                 repeatable: false,
             },
             Flag {
-                long: "--restart", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--restart",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Restart a running daemon.",
                 repeatable: false,
             },

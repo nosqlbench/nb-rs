@@ -99,8 +99,10 @@ pub fn acquire(path: &Path) -> io::Result<WorkloadLock> {
         if !path.exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("workload lock: cannot open '{}' for locking: not found",
-                    path.display()),
+                format!(
+                    "workload lock: cannot open '{}' for locking: not found",
+                    path.display()
+                ),
             ));
         }
         let lock_path = lock_target(path);
@@ -109,21 +111,26 @@ pub fn acquire(path: &Path) -> io::Result<WorkloadLock> {
             .write(true)
             .create(true)
             .open(&lock_path)
-            .map_err(|e| io::Error::new(
-                e.kind(),
-                format!("workload lock: cannot open '{}' for locking: {e}",
-                    lock_path.display()),
-            ))?
+            .map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "workload lock: cannot open '{}' for locking: {e}",
+                        lock_path.display()
+                    ),
+                )
+            })?
     };
     #[cfg(not(windows))]
-    let file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(|e| io::Error::new(
+    let file = OpenOptions::new().read(true).open(path).map_err(|e| {
+        io::Error::new(
             e.kind(),
-            format!("workload lock: cannot open '{}' for locking: {e}",
-                path.display()),
-        ))?;
+            format!(
+                "workload lock: cannot open '{}' for locking: {e}",
+                path.display()
+            ),
+        )
+    })?;
 
     let deadline = Instant::now() + LOCK_DEADLINE;
     loop {
@@ -144,10 +151,12 @@ pub fn acquire(path: &Path) -> io::Result<WorkloadLock> {
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
-            Err(e) => return Err(io::Error::new(
-                e.kind(),
-                format!("workload lock on '{}': {e}", path.display()),
-            )),
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("workload lock on '{}': {e}", path.display()),
+                ));
+            }
         }
     }
 }
@@ -192,8 +201,10 @@ mod tests {
 
         // Give the waiter a moment to start polling.
         thread::sleep(Duration::from_millis(100));
-        assert!(!waiter_done.load(Ordering::SeqCst),
-            "second acquirer must still be waiting");
+        assert!(
+            !waiter_done.load(Ordering::SeqCst),
+            "second acquirer must still be waiting"
+        );
 
         // Release the first lock; the waiter should pick it
         // up within one POLL_INTERVAL plus a margin.

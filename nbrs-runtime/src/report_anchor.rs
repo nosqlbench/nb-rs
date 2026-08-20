@@ -97,10 +97,9 @@ impl AnchorFlag {
             }
             v if v.starts_with("op:") => {
                 let body = v.trim_start_matches("op:").trim();
-                let (phase, op) = body.split_once('.')
-                    .ok_or_else(|| format!(
-                        "--at op:{body}: expected `op:<phase>.<op>`"
-                    ))?;
+                let (phase, op) = body
+                    .split_once('.')
+                    .ok_or_else(|| format!("--at op:{body}: expected `op:<phase>.<op>`"))?;
                 if phase.is_empty() || op.is_empty() {
                     return Err(format!(
                         "--at op:{body}: phase and op names must be non-empty"
@@ -121,11 +120,11 @@ impl AnchorFlag {
     /// Parse the `--contextual <mode>` value form.
     pub fn parse_contextual(value: &str) -> Result<AnchorFlag, String> {
         match value {
-            "auto"     => Ok(AnchorFlag::ContextualAuto),
-            "root"     => Ok(AnchorFlag::ContextualRoot),
+            "auto" => Ok(AnchorFlag::ContextualAuto),
+            "root" => Ok(AnchorFlag::ContextualRoot),
             "scenario" => Ok(AnchorFlag::ContextualScenario),
-            "phase"    => Ok(AnchorFlag::ContextualPhase),
-            "op"       => Ok(AnchorFlag::ContextualOp),
+            "phase" => Ok(AnchorFlag::ContextualPhase),
+            "op" => Ok(AnchorFlag::ContextualOp),
             _ => Err(format!(
                 "--contextual value '{value}': expected one of \
                  `auto`, `root`, `scenario`, `phase`, `op`"
@@ -175,10 +174,11 @@ pub fn resolve(
         }
         AnchorFlag::AtOp { phase, op } => {
             return Ok(AnchorResolution {
-                anchor: Anchor::Op { phase: phase.clone(), op: op.clone() },
-                diagnostic: format!(
-                    "anchor: op:{phase}.{op} (explicit --at)"
-                ),
+                anchor: Anchor::Op {
+                    phase: phase.clone(),
+                    op: op.clone(),
+                },
+                diagnostic: format!("anchor: op:{phase}.{op} (explicit --at)"),
             });
         }
         _ => {}
@@ -188,9 +188,7 @@ pub fn resolve(
     // once and reuse the connection for both the scenario
     // and phase queries.
     let conn = rusqlite::Connection::open(db_path)
-        .map_err(|e| format!(
-            "open session db '{}': {e}", db_path.display(),
-        ))?;
+        .map_err(|e| format!("open session db '{}': {e}", db_path.display(),))?;
 
     let scenarios = scenarios_in_session(&conn)?;
     let phases = phases_matching_filter(&conn, item)?;
@@ -202,10 +200,9 @@ pub fn resolve(
         }),
 
         AnchorFlag::ContextualScenario => match scenarios.len() {
-            0 => Err(
-                "no scenario recorded in session metadata; \
-                 cannot anchor at scenario level".to_string(),
-            ),
+            0 => Err("no scenario recorded in session metadata; \
+                 cannot anchor at scenario level"
+                .to_string()),
             1 => {
                 let s = scenarios.iter().next().unwrap().clone();
                 Ok(AnchorResolution {
@@ -225,10 +222,9 @@ pub fn resolve(
         },
 
         AnchorFlag::ContextualPhase => match phases.len() {
-            0 => Err(
-                "no phases in session match the item's filter; \
-                 cannot anchor at phase level".to_string(),
-            ),
+            0 => Err("no phases in session match the item's filter; \
+                 cannot anchor at phase level"
+                .to_string()),
             1 => {
                 let p = phases.iter().next().unwrap().clone();
                 Ok(AnchorResolution {
@@ -246,14 +242,13 @@ pub fn resolve(
             )),
         },
 
-        AnchorFlag::ContextualOp => Err(
-            "--contextual op: op-template anchoring needs an \
+        AnchorFlag::ContextualOp => Err("--contextual op: op-template anchoring needs an \
              `op_template` label key that the runtime doesn't \
              emit yet; this is a planned schema extension. Use \
              `--contextual phase` for now, or `--at op:<phase>.<op>` \
              to anchor explicitly (the YAML edit primitive accepts \
-             the path).".to_string(),
-        ),
+             the path)."
+            .to_string()),
 
         AnchorFlag::ContextualAuto => {
             // Deepest unique scope:
@@ -283,9 +278,9 @@ pub fn resolve(
                 }
                 _ => Ok(AnchorResolution {
                     anchor: Anchor::Root,
-                    diagnostic:
-                        "anchor: workload root (--contextual auto; \
-                         data spans multiple scenarios)".to_string(),
+                    diagnostic: "anchor: workload root (--contextual auto; \
+                         data spans multiple scenarios)"
+                        .to_string(),
                 }),
             }
         }
@@ -297,9 +292,7 @@ pub fn resolve(
 /// Distinct scenario names recorded in the session.
 /// Today the runtime only writes one `scenario` row per
 /// session, so this returns at most one element.
-fn scenarios_in_session(
-    conn: &rusqlite::Connection,
-) -> Result<BTreeSet<String>, String> {
+fn scenarios_in_session(conn: &rusqlite::Connection) -> Result<BTreeSet<String>, String> {
     // `scenario` is per-execution metadata; read the latest
     // execution's (falls back to legacy session_metadata).
     let mut out = BTreeSet::new();
@@ -327,10 +320,11 @@ fn phases_matching_filter(
 ) -> Result<BTreeSet<String>, String> {
     let _ = item; // filter awareness deferred — see doc above.
     let mut out = BTreeSet::new();
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT value FROM instance_label WHERE key = 'phase'",
-    ).map_err(|e| format!("phase distinct query: {e}"))?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT value FROM instance_label WHERE key = 'phase'")
+        .map_err(|e| format!("phase distinct query: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| format!("phase rows: {e}"))?;
     for row in rows {
         let v = row.map_err(|e| format!("phase row decode: {e}"))?;
@@ -354,8 +348,7 @@ mod tests {
     }
 
     fn make_db(label: &str, scenarios: &[&str], phases: &[&str]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-anchor-{label}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nbrs-anchor-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("metrics.db");
@@ -365,26 +358,31 @@ mod tests {
         // to drive the anchor queries. Post-cutover: denormalised
         // `instance_label` table holds `(instance_id, key, value)`
         // directly (no `label_set` indirection).
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE session_metadata (key TEXT, value TEXT);
             CREATE TABLE instance_label (
                 instance_id INTEGER NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL
             );
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         for s in scenarios {
             conn.execute(
                 "INSERT INTO session_metadata (key, value) VALUES ('scenario', ?1)",
                 [s],
-            ).unwrap();
+            )
+            .unwrap();
         }
         for (i, p) in phases.iter().enumerate() {
             let id = (i + 1) as i64;
             conn.execute(
                 "INSERT INTO instance_label (instance_id, key, value) VALUES (?1, 'phase', ?2)",
                 rusqlite::params![id, p],
-            ).unwrap();
+            )
+            .unwrap();
         }
         path
     }
@@ -392,12 +390,21 @@ mod tests {
     #[test]
     fn parse_at_recognises_all_scopes() {
         assert_eq!(AnchorFlag::parse_at("root").unwrap(), AnchorFlag::AtRoot);
-        assert_eq!(AnchorFlag::parse_at("scenario:foo").unwrap(),
-            AnchorFlag::AtScenario("foo".into()));
-        assert_eq!(AnchorFlag::parse_at("phase:setup").unwrap(),
-            AnchorFlag::AtPhase("setup".into()));
-        assert_eq!(AnchorFlag::parse_at("op:setup.step").unwrap(),
-            AnchorFlag::AtOp { phase: "setup".into(), op: "step".into() });
+        assert_eq!(
+            AnchorFlag::parse_at("scenario:foo").unwrap(),
+            AnchorFlag::AtScenario("foo".into())
+        );
+        assert_eq!(
+            AnchorFlag::parse_at("phase:setup").unwrap(),
+            AnchorFlag::AtPhase("setup".into())
+        );
+        assert_eq!(
+            AnchorFlag::parse_at("op:setup.step").unwrap(),
+            AnchorFlag::AtOp {
+                phase: "setup".into(),
+                op: "step".into()
+            }
+        );
     }
 
     #[test]
@@ -410,12 +417,18 @@ mod tests {
 
     #[test]
     fn parse_contextual_recognises_all_modes() {
-        assert_eq!(AnchorFlag::parse_contextual("auto").unwrap(),
-            AnchorFlag::ContextualAuto);
-        assert_eq!(AnchorFlag::parse_contextual("root").unwrap(),
-            AnchorFlag::ContextualRoot);
-        assert_eq!(AnchorFlag::parse_contextual("phase").unwrap(),
-            AnchorFlag::ContextualPhase);
+        assert_eq!(
+            AnchorFlag::parse_contextual("auto").unwrap(),
+            AnchorFlag::ContextualAuto
+        );
+        assert_eq!(
+            AnchorFlag::parse_contextual("root").unwrap(),
+            AnchorFlag::ContextualRoot
+        );
+        assert_eq!(
+            AnchorFlag::parse_contextual("phase").unwrap(),
+            AnchorFlag::ContextualPhase
+        );
         assert!(AnchorFlag::parse_contextual("garbage").is_err());
     }
 
@@ -426,7 +439,8 @@ mod tests {
             std::path::Path::new("/nonexistent/db"),
             &item(),
             &AnchorFlag::None,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(r.anchor, Anchor::Root));
         assert!(r.diagnostic.contains("default"));
     }
@@ -437,7 +451,8 @@ mod tests {
             std::path::Path::new("/nonexistent/db"),
             &item(),
             &AnchorFlag::AtRoot,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(r.anchor, Anchor::Root));
     }
 
@@ -447,7 +462,8 @@ mod tests {
             std::path::Path::new("/nonexistent/db"),
             &item(),
             &AnchorFlag::AtScenario("foo".into()),
-        ).unwrap();
+        )
+        .unwrap();
         match r.anchor {
             Anchor::Scenario(s) => assert_eq!(s, "foo"),
             other => panic!("expected Scenario, got {other:?}"),
@@ -508,10 +524,14 @@ mod tests {
         let db = make_db("op_unsupported", &["default"], &["a"]);
         let err = resolve(&db, &item(), &AnchorFlag::ContextualOp).unwrap_err();
         assert!(err.contains("op-template anchoring"));
-        assert!(err.contains("schema extension"),
-            "should call out the schema gap: {err}");
-        assert!(err.contains("--contextual phase"),
-            "should suggest the available alternative: {err}");
+        assert!(
+            err.contains("schema extension"),
+            "should call out the schema gap: {err}"
+        );
+        assert!(
+            err.contains("--contextual phase"),
+            "should suggest the available alternative: {err}"
+        );
     }
 
     #[test]

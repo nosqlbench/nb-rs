@@ -46,7 +46,9 @@ pub struct CellMap {
 
 impl CellMap {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
     }
 
     /// The cell for `coord` under `parent`, creating and attaching it on first
@@ -106,10 +108,7 @@ impl CellMap {
 /// context instead composes identity from wherever the code happens to be
 /// running, which silently drops the parts the registration site owns (`op=`,
 /// most obviously) — a different metric identity wearing the same family name.
-pub fn resolve_under(
-    parent: &Arc<RwLock<Component>>,
-    coord: &Labels,
-) -> Arc<RwLock<Component>> {
+pub fn resolve_under(parent: &Arc<RwLock<Component>>, coord: &Labels) -> Arc<RwLock<Component>> {
     let cells = parent.read().unwrap_or_else(|e| e.into_inner()).cells();
     cells.resolve(parent, coord)
 }
@@ -172,8 +171,10 @@ mod tests {
         let cells = CellMap::new();
         let c = cells.resolve(&p, &Labels::of("tier", "24"));
         let eff = c.read().unwrap().effective_labels().to_prometheus();
-        assert!(eff.contains("phase=") && eff.contains("tier="),
-            "cell must carry inherited + own dimensions, got {eff}");
+        assert!(
+            eff.contains("phase=") && eff.contains("tier="),
+            "cell must carry inherited + own dimensions, got {eff}"
+        );
     }
 
     /// Two dimensions are ONE cell carrying both, not a nesting.
@@ -183,11 +184,16 @@ mod tests {
         let cells = CellMap::new();
         let coord = Labels::of("tier", "24").with("keyspace", "baselines");
         let c = cells.resolve(&p, &coord);
-        assert_eq!(c.read().unwrap().child_count(), 0,
-            "a coordinate must not nest one dimension inside another");
+        assert_eq!(
+            c.read().unwrap().child_count(),
+            0,
+            "a coordinate must not nest one dimension inside another"
+        );
         let eff = c.read().unwrap().effective_labels().to_prometheus();
-        assert!(eff.contains("tier=") && eff.contains("keyspace="),
-            "both dimensions belong to one cell, got {eff}");
+        assert!(
+            eff.contains("tier=") && eff.contains("keyspace="),
+            "both dimensions belong to one cell, got {eff}"
+        );
         assert_eq!(p.read().unwrap().child_count(), 1);
     }
 
@@ -208,9 +214,11 @@ mod tests {
         let eff = cell.read().unwrap().effective_labels().to_prometheus();
 
         for owned in ["phase=", "op=", "tier="] {
-            assert!(eff.contains(owned),
+            assert!(
+                eff.contains(owned),
                 "a cell must carry every dimension its ancestors own; {owned} \
-                 missing from {eff}");
+                 missing from {eff}"
+            );
         }
     }
 
@@ -224,12 +232,16 @@ mod tests {
         let p = parent();
         let _first = {
             let c = Arc::new(RwLock::new(Component::new(
-                Labels::of("tier", "24"), HashMap::new())));
+                Labels::of("tier", "24"),
+                HashMap::new(),
+            )));
             crate::component::attach(&p, &c);
             c // kept alive and never stopped
         };
         let second = Arc::new(RwLock::new(Component::new(
-            Labels::of("tier", "24"), HashMap::new())));
+            Labels::of("tier", "24"),
+            HashMap::new(),
+        )));
         crate::component::attach(&p, &second);
     }
 
@@ -241,12 +253,16 @@ mod tests {
         use crate::component::ComponentState;
         let p = parent();
         let first = Arc::new(RwLock::new(Component::new(
-            Labels::of("tier", "24"), HashMap::new())));
+            Labels::of("tier", "24"),
+            HashMap::new(),
+        )));
         crate::component::attach(&p, &first);
         first.write().unwrap().set_state(ComponentState::Stopped);
 
         let second = Arc::new(RwLock::new(Component::new(
-            Labels::of("tier", "24"), HashMap::new())));
+            Labels::of("tier", "24"),
+            HashMap::new(),
+        )));
         crate::component::attach(&p, &second); // must not panic
         assert_eq!(p.read().unwrap().child_count(), 2);
     }
@@ -258,14 +274,18 @@ mod tests {
         let p = parent();
         {
             let c = Arc::new(RwLock::new(Component::new(
-                Labels::of("tier", "24"), HashMap::new())));
+                Labels::of("tier", "24"),
+                HashMap::new(),
+            )));
             crate::component::attach(&p, &c);
             // `children` holds a strong ref, so drop that too: this models a
             // component detached and released rather than stopped.
             crate::component::detach(&p, &c);
         }
         let again = Arc::new(RwLock::new(Component::new(
-            Labels::of("tier", "24"), HashMap::new())));
+            Labels::of("tier", "24"),
+            HashMap::new(),
+        )));
         crate::component::attach(&p, &again); // must not panic
     }
 
@@ -276,7 +296,9 @@ mod tests {
         let p = parent();
         for v in ["24", "25", "26"] {
             let c = Arc::new(RwLock::new(Component::new(
-                Labels::of("tier", v), HashMap::new())));
+                Labels::of("tier", v),
+                HashMap::new(),
+            )));
             crate::component::attach(&p, &c);
         }
         assert_eq!(p.read().unwrap().child_count(), 3);
@@ -292,8 +314,11 @@ mod tests {
         for _ in 0..5 {
             resolve_under(&p, &coord);
         }
-        assert_eq!(p.read().unwrap().child_count(), 1,
-            "repeated resolution must not multiply cells for one coordinate");
+        assert_eq!(
+            p.read().unwrap().child_count(),
+            1,
+            "repeated resolution must not multiply cells for one coordinate"
+        );
     }
 
     /// Cells route through the same check, so a resolver cannot be the only
@@ -304,8 +329,10 @@ mod tests {
         let coord = Labels::of("tier", "24");
         let first = resolve_under(&p, &coord);
         let again = resolve_under(&p, &coord);
-        assert!(Arc::ptr_eq(&first, &again),
-            "memoisation must return the existing cell rather than attach a twin");
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "memoisation must return the existing cell rather than attach a twin"
+        );
         assert_eq!(p.read().unwrap().child_count(), 1);
     }
 }

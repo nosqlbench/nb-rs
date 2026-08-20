@@ -51,7 +51,7 @@ pub fn estimate_value_size(v: &Value) -> u64 {
         // estimate never under-counts when the column is 64-bit;
         // a narrower `int` column merely over-estimates by 4.
         Value::U64(_) | Value::I64(_) => 8,
-        Value::F64(_) => 8, // double
+        Value::F64(_) => 8,                                        // double
         Value::U128(_) | Value::I128(_) | Value::Reg128(..) => 16, // uuid / 128-bit
         // Variable-length: 4-byte length prefix + payload bytes.
         Value::Str(s) => VAR_PREFIX + s.len() as u64,
@@ -300,7 +300,10 @@ mod tests {
         assert_eq!(estimate_value_size(&Value::U64(1)), 8);
         assert_eq!(estimate_value_size(&Value::I64(-1)), 8);
         assert_eq!(estimate_value_size(&Value::F64(1.5)), 8);
-        assert_eq!(estimate_value_size(&Value::Bytes([0u8; 12].into())), VAR_PREFIX + 12);
+        assert_eq!(
+            estimate_value_size(&Value::Bytes([0u8; 12].into())),
+            VAR_PREFIX + 12
+        );
         assert_eq!(estimate_value_size(&Value::None), 0);
     }
 
@@ -357,7 +360,10 @@ mod tests {
         // both, generous budget → still `batch_n` verbatim.
         assert_eq!(fixed_batch_stride(6148, 200, Some(10_000_000)), 200);
         // tiny rows: 10_000_000 / 1 rows clamps to the 1000-row cap.
-        assert_eq!(fixed_batch_stride(1, 0, Some(10_000_000)), MAX_PREDICTED_ROWS);
+        assert_eq!(
+            fixed_batch_stride(1, 0, Some(10_000_000)),
+            MAX_PREDICTED_ROWS
+        );
         // oversized single row (row > budget) still yields ≥1.
         assert_eq!(fixed_batch_stride(100_000, 0, Some(64_000)), 1);
         // neither → single row.
@@ -370,8 +376,8 @@ mod tests {
         // A coord-driven output: at cursor offset 0, `val` = 0 * 8 = 0.
         // The probe must set the coord to 0 and pull `val` through the
         // same wire surface the batch dispenser uses at execute time.
-        let kernel = compile_polydat("input cycle: u64\nval := cycle * 8\n")
-            .expect("compile probe program");
+        let kernel =
+            compile_polydat("input cycle: u64\nval := cycle * 8\n").expect("compile probe program");
         let parent = std::sync::Arc::new(kernel);
         // One bind name → a single U64 → 8 bytes (bigint wire width).
         assert_eq!(characterize_row_size(&parent, &["val".to_string()]), 8);

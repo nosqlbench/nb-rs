@@ -63,7 +63,11 @@ impl Axis {
     pub fn continuous(name: impl Into<String>, lo: f64, hi: f64) -> Self {
         Self {
             name: name.into(),
-            kind: AxisKind::Continuous { lo, hi, min_step: 0.0 },
+            kind: AxisKind::Continuous {
+                lo,
+                hi,
+                min_step: 0.0,
+            },
             changeover: Changeover::Coordinate,
         }
     }
@@ -87,9 +91,7 @@ impl Axis {
     pub fn lo(&self) -> f64 {
         match &self.kind {
             AxisKind::Continuous { lo, .. } => *lo,
-            AxisKind::Discrete { detents } => {
-                detents.iter().cloned().fold(f64::INFINITY, f64::min)
-            }
+            AxisKind::Discrete { detents } => detents.iter().cloned().fold(f64::INFINITY, f64::min),
         }
     }
 
@@ -121,7 +123,11 @@ impl Axis {
     pub fn step(&self) -> f64 {
         match &self.kind {
             AxisKind::Continuous { lo, hi, min_step } => {
-                if *min_step > 0.0 { *min_step } else { 0.1 * (hi - lo).abs().max(f64::EPSILON) }
+                if *min_step > 0.0 {
+                    *min_step
+                } else {
+                    0.1 * (hi - lo).abs().max(f64::EPSILON)
+                }
             }
             AxisKind::Discrete { detents } => {
                 if detents.len() < 2 {
@@ -154,7 +160,10 @@ impl Axis {
                 .iter()
                 .cloned()
                 .min_by(|a, b| {
-                    (a - x).abs().partial_cmp(&(b - x).abs()).unwrap_or(std::cmp::Ordering::Equal)
+                    (a - x)
+                        .abs()
+                        .partial_cmp(&(b - x).abs())
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .unwrap_or(x),
         }
@@ -198,7 +207,10 @@ impl SearchSpace {
 
     /// The relative changeover-cost prior per axis.
     pub fn cost_priors(&self) -> Vec<f64> {
-        self.axes.iter().map(|a| a.changeover.cost_prior()).collect()
+        self.axes
+            .iter()
+            .map(|a| a.changeover.cost_prior())
+            .collect()
     }
 
     /// Realize a raw point into a coordinate the objective can be queried
@@ -221,7 +233,11 @@ mod tests {
     fn continuous_realize_clamps_and_snaps() {
         let a = Axis {
             name: "x".into(),
-            kind: AxisKind::Continuous { lo: 0.0, hi: 10.0, min_step: 2.0 },
+            kind: AxisKind::Continuous {
+                lo: 0.0,
+                hi: 10.0,
+                min_step: 2.0,
+            },
             changeover: Changeover::Coordinate,
         };
         assert_eq!(a.realize(-5.0), 0.0);

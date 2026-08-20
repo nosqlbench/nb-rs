@@ -149,7 +149,9 @@ mod inner {
         fn resolved_url(&self) -> String {
             let job = self.jobname.as_deref().unwrap_or("default");
             let inst = self.instance.as_deref().unwrap_or("default");
-            self.endpoint.replace("JOBNAME", job).replace("INSTANCE", inst)
+            self.endpoint
+                .replace("JOBNAME", job)
+                .replace("INSTANCE", inst)
         }
 
         /// POST `body` to the endpoint, returning `Ok(())` on success
@@ -157,7 +159,8 @@ mod inner {
         /// the retry loop lives in [`Reporter::report`].
         fn post_once(&self, body: &str) -> Result<(), String> {
             let url = self.resolved_url();
-            let mut request = self.client
+            let mut request = self
+                .client
                 .post(&url)
                 .header("Content-Type", "text/plain; charset=utf-8")
                 .body(body.to_string());
@@ -170,8 +173,10 @@ mod inner {
                     if status.is_success() {
                         Ok(())
                     } else {
-                        Err(format!("status {status}: {}",
-                            resp.text().unwrap_or_default()))
+                        Err(format!(
+                            "status {status}: {}",
+                            resp.text().unwrap_or_default()
+                        ))
                     }
                 }
                 Err(e) => Err(format!("transport: {e}")),
@@ -182,7 +187,9 @@ mod inner {
     impl Reporter for VictoriaMetricsReporter {
         fn report(&mut self, snapshot: &MetricSet) {
             let body = render_prometheus_text(snapshot);
-            if body.is_empty() { return; }
+            if body.is_empty() {
+                return;
+            }
 
             // Exponential-backoff retry matching the Java impl's
             // behaviour. This blocks the *subscription dispatch*
@@ -219,20 +226,26 @@ mod inner {
         #[test]
         fn parse_victoria_plain_includes_job_instance_template() {
             let r = VictoriaMetricsReporter::from_spec("victoria:plain:localhost:8428").unwrap();
-            assert_eq!(r.endpoint,
-                "http://localhost:8428/api/v1/import/prometheus/metrics/job/JOBNAME/instance/INSTANCE");
+            assert_eq!(
+                r.endpoint,
+                "http://localhost:8428/api/v1/import/prometheus/metrics/job/JOBNAME/instance/INSTANCE"
+            );
         }
 
         #[test]
         fn parse_victoria_tls_includes_job_instance_template() {
             let r = VictoriaMetricsReporter::from_spec("victoria:tls:vm.example.com:8443").unwrap();
-            assert_eq!(r.endpoint,
-                "https://vm.example.com:8443/api/v1/import/prometheus/metrics/job/JOBNAME/instance/INSTANCE");
+            assert_eq!(
+                r.endpoint,
+                "https://vm.example.com:8443/api/v1/import/prometheus/metrics/job/JOBNAME/instance/INSTANCE"
+            );
         }
 
         #[test]
         fn parse_full_url_is_left_untouched() {
-            let r = VictoriaMetricsReporter::from_spec("https://custom.url/api/v1/import/prometheus").unwrap();
+            let r =
+                VictoriaMetricsReporter::from_spec("https://custom.url/api/v1/import/prometheus")
+                    .unwrap();
             assert_eq!(r.endpoint, "https://custom.url/api/v1/import/prometheus");
         }
 
@@ -243,26 +256,31 @@ mod inner {
 
         #[test]
         fn resolved_url_substitutes_jobname_and_instance() {
-            let r = VictoriaMetricsReporter::from_spec("victoria:plain:localhost:8428").unwrap()
+            let r = VictoriaMetricsReporter::from_spec("victoria:plain:localhost:8428")
+                .unwrap()
                 .with_jobname("cql_vector")
                 .with_instance("host-1");
-            assert_eq!(r.resolved_url(),
-                "http://localhost:8428/api/v1/import/prometheus/metrics/job/cql_vector/instance/host-1");
+            assert_eq!(
+                r.resolved_url(),
+                "http://localhost:8428/api/v1/import/prometheus/metrics/job/cql_vector/instance/host-1"
+            );
         }
 
         #[test]
         fn resolved_url_falls_back_to_default_when_unset() {
             let r = VictoriaMetricsReporter::from_spec("victoria:plain:localhost:8428").unwrap();
-            assert_eq!(r.resolved_url(),
-                "http://localhost:8428/api/v1/import/prometheus/metrics/job/default/instance/default");
+            assert_eq!(
+                r.resolved_url(),
+                "http://localhost:8428/api/v1/import/prometheus/metrics/job/default/instance/default"
+            );
         }
 
         #[test]
         fn resolved_url_substitutes_placeholders_in_custom_url_too() {
-            let r = VictoriaMetricsReporter::from_spec(
-                "https://custom.url/push/JOBNAME/INSTANCE"
-            ).unwrap()
-                .with_jobname("j").with_instance("i");
+            let r = VictoriaMetricsReporter::from_spec("https://custom.url/push/JOBNAME/INSTANCE")
+                .unwrap()
+                .with_jobname("j")
+                .with_instance("i");
             assert_eq!(r.resolved_url(), "https://custom.url/push/j/i");
         }
     }

@@ -28,14 +28,14 @@ use std::path::{Path, PathBuf};
 /// when forwarding render commands to plot_metrics / summary.
 pub fn report_command(args: &[String], kind_filter: KindFilter) {
     let (workload_path, rest) = extract_workload(args);
-    let workload_arg = workload_path.as_ref()
+    let workload_arg = workload_path
+        .as_ref()
         .map(|p| format!("workload={}", p.display()));
     // Resolve `--session` once at the top so every downstream
     // path (item lookup in db, forwarded render commands,
     // markdown output, text-section writes) sees the same
     // session dir. Read-side only — never mutates `logs/latest`.
-    let flagged_session: Option<PathBuf> =
-        nbrs_runtime::session::read_session_dir(args);
+    let flagged_session: Option<PathBuf> = nbrs_runtime::session::read_session_dir(args);
     // An explicit `--db <path>` names a session as surely as `--session <dir>`
     // does — the db's directory IS the session. Considering only `--session*`
     // before, a `--db` invocation resolved items and wrote output under
@@ -52,7 +52,8 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         (None, None) => None,
     };
     let session_dir: Option<PathBuf> = flagged_session.or_else(|| {
-        flagged_db.as_deref()
+        flagged_db
+            .as_deref()
             .and_then(Path::parent)
             .filter(|p| !p.as_os_str().is_empty())
             .map(Path::to_path_buf)
@@ -95,30 +96,45 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     } else {
         "session db (report.* metadata rows)"
     };
-    let source_path: String = workload_path.as_deref()
+    let source_path: String = workload_path
+        .as_deref()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| session_db.as_deref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| nbrs_runtime::session::latest_metrics_db()
-                .display().to_string()));
-    eprintln!("nbrs report: {} item(s) resolved from {} ({})",
-        items.len(), source_kind, source_path);
+        .unwrap_or_else(|| {
+            session_db
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| {
+                    nbrs_runtime::session::latest_metrics_db()
+                        .display()
+                        .to_string()
+                })
+        });
+    eprintln!(
+        "nbrs report: {} item(s) resolved from {} ({})",
+        items.len(),
+        source_kind,
+        source_path
+    );
     eprintln!("nbrs report: output → {}", output_root.display());
     if items.is_empty() {
         // The two paths that yield zero items are
         // distinguishable; flag the most common one so the
         // operator can act.
         if workload_path.is_none() {
-            eprintln!("nbrs report: hint — no report.* rows in \
+            eprintln!(
+                "nbrs report: hint — no report.* rows in \
                 the session db yet. For a LIVE session (sqlite \
                 flushes on its own cadence — see SRD-40b), pass \
                 `workload=<file>` to resolve items from the \
                 YAML source instead. Example: \
-                `nbrs report all workload=adapters/<adapter>/workloads/<workload>.yaml`");
+                `nbrs report all workload=adapters/<adapter>/workloads/<workload>.yaml`"
+            );
         } else {
-            eprintln!("nbrs report: hint — the workload yaml \
+            eprintln!(
+                "nbrs report: hint — the workload yaml \
                 has no `report:` items declared. Add a \
-                `report:` block to surface plots / tables.");
+                `report:` block to surface plots / tables."
+            );
         }
     }
 
@@ -160,12 +176,32 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         // keyword. `list` is an explicit alias for the bare
         // form: `nbrs report list` and `nbrs report` produce
         // the same output.
-        None | Some("list") => { print_listing(&items, kind_filter); Vec::new() }
-        Some("all") => render_all(&items, kind_filter, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref(), strict),
+        None | Some("list") => {
+            print_listing(&items, kind_filter);
+            Vec::new()
+        }
+        Some("all") => render_all(
+            &items,
+            kind_filter,
+            &rest[1..],
+            workload_arg.as_deref(),
+            &output_root,
+            session_db.as_deref(),
+            strict,
+        ),
         Some("figure") => {
             let n_arg = rest.get(1).cloned().unwrap_or_default();
             let pass = rest.get(2..).unwrap_or(&[]);
-            render_by_index(&items, kind_filter, &n_arg, pass, workload_arg.as_deref(), &output_root, session_db.as_deref(), strict)
+            render_by_index(
+                &items,
+                kind_filter,
+                &n_arg,
+                pass,
+                workload_arg.as_deref(),
+                &output_root,
+                session_db.as_deref(),
+                strict,
+            )
         }
         Some("scratch") => {
             crate::report_scratch::scratch_subcommand(&output_root, &rest[1..]);
@@ -184,7 +220,9 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         // ad-hoc `--metric`/`--filter`/etc.
         Some(arg) if arg.starts_with("--") => {
             forward_renderer_flags(
-                kind_filter, &rest, workload_arg.as_deref(),
+                kind_filter,
+                &rest,
+                workload_arg.as_deref(),
                 session_db.as_deref(),
             );
             Vec::new()
@@ -195,9 +233,10 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         // CLI flags rather than selecting an existing stored one.
         // Route through the Phase A vocab-driven builder + Phase C
         // scratch render path.
-        Some(_name) if matches!(kind_filter, KindFilter::Plot | KindFilter::Table)
-            && tail_has_vocab_flag(&rest)
-        => {
+        Some(_name)
+            if matches!(kind_filter, KindFilter::Plot | KindFilter::Table)
+                && tail_has_vocab_flag(&rest) =>
+        {
             let kind = match kind_filter {
                 KindFilter::Plot => nbrs_workload::report::Kind::Plot,
                 KindFilter::Table => nbrs_workload::report::Kind::Table,
@@ -215,9 +254,27 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             // name — safe to reinterpret as a figure
             // selector.
             if let Some(indices) = parse_figure_selector(arg) {
-                render_by_indices(&items, kind_filter, &indices, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref(), strict)
+                render_by_indices(
+                    &items,
+                    kind_filter,
+                    &indices,
+                    &rest[1..],
+                    workload_arg.as_deref(),
+                    &output_root,
+                    session_db.as_deref(),
+                    strict,
+                )
             } else {
-                render_by_glob(&items, kind_filter, arg, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref(), strict)
+                render_by_glob(
+                    &items,
+                    kind_filter,
+                    arg,
+                    &rest[1..],
+                    workload_arg.as_deref(),
+                    &output_root,
+                    session_db.as_deref(),
+                    strict,
+                )
             }
         }
     };
@@ -231,8 +288,10 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     // failure logs at stderr but does not affect the
     // report-command exit code.
     if let Err(e) = refresh_session_index(&output_root) {
-        eprintln!("nbrs report: failed to update {}: {e}",
-            output_root.join("index.md").display());
+        eprintln!(
+            "nbrs report: failed to update {}: {e}",
+            output_root.join("index.md").display()
+        );
     }
 
     // SRD: figure-render failures are not skip-overable. The
@@ -244,7 +303,10 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     // gives the count and the exit-time signal.
     if !failures.is_empty() {
         eprintln!();
-        eprintln!("nbrs report: {} figure(s) failed to render:", failures.len());
+        eprintln!(
+            "nbrs report: {} figure(s) failed to render:",
+            failures.len()
+        );
         for f in &failures {
             eprintln!("  - {f}");
         }
@@ -293,9 +355,11 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
         Err(e) => {
             return Err(std::io::Error::new(
                 e.kind(),
-                format!("cannot resolve session directory '{}': {e} \
+                format!(
+                    "cannot resolve session directory '{}': {e} \
                     (a broken or self-looping symlink? — index skipped)",
-                    output_root.display()),
+                    output_root.display()
+                ),
             ));
         }
     };
@@ -308,7 +372,9 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
     for entry in dir {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_file() && !file_type.is_symlink() { continue; }
+        if !file_type.is_file() && !file_type.is_symlink() {
+            continue;
+        }
         let name = entry.file_name();
         let name = match name.to_str() {
             Some(s) => s.to_string(),
@@ -317,10 +383,17 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
         // Skip the index itself so a future re-run doesn't
         // self-list with a relative loop. Also skip dotfiles
         // and lockfiles — operator clutter.
-        if name == "index.md" { continue; }
-        if name.starts_with('.') { continue; }
-        if name.ends_with(".lock") { continue; }
-        let ext = name.rsplit_once('.')
+        if name == "index.md" {
+            continue;
+        }
+        if name.starts_with('.') {
+            continue;
+        }
+        if name.ends_with(".lock") {
+            continue;
+        }
+        let ext = name
+            .rsplit_once('.')
             .map(|(_, e)| e.to_ascii_lowercase())
             .unwrap_or_default();
         let category = match ext.as_str() {
@@ -343,10 +416,12 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
     // alphabetical key order, which doesn't match the
     // doc-section narrative ("read the reports first, then
     // figures, then data, then logs, then everything else").
-    let display_order = ["reports", "figures", "data", "logs",
-        "database", "other"];
+    let display_order = ["reports", "figures", "data", "logs", "database", "other"];
     for (cat, name) in &entries {
-        by_category.entry(cat.as_str()).or_default().push(name.as_str());
+        by_category
+            .entry(cat.as_str())
+            .or_default()
+            .push(name.as_str());
     }
 
     // Build the markdown body once, then write atomically via
@@ -354,26 +429,35 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
     // half-written index. (Same pattern the cadence sqlite
     // writer uses.)
     let mut body = String::new();
-    let dir_name = output_root.file_name()
+    let dir_name = output_root
+        .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("session");
     writeln!(body, "# Index — `{dir_name}`").unwrap();
     writeln!(body).unwrap();
-    writeln!(body, "Auto-generated by `nbrs report`. Re-runs of \
-        any `nbrs report` subcommand refresh this index.").unwrap();
+    writeln!(
+        body,
+        "Auto-generated by `nbrs report`. Re-runs of \
+        any `nbrs report` subcommand refresh this index."
+    )
+    .unwrap();
     writeln!(body).unwrap();
 
     let mut wrote_anything = false;
     for cat in display_order {
-        let Some(names) = by_category.get(cat) else { continue };
-        if names.is_empty() { continue }
+        let Some(names) = by_category.get(cat) else {
+            continue;
+        };
+        if names.is_empty() {
+            continue;
+        }
         let heading = match cat {
-            "reports"  => "Reports",
-            "figures"  => "Figures",
-            "data"     => "Tables / data",
-            "logs"     => "Logs",
+            "reports" => "Reports",
+            "figures" => "Figures",
+            "data" => "Tables / data",
+            "logs" => "Logs",
             "database" => "Database",
-            "other"    => "Other",
+            "other" => "Other",
             _ => cat,
         };
         writeln!(body, "## {heading}").unwrap();
@@ -383,11 +467,14 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
             // so the markdown renderer shows them in place; the
             // bracket form (without the leading `!`) is a plain
             // link used for everything else.
-            let ext = name.rsplit_once('.')
+            let ext = name
+                .rsplit_once('.')
                 .map(|(_, e)| e.to_ascii_lowercase())
                 .unwrap_or_default();
-            let is_image = matches!(ext.as_str(),
-                "png" | "svg" | "jpg" | "jpeg" | "gif" | "webp");
+            let is_image = matches!(
+                ext.as_str(),
+                "png" | "svg" | "jpg" | "jpeg" | "gif" | "webp"
+            );
             if is_image {
                 writeln!(body, "- [`{name}`]({name})  ").unwrap();
                 writeln!(body, "  ![{name}]({name})").unwrap();
@@ -421,8 +508,7 @@ fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
 /// stored item by name."
 fn tail_has_vocab_flag(args: &[String]) -> bool {
     args.iter().any(|a| {
-        a.starts_with("--")
-            && nbrs_workload::report::vocab::directive_by_cli_flag(a).is_some()
+        a.starts_with("--") && nbrs_workload::report::vocab::directive_by_cli_flag(a).is_some()
     })
 }
 
@@ -453,9 +539,10 @@ fn dispatch_new_item(
     // `workload` field from the captured path so `--add`'s
     // workload-resolution can use it.
     if result.dispatch.workload.is_none()
-        && let Some(p) = workload_path {
-            result.dispatch.workload = Some(p.to_string_lossy().into_owned());
-        }
+        && let Some(p) = workload_path
+    {
+        result.dispatch.workload = Some(p.to_string_lossy().into_owned());
+    }
 
     if result.dispatch.add {
         run_add(&result, session_dir);
@@ -478,17 +565,17 @@ fn dispatch_new_item(
 
     let stub = format!(
         "<!-- {} {} -->\n\n```yaml\n{}```\n",
-        kind.as_str(), result.item.name,
+        kind.as_str(),
+        result.item.name,
         result.item.to_yaml_directive_string(),
     );
 
     if result.dispatch.stdout {
-        if matches!(kind, nbrs_workload::report::Kind::Plot)
-            && !result.dispatch.ascii
-        {
+        if matches!(kind, nbrs_workload::report::Kind::Plot) && !result.dispatch.ascii {
             eprintln!(
                 "--stdout is not compatible with `plot` kind; \
-                 use --ascii for terminal rendering");
+                 use --ascii for terminal rendering"
+            );
             std::process::exit(2);
         }
         print!("{stub}");
@@ -496,14 +583,19 @@ fn dispatch_new_item(
     }
 
     if let Err(e) = std::fs::write(&paths.md, &stub) {
-        eprintln!("nbrs report {}: write '{}': {e}",
-            kind.as_str(), paths.md.display());
+        eprintln!(
+            "nbrs report {}: write '{}': {e}",
+            kind.as_str(),
+            paths.md.display()
+        );
         std::process::exit(2);
     }
     eprintln!("scratch render: {}", paths.md.display());
     if let Some(png) = &paths.png {
-        eprintln!("(png path reserved — renderer integration lands in Phase D): {}",
-            png.display());
+        eprintln!(
+            "(png path reserved — renderer integration lands in Phase D): {}",
+            png.display()
+        );
     }
 }
 
@@ -511,10 +603,7 @@ fn dispatch_new_item(
 /// resolve the anchor against the active session, discover the
 /// workload to mutate, and route through
 /// [`nbrs_workload::edit::add_item`].
-fn run_add(
-    result: &crate::report_build::BuildResult,
-    session_dir: &std::path::Path,
-) {
+fn run_add(result: &crate::report_build::BuildResult, session_dir: &std::path::Path) {
     use nbrs_runtime::report_anchor::{self, AnchorFlag};
 
     // The builder enforced `--at` and `--contextual` are
@@ -541,13 +630,11 @@ fn run_add(
 
     eprintln!("{}", resolution.diagnostic);
 
-    let workload_path = match resolve_workload_for_add(
-        result.dispatch.workload.as_deref(),
-        session_dir,
-    ) {
-        Ok(p) => p,
-        Err(e) => die("nbrs report --add", &e),
-    };
+    let workload_path =
+        match resolve_workload_for_add(result.dispatch.workload.as_deref(), session_dir) {
+            Ok(p) => p,
+            Err(e) => die("nbrs report --add", &e),
+        };
 
     if result.dispatch.dry_run {
         // SRD-64 §6.1 dry-run: print the chosen anchor + the
@@ -619,35 +706,38 @@ fn run_rename(
     // dispatch reaches us; backfill so the workload-resolution
     // sees the user-supplied path.
     if parsed.workload.is_none()
-        && let Some(p) = extracted_workload {
-            parsed.workload = Some(p.to_string_lossy().into_owned());
-        }
+        && let Some(p) = extracted_workload
+    {
+        parsed.workload = Some(p.to_string_lossy().into_owned());
+    }
 
-    let workload_path = match resolve_workload_for_add(
-        parsed.workload.as_deref(),
-        session_dir,
-    ) {
+    let workload_path = match resolve_workload_for_add(parsed.workload.as_deref(), session_dir) {
         Ok(p) => p,
         Err(e) => die("nbrs report rename", &e),
     };
 
     if parsed.dry_run {
-        println!("# dry-run: would rename '{}' → '{}' in {}",
-            parsed.old, parsed.new, workload_path.display());
+        println!(
+            "# dry-run: would rename '{}' → '{}' in {}",
+            parsed.old,
+            parsed.new,
+            workload_path.display()
+        );
         if parsed.replace {
             println!("# replace: drop existing '{}' if present", parsed.new);
         }
         return;
     }
 
-    if let Err(e) = nbrs_workload::edit::rename_item(
-        &workload_path, &parsed.old, &parsed.new, parsed.replace,
-    ) {
+    if let Err(e) =
+        nbrs_workload::edit::rename_item(&workload_path, &parsed.old, &parsed.new, parsed.replace)
+    {
         die("nbrs report rename", &e.to_string());
     }
     eprintln!(
         "renamed `{}` → `{}` in {} (backup at {}.bak)",
-        parsed.old, parsed.new,
+        parsed.old,
+        parsed.new,
         workload_path.display(),
         workload_path.display(),
     );
@@ -673,12 +763,20 @@ fn parse_rename_args(args: &[String]) -> Result<RenameArgs, String> {
     while i < args.len() {
         let arg = &args[i];
         match arg.as_str() {
-            "--replace" => { replace = true; i += 1; }
-            "--dry-run" => { dry_run = true; i += 1; }
+            "--replace" => {
+                replace = true;
+                i += 1;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
             "--workload" => {
-                workload = Some(args.get(i + 1)
-                    .ok_or("--workload requires a value")?
-                    .clone());
+                workload = Some(
+                    args.get(i + 1)
+                        .ok_or("--workload requires a value")?
+                        .clone(),
+                );
                 i += 2;
             }
             // Session-resolution flags pass through (consumed
@@ -707,12 +805,8 @@ fn parse_rename_args(args: &[String]) -> Result<RenameArgs, String> {
     }
 
     Ok(RenameArgs {
-        old: old.ok_or(
-            "missing <old> name; usage: nbrs report rename <old> <new>",
-        )?,
-        new: new.ok_or(
-            "missing <new> name; usage: nbrs report rename <old> <new>",
-        )?,
+        old: old.ok_or("missing <old> name; usage: nbrs report rename <old> <new>")?,
+        new: new.ok_or("missing <new> name; usage: nbrs report rename <old> <new>")?,
         workload,
         replace,
         dry_run,
@@ -734,9 +828,7 @@ fn resolve_workload_for_add(
     if let Some(p) = explicit {
         let path = std::path::PathBuf::from(p);
         if !path.exists() {
-            return Err(format!(
-                "--workload '{}' does not exist", path.display(),
-            ));
+            return Err(format!("--workload '{}' does not exist", path.display(),));
         }
         return Ok(path);
     }
@@ -767,7 +859,9 @@ fn forward_renderer_flags(
     session_db: Option<&Path>,
 ) {
     let mut full: Vec<String> = Vec::new();
-    if let Some(w) = workload_arg { full.push(w.to_string()); }
+    if let Some(w) = workload_arg {
+        full.push(w.to_string());
+    }
     // Re-inject the resolved session db as an explicit `--db`
     // (overridable by anything in `args` that supplies its own
     // `--db`) so the downstream renderer doesn't fall back to
@@ -785,8 +879,10 @@ fn forward_renderer_flags(
         KindFilter::Plot => crate::plot_metrics::plot_metrics_command(&full),
         KindFilter::Table => crate::summary::summary_command(&full),
         KindFilter::Any => {
-            eprintln!("nbrs report: flag-form selection requires a kind \
-                (use `nbrs plot --<flag>...` or `nbrs table --<flag>...`)");
+            eprintln!(
+                "nbrs report: flag-form selection requires a kind \
+                (use `nbrs plot --<flag>...` or `nbrs table --<flag>...`)"
+            );
             std::process::exit(2);
         }
     }
@@ -889,12 +985,19 @@ fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
     // --session local/foo` would route to flag-form because
     // `--session` is `--`-prefixed.
     const FLAGS_WITH_VALUES: &[&str] = &[
-        "--session", "--session-name", "--session-path",
-        "--session-reuse", "--session-keep", "--session-shelflife",
-        "--resume", "--polydat-lib",
+        "--session",
+        "--session-name",
+        "--session-path",
+        "--session-reuse",
+        "--session-keep",
+        "--session-shelflife",
+        "--resume",
+        "--polydat-lib",
     ];
     const BOOL_FLAGS: &[&str] = &[
-        "--strict", "--no-prompt", "--resume-latest",
+        "--strict",
+        "--no-prompt",
+        "--resume-latest",
         "--force-retry-failed",
         // `--rebuild` wipes the report markdown files that
         // the workload's `report:` block declares before
@@ -946,7 +1049,10 @@ fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
             i += 2;
             continue;
         }
-        if FLAGS_WITH_VALUES.iter().any(|f| a.starts_with(&format!("{f}="))) {
+        if FLAGS_WITH_VALUES
+            .iter()
+            .any(|f| a.starts_with(&format!("{f}=")))
+        {
             i += 1;
             continue;
         }
@@ -1028,7 +1134,9 @@ pub(crate) fn plot_body_specs(
                 body.push(':');
                 let mut first = true;
                 for line in so.style.scalar_directive_lines() {
-                    if !first { body.push(' '); }
+                    if !first {
+                        body.push(' ');
+                    }
                     first = false;
                     body.push_str(&line);
                 }
@@ -1074,7 +1182,9 @@ pub(crate) fn resolve_items(
             return Err(format!("workload '{}' not found", resolved.display()));
         }
         let workload = nbrs_workload::parse::parse_workload_from_path(
-            &resolved, &std::collections::HashMap::new())?;
+            &resolved,
+            &std::collections::HashMap::new(),
+        )?;
         // Workload-param interpolation: report items (the
         // `label "..."` and the body lines) routinely
         // contain `{cql_dialect}`-style placeholders that
@@ -1093,7 +1203,9 @@ pub(crate) fn resolve_items(
         let db_path = session_db
             .map(PathBuf::from)
             .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
-        if !db_path.exists() { return Ok(Vec::new()); }
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
@@ -1107,7 +1219,8 @@ pub(crate) fn resolve_items(
         // expansion. Same substitution as the YAML path.
         // Latest execution's params + report defs (per-execution
         // metadata), with legacy session_metadata fallback.
-        let mut params: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut params: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for (k, v) in
             nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "param.%")
         {
@@ -1126,7 +1239,9 @@ pub(crate) fn resolve_items(
             // to the workload-side parser so directive handling
             // lives in one place and stays in lockstep with the
             // YAML path.
-            if row.0.strip_prefix("report.").is_none() { continue; }
+            if row.0.strip_prefix("report.").is_none() {
+                continue;
+            }
             match nbrs_workload::report::parse_persisted_item(&row.1) {
                 Ok(item) => out.push((item.order, resolve_item(&item, &default_style, &params))),
                 Err(_) => continue,
@@ -1151,19 +1266,19 @@ pub(crate) fn resolve_items(
         // life, and resolves against the workload as it was WHEN THE RUN STARTED
         // rather than whatever the file says now — which is the more truthful
         // source for a report about that run.
-        let yaml = nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(
-            &conn, "workload_yaml")
-            .into_iter()
-            .find(|(k, _)| k == "workload_yaml")
-            .map(|(_, v)| v);
+        let yaml =
+            nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "workload_yaml")
+                .into_iter()
+                .find(|(k, _)| k == "workload_yaml")
+                .map(|(_, v)| v);
         if let Some(yaml) = yaml {
-            match nbrs_workload::parse::parse_workload(
-                &yaml, &std::collections::HashMap::new())
-            {
+            match nbrs_workload::parse::parse_workload(&yaml, &std::collections::HashMap::new()) {
                 Ok(w) => return Ok(items_from_workload(&w)),
                 Err(e) => {
-                    eprintln!("nbrs report: stored workload_yaml did not parse \
-                               ({e}); pass `workload=<file>` to override");
+                    eprintln!(
+                        "nbrs report: stored workload_yaml did not parse \
+                               ({e}); pass `workload=<file>` to override"
+                    );
                 }
             }
         }
@@ -1183,10 +1298,16 @@ fn content_hint(item: &ResolvedItem) -> String {
             let cols: Vec<&str> = if cfg.metricsql_columns.is_empty() {
                 cfg.columns.iter().map(String::as_str).collect()
             } else {
-                cfg.metricsql_columns.iter().map(|(n, _)| n.as_str()).collect()
+                cfg.metricsql_columns
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect()
             };
-            let cols = if cols.is_empty() { "(all gauges)".to_string() }
-                else { cols.join(", ") };
+            let cols = if cols.is_empty() {
+                "(all gauges)".to_string()
+            } else {
+                cols.join(", ")
+            };
             if cfg.group_by.is_empty() {
                 format!("columns: {cols}")
             } else {
@@ -1209,8 +1330,8 @@ fn content_hint(item: &ResolvedItem) -> String {
                         for _ in 0..2 {
                             match crate::plot_metrics::metric_name_from_query(rest) {
                                 Some(m) => {
-                                    let idx = rest.find(&m).map(|i| i + m.len())
-                                        .unwrap_or(rest.len());
+                                    let idx =
+                                        rest.find(&m).map(|i| i + m.len()).unwrap_or(rest.len());
                                     axes.push(m);
                                     rest = &rest[idx..];
                                 }
@@ -1222,7 +1343,9 @@ fn content_hint(item: &ResolvedItem) -> String {
             }
             axes.dedup();
             let mut hint = axes.join(" vs ");
-            if hint.is_empty() { hint = "(no axis queries)".to_string(); }
+            if hint.is_empty() {
+                hint = "(no axis queries)".to_string();
+            }
             if !series.is_empty() {
                 hint.push_str(&format!("; series {series}"));
             }
@@ -1256,7 +1379,9 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
         if !filter.matches(item.kind) {
             // Bump fig counter to keep numbering stable even
             // when the listing is filtered.
-            if item.kind.is_figure() { fig_num += 1; }
+            if item.kind.is_figure() {
+                fig_num += 1;
+            }
             continue;
         }
         // Section banner when target_file changes.
@@ -1276,30 +1401,46 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
                     Some(l) if !l.is_empty() => format!("\"{l}\" — {hint}"),
                     _ => hint,
                 };
-                println!("  {fig_num:3} — {name:24} {kind:6} {display}",
-                    name = item.name, kind = item.kind.as_str());
+                println!(
+                    "  {fig_num:3} — {name:24} {kind:6} {display}",
+                    name = item.name,
+                    kind = item.kind.as_str()
+                );
             }
             Kind::Text => {
                 let label = item.label.as_deref().unwrap_or("");
                 let preview = item.body.lines().next().unwrap_or("").trim();
                 let preview = if preview.len() > 40 {
                     format!("{}…", &preview[..40])
-                } else { preview.to_string() };
+                } else {
+                    preview.to_string()
+                };
                 let display = if !label.is_empty() {
                     label.to_string()
-                } else { preview };
-                println!("    T — {name:24} {kind:6} \"{display}\"",
-                    name = item.name, kind = item.kind.as_str());
+                } else {
+                    preview
+                };
+                println!(
+                    "    T — {name:24} {kind:6} \"{display}\"",
+                    name = item.name,
+                    kind = item.kind.as_str()
+                );
             }
             Kind::File => {
                 let label = item.label.as_deref().unwrap_or("");
-                println!("    F — {name:24} {kind:6} \"{label}\"",
-                    name = item.name, kind = item.kind.as_str());
+                println!(
+                    "    F — {name:24} {kind:6} \"{label}\"",
+                    name = item.name,
+                    kind = item.kind.as_str()
+                );
             }
             Kind::Details => {
                 let label = item.label.as_deref().unwrap_or("run details");
-                println!("    D — {name:24} {kind:6} \"{label}\"",
-                    name = item.name, kind = item.kind.as_str());
+                println!(
+                    "    D — {name:24} {kind:6} \"{label}\"",
+                    name = item.name,
+                    kind = item.kind.as_str()
+                );
             }
         }
     }
@@ -1308,27 +1449,48 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
     // figure counts by kind, total table columns, and text
     // sections — so the listing reads as a report inventory, not
     // just a name index.
-    let shown: Vec<&ResolvedItem> = items.iter()
-        .filter(|i| filter.matches(i.kind)).collect();
-    let tables = shown.iter().filter(|i| matches!(i.kind, Kind::Table)).count();
-    let plots = shown.iter().filter(|i| matches!(i.kind, Kind::Plot)).count();
-    let texts = shown.iter().filter(|i| matches!(i.kind, Kind::Text)).count();
-    let files = shown.iter().filter(|i| matches!(i.kind, Kind::File)).count();
-    let columns: usize = shown.iter()
+    let shown: Vec<&ResolvedItem> = items.iter().filter(|i| filter.matches(i.kind)).collect();
+    let tables = shown
+        .iter()
+        .filter(|i| matches!(i.kind, Kind::Table))
+        .count();
+    let plots = shown
+        .iter()
+        .filter(|i| matches!(i.kind, Kind::Plot))
+        .count();
+    let texts = shown
+        .iter()
+        .filter(|i| matches!(i.kind, Kind::Text))
+        .count();
+    let files = shown
+        .iter()
+        .filter(|i| matches!(i.kind, Kind::File))
+        .count();
+    let columns: usize = shown
+        .iter()
         .filter(|i| matches!(i.kind, Kind::Table))
         .map(|i| {
             let cfg = nbrs_workload::model::SummaryConfig::parse(&i.body);
-            if cfg.metricsql_columns.is_empty() { cfg.columns.len() }
-            else { cfg.metricsql_columns.len() }
+            if cfg.metricsql_columns.is_empty() {
+                cfg.columns.len()
+            } else {
+                cfg.metricsql_columns.len()
+            }
         })
         .sum();
     let mut parts: Vec<String> = Vec::new();
     if tables > 0 {
         parts.push(format!("{tables} table(s) totalling {columns} column(s)"));
     }
-    if plots > 0 { parts.push(format!("{plots} plot(s)")); }
-    if texts > 0 { parts.push(format!("{texts} text section(s)")); }
-    if files > 0 { parts.push(format!("{files} named report file(s)")); }
+    if plots > 0 {
+        parts.push(format!("{plots} plot(s)"));
+    }
+    if texts > 0 {
+        parts.push(format!("{texts} text section(s)"));
+    }
+    if files > 0 {
+        parts.push(format!("{files} named report file(s)"));
+    }
     if !parts.is_empty() {
         println!("\n{} figure(s): {}", tables + plots, parts.join(", "));
     }
@@ -1350,24 +1512,27 @@ fn render_all(
     // the operator renders.
     let mut fig_num: usize = 0;
     let mut failures: Vec<String> = Vec::new();
-    let to_render: usize = items.iter()
-        .filter(|i| filter.matches(i.kind))
-        .count();
+    let to_render: usize = items.iter().filter(|i| filter.matches(i.kind)).count();
     if to_render == 0 {
         // Items resolved but the kind filter excluded all of
         // them — distinguishable from the "no items at all"
         // case the caller already warned about.
         eprintln!(
             "nbrs report: 0 of {} item(s) match the kind filter \
-             (rendering nothing)", items.len(),
+             (rendering nothing)",
+            items.len(),
         );
         return failures;
     }
     eprintln!("nbrs report: rendering {} item(s)…", to_render);
     let mut idx = 0;
     for item in items.iter() {
-        if item.kind.is_figure() { fig_num += 1; }
-        if !filter.matches(item.kind) { continue; }
+        if item.kind.is_figure() {
+            fig_num += 1;
+        }
+        if !filter.matches(item.kind) {
+            continue;
+        }
         idx += 1;
         // Per-item heading so the operator can map the
         // downstream renderer output (plot points, table
@@ -1377,16 +1542,33 @@ fn render_all(
         // works.
         let fig_label = if item.kind.is_figure() {
             format!("[fig {}] ", fig_num)
-        } else { String::new() };
-        eprintln!("  ({}/{}) {}{} {}",
-            idx, to_render, fig_label,
-            item.kind.as_str(), item.name);
-        if let Err(e) = render_one(fig_num, item, passthrough, workload_arg, output_root, session_db) {
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "  ({}/{}) {}{} {}",
+            idx,
+            to_render,
+            fig_label,
+            item.kind.as_str(),
+            item.name
+        );
+        if let Err(e) = render_one(
+            fig_num,
+            item,
+            passthrough,
+            workload_arg,
+            output_root,
+            session_db,
+        ) {
             classify_render_error(e, strict, &mut failures);
         }
     }
-    eprintln!("nbrs report: rendered {} item(s); {} failure(s)",
-        to_render, failures.len());
+    eprintln!(
+        "nbrs report: rendered {} item(s); {} failure(s)",
+        to_render,
+        failures.len()
+    );
     failures
 }
 
@@ -1396,8 +1578,7 @@ fn render_all(
 /// `NBRS_STRICT` env var set. When strict is on, no-data
 /// figure-render errors keep their hard-failure semantics.
 fn is_strict_mode(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--strict")
-        || std::env::var("NBRS_STRICT").is_ok()
+    args.iter().any(|a| a == "--strict") || std::env::var("NBRS_STRICT").is_ok()
 }
 
 /// True when `--rebuild` is on the arg list. Activates the
@@ -1408,8 +1589,7 @@ fn is_strict_mode(args: &[String]) -> bool {
 /// the new declaration set without orphan sections from the
 /// previous render.
 fn is_rebuild_mode(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--rebuild")
-        || std::env::var("NBRS_REPORT_REBUILD").is_ok()
+    args.iter().any(|a| a == "--rebuild") || std::env::var("NBRS_REPORT_REBUILD").is_ok()
 }
 
 /// True when `--clean` is on the arg list. Activates the
@@ -1421,8 +1601,7 @@ fn is_rebuild_mode(args: &[String]) -> bool {
 /// current declaration set — no orphan artifacts from
 /// prior runs.
 fn is_clean_mode(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--clean")
-        || std::env::var("NBRS_REPORT_CLEAN").is_ok()
+    args.iter().any(|a| a == "--clean") || std::env::var("NBRS_REPORT_CLEAN").is_ok()
 }
 
 /// Remove every top-level `.png` and `.md` file under
@@ -1449,11 +1628,19 @@ fn clean_wipe_artifacts(output_root: &Path) {
     let mut removed: usize = 0;
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
-        if ext != "png" && ext != "md" { continue; }
+        if !path.is_file() {
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        if ext != "png" && ext != "md" {
+            continue;
+        }
         match std::fs::remove_file(&path) {
-            Ok(()) => { removed += 1; }
+            Ok(()) => {
+                removed += 1;
+            }
             Err(e) => eprintln!(
                 "nbrs report: --clean: could not remove '{}': {e}",
                 path.display(),
@@ -1528,7 +1715,14 @@ pub fn render_session_reports(db_path: &Path) -> Result<usize, Vec<String>> {
         .to_path_buf();
     let strict = std::env::var("NBRS_STRICT").is_ok();
     let failures = render_all(
-        &items, KindFilter::Any, &[], None, &output_root, Some(db_path), strict);
+        &items,
+        KindFilter::Any,
+        &[],
+        None,
+        &output_root,
+        Some(db_path),
+        strict,
+    );
     if failures.is_empty() {
         Ok(items.len())
     } else {
@@ -1570,7 +1764,16 @@ fn render_by_index(
             std::process::exit(2);
         }
     };
-    render_by_indices(items, filter, &indices, passthrough, workload_arg, output_root, session_db, strict)
+    render_by_indices(
+        items,
+        filter,
+        &indices,
+        passthrough,
+        workload_arg,
+        output_root,
+        session_db,
+        strict,
+    )
 }
 
 // Selector + render context threaded explicitly; the sibling
@@ -1597,7 +1800,8 @@ fn render_by_indices(
         if !filter.matches(item.kind) {
             eprintln!(
                 "nbrs report: figure {n} is a {} but the kind filter requires {:?}",
-                item.kind.as_str(), filter,
+                item.kind.as_str(),
+                filter,
             );
             std::process::exit(2);
         }
@@ -1624,11 +1828,15 @@ fn render_by_indices(
 /// reversed iteration. Empty input → `None`.
 fn parse_figure_selector(s: &str) -> Option<Vec<usize>> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut out: Vec<usize> = Vec::new();
     for token in s.split(',') {
         let token = token.trim();
-        if token.is_empty() { return None; }
+        if token.is_empty() {
+            return None;
+        }
         // Try Rust-style range first so `2..4` doesn't get
         // hyphen-split. `..=` is the inclusive form; for this
         // CLI we treat `..` as inclusive too — humans typing
@@ -1641,18 +1849,26 @@ fn parse_figure_selector(s: &str) -> Option<Vec<usize>> {
             // `-` ambiguity: the empty-LHS case (`-5`) would be
             // a negative literal — figure indices are positive,
             // so reject it.
-            if l.is_empty() { return None; }
+            if l.is_empty() {
+                return None;
+            }
             (l.trim(), Some(r.trim()))
         } else {
             (token, None)
         };
         let lo: usize = lo.parse().ok()?;
-        if lo == 0 { return None; }
+        if lo == 0 {
+            return None;
+        }
         match hi {
             Some(h) => {
                 let hi: usize = h.parse().ok()?;
-                if hi < lo { return None; }
-                for i in lo..=hi { out.push(i); }
+                if hi < lo {
+                    return None;
+                }
+                for i in lo..=hi {
+                    out.push(i);
+                }
             }
             None => out.push(lo),
         }
@@ -1679,9 +1895,15 @@ fn render_by_glob(
     let mut fig_num: usize = 0;
     let mut matches: Vec<(usize, &ResolvedItem)> = Vec::new();
     for item in items.iter() {
-        if item.kind.is_figure() { fig_num += 1; }
-        if !filter.matches(item.kind) { continue; }
-        if !glob_matches(glob, &item.name) { continue; }
+        if item.kind.is_figure() {
+            fig_num += 1;
+        }
+        if !filter.matches(item.kind) {
+            continue;
+        }
+        if !glob_matches(glob, &item.name) {
+            continue;
+        }
         matches.push((fig_num, item));
     }
     if matches.is_empty() {
@@ -1727,7 +1949,9 @@ fn render_one(
         return Ok(());
     }
     let mut base: Vec<String> = Vec::new();
-    if let Some(w) = workload_arg { base.push(w.to_string()); }
+    if let Some(w) = workload_arg {
+        base.push(w.to_string());
+    }
     // Re-inject the resolved session db as an explicit `--db`
     // so the downstream renderer (which sees only `base` plus
     // `passthrough`, neither containing the original `--session`
@@ -1739,7 +1963,8 @@ fn render_one(
     // see TWO dbs, which routes through `db_merge` — so `session=<dir> --db
     // <same dir>/metrics.db` merged a database with itself, turning a
     // seconds-long render into a multi-minute one that looks like a hang.
-    let passthrough_has_db = passthrough.iter()
+    let passthrough_has_db = passthrough
+        .iter()
         .any(|a| a == "--db" || a.starts_with("--db="));
     if let (Some(db), false) = (session_db, passthrough_has_db) {
         base.push("--db".into());
@@ -1791,7 +2016,9 @@ fn render_one(
             let mut s = format!("{}={}:", so.key, so.value);
             let mut first = true;
             for line in so.style.scalar_directive_lines() {
-                if !first { s.push(' '); }
+                if !first {
+                    s.push(' ');
+                }
                 first = false;
                 s.push_str(&line);
             }
@@ -1814,8 +2041,8 @@ fn render_one(
             // non-strict mode (incremental / auto-render
             // legitimately produces empty results before data
             // accumulates).
-            let plot_result = crate::plot_metrics::plot_metrics_command_result(&base)
-                .map_err(|e| {
+            let plot_result =
+                crate::plot_metrics::plot_metrics_command_result(&base).map_err(|e| {
                     if crate::plot_metrics::is_no_data_error(&e) {
                         format!(
                             "{}plot '{}' has no data: {}",
@@ -1841,14 +2068,13 @@ fn render_one(
             // success/failure return.
             if plot_result.is_ok() {
                 if item.with_table
-                    && let Err(e) = render_companion_table(
-                        n, item, output_root, session_db, &[],
-                    ) {
-                        eprintln!(
-                            "WARNING: companion table for plot '{}' failed: {e}",
-                            item.name,
-                        );
-                    }
+                    && let Err(e) = render_companion_table(n, item, output_root, session_db, &[])
+                {
+                    eprintln!(
+                        "WARNING: companion table for plot '{}' failed: {e}",
+                        item.name,
+                    );
+                }
                 if !item.with_tables.is_empty() {
                     match discover_faceted_tuples(item, session_db) {
                         Ok(tuples) if tuples.is_empty() => {
@@ -1860,11 +2086,15 @@ fn render_one(
                         }
                         Ok(tuples) => {
                             for tuple in tuples {
-                                let pairs: Vec<(String, String)> = item.with_tables.iter()
-                                    .cloned().zip(tuple.iter().cloned()).collect();
-                                if let Err(e) = render_companion_table(
-                                    n, item, output_root, session_db, &pairs,
-                                ) {
+                                let pairs: Vec<(String, String)> = item
+                                    .with_tables
+                                    .iter()
+                                    .cloned()
+                                    .zip(tuple.iter().cloned())
+                                    .collect();
+                                if let Err(e) =
+                                    render_companion_table(n, item, output_root, session_db, &pairs)
+                                {
                                     eprintln!(
                                         "WARNING: faceted companion table for \
                                          plot '{}' ({pairs:?}) failed: {e}",
@@ -1953,7 +2183,8 @@ fn render_companion_table(
     let columns: Vec<(String, String)> = if facet.is_empty() {
         columns
     } else {
-        columns.into_iter()
+        columns
+            .into_iter()
             .map(|(name, q)| (name, inject_label_matchers(&q, facet)))
             .collect()
     };
@@ -1999,8 +2230,8 @@ fn render_companion_table(
     // this table; pulling them out of group_by avoids
     // single-value columns that just repeat the facet.
     if !facet.is_empty() {
-        let facet_keys: std::collections::HashSet<&str> = facet.iter()
-            .map(|(k, _)| k.as_str()).collect();
+        let facet_keys: std::collections::HashSet<&str> =
+            facet.iter().map(|(k, _)| k.as_str()).collect();
         group_by.retain(|k| !facet_keys.contains(k.as_str()));
     }
 
@@ -2017,7 +2248,9 @@ fn render_companion_table(
         spec.push_str(&format!("query {col_name}: {query}\n"));
     }
 
-    let plot_label = item.label.clone()
+    let plot_label = item
+        .label
+        .clone()
         .unwrap_or_else(|| crate::report::prettify_name(&item.name));
     // Facet suffix folded into both the markdown section
     // name (so each table gets its own anchor / file slot)
@@ -2044,9 +2277,7 @@ fn render_companion_table(
     let facet_suffix_label = if facet.is_empty() {
         String::new()
     } else {
-        let parts: Vec<String> = facet.iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
+        let parts: Vec<String> = facet.iter().map(|(k, v)| format!("{k}={v}")).collect();
         format!(" [{}]", parts.join(", "))
     };
     let mut argv: Vec<String> = vec![
@@ -2092,10 +2323,14 @@ fn render_companion_table(
 /// matchers). When no `{ … }` exists, wraps the bare
 /// metric name with one.
 fn inject_label_matchers(expr: &str, pairs: &[(String, String)]) -> String {
-    if pairs.is_empty() { return expr.to_string(); }
-    let inj: String = pairs.iter()
+    if pairs.is_empty() {
+        return expr.to_string();
+    }
+    let inj: String = pairs
+        .iter()
         .map(|(k, v)| format!("{k}=\"{v}\""))
-        .collect::<Vec<_>>().join(",");
+        .collect::<Vec<_>>()
+        .join(",");
     if let Some(open) = expr.find('{') {
         // Find the matching close at depth 0 in label space.
         let after_open = &expr[open + 1..];
@@ -2138,9 +2373,15 @@ fn inject_label_matchers(expr: &str, pairs: &[(String, String)]) -> String {
 /// filename suffix: keep alphanumerics + `_`, replace
 /// everything else with `_`.
 fn sanitize_for_anchor(v: &str) -> String {
-    v.chars().map(|c| {
-        if c.is_alphanumeric() || c == '_' { c } else { '_' }
-    }).collect()
+    v.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Discover the distinct value tuples for the given label
@@ -2161,7 +2402,8 @@ fn discover_faceted_tuples(
         return Err(format!("session db '{}' missing", db_path.display()));
     }
     let columns = extract_y_queries(&item.body);
-    let first = columns.first()
+    let first = columns
+        .first()
         .ok_or_else(|| "plot has no y queries — nothing to facet over".to_string())?;
     let expr = &first.1;
 
@@ -2169,13 +2411,14 @@ fn discover_faceted_tuples(
     use nbrs_metricsql::eval::{EvalContext, evaluate};
     let ds = SqliteDataSource::open(&db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("open db: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("open db: {e}"))?;
     let (min_ts, max_ts): (i64, i64) = conn.query_row(
         "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) FROM sample_value",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(|e| format!("read time bounds: {e}"))?;
-    if max_ts == 0 { return Ok(Vec::new()); }
+    if max_ts == 0 {
+        return Ok(Vec::new());
+    }
     let ctx = EvalContext {
         data: &ds,
         start_ms: min_ts,
@@ -2185,21 +2428,24 @@ fn discover_faceted_tuples(
         query_start_ms: Some(min_ts),
         query_end_ms: Some(max_ts),
     };
-    let parsed = nbrs_metricsql::parse(expr)
-        .map_err(|e| format!("parse '{expr}': {e}"))?;
+    let parsed = nbrs_metricsql::parse(expr).map_err(|e| format!("parse '{expr}': {e}"))?;
     // SRD-77 — facet discovery coalesces across executions
     // (per-instance-latest, the DataSource default), so a refined
     // session's companion tables break down by every facet, not just
     // the newest execution's.
-    let series = evaluate(&ctx, &parsed)
-        .map_err(|e| format!("evaluate '{expr}': {e}"))?;
+    let series = evaluate(&ctx, &parsed).map_err(|e| format!("evaluate '{expr}': {e}"))?;
     let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
     for s in series {
-        let tuple: Vec<String> = item.with_tables.iter()
-            .map(|k| s.labels.iter()
-                .find(|(lk, _)| lk == k)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_default())
+        let tuple: Vec<String> = item
+            .with_tables
+            .iter()
+            .map(|k| {
+                s.labels
+                    .iter()
+                    .find(|(lk, _)| lk == k)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            })
             .collect();
         if tuple.iter().all(|v| !v.is_empty()) {
             seen.insert(tuple);
@@ -2237,7 +2483,13 @@ fn extract_y_queries(body: &str) -> Vec<(String, String)> {
     let mut positional: Vec<String> = Vec::new();
     for line in body.lines() {
         let line = line.trim();
-        for pfx in ["y-legend:", "y1-legend:", "y2-legend:", "y3-legend:", "y4-legend:"] {
+        for pfx in [
+            "y-legend:",
+            "y1-legend:",
+            "y2-legend:",
+            "y3-legend:",
+            "y4-legend:",
+        ] {
             if let Some(rest) = line.strip_prefix(pfx) {
                 let key = match pfx {
                     "y-legend:" | "y1-legend:" => "y1",
@@ -2273,7 +2525,8 @@ fn extract_y_queries(body: &str) -> Vec<(String, String)> {
                     "y4" => 3,
                     _ => 0,
                 };
-                let col_name = per_axis_legend.get(key)
+                let col_name = per_axis_legend
+                    .get(key)
                     .cloned()
                     .or_else(|| positional.get(axis_idx).cloned())
                     .unwrap_or_else(|| key.to_string());
@@ -2286,8 +2539,7 @@ fn extract_y_queries(body: &str) -> Vec<(String, String)> {
                 // discover_faceted_tuples). When the value isn't a
                 // shorthand, pass through verbatim.
                 let raw = rest.trim().to_string();
-                let y_query = crate::plot_metrics::try_decompose_y_query(&raw)
-                    .unwrap_or(raw);
+                let y_query = crate::plot_metrics::try_decompose_y_query(&raw).unwrap_or(raw);
                 out.push((col_name, y_query));
                 break;
             }
@@ -2299,7 +2551,8 @@ fn extract_y_queries(body: &str) -> Vec<(String, String)> {
 /// Strip a single layer of `"…"` or `'…'` from a token.
 fn strip_outer_quotes(s: &str) -> &str {
     let s = s.trim();
-    s.strip_prefix('"').and_then(|t| t.strip_suffix('"'))
+    s.strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
         .or_else(|| s.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')))
         .unwrap_or(s)
 }
@@ -2314,7 +2567,11 @@ fn strip_legend_placeholders(s: &str) -> String {
     for c in s.chars() {
         match c {
             '[' => depth += 1,
-            ']' => { if depth > 0 { depth -= 1; } }
+            ']' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
             _ if depth == 0 => out.push(c),
             _ => {}
         }
@@ -2326,7 +2583,11 @@ fn strip_legend_placeholders(s: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join("_");
-    if cleaned.is_empty() { "value".to_string() } else { cleaned }
+    if cleaned.is_empty() {
+        "value".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Split `y-legends:` array contents on top-level commas,
@@ -2338,19 +2599,32 @@ fn split_legend_array(inner: &str) -> Vec<String> {
     let mut depth: i32 = 0;
     let push = |buf: &mut String, out: &mut Vec<String>| {
         let trimmed = strip_outer_quotes(buf.trim()).to_string();
-        if !trimmed.is_empty() { out.push(trimmed); }
+        if !trimmed.is_empty() {
+            out.push(trimmed);
+        }
         buf.clear();
     };
     for c in inner.chars() {
         if let Some(q) = in_quote {
             current.push(c);
-            if c == q { in_quote = None; }
+            if c == q {
+                in_quote = None;
+            }
             continue;
         }
         match c {
-            '"' | '\'' => { in_quote = Some(c); current.push(c); }
-            '[' | '(' => { depth += 1; current.push(c); }
-            ']' | ')' => { depth -= 1; current.push(c); }
+            '"' | '\'' => {
+                in_quote = Some(c);
+                current.push(c);
+            }
+            '[' | '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                current.push(c);
+            }
             ',' if depth == 0 => push(&mut current, &mut out),
             _ => current.push(c),
         }
@@ -2388,13 +2662,18 @@ fn extract_xticks_query(body: &str) -> Option<String> {
 fn extract_label_keys(query: &str) -> Vec<String> {
     let lower = query.to_ascii_lowercase();
     let by_idx = lower.rfind(" by ");
-    let by_idx = match by_idx { Some(i) => i, None => return Vec::new() };
+    let by_idx = match by_idx {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
     let after = &query[by_idx + 4..];
     let after = after.trim();
-    let inner = after.strip_prefix('(')
+    let inner = after
+        .strip_prefix('(')
         .and_then(|s| s.strip_suffix(')'))
         .unwrap_or(after);
-    inner.split(',')
+    inner
+        .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -2408,14 +2687,22 @@ fn extract_label_keys(query: &str) -> Vec<String> {
 fn render_text(item: &ResolvedItem, output_root: &Path) {
     let target = item.target_file.as_deref().unwrap_or("summary.md");
     let path = output_root.join(target);
-    let label = item.label.clone()
+    let label = item
+        .label
+        .clone()
         .unwrap_or_else(|| crate::report::prettify_name(&item.name));
     let heading_display = format!("{label} (text)");
     if let Err(e) = crate::report::write_named_section(
-        &path, &item.name, &heading_display, &item.body,
+        &path,
+        &item.name,
+        &heading_display,
+        &item.body,
         crate::report::WriteMode::Update,
     ) {
-        eprintln!("warning: failed to write text section to '{}': {e}", path.display());
+        eprintln!(
+            "warning: failed to write text section to '{}': {e}",
+            path.display()
+        );
     }
 }
 
@@ -2427,8 +2714,12 @@ fn glob_matches(glob: &str, name: &str) -> bool {
         match (g.first(), n.first()) {
             (None, None) => true,
             (Some(b'*'), _) => {
-                if rec(&g[1..], n) { return true; }
-                if !n.is_empty() && rec(g, &n[1..]) { return true; }
+                if rec(&g[1..], n) {
+                    return true;
+                }
+                if !n.is_empty() && rec(g, &n[1..]) {
+                    return true;
+                }
                 false
             }
             (Some(b'?'), Some(_)) => rec(&g[1..], &n[1..]),
@@ -2448,27 +2739,56 @@ fn glob_matches(glob: &str, name: &str) -> bool {
 /// Handler reconstructs `[subname, ...raw]` and forwards to
 /// the dispatcher so the legacy parser sees its expected
 /// shape.
-fn report_subleaf(subname: &'static str, help: &'static str)
-    -> crate::cli_spec::Command
-{
+fn report_subleaf(subname: &'static str, help: &'static str) -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
     // One-off handlers per subname — fn pointers can't capture
     // so we route through a shared dispatch table by name.
-    fn h(subname: &'static str)
-        -> fn(ParsedCommand) -> Result<(), String>
-    {
+    fn h(subname: &'static str) -> fn(ParsedCommand) -> Result<(), String> {
         match subname {
-            "plot"     => |p| { dispatch(p, "plot");    Ok(()) },
-            "table"    => |p| { dispatch(p, "table");   Ok(()) },
-            "text"     => |p| { dispatch(p, "text");    Ok(()) },
-            "file"     => |p| { dispatch(p, "file");    Ok(()) },
-            "details"  => |p| { dispatch(p, "details"); Ok(()) },
-            "list"     => |p| { dispatch(p, "list");    Ok(()) },
-            "all"      => |p| { dispatch(p, "all");     Ok(()) },
-            "show"     => |p| { dispatch(p, "show");    Ok(()) },
-            "figure"   => |p| { dispatch(p, "figure");  Ok(()) },
-            "rename"   => |p| { dispatch(p, "rename");  Ok(()) },
-            "scratch"  => |p| { dispatch(p, "scratch"); Ok(()) },
+            "plot" => |p| {
+                dispatch(p, "plot");
+                Ok(())
+            },
+            "table" => |p| {
+                dispatch(p, "table");
+                Ok(())
+            },
+            "text" => |p| {
+                dispatch(p, "text");
+                Ok(())
+            },
+            "file" => |p| {
+                dispatch(p, "file");
+                Ok(())
+            },
+            "details" => |p| {
+                dispatch(p, "details");
+                Ok(())
+            },
+            "list" => |p| {
+                dispatch(p, "list");
+                Ok(())
+            },
+            "all" => |p| {
+                dispatch(p, "all");
+                Ok(())
+            },
+            "show" => |p| {
+                dispatch(p, "show");
+                Ok(())
+            },
+            "figure" => |p| {
+                dispatch(p, "figure");
+                Ok(())
+            },
+            "rename" => |p| {
+                dispatch(p, "rename");
+                Ok(())
+            },
+            "scratch" => |p| {
+                dispatch(p, "scratch");
+                Ok(())
+            },
             _ => |_| Err("report: unknown subcommand".to_string()),
         }
     }
@@ -2481,42 +2801,53 @@ fn report_subleaf(subname: &'static str, help: &'static str)
     // additionally completes stored item names on `--name`.
     let mut flags = vec![
         crate::cli_spec::Flag {
-            long: "--db", short: None, aliases: &[],
+            long: "--db",
+            short: None,
+            aliases: &[],
             arity: crate::cli_spec::Arity::Value,
             value: crate::cli_spec::ValueProvider::Path,
             help: "Metrics database path (default: logs/latest/metrics.db).",
             repeatable: false,
         },
         crate::cli_spec::Flag {
-            long: "--session", short: None, aliases: &[],
+            long: "--session",
+            short: None,
+            aliases: &[],
             arity: crate::cli_spec::Arity::Value,
-            value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::session_name_provider),
+            value: crate::cli_spec::ValueProvider::Custom(crate::completion::session_name_provider),
             help: "Session name or path.",
             repeatable: false,
         },
         crate::cli_spec::Flag {
-            long: "--workload", short: None, aliases: &[],
+            long: "--workload",
+            short: None,
+            aliases: &[],
             arity: crate::cli_spec::Arity::Value,
             value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::workload_positional_provider),
+                crate::completion::workload_positional_provider,
+            ),
             help: "Workload file providing the report: block.",
             repeatable: false,
         },
     ];
     if subname == "show" {
         flags.push(crate::cli_spec::Flag {
-            long: "--name", short: None, aliases: &[],
+            long: "--name",
+            short: None,
+            aliases: &[],
             arity: crate::cli_spec::Arity::Value,
             value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::report_any_name_provider),
+                crate::completion::report_any_name_provider,
+            ),
             help: "Stored report item name.",
             repeatable: false,
         });
     }
     Command {
-        name: subname, help,
-        category: Category::Tools, level: Level::Secondary,
+        name: subname,
+        help,
+        category: Category::Tools,
+        level: Level::Secondary,
         flags,
         kv_params: &[],
         dynamic_options: None,
@@ -2581,15 +2912,23 @@ pub fn spec() -> crate::cli_spec::Command {
             // accept them on the CLI today). Surfacing them
             // would mislead users — the bare-form glob path
             // would error with "no items match".
-            kind_subleaf("plot",    "Render plot items by name (kind-filtered).",  nbrs_workload::report::Kind::Plot),
-            kind_subleaf("table",   "Render table items by name (kind-filtered).", nbrs_workload::report::Kind::Table),
+            kind_subleaf(
+                "plot",
+                "Render plot items by name (kind-filtered).",
+                nbrs_workload::report::Kind::Plot,
+            ),
+            kind_subleaf(
+                "table",
+                "Render table items by name (kind-filtered).",
+                nbrs_workload::report::Kind::Table,
+            ),
             // `list` and bare-form `nbrs report` produce the
             // same listing — the user's canonical command is
             // `nbrs report list`, the bare form is the shortcut.
-            report_subleaf("list",    "List figures defined in the report."),
-            report_subleaf("all",     "Render every report item."),
-            report_subleaf("show",    "Render one stored item by name."),
-            report_subleaf("figure",  "Render by figure number / range."),
+            report_subleaf("list", "List figures defined in the report."),
+            report_subleaf("all", "Render every report item."),
+            report_subleaf("show", "Render one stored item by name."),
+            report_subleaf("figure", "Render by figure number / range."),
             rename_subleaf(),
             scratch_subleaf(),
         ],
@@ -2637,28 +2976,35 @@ fn kind_subleaf(
         Ok(())
     }
     let handler = match subname {
-        "plot"    => Handler::Sync(handle_plot),
-        "table"   => Handler::Sync(handle_table),
-        "text"    => Handler::Sync(handle_text),
-        "file"    => Handler::Sync(handle_file),
+        "plot" => Handler::Sync(handle_plot),
+        "table" => Handler::Sync(handle_table),
+        "text" => Handler::Sync(handle_text),
+        "file" => Handler::Sync(handle_file),
         "details" => Handler::Sync(handle_details),
         _ => unreachable!(),
     };
     let override_fn: fn() -> veks_completion::Node = match kind {
-        nbrs_workload::report::Kind::Plot =>
-            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Plot),
-        nbrs_workload::report::Kind::Table =>
-            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Table),
-        nbrs_workload::report::Kind::Text =>
-            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Text),
-        nbrs_workload::report::Kind::File =>
-            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::File),
-        nbrs_workload::report::Kind::Details =>
-            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Details),
+        nbrs_workload::report::Kind::Plot => {
+            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Plot)
+        }
+        nbrs_workload::report::Kind::Table => {
+            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Table)
+        }
+        nbrs_workload::report::Kind::Text => {
+            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Text)
+        }
+        nbrs_workload::report::Kind::File => {
+            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::File)
+        }
+        nbrs_workload::report::Kind::Details => {
+            || crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Details)
+        }
     };
     Command {
-        name: subname, help,
-        category: Category::Tools, level: Level::Secondary,
+        name: subname,
+        help,
+        category: Category::Tools,
+        level: Level::Secondary,
         flags: Vec::new(),
         kv_params: &[],
         dynamic_options: None,
@@ -2674,8 +3020,9 @@ fn kind_subleaf(
 /// cli_spec so completion offers `--replace`, `--dry-run`,
 /// `--workload`.
 fn rename_subleaf() -> crate::cli_spec::Command {
-    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
-        Level, ParsedCommand, ValueProvider};
+    use crate::cli_spec::{
+        Arity, Category, Command, Flag, Handler, Level, ParsedCommand, ValueProvider,
+    };
     fn handle(p: ParsedCommand) -> Result<(), String> {
         let mut argv: Vec<String> = vec!["rename".into()];
         argv.extend(p.raw.iter().cloned());
@@ -2689,20 +3036,29 @@ fn rename_subleaf() -> crate::cli_spec::Command {
         level: Level::Secondary,
         flags: vec![
             Flag {
-                long: "--workload", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::Path,
+                long: "--workload",
+                short: None,
+                aliases: &[],
+                arity: Arity::Value,
+                value: ValueProvider::Path,
                 help: "Override the workload file to mutate.",
                 repeatable: false,
             },
             Flag {
-                long: "--replace", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--replace",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Overwrite if `<new>` already exists.",
                 repeatable: false,
             },
             Flag {
-                long: "--dry-run", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--dry-run",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Print intended change without writing.",
                 repeatable: false,
             },
@@ -2739,17 +3095,20 @@ fn scratch_subleaf() -> crate::cli_spec::Command {
         report_command(&argv, KindFilter::Any);
         Ok(())
     }
-    fn child(name: &'static str, help: &'static str,
-             handler: fn(ParsedCommand) -> Result<(), String>)
-        -> Command
-    {
+    fn child(
+        name: &'static str,
+        help: &'static str,
+        handler: fn(ParsedCommand) -> Result<(), String>,
+    ) -> Command {
         Command {
-            name, help,
-            category: Category::Tools, level: Level::Secondary,
+            name,
+            help,
+            category: Category::Tools,
+            level: Level::Secondary,
             flags: Vec::new(),
             kv_params: &[],
-        dynamic_options: None,
-        positionals: Vec::new(),
+            dynamic_options: None,
+            positionals: Vec::new(),
             subcommands: Vec::new(),
             handler: Some(Handler::Sync(handler)),
             raw_args: true,
@@ -2769,8 +3128,8 @@ fn scratch_subleaf() -> crate::cli_spec::Command {
         raw_args: false,
         completion_override: None,
         subcommands: vec![
-            child("list",    "List scratch entries.",    h_list),
-            child("clean",   "Remove scratch entries.",  h_clean),
+            child("list", "List scratch entries.", h_list),
+            child("clean", "Remove scratch entries.", h_clean),
             child("promote", "Promote scratch to workload.", h_promote),
         ],
     }
@@ -2798,8 +3157,9 @@ pub fn plot_alias_spec() -> crate::cli_spec::Command {
         // Same completion node as the real subcommand. Without this the
         // alias — the spelling most operators actually type — completed
         // NOTHING: not its flags, not `session=`, not report names.
-        completion_override: Some(|| crate::completion::kind_subcommand_node(
-            nbrs_workload::report::Kind::Plot)),
+        completion_override: Some(|| {
+            crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Plot)
+        }),
     }
 }
 
@@ -2825,8 +3185,9 @@ pub fn table_alias_spec() -> crate::cli_spec::Command {
         // Same completion node as the real subcommand. Without this the
         // alias — the spelling most operators actually type — completed
         // NOTHING: not its flags, not `session=`, not report names.
-        completion_override: Some(|| crate::completion::kind_subcommand_node(
-            nbrs_workload::report::Kind::Table)),
+        completion_override: Some(|| {
+            crate::completion::kind_subcommand_node(nbrs_workload::report::Kind::Table)
+        }),
     }
 }
 
@@ -2844,23 +3205,30 @@ mod tests {
     /// the named db — two sessions in one command, item list from the wrong one.
     #[test]
     fn db_flag_supplies_the_session_anchor() {
-        assert_eq!(db_flag_path(&v(&["--db", "/tmp/s/metrics.db"])),
-            Some(PathBuf::from("/tmp/s/metrics.db")));
-        assert_eq!(db_flag_path(&v(&["--db=/tmp/s/metrics.db"])),
-            Some(PathBuf::from("/tmp/s/metrics.db")));
+        assert_eq!(
+            db_flag_path(&v(&["--db", "/tmp/s/metrics.db"])),
+            Some(PathBuf::from("/tmp/s/metrics.db"))
+        );
+        assert_eq!(
+            db_flag_path(&v(&["--db=/tmp/s/metrics.db"])),
+            Some(PathBuf::from("/tmp/s/metrics.db"))
+        );
         // Comma list: the first entry is primary, matching how the renderer
         // anchors output when it merges several dbs.
-        assert_eq!(db_flag_path(&v(&["--db=/tmp/a.db,/tmp/b.db"])),
-            Some(PathBuf::from("/tmp/a.db")));
+        assert_eq!(
+            db_flag_path(&v(&["--db=/tmp/a.db,/tmp/b.db"])),
+            Some(PathBuf::from("/tmp/a.db"))
+        );
         // A db need not be named `metrics.db` — the path is carried as given
         // rather than rebuilt from the parent directory.
-        assert_eq!(db_flag_path(&v(&["--db", "/tmp/s/custom.db"])),
-            Some(PathBuf::from("/tmp/s/custom.db")));
+        assert_eq!(
+            db_flag_path(&v(&["--db", "/tmp/s/custom.db"])),
+            Some(PathBuf::from("/tmp/s/custom.db"))
+        );
         assert_eq!(db_flag_path(&v(&["--name=x"])), None);
         // Trailing `--db` with no value must not panic or invent a path.
         assert_eq!(db_flag_path(&v(&["--db"])), None);
     }
-
 
     /// `refresh_session_index` writes `index.md` listing every
     /// non-skipped file in the directory, organised by category,
@@ -2881,14 +3249,15 @@ mod tests {
         std::fs::write(dir.join("metrics.db.lock"), "x").unwrap();
 
         refresh_session_index(dir).expect("refresh");
-        let body = std::fs::read_to_string(dir.join("index.md"))
-            .expect("read index");
-        assert!(body.contains("## Reports"),     "reports section missing");
+        let body = std::fs::read_to_string(dir.join("index.md")).expect("read index");
+        assert!(body.contains("## Reports"), "reports section missing");
         assert!(body.contains("[`report_a.md`](report_a.md)"));
-        assert!(body.contains("## Figures"),     "figures section missing");
+        assert!(body.contains("## Figures"), "figures section missing");
         assert!(body.contains("[`plot.png`](plot.png)"));
-        assert!(body.contains("![plot.png](plot.png)"),
-            "image preview missing");
+        assert!(
+            body.contains("![plot.png](plot.png)"),
+            "image preview missing"
+        );
         assert!(body.contains("## Tables / data"));
         assert!(body.contains("[`results.csv`](results.csv)"));
         assert!(body.contains("## Logs"));
@@ -2908,10 +3277,11 @@ mod tests {
     fn refresh_session_index_empty_directory_writes_placeholder() {
         let tmp = tempfile::tempdir().expect("tmp dir");
         refresh_session_index(tmp.path()).expect("refresh");
-        let body = std::fs::read_to_string(tmp.path().join("index.md"))
-            .expect("read index");
-        assert!(body.contains("no artifacts"),
-            "empty-directory placeholder missing: {body}");
+        let body = std::fs::read_to_string(tmp.path().join("index.md")).expect("read index");
+        assert!(
+            body.contains("no artifacts"),
+            "empty-directory placeholder missing: {body}"
+        );
     }
 
     /// Re-running on a populated directory overwrites cleanly —
@@ -2940,8 +3310,7 @@ mod tests {
         // post-wipe; non-artifact files (metrics.db, log,
         // checkpoint, etc.) survive. Subdirectories are
         // left alone — wipe is non-recursive.
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs_clean_wipe_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nbrs_clean_wipe_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -2959,20 +3328,28 @@ mod tests {
 
         clean_wipe_artifacts(&dir);
 
-        assert!(!dir.join("recall_10_mean_plot.png").exists(),
-            "png should be removed");
-        assert!(!dir.join("throughput_1__optimize_for_recall.md").exists(),
-            "companion-table md should be removed");
-        assert!(!dir.join("summary.md").exists(),
-            "summary.md should be removed");
-        assert!(dir.join("metrics.db").exists(),
-            "metrics.db must survive");
-        assert!(dir.join("session.log").exists(),
-            "session.log must survive");
-        assert!(dir.join("checkpoint.jsonl").exists(),
-            "checkpoint.jsonl must survive");
-        assert!(dir.join("metrics/nested.md").exists(),
-            "nested md inside subdir must survive (non-recursive wipe)");
+        assert!(
+            !dir.join("recall_10_mean_plot.png").exists(),
+            "png should be removed"
+        );
+        assert!(
+            !dir.join("throughput_1__optimize_for_recall.md").exists(),
+            "companion-table md should be removed"
+        );
+        assert!(
+            !dir.join("summary.md").exists(),
+            "summary.md should be removed"
+        );
+        assert!(dir.join("metrics.db").exists(), "metrics.db must survive");
+        assert!(dir.join("session.log").exists(), "session.log must survive");
+        assert!(
+            dir.join("checkpoint.jsonl").exists(),
+            "checkpoint.jsonl must survive"
+        );
+        assert!(
+            dir.join("metrics/nested.md").exists(),
+            "nested md inside subdir must survive (non-recursive wipe)"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2981,10 +3358,13 @@ mod tests {
     fn is_clean_mode_recognises_flag_and_env() {
         assert!(is_clean_mode(&["--clean".to_string()]));
         assert!(is_clean_mode(&[
-            "all".to_string(), "--clean".to_string(), "workload=x.yaml".to_string(),
+            "all".to_string(),
+            "--clean".to_string(),
+            "workload=x.yaml".to_string(),
         ]));
         assert!(!is_clean_mode(&[
-            "all".to_string(), "workload=x.yaml".to_string(),
+            "all".to_string(),
+            "workload=x.yaml".to_string(),
         ]));
     }
 
@@ -3040,14 +3420,8 @@ mod tests {
 
     #[test]
     fn figure_selector_mixed_list_with_ranges() {
-        assert_eq!(
-            parse_figure_selector("1,3-5,7"),
-            Some(vec![1, 3, 4, 5, 7]),
-        );
-        assert_eq!(
-            parse_figure_selector("1,3..5,7"),
-            Some(vec![1, 3, 4, 5, 7]),
-        );
+        assert_eq!(parse_figure_selector("1,3-5,7"), Some(vec![1, 3, 4, 5, 7]),);
+        assert_eq!(parse_figure_selector("1,3..5,7"), Some(vec![1, 3, 4, 5, 7]),);
     }
 
     #[test]

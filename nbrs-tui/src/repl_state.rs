@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 /// about, and so the value can be mapped directly to the enum
 /// without unsafe transmutes.
 const STATE_HIDDEN: u8 = 0;
-const STATE_BAR: u8    = 1;
+const STATE_BAR: u8 = 1;
 const STATE_WINDOW: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,16 +68,16 @@ impl ReplVisibility {
     fn to_u8(self) -> u8 {
         match self {
             Self::Hidden => STATE_HIDDEN,
-            Self::Bar    => STATE_BAR,
+            Self::Bar => STATE_BAR,
             Self::Window => STATE_WINDOW,
         }
     }
 
     fn from_u8(v: u8) -> Self {
         match v {
-            STATE_BAR    => Self::Bar,
+            STATE_BAR => Self::Bar,
             STATE_WINDOW => Self::Window,
-            _            => Self::Hidden,
+            _ => Self::Hidden,
         }
     }
 }
@@ -182,7 +182,9 @@ static TRANSCRIPT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// display rows. Older entries fall off the front when the
 /// ring is full.
 pub fn push_transcript(command: &str, response: &str) {
-    let Ok(mut t) = TRANSCRIPT.lock() else { return; };
+    let Ok(mut t) = TRANSCRIPT.lock() else {
+        return;
+    };
     t.push_back(format!("> {command}"));
     for line in response.split('\n') {
         t.push_back(line.to_string());
@@ -198,7 +200,9 @@ pub fn push_transcript(command: &str, response: &str) {
 /// to keep ephemeral console output inside the frame instead of
 /// scrolling it through the terminal.
 pub fn push_transcript_line(line: &str) {
-    let Ok(mut t) = TRANSCRIPT.lock() else { return; };
+    let Ok(mut t) = TRANSCRIPT.lock() else {
+        return;
+    };
     t.push_back(line.to_string());
     while t.len() > TRANSCRIPT_CAPACITY {
         t.pop_front();
@@ -217,7 +221,9 @@ pub fn transcript_len() -> usize {
 /// order (oldest first). Returns `<= n` strings — fewer when
 /// the transcript is shorter than `n`.
 pub fn transcript_tail(n: usize) -> Vec<String> {
-    let Ok(t) = TRANSCRIPT.lock() else { return Vec::new(); };
+    let Ok(t) = TRANSCRIPT.lock() else {
+        return Vec::new();
+    };
     let start = t.len().saturating_sub(n);
     t.iter().skip(start).cloned().collect()
 }
@@ -230,7 +236,9 @@ pub fn transcript_tail(n: usize) -> Vec<String> {
 pub fn reset() {
     STATE.store(STATE_HIDDEN, Ordering::Release);
     LAST_TOGGLE_NS.store(0, Ordering::Release);
-    if let Ok(mut t) = TRANSCRIPT.lock() { t.clear(); }
+    if let Ok(mut t) = TRANSCRIPT.lock() {
+        t.clear();
+    }
 }
 
 /// Test-only: apply a toggle bypassing the auto-repeat
@@ -326,13 +334,16 @@ mod tests {
         push_transcript("set foo 1", "OK");
         push_transcript("controls", "foo=1\nbar=0");
         let tail = transcript_tail(10);
-        assert_eq!(tail, vec![
-            "> set foo 1".to_string(),
-            "OK".to_string(),
-            "> controls".to_string(),
-            "foo=1".to_string(),
-            "bar=0".to_string(),
-        ]);
+        assert_eq!(
+            tail,
+            vec![
+                "> set foo 1".to_string(),
+                "OK".to_string(),
+                "> controls".to_string(),
+                "foo=1".to_string(),
+                "bar=0".to_string(),
+            ]
+        );
     }
 
     /// `push_transcript_line` appends a single raw line (no `> `
@@ -345,11 +356,14 @@ mod tests {
         push_transcript("cmd", "resp");
         push_transcript_line("a  b  c"); // e.g. a completion row
         let tail = transcript_tail(10);
-        assert_eq!(tail, vec![
-            "> cmd".to_string(),
-            "resp".to_string(),
-            "a  b  c".to_string(),
-        ]);
+        assert_eq!(
+            tail,
+            vec![
+                "> cmd".to_string(),
+                "resp".to_string(),
+                "a  b  c".to_string(),
+            ]
+        );
     }
 
     /// Tail bounded by request — `transcript_tail(2)` on a
@@ -380,9 +394,14 @@ mod tests {
         // The very first command's echo (`> c0`) MUST have
         // fallen off; the most recent one (`> c{N+4}`) MUST
         // still be present.
-        assert!(!tail.iter().any(|l| l == "> c0"),
-            "oldest entry MUST be evicted: {tail:?}");
-        assert!(tail.iter().any(|l| l == &format!("> c{}", TRANSCRIPT_CAPACITY + 4)),
-            "newest entry MUST be retained: {tail:?}");
+        assert!(
+            !tail.iter().any(|l| l == "> c0"),
+            "oldest entry MUST be evicted: {tail:?}"
+        );
+        assert!(
+            tail.iter()
+                .any(|l| l == &format!("> c{}", TRANSCRIPT_CAPACITY + 4)),
+            "newest entry MUST be retained: {tail:?}"
+        );
     }
 }

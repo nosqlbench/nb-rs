@@ -19,8 +19,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
@@ -30,7 +30,9 @@ pub const NAME: WrapperName = WrapperName::new("dryrun");
 /// session-originated marker, NOT something workload authors
 /// write by hand — see `inject_dryrun_intent`).
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template.params.contains_key("dryrun")
 }
 
@@ -120,7 +122,9 @@ impl OpDispenser for DryRunWrapper {
         &'a self,
         _cycle: u64,
         _ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Pure short-circuit. No field resolution, no wires
             // access, no inner call. `skipped: true` so any
@@ -154,7 +158,9 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async {
                 panic!(
                     "DryRunWrapper invariant violated: inner dispenser was called \
@@ -176,13 +182,16 @@ mod tests {
         let pulls = ResolvedPulls::empty();
         let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
-        let result = wrapper.execute(0, &ctx).await
+        let result = wrapper
+            .execute(0, &ctx)
+            .await
             .expect("dryrun should succeed");
-        assert!(result.body.is_none(),
-            "dryrun result carries no body");
-        assert!(result.skipped,
+        assert!(result.body.is_none(), "dryrun result carries no body");
+        assert!(
+            result.skipped,
             "dryrun result is marked skipped so any wrapper that DID sit \
              outside us (defensive) honours the existing skip-on-skipped \
-             contract");
+             contract"
+        );
     }
 }

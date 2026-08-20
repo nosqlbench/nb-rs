@@ -70,8 +70,7 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 /// contention pattern is exactly one writer per render —
 /// no concurrent readers without writers. A Mutex is
 /// simpler and matches the once-per-phase write cadence.
-static LAST_RENDERED_COORDS: std::sync::Mutex<String> =
-    std::sync::Mutex::new(String::new());
+static LAST_RENDERED_COORDS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// One stratum of scope coordinates — a single
 /// `(k1=v1, k2=v2, ...)` group as produced by
@@ -147,11 +146,11 @@ fn render_strata(
     if strata.is_empty() {
         return String::new();
     }
-    let bold       = if color { "\x1b[1m"  } else { "" };
-    let dim        = if color { "\x1b[2m"  } else { "" };
-    let yellow     = if color { "\x1b[33m" } else { "" };
-    let magenta    = if color { "\x1b[35m" } else { "" };
-    let reset      = if color { "\x1b[0m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let yellow = if color { "\x1b[33m" } else { "" };
+    let magenta = if color { "\x1b[35m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     // Render each stratum twice: once styled (for emission)
     // and once plain (for visible-width measurement). The
@@ -159,10 +158,9 @@ fn render_strata(
     // drive what reaches the terminal.
     let mut rendered: Vec<(String, usize)> = Vec::with_capacity(strata.len());
     for (idx, s) in strata.iter().enumerate() {
-        let prior_pairs: Option<&Vec<(String, String)>> =
-            prev_strata.get(idx).map(|p| &p.pairs);
+        let prior_pairs: Option<&Vec<(String, String)>> = prev_strata.get(idx).map(|p| &p.pairs);
         let mut styled = String::with_capacity(64);
-        let mut plain  = String::with_capacity(64);
+        let mut plain = String::with_capacity(64);
         styled.push_str(bold);
         styled.push_str(yellow);
         styled.push('(');
@@ -178,7 +176,8 @@ fn render_strata(
             // that didn't exist last time) is treated as
             // "changed" so the operator sees the new context.
             let changed = match prior_pairs {
-                Some(prior) => prior.iter()
+                Some(prior) => prior
+                    .iter()
                     .find(|(pk, _)| pk == k)
                     .map(|(_, pv)| pv != v)
                     .unwrap_or(true),
@@ -230,7 +229,7 @@ fn render_strata(
     // net for the truly-pathological "one stratum is wider
     // than the terminal" case.
     let mut out = String::new();
-    let sep_plain_len = 2;        // visible chars of `, `
+    let sep_plain_len = 2; // visible chars of `, `
     let cont_indent_width = continuation_indent.chars().count();
     let mut current_visible = head_consumed;
     let mut wrote_any = false;
@@ -302,10 +301,7 @@ fn current_terminal_cols() -> usize {
 /// can omit the coords block entirely for the no-op-axis
 /// case — every cell in the sweep with literally the same
 /// coords as the prior one — common at session start).
-fn strata_diff(
-    strata: &[Stratum],
-    prev_strata: &[Stratum],
-) -> Vec<Stratum> {
+fn strata_diff(strata: &[Stratum], prev_strata: &[Stratum]) -> Vec<Stratum> {
     if prev_strata.is_empty() {
         // First-phase render: every coord is "new" relative
         // to the empty prior. Returning the full set
@@ -318,7 +314,9 @@ fn strata_diff(
         let mut changed_pairs: Vec<(String, String)> = Vec::new();
         for (k, v) in &s.pairs {
             let unchanged = match prior {
-                Some(p) => p.pairs.iter()
+                Some(p) => p
+                    .pairs
+                    .iter()
                     .find(|(pk, _)| pk == k)
                     .map(|(_, pv)| pv == v)
                     .unwrap_or(false),
@@ -329,7 +327,9 @@ fn strata_diff(
             }
         }
         if !changed_pairs.is_empty() {
-            out.push(Stratum { pairs: changed_pairs });
+            out.push(Stratum {
+                pairs: changed_pairs,
+            });
         }
     }
     out
@@ -337,7 +337,9 @@ fn strata_diff(
 
 impl Clone for Stratum {
     fn clone(&self) -> Self {
-        Self { pairs: self.pairs.clone() }
+        Self {
+            pairs: self.pairs.clone(),
+        }
     }
 }
 
@@ -374,7 +376,9 @@ pub(crate) fn format_coords_block(
         return String::new();
     }
     let strata = parse_strata(labels);
-    let prev = LAST_RENDERED_COORDS.lock().ok()
+    let prev = LAST_RENDERED_COORDS
+        .lock()
+        .ok()
         .map(|g| g.clone())
         .unwrap_or_default();
     let prev_strata = parse_strata(&prev);
@@ -395,10 +399,9 @@ pub(crate) fn format_coords_block(
     // phase-end event, and its single call per phase is
     // where the "what's changed since the last
     // *completed* phase" lens gets fixed.
-    if summarize_changed_only
-        && let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
-            *g = labels.to_string();
-        }
+    if summarize_changed_only && let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
+        *g = labels.to_string();
+    }
     if display_strata.is_empty() {
         // Nothing changed — completion line elides the
         // coords block entirely. The leading space is
@@ -411,9 +414,12 @@ pub(crate) fn format_coords_block(
     let width = current_terminal_cols();
     let available = width.saturating_sub(1);
     let body = render_strata(
-        &display_strata, &prev_strata, color,
+        &display_strata,
+        &prev_strata,
+        color,
         head_consumed.saturating_add(1),
-        available, continuation_indent,
+        available,
+        continuation_indent,
     );
     let mut out = String::with_capacity(body.len() + 1);
     out.push(' ');
@@ -434,8 +440,12 @@ pub(crate) fn format_coords_block(
 pub struct PhaseOutcomeReadout;
 
 impl Readout for PhaseOutcomeReadout {
-    fn name(&self) -> &'static str { "phase_outcome" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+    fn name(&self) -> &'static str {
+        "phase_outcome"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Phase]
+    }
 
     fn render(
         &self,
@@ -446,11 +456,11 @@ impl Readout for PhaseOutcomeReadout {
         out: &mut dyn ReadoutBuf,
     ) -> usize {
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact_value(ctx, out),
-            (Lod::Compact,  ContentMode::Explanation) => render_compact_explanation(ctx, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled_value(ctx, out),
-            (Lod::Labeled,  ContentMode::Explanation) => render_labeled_explanation(ctx, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded_value(ctx, out),
+            (Lod::Compact, ContentMode::Value) => render_compact_value(ctx, out),
+            (Lod::Compact, ContentMode::Explanation) => render_compact_explanation(ctx, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled_value(ctx, out),
+            (Lod::Labeled, ContentMode::Explanation) => render_labeled_explanation(ctx, out),
+            (Lod::Expanded, ContentMode::Value) => render_expanded_value(ctx, out),
             (Lod::Expanded, ContentMode::Explanation) => render_expanded_explanation(ctx, out),
         }
     }
@@ -466,16 +476,16 @@ impl Readout for PhaseOutcomeReadout {
 ///
 /// Returns empty strings when colour is off so the same
 /// format template covers both colour and no-colour modes.
-fn status_color(
-    outcome: &crate::phase_outcome::Outcome, color: bool,
-) -> &'static str {
-    if !color { return ""; }
+fn status_color(outcome: &crate::phase_outcome::Outcome, color: bool) -> &'static str {
+    if !color {
+        return "";
+    }
     use crate::phase_outcome::{Disposition, Validity};
     match (outcome.disposition, outcome.validity) {
-        (_, Validity::Failed)                            => "\x1b[31m", // red
-        (Disposition::Skipped, _)                        => "\x1b[2m",  // dim
-        (Disposition::Interrupted, Validity::Succeeded)  => "\x1b[33m", // yellow (re-usable partial)
-        _                                                => "\x1b[32m", // green
+        (_, Validity::Failed) => "\x1b[31m",    // red
+        (Disposition::Skipped, _) => "\x1b[2m", // dim
+        (Disposition::Interrupted, Validity::Succeeded) => "\x1b[33m", // yellow (re-usable partial)
+        _ => "\x1b[32m",                        // green
     }
 }
 
@@ -498,19 +508,18 @@ fn completion_meter(ctx: &dyn ReadoutContext) -> String {
     if ctx.open_ended() {
         return String::new();
     }
-    format!(" {:.0}%",
-        ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0))
+    format!(
+        " {:.0}%",
+        ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0)
+    )
 }
 
-fn render_compact_value(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_compact_value(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let outcome = ctx.outcome();
     let glyph_color = status_color(&outcome, color);
@@ -538,16 +547,13 @@ fn render_compact_value(
 
 /// Compact LOD explanation overlay. Same skeleton as the
 /// value form, with field tokens swapped for descriptors.
-fn render_compact_explanation(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_compact_explanation(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let green  = if color { "\x1b[32m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let green = if color { "\x1b[32m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let depth_indent = ctx.depth_indent();
     let mut tmp = String::with_capacity(96);
@@ -566,17 +572,14 @@ progress% {dim}(elapsed){reset}",
 /// Expanded LOD: multi-line labelled block. Same data as
 /// Labeled, organised one field per line. Per §3.3
 /// monotonicity, every Labeled field is here too.
-fn render_expanded_value(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_expanded_value(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let yellow = if color { "\x1b[33m" } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let red    = if color { "\x1b[31m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let red = if color { "\x1b[31m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let outcome = ctx.outcome();
     let glyph_color = status_color(&outcome, color);
     let glyph = outcome.glyph();
@@ -605,20 +608,29 @@ fn render_expanded_value(
     let result_total = cycles.saturating_sub(skips).max(ok);
     let ok_pct: f64 = if result_total > 0 {
         ok as f64 * 100.0 / result_total as f64
-    } else { 100.0 };
+    } else {
+        100.0
+    };
     // Open-ended subjects have no completion fraction — the progress
     // row shows the bare cycle count instead of a fabricated percent.
     let progress_cell: String = if ctx.open_ended() {
         format!("— (open-ended, {cycles} cycles)")
     } else {
-        let pct: f64 = ctx.progress_fraction()
-            .map(|f| f * 100.0).unwrap_or(100.0);
+        let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
         format!("{pct:.0}% ({cycles} of {total_extent})")
     };
-    let rate: f64 = if elapsed > 0.0 { consumed as f64 / elapsed } else { 0.0 };
+    let rate: f64 = if elapsed > 0.0 {
+        consumed as f64 / elapsed
+    } else {
+        0.0
+    };
     let rate_str = format_rate(rate);
 
-    let err_color = if errors > 0 || retries > 0 { yellow } else { dim };
+    let err_color = if errors > 0 || retries > 0 {
+        yellow
+    } else {
+        dim
+    };
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
     // Margin owns [n/N] (single-placement rule) — body omits it.
@@ -635,7 +647,9 @@ fn render_expanded_value(
     let coords_continuation_indent = format!("{depth_indent}               ");
     let coords_head_consumed = depth_indent.chars().count() + 14; // "  coords:      "
     let coords_payload = format_coords_block(
-        labels, color, coords_head_consumed,
+        labels,
+        color,
+        coords_head_consumed,
         &coords_continuation_indent,
         /* summarize_changed_only */ true,
     );
@@ -650,13 +664,10 @@ fn render_expanded_value(
     // Chip stream: convert `name:value` chips into one per
     // line so the Expanded block reads vertically. Empty
     // chip strings render no metrics block.
-    let chips_block = render_chips_block(
-        &ctx.status_metric_chips(), depth_indent, dim, reset,
-    );
+    let chips_block = render_chips_block(&ctx.status_metric_chips(), depth_indent, dim, reset);
 
-    let errors_block = render_outcome_errors_block(
-        outcome_errors, errors, depth_indent, red, dim, reset,
-    );
+    let errors_block =
+        render_outcome_errors_block(outcome_errors, errors, depth_indent, red, dim, reset);
     let mut tmp = String::with_capacity(384);
     let _ = write!(
         &mut tmp,
@@ -712,8 +723,12 @@ fn render_outcome_errors_block(
         let mut out = String::with_capacity(s.len() + prefix.len() * 2);
         let mut first = true;
         for line in s.split('\n') {
-            if first { first = false; }
-            else { out.push('\n'); out.push_str(prefix); }
+            if first {
+                first = false;
+            } else {
+                out.push('\n');
+                out.push_str(prefix);
+            }
             out.push_str(line);
         }
         out
@@ -722,22 +737,21 @@ fn render_outcome_errors_block(
     let _ = write!(&mut out, "\n{indent}  errors:");
     for e in errors {
         let msg = reindent(&e.message, &msg_continuation);
-        let _ = write!(&mut out,
+        let _ = write!(
+            &mut out,
             "\n{indent}    {red}[{class}]{reset} {msg}",
-            class = e.class);
+            class = e.class
+        );
         if let Some(c) = e.cycle {
-            let _ = write!(&mut out,
-                "\n{indent}      {dim}cycle:{reset} {c}");
+            let _ = write!(&mut out, "\n{indent}      {dim}cycle:{reset} {c}");
         }
         if let Some(t) = &e.op_template {
             let t = reindent(t, &detail_continuation);
-            let _ = write!(&mut out,
-                "\n{indent}      {dim}op-template:{reset} {t}");
+            let _ = write!(&mut out, "\n{indent}      {dim}op-template:{reset} {t}");
         }
         if let Some(r) = &e.op_resolved {
             let r = reindent(r, &detail_continuation);
-            let _ = write!(&mut out,
-                "\n{indent}      {dim}op-resolved:{reset} {r}");
+            let _ = write!(&mut out, "\n{indent}      {dim}op-resolved:{reset} {r}");
         }
     }
     // The capture buffer (PHASE_ERROR_CAPTURE_CAP) can fill before
@@ -745,9 +759,11 @@ fn render_outcome_errors_block(
     // mistaken for the complete record.
     let captured = errors.len() as u64;
     if captured < total {
-        let _ = write!(&mut out,
+        let _ = write!(
+            &mut out,
             "\n{indent}    {dim}(+{} more occurred — not captured (buffer cap)){reset}",
-            total - captured);
+            total - captured
+        );
     }
     out
 }
@@ -767,10 +783,8 @@ fn render_chips_block(chips: &str, indent: &str, dim: &str, reset: &str) -> Stri
     for chip in &entries {
         // Each chip is `name:value`; align the name in a
         // 16-char field so values columnise.
-        let (name, value) = chip.split_once(':')
-            .unwrap_or((chip, ""));
-        let _ = writeln!(&mut out,
-            "{indent}    {name:<16} {dim}{value}{reset}");
+        let (name, value) = chip.split_once(':').unwrap_or((chip, ""));
+        let _ = writeln!(&mut out, "{indent}    {name:<16} {dim}{value}{reset}");
     }
     out
 }
@@ -778,16 +792,13 @@ fn render_chips_block(chips: &str, indent: &str, dim: &str, reset: &str) -> Stri
 /// Expanded LOD explanation overlay. Same multi-line shape
 /// as the value form; field labels stay (they're already
 /// descriptors), values are replaced with token names.
-fn render_expanded_explanation(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_expanded_explanation(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold  = if color { "\x1b[1m"  } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let blue  = if color { "\x1b[34m" } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
     let green = if color { "\x1b[32m" } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let depth_indent = ctx.depth_indent();
     let mut tmp = String::with_capacity(384);
@@ -813,17 +824,14 @@ fn render_expanded_explanation(
 /// the structural skeleton (`✓`, `[name]`, percentages,
 /// `e:`/`r:`/`c:` tail) and rewrite each token's *text*
 /// to its meaning.
-fn render_labeled_explanation(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled_explanation(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let yellow = if color { "\x1b[33m" } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let green  = if color { "\x1b[32m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let green = if color { "\x1b[32m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let depth_indent = ctx.depth_indent();
     // Margin owns [n/N] (single-placement rule) — body omits it.
@@ -854,10 +862,7 @@ errors retries concurrency \
     len
 }
 
-fn render_labeled_value(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled_value(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     // SRD-76 — branch on terminal status. Failed phases
     // render the error-flavoured line (glyph + class + first
     // message + elapsed) instead of the success summary.
@@ -872,11 +877,11 @@ fn render_labeled_value(
         return render_labeled_value_failed(ctx, out);
     }
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let yellow = if color { "\x1b[33m" } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let glyph_color = status_color(&outcome, color);
     let glyph = outcome.glyph();
 
@@ -923,7 +928,11 @@ fn render_labeled_value(
     };
     let rate_str = format_rate(rate);
 
-    let err_color = if errors > 0 || retries > 0 { yellow } else { dim };
+    let err_color = if errors > 0 || retries > 0 {
+        yellow
+    } else {
+        dim
+    };
 
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
@@ -937,7 +946,7 @@ fn render_labeled_value(
     // (1 leading space + N glyphs).
     let bar = if total_extent > 0 && total_extent <= 10 {
         let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
-        let fg = if color { "\x1b[97m"            } else { "" };
+        let fg = if color { "\x1b[97m" } else { "" };
         format!(" {bg}{fg}{}{reset}", ballot_bar(total_extent, ok, errors))
     } else {
         String::new()
@@ -974,7 +983,10 @@ fn render_labeled_value(
     // above the completion already establish the
     // unchanged context.
     let coords_part = format_coords_block(
-        labels, color, head_consumed, &continuation_indent,
+        labels,
+        color,
+        head_consumed,
+        &continuation_indent,
         /* summarize_changed_only */ true,
     );
     let chips = ctx.status_metric_chips();
@@ -999,11 +1011,9 @@ fn render_labeled_value(
     // glyph plus the skip count; no rate, no ok%, no pct (nothing was
     // measured). `elide`/`prune` never reach this renderer — the fire
     // site suppresses the readout entirely for those modes.
-    let fully_skipped = skips > 0 && cycles > 0 && skips >= cycles
-        && ok == 0 && errors == 0;
+    let fully_skipped = skips > 0 && cycles > 0 && skips >= cycles && ok == 0 && errors == 0;
     if fully_skipped
-        && crate::observer::skipped_phase_display()
-           == crate::observer::SkippedPhaseDisplay::Mark
+        && crate::observer::skipped_phase_display() == crate::observer::SkippedPhaseDisplay::Mark
     {
         let mut tmp = String::with_capacity(160);
         let _ = write!(
@@ -1084,16 +1094,13 @@ fn render_labeled_value(
 /// status surface stays line-bounded. Operators wanting the
 /// full chronology pass `lod=expanded` or use `nbrs replay
 /// --errors`.
-fn render_labeled_value_failed(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled_value_failed(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let red    = if color { "\x1b[31m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let red = if color { "\x1b[31m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
@@ -1113,8 +1120,11 @@ fn render_labeled_value_failed(
     let err_count = ctx.errors();
     let bar = if total_extent > 0 && total_extent <= 10 {
         let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
-        let fg = if color { "\x1b[97m"            } else { "" };
-        format!(" {bg}{fg}{}{reset}", ballot_bar(total_extent, ok, err_count))
+        let fg = if color { "\x1b[97m" } else { "" };
+        format!(
+            " {bg}{fg}{}{reset}",
+            ballot_bar(total_extent, ok, err_count)
+        )
     } else {
         String::new()
     };
@@ -1131,7 +1141,10 @@ fn render_labeled_value_failed(
         + name.chars().count();
     let continuation_indent = format!("{depth_indent}  ");
     let coords_part = format_coords_block(
-        labels, color, head_consumed, &continuation_indent,
+        labels,
+        color,
+        head_consumed,
+        &continuation_indent,
         /* summarize_changed_only */ true,
     );
 
@@ -1193,8 +1206,7 @@ mod tests {
     /// code path doesn't need this lock — realtime readout
     /// dispatch is single-threaded — but the test
     /// harness's per-#[test] task pool is multi-threaded.
-    static SERIAL_TEST_GUARD: std::sync::Mutex<()> =
-        std::sync::Mutex::new(());
+    static SERIAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// `parse_strata` round-trips the canonical striated-
     /// parens form into per-stratum / per-pair structure.
@@ -1202,12 +1214,17 @@ mod tests {
     fn parse_strata_round_trips_two_strata() {
         let s = parse_strata("(profile=default), (sm=OTHER, mnc=8)");
         assert_eq!(s.len(), 2);
-        assert_eq!(s[0].pairs, vec![
-            ("profile".to_string(), "default".to_string())]);
-        assert_eq!(s[1].pairs, vec![
-            ("sm".to_string(), "OTHER".to_string()),
-            ("mnc".to_string(), "8".to_string()),
-        ]);
+        assert_eq!(
+            s[0].pairs,
+            vec![("profile".to_string(), "default".to_string())]
+        );
+        assert_eq!(
+            s[1].pairs,
+            vec![
+                ("sm".to_string(), "OTHER".to_string()),
+                ("mnc".to_string(), "8".to_string()),
+            ]
+        );
     }
 
     /// `parse_strata` returns an empty Vec for the empty
@@ -1229,8 +1246,7 @@ mod tests {
         // profile stratum unchanged → dropped entirely.
         // sm changed, mnc unchanged → only sm survives.
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0].pairs, vec![
-            ("sm".to_string(), "ADA002".to_string())]);
+        assert_eq!(d[0].pairs, vec![("sm".to_string(), "ADA002".to_string())]);
     }
 
     /// First-phase render (empty prior) is treated as
@@ -1252,8 +1268,7 @@ mod tests {
     /// against the previous one.
     #[test]
     fn format_coords_block_completed_phase_summary_elides_unchanged() {
-        let _serial = SERIAL_TEST_GUARD.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = SERIAL_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // Reset the global tracker so this test is
         // order-independent (the global persists between
         // tests if `cargo test` runs them in the same
@@ -1266,8 +1281,7 @@ mod tests {
         let labels_b = "(profile=default), (sm=ADA002, mnc=8)";
 
         let first = format_coords_block(
-            labels_a, /* color */ false, 0, "  ",
-            /* summarize_changed_only */ true,
+            labels_a, /* color */ false, 0, "  ", /* summarize_changed_only */ true,
         );
         // First call diffs against empty prior → every coord
         // appears.
@@ -1276,17 +1290,22 @@ mod tests {
         assert!(first.contains("mnc=8"));
 
         let second = format_coords_block(
-            labels_b, /* color */ false, 0, "  ",
-            /* summarize_changed_only */ true,
+            labels_b, /* color */ false, 0, "  ", /* summarize_changed_only */ true,
         );
         // Only `sm=ADA002` changed → the second render
         // elides the unchanged ones.
-        assert!(second.contains("sm=ADA002"),
-            "changed pair missing in second render: {second:?}");
-        assert!(!second.contains("profile=default"),
-            "unchanged profile stratum should be elided: {second:?}");
-        assert!(!second.contains("mnc=8"),
-            "unchanged mnc should be elided: {second:?}");
+        assert!(
+            second.contains("sm=ADA002"),
+            "changed pair missing in second render: {second:?}"
+        );
+        assert!(
+            !second.contains("profile=default"),
+            "unchanged profile stratum should be elided: {second:?}"
+        );
+        assert!(
+            !second.contains("mnc=8"),
+            "unchanged mnc should be elided: {second:?}"
+        );
     }
 
     /// Active-phase render (summarize_changed_only=false)
@@ -1294,18 +1313,18 @@ mod tests {
     /// changed since the prior render.
     #[test]
     fn format_coords_block_active_phase_shows_full_stack() {
-        let _serial = SERIAL_TEST_GUARD.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = SERIAL_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
             *g = "(profile=default)".into();
         }
         let labels = "(profile=default)";
         let body = format_coords_block(
-            labels, /* color */ false, 0, "  ",
-            /* summarize_changed_only */ false,
+            labels, /* color */ false, 0, "  ", /* summarize_changed_only */ false,
         );
-        assert!(body.contains("profile=default"),
-            "active-phase render should show unchanged coords too: {body:?}");
+        assert!(
+            body.contains("profile=default"),
+            "active-phase render should show unchanged coords too: {body:?}"
+        );
     }
 
     /// When the head + first stratum would overflow the
@@ -1328,24 +1347,28 @@ mod tests {
         // (short terminal for the test). The first stratum
         // is ~73 chars; 40 + 73 = 113 > 80 → must wrap.
         let out = render_strata(
-            &strata, &prev, /* color */ false,
-            /* head_consumed */ 40,
-            /* available_width */ 80,
-            /* continuation_indent */ "  ",
+            &strata, &prev, /* color */ false, /* head_consumed */ 40,
+            /* available_width */ 80, /* continuation_indent */ "  ",
         );
-        assert!(out.starts_with('\n'),
+        assert!(
+            out.starts_with('\n'),
             "first-stratum overflow should start with a newline; \
-             got: {out:?}");
-        assert!(out.contains("source_model=OTHER"),
-            "first stratum content should still appear: {out:?}");
+             got: {out:?}"
+        );
+        assert!(
+            out.contains("source_model=OTHER"),
+            "first stratum content should still appear: {out:?}"
+        );
         // No comma-at-end-of-line wrapping marker on the
         // first-stratum-overflow path (the comma is only
         // inserted between strata to signal continuation;
         // when the very first stratum is the overflow, the
         // newline is the only delimiter).
-        assert!(!out.starts_with(',') && !out.contains(",\n  ("),
+        assert!(
+            !out.starts_with(',') && !out.contains(",\n  ("),
             "first-stratum overflow path should not produce a comma-wrap; \
-             got: {out:?}");
+             got: {out:?}"
+        );
     }
 
     /// Repeated active-phase renders during ONE phase
@@ -1358,8 +1381,7 @@ mod tests {
     /// nothing).
     #[test]
     fn format_coords_block_active_render_does_not_advance_tracker() {
-        let _serial = SERIAL_TEST_GUARD.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = SERIAL_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // Seed the tracker with the previous completed
         // phase's coords.
         if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
@@ -1372,22 +1394,34 @@ mod tests {
         // advancing the tracker.
         for _ in 0..5 {
             let _ = format_coords_block(
-                active_labels, /* color */ false, 0, "  ",
+                active_labels,
+                /* color */ false,
+                0,
+                "  ",
                 /* summarize_changed_only */ false,
             );
             let g = LAST_RENDERED_COORDS.lock().expect("lock");
-            assert_eq!(g.as_str(), "(profile=default), (sm=OTHER)",
-                "active-phase render must NOT advance the tracker");
+            assert_eq!(
+                g.as_str(),
+                "(profile=default), (sm=OTHER)",
+                "active-phase render must NOT advance the tracker"
+            );
         }
         // The completed-phase render with the same labels
         // advances the tracker.
         let _ = format_coords_block(
-            active_labels, /* color */ false, 0, "  ",
+            active_labels,
+            /* color */ false,
+            0,
+            "  ",
             /* summarize_changed_only */ true,
         );
         let g = LAST_RENDERED_COORDS.lock().expect("lock");
-        assert_eq!(g.as_str(), active_labels,
-            "completed-phase render must advance the tracker");
+        assert_eq!(
+            g.as_str(),
+            active_labels,
+            "completed-phase render must advance the tracker"
+        );
     }
 
     /// When NO coords changed between two completed phases,
@@ -1397,8 +1431,7 @@ mod tests {
     /// below.
     #[test]
     fn format_coords_block_no_change_collapses_to_empty() {
-        let _serial = SERIAL_TEST_GUARD.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = SERIAL_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
             *g = String::new();
         }
@@ -1407,8 +1440,10 @@ mod tests {
         let _ = format_coords_block(labels, false, 0, "  ", true);
         // Re-render the same coords — should be empty.
         let body = format_coords_block(labels, false, 0, "  ", true);
-        assert_eq!(body, "",
-            "no-change render should collapse to empty: {body:?}");
+        assert_eq!(
+            body, "",
+            "no-change render should collapse to empty: {body:?}"
+        );
     }
 
     /// Tiny in-test context that lets us hand-pick every
@@ -1459,22 +1494,54 @@ mod tests {
     }
 
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { &self.phase_name }
-        fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
-        fn subject_labels(&self) -> &str { &self.phase_labels }
-        fn cycles_completed(&self) -> u64 { self.cycles_completed }
-        fn cycles_total(&self) -> u64 { self.cycles_total }
-        fn ops_ok(&self) -> u64 { self.ops_ok }
-        fn skips(&self) -> u64 { self.skips }
-        fn errors(&self) -> u64 { self.errors }
-        fn retries(&self) -> u64 { self.retries }
-        fn concurrency(&self) -> usize { self.concurrency }
-        fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-        fn consumed(&self) -> u64 { self.consumed }
-        fn status_metric_chips(&self) -> String { self.chips.clone() }
-        fn depth_indent(&self) -> &str { &self.depth_indent }
-        fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
+        fn subject_name(&self) -> &str {
+            &self.phase_name
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            self.phase_seq
+        }
+        fn subject_labels(&self) -> &str {
+            &self.phase_labels
+        }
+        fn cycles_completed(&self) -> u64 {
+            self.cycles_completed
+        }
+        fn cycles_total(&self) -> u64 {
+            self.cycles_total
+        }
+        fn ops_ok(&self) -> u64 {
+            self.ops_ok
+        }
+        fn skips(&self) -> u64 {
+            self.skips
+        }
+        fn errors(&self) -> u64 {
+            self.errors
+        }
+        fn retries(&self) -> u64 {
+            self.retries
+        }
+        fn concurrency(&self) -> usize {
+            self.concurrency
+        }
+        fn elapsed_secs(&self) -> f64 {
+            self.elapsed_secs
+        }
+        fn consumed(&self) -> u64 {
+            self.consumed
+        }
+        fn status_metric_chips(&self) -> String {
+            self.chips.clone()
+        }
+        fn depth_indent(&self) -> &str {
+            &self.depth_indent
+        }
+        fn use_color(&self) -> bool {
+            self.use_color
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::PhaseEnd
+        }
         fn outcome(&self) -> crate::phase_outcome::Outcome {
             self.outcome.clone()
         }
@@ -1497,16 +1564,18 @@ mod tests {
         // the full coord chain to appear) stay stable
         // regardless of whether a prior test in the same
         // process advanced the tracker.
-        let _serial = SERIAL_TEST_GUARD.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = SERIAL_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
             *g = String::new();
         }
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseOutcomeReadout.render(
-            ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -1569,16 +1638,13 @@ mod tests {
         // readout dispatch is single-threaded; the guard exists
         // only to serialise the test task pool. (No guard-holding
         // helper calls `render_at`, so re-entrancy can't occur.)
-        let _serial = SERIAL_TEST_GUARD.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = SERIAL_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
             *g = String::new();
         }
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        PhaseOutcomeReadout.render(
-            ctx, lod, mode, &ReadoutOptions::new(), &mut buf,
-        );
+        PhaseOutcomeReadout.render(ctx, lod, mode, &ReadoutOptions::new(), &mut buf);
         s
     }
 
@@ -1607,11 +1673,15 @@ mod tests {
         };
         let first = render_at(&ctx, Lod::Expanded, ContentMode::Value);
         let second = render_at(&ctx, Lod::Expanded, ContentMode::Value);
-        assert!(first.contains("profile=alpha, k=10"),
-            "first render should carry coords: {first}");
-        assert!(second.contains("profile=alpha, k=10"),
+        assert!(
+            first.contains("profile=alpha, k=10"),
+            "first render should carry coords: {first}"
+        );
+        assert!(
+            second.contains("profile=alpha, k=10"),
             "second render must NOT elide coords (tracker must reset \
-             per render_at call): {second}");
+             per render_at call): {second}"
+        );
     }
 
     #[test]
@@ -1664,19 +1734,26 @@ mod tests {
 
     #[test]
     fn compact_explanation_describes_each_field() {
-        let ctx = TestCtx { phase_name: "x".into(), ..Default::default() };
+        let ctx = TestCtx {
+            phase_name: "x".into(),
+            ..Default::default()
+        };
         let s = render_at(&ctx, Lod::Compact, ContentMode::Explanation);
-        assert!(s.contains("done"),       "expected 'done': {s}");
+        assert!(s.contains("done"), "expected 'done': {s}");
         assert!(s.contains("phase-name"), "expected 'phase-name': {s}");
-        assert!(s.contains("progress%"),  "expected 'progress%': {s}");
-        assert!(s.contains("(elapsed)"),  "expected '(elapsed)': {s}");
+        assert!(s.contains("progress%"), "expected 'progress%': {s}");
+        assert!(s.contains("(elapsed)"), "expected '(elapsed)': {s}");
         // Compact's overlay must NOT describe fields it
         // doesn't show (rate, ok-pct, errors, retries,
         // concurrency, coords, chips, seq).
-        assert!(!s.contains("idx/total"),
-            "compact must not describe seq prefix it doesn't render: {s}");
-        assert!(!s.contains("throughput"),
-            "compact must not describe throughput it doesn't render: {s}");
+        assert!(
+            !s.contains("idx/total"),
+            "compact must not describe seq prefix it doesn't render: {s}"
+        );
+        assert!(
+            !s.contains("throughput"),
+            "compact must not describe throughput it doesn't render: {s}"
+        );
     }
 
     #[test]
@@ -1717,8 +1794,10 @@ mod tests {
         assert!(s.contains("elapsed:     1.50s"));
         // Multi-line block — verify line count.
         let line_count = s.lines().count();
-        assert!(line_count >= 8,
-            "expanded should be multi-line (got {line_count}): {s}");
+        assert!(
+            line_count >= 8,
+            "expanded should be multi-line (got {line_count}): {s}"
+        );
     }
 
     #[test]
@@ -1737,8 +1816,10 @@ mod tests {
             ..Default::default()
         };
         let s = render_at(&ctx, Lod::Expanded, ContentMode::Value);
-        assert!(!s.contains("metrics:"),
-            "expected no metrics: header when chips empty: {s}");
+        assert!(
+            !s.contains("metrics:"),
+            "expected no metrics: header when chips empty: {s}"
+        );
     }
 
     #[test]
@@ -1755,13 +1836,18 @@ mod tests {
             ..Default::default()
         };
         let s = render_at(&ctx, Lod::Expanded, ContentMode::Value);
-        assert!(!s.contains("coords:"),
-            "expected no coords: line when labels empty: {s}");
+        assert!(
+            !s.contains("coords:"),
+            "expected no coords: line when labels empty: {s}"
+        );
     }
 
     #[test]
     fn expanded_explanation_describes_each_row() {
-        let ctx = TestCtx { phase_name: "x".into(), ..Default::default() };
+        let ctx = TestCtx {
+            phase_name: "x".into(),
+            ..Default::default()
+        };
         let s = render_at(&ctx, Lod::Expanded, ContentMode::Explanation);
         assert!(s.contains("phase-name"));
         assert!(s.contains("progress:"));
@@ -1818,23 +1904,26 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         let n = PhaseOutcomeReadout.render(
-            &ctx, Lod::Labeled, ContentMode::Explanation,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Explanation,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         assert!(n > 0, "explanation should render");
         // Spot-check semantic descriptors are present —
         // the user reads "phase-name", "progress%", etc.
         // rather than concrete data.
-        assert!(s.contains("done"),         "expected 'done' descriptor: {s}");
-        assert!(s.contains("phase-name"),   "expected 'phase-name': {s}");
+        assert!(s.contains("done"), "expected 'done' descriptor: {s}");
+        assert!(s.contains("phase-name"), "expected 'phase-name': {s}");
         assert!(s.contains("scope-coords"), "expected 'scope-coords': {s}");
         // Single-placement: the body no longer carries [n/N] (the
         // margin owns it), so the explanation must not describe it.
-        assert!(!s.contains("idx/total"),   "seq descriptor must be gone: {s}");
-        assert!(s.contains("progress%"),    "expected 'progress%': {s}");
-        assert!(s.contains("throughput"),   "expected 'throughput': {s}");
-        assert!(s.contains("ok:ok%"),       "expected ok descriptor: {s}");
-        assert!(s.contains("(elapsed)"),    "expected '(elapsed)': {s}");
+        assert!(!s.contains("idx/total"), "seq descriptor must be gone: {s}");
+        assert!(s.contains("progress%"), "expected 'progress%': {s}");
+        assert!(s.contains("throughput"), "expected 'throughput': {s}");
+        assert!(s.contains("ok:ok%"), "expected ok descriptor: {s}");
+        assert!(s.contains("(elapsed)"), "expected '(elapsed)': {s}");
     }
 
     // ── SRD-76 outcome-driven rendering tests ──────────────
@@ -1853,23 +1942,33 @@ mod tests {
             outcome_errors: vec![crate::phase_outcome::PhaseErrorDetail {
                 class: "poll_timeout".into(),
                 message: "phase-poll deadline reached after 14441.3s".into(),
-                op_name: None, cycle: None,
-                op_template: None, op_resolved: None,
-                at_nanos: 0, retryable: false,
+                op_name: None,
+                cycle: None,
+                op_template: None,
+                op_resolved: None,
+                at_nanos: 0,
+                retryable: false,
             }],
             ..Default::default()
         };
         let out = render(&ctx);
-        assert!(out.starts_with("✗ "),
-            "failed render must start with the ✗ glyph: {out:?}");
-        assert!(out.contains("[ensure_compacted]"),
-            "phase name still in line 1: {out:?}");
-        assert!(out.contains("poll_timeout"),
-            "first-error class on line 1: {out:?}");
-        assert!(out.contains("phase-poll deadline"),
-            "first-error message on line 2: {out:?}");
-        assert!(out.contains("(14400.00s)"),
-            "elapsed on line 2: {out:?}");
+        assert!(
+            out.starts_with("✗ "),
+            "failed render must start with the ✗ glyph: {out:?}"
+        );
+        assert!(
+            out.contains("[ensure_compacted]"),
+            "phase name still in line 1: {out:?}"
+        );
+        assert!(
+            out.contains("poll_timeout"),
+            "first-error class on line 1: {out:?}"
+        );
+        assert!(
+            out.contains("phase-poll deadline"),
+            "first-error message on line 2: {out:?}"
+        );
+        assert!(out.contains("(14400.00s)"), "elapsed on line 2: {out:?}");
     }
 
     /// Failed with multiple errors surfaces `(+N more)` so
@@ -1877,13 +1976,16 @@ mod tests {
     /// Expanded LOD shows the full list.
     #[test]
     fn labeled_failed_shows_more_count_when_multiple_errors() {
-        let mk_err = |class: &str, msg: &str|
-            crate::phase_outcome::PhaseErrorDetail {
-                class: class.into(), message: msg.into(),
-                op_name: None, cycle: None,
-                op_template: None, op_resolved: None,
-                at_nanos: 0, retryable: false,
-            };
+        let mk_err = |class: &str, msg: &str| crate::phase_outcome::PhaseErrorDetail {
+            class: class.into(),
+            message: msg.into(),
+            op_name: None,
+            cycle: None,
+            op_template: None,
+            op_resolved: None,
+            at_nanos: 0,
+            retryable: false,
+        };
         let ctx = TestCtx {
             phase_name: "p".into(),
             elapsed_secs: 1.0,
@@ -1900,8 +2002,10 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx);
-        assert!(out.contains("(+2 more)"),
-            "expected `(+2 more)` truncation marker: {out:?}");
+        assert!(
+            out.contains("(+2 more)"),
+            "expected `(+2 more)` truncation marker: {out:?}"
+        );
     }
 
     /// Skipped status renders ~ glyph but keeps the
@@ -1918,10 +2022,11 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx);
-        assert!(out.starts_with("~ "),
-            "skipped render uses ~ glyph: {out:?}");
-        assert!(out.contains("[rampup]"),
-            "phase name preserved: {out:?}");
+        assert!(
+            out.starts_with("~ "),
+            "skipped render uses ~ glyph: {out:?}"
+        );
+        assert!(out.contains("[rampup]"), "phase name preserved: {out:?}");
     }
 
     /// Expanded LOD on a Failed phase appends a per-error
@@ -1932,32 +2037,38 @@ mod tests {
     fn expanded_failed_includes_per_error_block() {
         let ctx = TestCtx {
             phase_name: "ann_query".into(),
-            cycles_completed: 5, cycles_total: 10,
+            cycles_completed: 5,
+            cycles_total: 10,
             elapsed_secs: 1.5,
             outcome: crate::phase_outcome::Outcome::failed(),
-            outcome_errors: vec![
-                crate::phase_outcome::PhaseErrorDetail {
-                    class: "Timeout".into(),
-                    message: "read timed out".into(),
-                    op_name: Some("read".into()),
-                    cycle: Some(3),
-                    op_template: Some("SELECT * FROM ks.t WHERE k = {cycle}".into()),
-                    op_resolved: Some("SELECT * FROM ks.t WHERE k = 3".into()),
-                    at_nanos: 0, retryable: true,
-                },
-            ],
+            outcome_errors: vec![crate::phase_outcome::PhaseErrorDetail {
+                class: "Timeout".into(),
+                message: "read timed out".into(),
+                op_name: Some("read".into()),
+                cycle: Some(3),
+                op_template: Some("SELECT * FROM ks.t WHERE k = {cycle}".into()),
+                op_resolved: Some("SELECT * FROM ks.t WHERE k = 3".into()),
+                at_nanos: 0,
+                retryable: true,
+            }],
             ..Default::default()
         };
         let s = render_at(&ctx, Lod::Expanded, ContentMode::Value);
-        assert!(s.contains("✗ [ann_query]"),
-            "expanded header uses ✗ glyph for Failed: {s}");
+        assert!(
+            s.contains("✗ [ann_query]"),
+            "expanded header uses ✗ glyph for Failed: {s}"
+        );
         assert!(s.contains("status:"), "status row present: {s}");
         assert!(s.contains("failed"), "status label shows 'failed': {s}");
         assert!(s.contains("errors:"), "errors header present: {s}");
-        assert!(s.contains("[Timeout] read timed out"),
-            "per-error class+message: {s}");
-        assert!(s.contains("cycle:") && s.contains(" 3"),
-            "cycle row present when populated: {s}");
+        assert!(
+            s.contains("[Timeout] read timed out"),
+            "per-error class+message: {s}"
+        );
+        assert!(
+            s.contains("cycle:") && s.contains(" 3"),
+            "cycle row present when populated: {s}"
+        );
         assert!(s.contains("op-template:"), "op-template row present: {s}");
         assert!(s.contains("op-resolved:"), "op-resolved row present: {s}");
     }
@@ -1969,11 +2080,11 @@ mod tests {
     fn compact_glyph_tracks_outcome_status() {
         use crate::phase_outcome::Outcome;
         for (outcome, want) in [
-            (Outcome::completed(),        '✓'),
-            (Outcome::failed(),           '✗'),
+            (Outcome::completed(), '✓'),
+            (Outcome::failed(), '✗'),
             (Outcome::completed_failed(), '✗'),
-            (Outcome::skipped(),          '~'),
-            (Outcome::interrupted(),      '…'),
+            (Outcome::skipped(), '~'),
+            (Outcome::interrupted(), '…'),
         ] {
             let ctx = TestCtx {
                 phase_name: "x".into(),
@@ -1982,8 +2093,10 @@ mod tests {
                 ..Default::default()
             };
             let s = render_at(&ctx, Lod::Compact, ContentMode::Value);
-            assert!(s.starts_with(want),
-                "compact glyph for {want:?} missing: {s:?}");
+            assert!(
+                s.starts_with(want),
+                "compact glyph for {want:?} missing: {s:?}"
+            );
         }
     }
 
@@ -2003,16 +2116,21 @@ mod tests {
             outcome_errors: vec![crate::phase_outcome::PhaseErrorDetail {
                 class: "Timeout".into(),
                 message: "deadline exceeded".into(),
-                op_name: None, cycle: None,
-                op_template: None, op_resolved: None,
-                at_nanos: 0, retryable: false,
+                op_name: None,
+                cycle: None,
+                op_template: None,
+                op_resolved: None,
+                at_nanos: 0,
+                retryable: false,
             }],
             ..Default::default()
         };
         let out = render(&ctx);
         // 2 errors → ☒☒, 3 successes → ☑☑☑.
-        assert!(out.starts_with("✗ ☒☒☑☑☑ "),
-            "failed ≤10 phase should lead with bar (errors first): {out:?}");
+        assert!(
+            out.starts_with("✗ ☒☒☑☑☑ "),
+            "failed ≤10 phase should lead with bar (errors first): {out:?}"
+        );
     }
 
     #[test]
@@ -2035,10 +2153,14 @@ mod tests {
         // Yellow used (errors > 0) — confirm the ANSI code
         // sequence appears around the `e:` chunk. Tail line
         // carries the counters under the new two-line layout.
-        assert!(out.contains("\x1b[33me:1 r:0\x1b[0m"),
-            "expected yellow err_color around `e:1 r:0`, got: {out:?}");
-        assert!(out.contains('\n'),
-            "expected two-line break in labeled render: {out:?}");
+        assert!(
+            out.contains("\x1b[33me:1 r:0\x1b[0m"),
+            "expected yellow err_color around `e:1 r:0`, got: {out:?}"
+        );
+        assert!(
+            out.contains('\n'),
+            "expected two-line break in labeled render: {out:?}"
+        );
     }
     /// A phase whose ops ALL `if:`-skipped reads as gated off — under
     /// the default `skipped_phases=mark` mode the completion is the
@@ -2060,8 +2182,10 @@ mod tests {
         assert!(out.contains("gated off"), "explicit skip marker: {out:?}");
         assert!(out.contains('⊘'), "skip glyph shown: {out:?}");
         assert!(out.contains("skip:10000"), "skip count shown: {out:?}");
-        assert!(!out.contains("ok:"), "no ok% of any kind on a gated-off phase: {out:?}");
+        assert!(
+            !out.contains("ok:"),
+            "no ok% of any kind on a gated-off phase: {out:?}"
+        );
         assert!(!out.contains("/s"), "no rate on a gated-off phase: {out:?}");
     }
-
 }

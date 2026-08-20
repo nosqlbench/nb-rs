@@ -16,11 +16,11 @@ use crate::cassandra_sys::cass_future_ready;
 use crate::cassandra_sys::cass_future_set_callback;
 use crate::cassandra_sys::cass_future_tracing_id;
 
+use crate::cassandra::uuid::Uuid;
 use crate::cassandra_sys::cass_true;
 use crate::cassandra_sys::CassFuture as _Future;
 use crate::cassandra_sys::CassUuid as _Uuid;
 use crate::cassandra_sys::CASS_OK;
-use crate::cassandra::uuid::Uuid;
 use crate::Session;
 
 use parking_lot::Mutex;

@@ -93,7 +93,10 @@ fn build_config(workload: &Path, session: &Path) -> Config {
 }
 
 async fn assert_screen_contains(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
-    assert_screen(stepper, &format!("substring {needle:?}"), timeout, |s| s.contains(needle)).await;
+    assert_screen(stepper, &format!("substring {needle:?}"), timeout, |s| {
+        s.contains(needle)
+    })
+    .await;
 }
 
 /// Poll the rendered screen until `pred` holds, or kill the child
@@ -111,7 +114,9 @@ async fn assert_screen(
 /// bracketed phase counter appearing before the `│` divider on the same line?
 fn has_agreed_gutter(screen: &str) -> bool {
     screen.lines().any(|line| {
-        let Some(bar) = line.find('│') else { return false };
+        let Some(bar) = line.find('│') else {
+            return false;
+        };
         let head = &line[..bar];
         // `[n/total]` bracketed counter somewhere left of the divider.
         head.contains('[') && head.contains('/') && head.contains(']')
@@ -132,8 +137,13 @@ async fn readout_visible_op_renders_as_footer_leaf() {
     assert_screen_contains(&mut stepper, "build", Duration::from_secs(10)).await;
 
     // The agreed gutter: a `[n/total] … │` counter-before-divider line.
-    assert_screen(&mut stepper, "agreed [n/total] │ gutter", Duration::from_secs(10),
-                  has_agreed_gutter).await;
+    assert_screen(
+        &mut stepper,
+        "agreed [n/total] │ gutter",
+        Duration::from_secs(10),
+        has_agreed_gutter,
+    )
+    .await;
 
     // The op leaf: `readout: visible` op `flush` nested under `build`.
     assert_screen_contains(&mut stepper, "flush", Duration::from_secs(15)).await;

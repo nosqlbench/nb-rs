@@ -29,13 +29,13 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
     // return immediately with the appropriate request bit set.
     // main.rs renders usage / prints the version string and
     // exits; handlers never see these flags.
-    let help_at    = argv.iter().position(|a| a == "--help"    || a == "-h");
+    let help_at = argv.iter().position(|a| a == "--help" || a == "-h");
     let version_at = argv.iter().position(|a| a == "--version" || a == "-V");
     let short_at = match (help_at, version_at) {
         (Some(h), Some(v)) => Some(h.min(v)),
-        (Some(h), None)    => Some(h),
-        (None,    Some(v)) => Some(v),
-        (None,    None)    => None,
+        (Some(h), None) => Some(h),
+        (None, Some(v)) => Some(v),
+        (None, None) => None,
     };
     let effective_end = short_at.unwrap_or(argv.len());
 
@@ -48,7 +48,9 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
     // subcommand of the current node — that token becomes the
     // start of the leaf's argument tail.
     loop {
-        if i >= effective_end { break; }
+        if i >= effective_end {
+            break;
+        }
         let tok = &argv[i];
         let next = current.subcommands.iter().find(|s| s.name == tok);
         match next {
@@ -69,7 +71,7 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
             positionals: Vec::new(),
             raw: Vec::new(),
             argv: argv.to_vec(),
-            help_requested:    help_at.is_some(),
+            help_requested: help_at.is_some(),
             version_requested: version_at.is_some(),
         });
     }
@@ -109,8 +111,15 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
             };
             let f = lookup_flag(current, &raw_name)
                 .ok_or_else(|| format!("unknown flag '{raw_name}' for `{}`", path.join(" ")))?;
-            consume_flag(f, &raw_name, inline_value, remaining, &mut j,
-                         &mut flags, &mut bools)?;
+            consume_flag(
+                f,
+                &raw_name,
+                inline_value,
+                remaining,
+                &mut j,
+                &mut flags,
+                &mut bools,
+            )?;
             continue;
         }
         if let Some(rest) = tok.strip_prefix('-')
@@ -121,8 +130,9 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
             let raw_name = format!("-{rest}");
             let f = lookup_short(current, &raw_name);
             if let Some(f) = f {
-                consume_flag(f, &raw_name, None, remaining, &mut j,
-                             &mut flags, &mut bools)?;
+                consume_flag(
+                    f, &raw_name, None, remaining, &mut j, &mut flags, &mut bools,
+                )?;
                 continue;
             }
             // Fall through: treat as positional (some handlers
@@ -136,11 +146,15 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
     // Validate required positionals. Optional / Many kinds
     // never error here; the handler decides when "missing" is
     // OK.
-    let required = current.positionals.iter()
+    let required = current
+        .positionals
+        .iter()
         .filter(|p| matches!(p.kind, PositionalKind::One))
         .count();
     if positionals.len() < required {
-        let missing = current.positionals.iter()
+        let missing = current
+            .positionals
+            .iter()
             .skip(positionals.len())
             .filter(|p| matches!(p.kind, PositionalKind::One))
             .map(|p| format!("<{}>", p.name))
@@ -167,11 +181,15 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
 }
 
 fn lookup_flag<'a>(cmd: &'a Command, name: &str) -> Option<&'a Flag> {
-    cmd.flags.iter().find(|f| f.long == name || f.aliases.contains(&name))
+    cmd.flags
+        .iter()
+        .find(|f| f.long == name || f.aliases.contains(&name))
 }
 
 fn lookup_short<'a>(cmd: &'a Command, dashed: &str) -> Option<&'a Flag> {
-    cmd.flags.iter().find(|f| f.short.is_some_and(|s| s == dashed))
+    cmd.flags
+        .iter()
+        .find(|f| f.short.is_some_and(|s| s == dashed))
 }
 
 fn consume_flag(
@@ -186,14 +204,19 @@ fn consume_flag(
     match f.arity {
         Arity::Bool => {
             if inline_value.is_some() {
-                return Err(format!("flag '{raw_name}' is boolean — does not accept a value"));
+                return Err(format!(
+                    "flag '{raw_name}' is boolean — does not accept a value"
+                ));
             }
             bools.insert(f.long.to_string());
             *j += 1;
         }
         Arity::Value => {
             let value = match inline_value {
-                Some(v) => { *j += 1; v }
+                Some(v) => {
+                    *j += 1;
+                    v
+                }
                 None => {
                     *j += 1;
                     if *j >= remaining.len() {
@@ -232,7 +255,7 @@ mod tests {
             level: Level::Secondary,
             flags,
             kv_params: &[],
-        dynamic_options: None,
+            dynamic_options: None,
             positionals: Vec::new(),
             subcommands: Vec::new(),
             handler: None,
@@ -243,17 +266,25 @@ mod tests {
 
     fn flag_value(long: &'static str) -> Flag {
         Flag {
-            long, short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::None,
-            help: "", repeatable: false,
+            long,
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "",
+            repeatable: false,
         }
     }
 
     fn flag_bool(long: &'static str) -> Flag {
         Flag {
-            long, short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
-            help: "", repeatable: false,
+            long,
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
+            help: "",
+            repeatable: false,
         }
     }
 
@@ -274,10 +305,16 @@ mod tests {
     #[test]
     fn collects_positionals() {
         let root = cmd_leaf("nbrs", vec![flag_value("--db")]);
-        let p = parse(&root, &[
-            "--db".into(), "x.db".into(),
-            "filter1".into(), "filter2".into(),
-        ]).unwrap();
+        let p = parse(
+            &root,
+            &[
+                "--db".into(),
+                "x.db".into(),
+                "filter1".into(),
+                "filter2".into(),
+            ],
+        )
+        .unwrap();
         assert_eq!(p.positionals, vec!["filter1", "filter2"]);
     }
 
@@ -320,25 +357,38 @@ mod tests {
     fn descends_into_subcommand() {
         let list = cmd_leaf("list", vec![flag_value("--db")]);
         let metrics = Command {
-            name: "metrics", help: "",
-            category: Category::Tools, level: Level::Secondary,
-            flags: Vec::new(), kv_params: &[],
-        dynamic_options: None, positionals: Vec::new(),
+            name: "metrics",
+            help: "",
+            category: Category::Tools,
+            level: Level::Secondary,
+            flags: Vec::new(),
+            kv_params: &[],
+            dynamic_options: None,
+            positionals: Vec::new(),
             subcommands: vec![list],
-            handler: None, raw_args: false,
+            handler: None,
+            raw_args: false,
             completion_override: None,
         };
         let root = Command {
-            name: "nbrs", help: "",
-            category: Category::Tools, level: Level::Secondary,
-            flags: Vec::new(), kv_params: &[],
-        dynamic_options: None, positionals: Vec::new(),
+            name: "nbrs",
+            help: "",
+            category: Category::Tools,
+            level: Level::Secondary,
+            flags: Vec::new(),
+            kv_params: &[],
+            dynamic_options: None,
+            positionals: Vec::new(),
             subcommands: vec![metrics],
-            handler: None, raw_args: false,
+            handler: None,
+            raw_args: false,
             completion_override: None,
         };
-        let p = parse(&root, &["metrics".into(), "list".into(),
-                               "--db".into(), "x".into()]).unwrap();
+        let p = parse(
+            &root,
+            &["metrics".into(), "list".into(), "--db".into(), "x".into()],
+        )
+        .unwrap();
         assert_eq!(p.path, vec!["nbrs", "metrics", "list"]);
         assert_eq!(p.flag("--db"), Some("x"));
     }
@@ -348,16 +398,24 @@ mod tests {
         let mut leaf = cmd_leaf("run", vec![]);
         leaf.raw_args = true;
         let root = Command {
-            name: "nbrs", help: "",
-            category: Category::Tools, level: Level::Secondary,
-            flags: Vec::new(), kv_params: &[],
-        dynamic_options: None, positionals: Vec::new(),
+            name: "nbrs",
+            help: "",
+            category: Category::Tools,
+            level: Level::Secondary,
+            flags: Vec::new(),
+            kv_params: &[],
+            dynamic_options: None,
+            positionals: Vec::new(),
             subcommands: vec![leaf],
-            handler: None, raw_args: false,
+            handler: None,
+            raw_args: false,
             completion_override: None,
         };
-        let p = parse(&root, &["run".into(), "workload=x.yaml".into(),
-                               "cycles=100".into()]).unwrap();
+        let p = parse(
+            &root,
+            &["run".into(), "workload=x.yaml".into(), "cycles=100".into()],
+        )
+        .unwrap();
         assert_eq!(p.raw, vec!["workload=x.yaml", "cycles=100"]);
     }
 }

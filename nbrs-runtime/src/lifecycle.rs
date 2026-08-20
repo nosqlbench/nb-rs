@@ -72,14 +72,14 @@ impl EventType {
     pub fn slot_name(self) -> &'static str {
         match self {
             EventType::SessionStart => "on_session_start",
-            EventType::SessionEnd   => "on_session_end",
-            EventType::PhaseStart   => "on_phase_start",
-            EventType::PhaseEnd     => "on_phase_end",
-            EventType::EachStart    => "on_each_start",
-            EventType::EachEnd      => "on_each_end",
-            EventType::ScopeStart   => "on_scope_start",
-            EventType::ScopeEnd     => "on_scope_end",
-            EventType::Update       => "on_update",
+            EventType::SessionEnd => "on_session_end",
+            EventType::PhaseStart => "on_phase_start",
+            EventType::PhaseEnd => "on_phase_end",
+            EventType::EachStart => "on_each_start",
+            EventType::EachEnd => "on_each_end",
+            EventType::ScopeStart => "on_scope_start",
+            EventType::ScopeEnd => "on_scope_end",
+            EventType::Update => "on_update",
         }
     }
 
@@ -91,10 +91,9 @@ impl EventType {
     pub fn subject_kind(self) -> SubjectKind {
         match self {
             EventType::SessionStart | EventType::SessionEnd => SubjectKind::Session,
-            EventType::PhaseStart   | EventType::PhaseEnd
-            | EventType::Update                              => SubjectKind::Phase,
-            EventType::EachStart    | EventType::EachEnd     => SubjectKind::Iteration,
-            EventType::ScopeStart   | EventType::ScopeEnd    => SubjectKind::Scope,
+            EventType::PhaseStart | EventType::PhaseEnd | EventType::Update => SubjectKind::Phase,
+            EventType::EachStart | EventType::EachEnd => SubjectKind::Iteration,
+            EventType::ScopeStart | EventType::ScopeEnd => SubjectKind::Scope,
         }
     }
 }
@@ -127,10 +126,10 @@ impl SubjectKind {
     /// column so `nbrs replay` can group rows by subject.
     pub fn as_str(self) -> &'static str {
         match self {
-            SubjectKind::Session   => "session",
-            SubjectKind::Phase     => "phase",
+            SubjectKind::Session => "session",
+            SubjectKind::Phase => "phase",
             SubjectKind::Iteration => "iteration",
-            SubjectKind::Scope     => "scope",
+            SubjectKind::Scope => "scope",
         }
     }
 }

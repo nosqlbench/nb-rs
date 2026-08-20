@@ -51,12 +51,12 @@ use std::os::unix::net::{UnixListener, UnixStream};
 // Windows has supported AF_UNIX sockets since Windows 10 1803,
 // but std doesn't expose them there — `uds_windows` mirrors the
 // std API surface we use (bind/incoming/connect/timeouts).
-#[cfg(windows)]
-use uds_windows::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
 use std::thread;
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 
 use crate::run_state_actor::RunStateHandle;
 use crate::state::{EntryKind, LogSeverity, PhaseStatus, RunState};
@@ -164,9 +164,8 @@ fn run_accept_loop(
                 let _ = thread::Builder::new()
                     .name("inspector-conn".into())
                     .spawn(move || {
-                        let _ = handle_connection(
-                            stream, &state_for_conn, runtime_for_conn.as_ref(),
-                        );
+                        let _ =
+                            handle_connection(stream, &state_for_conn, runtime_for_conn.as_ref());
                     });
             }
             Err(_) => {
@@ -246,45 +245,50 @@ pub(crate) fn dispatch(
 /// `attach --command` completion power Tab against the same
 /// set the unix-socket inspector accepts.
 pub const COMMAND_NAMES: &[&str] = &[
-    "commands",
-    "help",
-    "meta",
-    "pid",
-    "snapshot",
-    "phases",
-    "active",
-    "latency",
-    "tree",
-    "log",
-    "controls",
-    "set",
-    "metrics",
-    "metric",
-    "readout",
+    "commands", "help", "meta", "pid", "snapshot", "phases", "active", "latency", "tree", "log",
+    "controls", "set", "metrics", "metric", "readout",
 ];
 
 fn render_help() -> String {
     let mut s = String::from("nbrs inspector — out-of-band introspection\n\n");
     let lines: &[(&str, &str)] = &[
-        ("commands",  "list command names (one per line) — used for autocomplete"),
-        ("help",      "this message"),
-        ("meta",      "workload, scenario, adapter, profiler, limit"),
-        ("pid",       "server process id"),
-        ("snapshot",  "combined dump: meta + phases + latency + recent log"),
-        ("phases",    "all phases with status markers"),
-        ("active",    "currently-running phases with live counters"),
-        ("latency",   "current latency percentiles (ns)"),
-        ("tree",      "scenario tree as indented text"),
-        ("log [N]",   "last N log entries (default 20, max 200)"),
-        ("controls",  "list every dynamic control in the live component tree"),
-        ("set <name> <value> [source=<id>]",
-                      "write a dynamic control (default source=inspector)"),
-        ("metrics",   "list every (family, labels) pair in the live tree"),
-        ("metric <selector>",
-                      "read matching metric instance(s) — Prometheus-style selector"),
-        ("readout [name]",
-                      "render the SRD-63 readout of the given name (default `phase_status`) \
-                       against the latest active phase; ANSI-stripped plain text"),
+        (
+            "commands",
+            "list command names (one per line) — used for autocomplete",
+        ),
+        ("help", "this message"),
+        ("meta", "workload, scenario, adapter, profiler, limit"),
+        ("pid", "server process id"),
+        (
+            "snapshot",
+            "combined dump: meta + phases + latency + recent log",
+        ),
+        ("phases", "all phases with status markers"),
+        ("active", "currently-running phases with live counters"),
+        ("latency", "current latency percentiles (ns)"),
+        ("tree", "scenario tree as indented text"),
+        ("log [N]", "last N log entries (default 20, max 200)"),
+        (
+            "controls",
+            "list every dynamic control in the live component tree",
+        ),
+        (
+            "set <name> <value> [source=<id>]",
+            "write a dynamic control (default source=inspector)",
+        ),
+        (
+            "metrics",
+            "list every (family, labels) pair in the live tree",
+        ),
+        (
+            "metric <selector>",
+            "read matching metric instance(s) — Prometheus-style selector",
+        ),
+        (
+            "readout [name]",
+            "render the SRD-63 readout of the given name (default `phase_status`) \
+                       against the latest active phase; ANSI-stripped plain text",
+        ),
     ];
     for (name, descr) in lines {
         s.push_str(&format!("  {:<36} {}\n", name, descr));
@@ -318,23 +322,29 @@ fn render_phases(state: &RunState) -> String {
     for p in &state.phases {
         let indent = " ".repeat(p.depth);
         let marker = match &p.status {
-            PhaseStatus::Pending     => "[  ]",
-            PhaseStatus::Running     => "[..]",
-            PhaseStatus::Completed   => "[ok]",
-            PhaseStatus::Failed(_)   => "[!!]",
+            PhaseStatus::Pending => "[  ]",
+            PhaseStatus::Running => "[..]",
+            PhaseStatus::Completed => "[ok]",
+            PhaseStatus::Failed(_) => "[!!]",
         };
         let kind = match p.kind {
             EntryKind::Phase => "phase",
             EntryKind::Scope => "scope",
-            EntryKind::Root  => "root",
+            EntryKind::Root => "root",
         };
         let labels = if p.labels.is_empty() {
             String::new()
         } else {
             format!(" ({})", p.labels)
         };
-        let dur = p.duration_secs.map(|d| format!(" {d:.2}s")).unwrap_or_default();
-        s.push_str(&format!("{indent}{marker} {kind:5} {}{labels}{dur}\n", p.name));
+        let dur = p
+            .duration_secs
+            .map(|d| format!(" {d:.2}s"))
+            .unwrap_or_default();
+        s.push_str(&format!(
+            "{indent}{marker} {kind:5} {}{labels}{dur}\n",
+            p.name
+        ));
     }
     s
 }
@@ -348,9 +358,16 @@ fn render_active(state: &RunState) -> String {
 
     let mut s = String::new();
     for a in entries {
-        let labels = if a.labels.is_empty() { String::new() } else { format!(" ({})", a.labels) };
+        let labels = if a.labels.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", a.labels)
+        };
         s.push_str(&format!("phase: {}{labels}\n", a.name));
-        s.push_str(&format!("  cursor       : {} ({}/{})\n", a.cursor_name, a.ops_finished, a.cursor_extent));
+        s.push_str(&format!(
+            "  cursor       : {} ({}/{})\n",
+            a.cursor_name, a.ops_finished, a.cursor_extent
+        ));
         s.push_str(&format!("  fibers       : {}\n", a.fibers));
         s.push_str(&format!("  ops/sec      : {:.1}\n", a.ops_per_sec));
         s.push_str(&format!("  ops_started  : {}\n", a.ops_started));
@@ -367,7 +384,9 @@ fn render_active(state: &RunState) -> String {
         if !a.relevancy.is_empty() {
             s.push_str("  relevancy:\n");
             for (n, w, t, c, l) in &a.relevancy {
-                s.push_str(&format!("    {n:<14} window={w:.4} total={t:.4} count={c} window_len={l}\n"));
+                s.push_str(&format!(
+                    "    {n:<14} window={w:.4} total={t:.4} count={c} window_len={l}\n"
+                ));
             }
         }
     }
@@ -376,12 +395,12 @@ fn render_active(state: &RunState) -> String {
 
 fn render_latency(state: &RunState) -> String {
     let mut s = String::from("current latency (ns):\n");
-    s.push_str(&format!("  min   : {}\n",  state.min_nanos));
-    s.push_str(&format!("  p50   : {}\n",  state.p50_nanos));
-    s.push_str(&format!("  p90   : {}\n",  state.p90_nanos));
-    s.push_str(&format!("  p99   : {}\n",  state.p99_nanos));
-    s.push_str(&format!("  p999  : {}\n",  state.p999_nanos));
-    s.push_str(&format!("  max   : {}\n",  state.max_nanos));
+    s.push_str(&format!("  min   : {}\n", state.min_nanos));
+    s.push_str(&format!("  p50   : {}\n", state.p50_nanos));
+    s.push_str(&format!("  p90   : {}\n", state.p90_nanos));
+    s.push_str(&format!("  p99   : {}\n", state.p99_nanos));
+    s.push_str(&format!("  p999  : {}\n", state.p999_nanos));
+    s.push_str(&format!("  max   : {}\n", state.max_nanos));
     s
 }
 
@@ -400,10 +419,14 @@ fn render_tree(state: &RunState) -> String {
                 s.push_str(&format!("{indent}· {}\n", p.labels));
             }
             EntryKind::Phase => {
-                let labels = if p.labels.is_empty() { String::new() } else { format!(" ({})", p.labels) };
+                let labels = if p.labels.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", p.labels)
+                };
                 let status = match &p.status {
-                    PhaseStatus::Pending   => "○",
-                    PhaseStatus::Running   => "▶",
+                    PhaseStatus::Pending => "○",
+                    PhaseStatus::Running => "▶",
                     PhaseStatus::Completed => "✓",
                     PhaseStatus::Failed(_) => "✗",
                 };
@@ -424,8 +447,8 @@ fn render_log(state: &RunState, n: usize) -> String {
     for entry in &state.log_messages[start..] {
         let tag = match entry.severity {
             LogSeverity::Debug => "DBG",
-            LogSeverity::Info  => "INF",
-            LogSeverity::Warn  => "WRN",
+            LogSeverity::Info => "INF",
+            LogSeverity::Warn => "WRN",
             LogSeverity::Error => "ERR",
         };
         s.push_str(&format!("{tag} {}\n", entry.message));
@@ -458,7 +481,9 @@ fn render_controls() -> String {
     };
     let mut rows: Vec<String> = Vec::new();
     for comp in component::find(&root, &Selector::new()) {
-        let Ok(guard) = comp.read() else { continue; };
+        let Ok(guard) = comp.read() else {
+            continue;
+        };
         let path = labels_to_path(guard.effective_labels());
         for ctl in guard.controls().list() {
             let scope = match ctl.branch_scope() {
@@ -471,7 +496,11 @@ fn render_controls() -> String {
             };
             rows.push(format!(
                 "{path} | {name} | {ty} | {value} | rev={rev} | scope={scope} | {final_marker}",
-                path = if path.is_empty() { "<root>" } else { path.as_str() },
+                path = if path.is_empty() {
+                    "<root>"
+                } else {
+                    path.as_str()
+                },
                 name = ctl.name(),
                 ty = ctl.value_type_name(),
                 value = ctl.value_string(),
@@ -487,7 +516,8 @@ fn render_controls() -> String {
 }
 
 fn labels_to_path(labels: &Labels) -> String {
-    labels.iter()
+    labels
+        .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(",")
@@ -498,10 +528,7 @@ fn labels_to_path(labels: &Labels) -> String {
 /// drive the async `erased.set_f64(...)` via the captured tokio
 /// runtime handle, blocking the per-connection thread (NOT the
 /// async runtime worker pool) until the applier completes.
-fn render_set(
-    tail: &str,
-    runtime: Option<&tokio::runtime::Handle>,
-) -> String {
+fn render_set(tail: &str, runtime: Option<&tokio::runtime::Handle>) -> String {
     let mut tokens = tail.split_whitespace();
     let Some(name) = tokens.next() else {
         return "ERR parse: missing name. Usage: set <name> <value> [source=<id>]".into();
@@ -524,7 +551,8 @@ fn render_set(
 
     let Some(rt) = runtime else {
         return "ERR no_runtime: inspector server has no tokio runtime handle; \
-                control writes are unavailable".into();
+                control writes are unavailable"
+            .into();
     };
     let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return format!("ERR no_session: no active session; cannot resolve control '{name}'");
@@ -551,17 +579,18 @@ fn render_set(
     match rt.block_on(async move { erased.set_f64(value, origin).await }) {
         Ok(rev) => format!("OK {name_owned} rev={rev} value={value}"),
         Err(e) => match &e {
-            SetError::ValidationFailed(m) =>
-                format!("ERR validation_failed: {m}"),
+            SetError::ValidationFailed(m) => format!("ERR validation_failed: {m}"),
             SetError::ApplyFailed(fs) => {
-                let joined = fs.iter()
+                let joined = fs
+                    .iter()
                     .map(|f| format!("#{}: {}", f.applier_index, f.message))
                     .collect::<Vec<_>>()
                     .join("; ");
                 format!("ERR apply_failed: {joined}")
             }
-            SetError::FinalViolation { scope } =>
-                format!("ERR final_violation: control is final at scope '{scope}'"),
+            SetError::FinalViolation { scope } => {
+                format!("ERR final_violation: control is final at scope '{scope}'")
+            }
         },
     }
 }
@@ -588,14 +617,14 @@ struct MetricInstance {
 /// scheduler's own walk uses `capture_tree(_current)` and merges
 /// into snapshots; we just flatten the same trees into a value
 /// list.
-fn walk_live_metrics(
-    root: &Arc<StdRwLock<Component>>,
-) -> Vec<MetricInstance> {
+fn walk_live_metrics(root: &Arc<StdRwLock<Component>>) -> Vec<MetricInstance> {
     let mut out = Vec::new();
     for (_, set) in component::capture_tree_current(root) {
         for family in set.families() {
             for metric in family.metrics() {
-                let Some(point) = metric.point() else { continue; };
+                let Some(point) = metric.point() else {
+                    continue;
+                };
                 out.push(MetricInstance {
                     family: family.name().to_string(),
                     labels: metric.labels().clone(),
@@ -615,7 +644,8 @@ fn render_metrics() -> String {
     if instances.is_empty() {
         return "(no metrics)".into();
     }
-    let mut rows: Vec<String> = instances.iter()
+    let mut rows: Vec<String> = instances
+        .iter()
         .map(|m| format!("{}{}", m.family, m.labels.to_prometheus()))
         .collect();
     rows.sort();
@@ -642,7 +672,7 @@ impl MetricSelector {
                 if !rest.ends_with('}') {
                     return Err("selector body must be wrapped in {...}".into());
                 }
-                (f, &rest[1..rest.len()-1])
+                (f, &rest[1..rest.len() - 1])
             }
             None => (s, ""),
         };
@@ -650,7 +680,10 @@ impl MetricSelector {
             "" => return Err("missing family. Usage: metric <family>{k=v,...}".into()),
             "*" => None,
             other => {
-                if !other.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-') {
+                if !other
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+                {
                     return Err(format!("invalid family '{other}'"));
                 }
                 Some(other.to_string())
@@ -659,7 +692,9 @@ impl MetricSelector {
         let mut label_eq: Vec<(String, String)> = Vec::new();
         for piece in body.split(',') {
             let p = piece.trim();
-            if p.is_empty() { continue; }
+            if p.is_empty() {
+                continue;
+            }
             let Some((k, v)) = p.split_once('=') else {
                 return Err(format!("expected k=v in selector body, got '{p}'"));
             };
@@ -675,9 +710,14 @@ impl MetricSelector {
 
     fn matches(&self, family: &str, labels: &Labels) -> bool {
         if let Some(ref name) = self.family
-            && name != family { return false; }
+            && name != family
+        {
+            return false;
+        }
         for (k, v) in &self.label_eq {
-            if labels.get(k) != Some(v.as_str()) { return false; }
+            if labels.get(k) != Some(v.as_str()) {
+                return false;
+            }
         }
         true
     }
@@ -705,7 +745,9 @@ fn render_metric(tail: &str) -> String {
         if sel.label_eq.is_empty() {
             String::new()
         } else {
-            let inner = sel.label_eq.iter()
+            let inner = sel
+                .label_eq
+                .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join(",");
@@ -721,7 +763,8 @@ fn render_metric(tail: &str) -> String {
     out.push('\n');
     // Sort matches for stable output.
     hits.sort_by(|a, b| {
-        a.family.cmp(&b.family)
+        a.family
+            .cmp(&b.family)
             .then_with(|| a.labels.to_prometheus().cmp(&b.labels.to_prometheus()))
     });
     for inst in &hits {
@@ -745,7 +788,13 @@ fn format_metric_line(inst: &MetricInstance) -> String {
         MetricValue::Gauge(g) => format!("{prefix} = {} (gauge)", g.value),
         MetricValue::Histogram(h) => {
             let ms_mode = is_latency_family(&inst.family);
-            let scale = |v: u64| if ms_mode { v as f64 / 1_000_000.0 } else { v as f64 };
+            let scale = |v: u64| {
+                if ms_mode {
+                    v as f64 / 1_000_000.0
+                } else {
+                    v as f64
+                }
+            };
             let unit = if ms_mode { "ms" } else { "raw" };
             let p50 = h.reservoir.value_at_quantile(0.50);
             let p99 = h.reservoir.value_at_quantile(0.99);
@@ -754,19 +803,33 @@ fn format_metric_line(inst: &MetricInstance) -> String {
             let mean_scaled = if ms_mode { mean / 1_000_000.0 } else { mean };
             format!(
                 "{prefix} count={} mean={:.3}{unit} p50={:.3}{unit} p99={:.3}{unit} max={:.3}{unit}",
-                h.count, mean_scaled, scale(p50), scale(p99), scale(max),
+                h.count,
+                mean_scaled,
+                scale(p50),
+                scale(p99),
+                scale(max),
             )
         }
         MetricValue::BucketedHistogram(h) => {
-            format!("{prefix} count={} buckets={} (histogram)",
-                h.count, h.buckets.len())
+            format!(
+                "{prefix} count={} buckets={} (histogram)",
+                h.count,
+                h.buckets.len()
+            )
         }
         MetricValue::Info(_) => format!("{prefix} = 1 (info)"),
         MetricValue::StateSet(s) => {
-            let active: Vec<&str> = s.states.iter()
-                .filter(|(_, a)| *a).map(|(n, _)| n.as_str()).collect();
-            format!("{prefix} states={} active=[{}]",
-                s.states.len(), active.join(","))
+            let active: Vec<&str> = s
+                .states
+                .iter()
+                .filter(|(_, a)| *a)
+                .map(|(n, _)| n.as_str())
+                .collect();
+            format!(
+                "{prefix} states={} active=[{}]",
+                s.states.len(),
+                active.join(",")
+            )
         }
     }
 }
@@ -792,7 +855,11 @@ fn render_readout(state: &RunState, tail: &str) -> String {
     use nbrs_runtime::readouts as ro;
     use ro::ReadoutContext;
 
-    let name = if tail.is_empty() { "phase_status" } else { tail.trim() };
+    let name = if tail.is_empty() {
+        "phase_status"
+    } else {
+        tail.trim()
+    };
     let Some(handle) = ro::Registry::lookup(name) else {
         let known = ro::Registry::all_names().join(", ");
         return format!("ERR unknown readout '{name}' — known: {known}\n");
@@ -801,12 +868,16 @@ fn render_readout(state: &RunState, tail: &str) -> String {
     // Pick a context: prefer the first active phase; else
     // the most recently completed phase.
     let active = state.first_active().cloned();
-    let phase = state.phases.iter()
+    let phase = state
+        .phases
+        .iter()
         .rev()
-        .find(|p| p.kind == crate::state::EntryKind::Phase
-            && (matches!(p.status, crate::state::PhaseStatus::Running)
-                || active.is_some()
-                || matches!(p.status, crate::state::PhaseStatus::Completed)))
+        .find(|p| {
+            p.kind == crate::state::EntryKind::Phase
+                && (matches!(p.status, crate::state::PhaseStatus::Running)
+                    || active.is_some()
+                    || matches!(p.status, crate::state::PhaseStatus::Completed))
+        })
         .cloned();
     let Some(phase) = phase else {
         return format!("(no phase to render `{name}` against)\n");
@@ -867,7 +938,10 @@ mod tests {
         let s = MetricSelector::parse("cycles_servicetime{phase=pvs_query,table=fknn}").unwrap();
         assert_eq!(s.family.as_deref(), Some("cycles_servicetime"));
         assert_eq!(s.label_eq.len(), 2);
-        assert_eq!(s.label_eq[0], ("phase".to_string(), "pvs_query".to_string()));
+        assert_eq!(
+            s.label_eq[0],
+            ("phase".to_string(), "pvs_query".to_string())
+        );
         assert_eq!(s.label_eq[1], ("table".to_string(), "fknn".to_string()));
     }
 
@@ -922,10 +996,14 @@ mod tests {
     fn readout_unknown_name_returns_err_with_known_list() {
         let state = RunState::new("test.yaml", "fake", "stdout");
         let out = render_readout(&state, "not_a_real_readout");
-        assert!(out.starts_with("ERR unknown readout"),
-            "unexpected output: {out}");
-        assert!(out.contains("phase_status"),
-            "should list known names: {out}");
+        assert!(
+            out.starts_with("ERR unknown readout"),
+            "unexpected output: {out}"
+        );
+        assert!(
+            out.contains("phase_status"),
+            "should list known names: {out}"
+        );
     }
 
     /// With no phase to render against, the command returns
@@ -936,7 +1014,6 @@ mod tests {
     fn readout_with_no_phase_returns_placeholder() {
         let state = RunState::new("test.yaml", "fake", "stdout");
         let out = render_readout(&state, "phase_outcome");
-        assert!(out.contains("no phase"),
-            "expected placeholder, got: {out}");
+        assert!(out.contains("no phase"), "expected placeholder, got: {out}");
     }
 }

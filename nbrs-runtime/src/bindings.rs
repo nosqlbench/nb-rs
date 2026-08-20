@@ -19,8 +19,8 @@ use std::collections::{HashMap, HashSet};
 
 use polydat::kernel::PolydatKernel;
 
-use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints;
+use nbrs_workload::model::ParsedOp;
 
 /// A parsed function call in a binding chain.
 #[derive(Debug, Clone)]
@@ -37,7 +37,9 @@ fn parse_binding_chain(expr: &str) -> Vec<BindingFunc> {
 
     for segment in expr.split(';') {
         let segment = segment.trim();
-        if segment.is_empty() { continue; }
+        if segment.is_empty() {
+            continue;
+        }
 
         // Find function name and args
         if let Some(paren_pos) = segment.find('(') {
@@ -74,10 +76,22 @@ fn split_args(s: &str) -> Vec<String> {
 
     for c in s.chars() {
         match c {
-            '\'' if !in_quote => { in_quote = true; current.push(c); }
-            '\'' if in_quote => { in_quote = false; current.push(c); }
-            '(' if !in_quote => { depth += 1; current.push(c); }
-            ')' if !in_quote => { depth -= 1; current.push(c); }
+            '\'' if !in_quote => {
+                in_quote = true;
+                current.push(c);
+            }
+            '\'' if in_quote => {
+                in_quote = false;
+                current.push(c);
+            }
+            '(' if !in_quote => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' if !in_quote => {
+                depth -= 1;
+                current.push(c);
+            }
             ',' if depth == 0 && !in_quote => {
                 args.push(current.trim().to_string());
                 current = String::new();
@@ -94,7 +108,6 @@ fn split_args(s: &str) -> Vec<String> {
 // build_chain_node and its helpers have been removed.
 // Legacy semicolon-chain bindings are now translated to Polydat source
 // and compiled through the unified Polydat compiler. See compile_bindings_with_opts.
-
 
 /// Compile all bindings from a set of ParsedOps into a Polydat Kernel.
 ///
@@ -127,7 +140,9 @@ pub fn probe_compile_level(func_name: &str) -> polydat::ast::CompileLevel {
     let mut has_wire = false;
     for p in sig.params {
         parts.push(p.example.to_string());
-        if p.slot_type.is_wire() { has_wire = true; }
+        if p.slot_type.is_wire() {
+            has_wire = true;
+        }
     }
     // Ensure at least one wire input for the coordinates declaration.
     if !has_wire && parts.is_empty() {
@@ -138,9 +153,9 @@ pub fn probe_compile_level(func_name: &str) -> polydat::ast::CompileLevel {
 
     // Probe compile level via catch_unwind — fallback is Phase1.
     // Does not replace the global panic hook (not thread-safe).
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || polydat::dsl::compile_polydat(&source)
-    ));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        polydat::dsl::compile_polydat(&source)
+    }));
 
     match result {
         Ok(Ok(kernel)) => kernel.program().last_node_compile_level(),
@@ -208,7 +223,10 @@ fn collect_json_bindings(
     }
 }
 
-pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<PolydatKernel, String> {
+pub fn compile_bindings_with_path(
+    ops: &[ParsedOp],
+    source_dir: Option<&std::path::Path>,
+) -> Result<PolydatKernel, String> {
     compile_bindings_with_opts(ops, source_dir, false)
 }
 
@@ -239,7 +257,13 @@ pub fn compile_from_scope(
     let required = scope.required_outputs();
     let source = prepend_effective_pragmas(pragmas, &body);
     polydat::dsl::compile_polydat_with_libs_and_limit(
-        &source, source_dir, polydat_lib_paths, &required, strict, context, cursor_limit,
+        &source,
+        source_dir,
+        polydat_lib_paths,
+        &required,
+        strict,
+        context,
+        cursor_limit,
     )
 }
 
@@ -318,12 +342,12 @@ pub fn build_workload_root_kernel(
     let mut scope = crate::scope::build_scope(
         ops,
         &std::collections::HashMap::new(), // no iteration vars at outer level
-        &[],                                // no outer manifest (this IS the outer scope)
+        &[],                               // no outer manifest (this IS the outer scope)
         workload_params,
         &std::collections::HashMap::new(), // phases not needed here
-        None,                               // no phase cycles
-        &[],                                // no excluded names
-        None, // workload-root has no parent program for AST mode
+        None,                              // no phase cycles
+        &[],                               // no excluded names
+        None,                              // workload-root has no parent program for AST mode
     )?;
 
     // SRD-13f §"Wire-reference classification" — the workload's
@@ -331,9 +355,10 @@ pub fn build_workload_root_kernel(
     // local matter. Ingest before validate/emit so emit()
     // produces a single coherent source.
     if let Some(extra) = workload_level_polydat
-        && !extra.trim().is_empty() {
-            scope.ingest_polydat_source(extra, crate::scope::BindingOrigin::Inherited);
-        }
+        && !extra.trim().is_empty()
+    {
+        scope.ingest_polydat_source(extra, crate::scope::BindingOrigin::Inherited);
+    }
     scope.validate().map_err(|e| format!("{context}: {e}"))?;
 
     // DCE-keepalive list: caller's config refs plus every
@@ -399,8 +424,7 @@ pub fn build_workload_root_kernel(
     // through semantics: descendants still extern these names from
     // the workload-root's manifest, but the workload-root itself
     // treats them as inherited rather than as its own iter-vars.
-    let mut inherited_param_names: Vec<String> = workload_params.keys()
-        .cloned().collect();
+    let mut inherited_param_names: Vec<String> = workload_params.keys().cloned().collect();
     inherited_param_names.sort();
     let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
@@ -409,9 +433,7 @@ pub fn build_workload_root_kernel(
         .options(opts)
         .build()
         .map_err(|e| format!("{e:?}"))?;
-    parent
-        .build_subscope(matter)
-        .map_err(|e| format!("{e:?}"))
+    parent.build_subscope(matter).map_err(|e| format!("{e:?}"))
 }
 
 /// Compile all bindings from a set of ParsedOps into a Polydat Kernel.
@@ -420,13 +442,21 @@ pub fn build_workload_root_kernel(
 /// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by caller (no fallthrough)
-pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, strict: bool) -> Result<PolydatKernel, String> {
+pub fn compile_bindings_with_opts(
+    ops: &[ParsedOp],
+    source_dir: Option<&std::path::Path>,
+    strict: bool,
+) -> Result<PolydatKernel, String> {
     use nbrs_workload::model::BindingsDef;
 
     // Check if any op uses Polydat source mode
     let polydat_source = ops.iter().find_map(|op| {
         if let BindingsDef::PolydatSource(src) = &op.bindings {
-            if !src.trim().is_empty() { Some(src.clone()) } else { None }
+            if !src.trim().is_empty() {
+                Some(src.clone())
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -459,7 +489,9 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
     for op in ops {
         if let BindingsDef::Map(map) = &op.bindings {
             for (name, expr) in map {
-                all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
+                all_bindings
+                    .entry(name.clone())
+                    .or_insert_with(|| expr.clone());
             }
         }
     }
@@ -508,8 +540,10 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
             }
             call_args.extend(extra_args);
 
-            polydat_lines.push(format!("{target} := {func_name}({args})",
-                args = call_args.join(", ")));
+            polydat_lines.push(format!(
+                "{target} := {func_name}({args})",
+                args = call_args.join(", ")
+            ));
 
             prev_wire = target;
         }
@@ -606,7 +640,9 @@ fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
 
 /// Strip Java long literal suffix (e.g., "1000000000L" → "1000000000")
 fn strip_java_long_suffix(arg: &str) -> &str {
-    arg.strip_suffix('L').or_else(|| arg.strip_suffix('l')).unwrap_or(arg)
+    arg.strip_suffix('L')
+        .or_else(|| arg.strip_suffix('l'))
+        .unwrap_or(arg)
 }
 
 /// SRD-13f Push D: translate a Map-form bindings block (legacy
@@ -651,7 +687,6 @@ pub fn legacy_chain_map_to_polydat_lines(
     }
     Ok(polydat_lines.join("\n"))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -718,8 +753,10 @@ mod tests {
             parent: Some(parent),
         };
         let out = prepend_effective_pragmas(&child, "x := cycle");
-        assert!(out.starts_with("pragma strict_values\n"),
-            "expected pragma to flow from parent chain, got:\n{out}");
+        assert!(
+            out.starts_with("pragma strict_values\n"),
+            "expected pragma to flow from parent chain, got:\n{out}"
+        );
     }
 
     #[test]
@@ -781,7 +818,8 @@ mod tests {
     fn compile_hash_mod_binding() {
         let ops = vec![{
             let mut op = ParsedOp::simple("test", "{id}");
-            op.bindings.insert("id".into(), "Hash(); Mod(1000000)".into());
+            op.bindings
+                .insert("id".into(), "Hash(); Mod(1000000)".into());
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();
@@ -832,7 +870,8 @@ mod tests {
     fn compile_add_chain() {
         let ops = vec![{
             let mut op = ParsedOp::simple("test", "{val}");
-            op.bindings.insert("val".into(), "Add(100); Mod(1000)".into());
+            op.bindings
+                .insert("val".into(), "Add(100); Mod(1000)".into());
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();

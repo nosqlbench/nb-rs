@@ -3,10 +3,10 @@
 
 //! Web server setup and configuration.
 
-use axum::{Router, routing::get, routing::post};
+use axum::http::Request;
 use axum::middleware;
 use axum::response::Response;
-use axum::http::Request;
+use axum::{Router, routing::get, routing::post};
 use tower_http::compression::CompressionLayer;
 
 use crate::routes;
@@ -59,13 +59,13 @@ pub fn build_router(broadcast: MetricsBroadcast) -> Router {
 }
 
 /// Middleware that sets aggressive no-cache headers on every response.
-async fn no_cache_headers(
-    request: Request<axum::body::Body>,
-    next: middleware::Next,
-) -> Response {
+async fn no_cache_headers(request: Request<axum::body::Body>, next: middleware::Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert("Cache-Control", "no-cache, no-store, must-revalidate".parse().unwrap());
+    headers.insert(
+        "Cache-Control",
+        "no-cache, no-store, must-revalidate".parse().unwrap(),
+    );
     headers.insert("Pragma", "no-cache".parse().unwrap());
     headers.insert("Expires", "0".parse().unwrap());
     response
@@ -90,7 +90,11 @@ pub async fn serve_with(
     let app = build_router(broadcast);
     eprintln!("nbrs web: listening on http://{addr}");
     let socket = socket2::Socket::new(
-        if addr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 },
+        if addr.is_ipv6() {
+            socket2::Domain::IPV6
+        } else {
+            socket2::Domain::IPV4
+        },
         socket2::Type::STREAM,
         Some(socket2::Protocol::TCP),
     )?;

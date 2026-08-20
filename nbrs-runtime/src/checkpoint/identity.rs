@@ -129,10 +129,7 @@ impl PhaseIdentity {
 mod hex_opt {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S: Serializer>(
-        v: &Option<[u8; 32]>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(v: &Option<[u8; 32]>, s: S) -> Result<S::Ok, S::Error> {
         match v {
             None => s.serialize_none(),
             Some(bytes) => {
@@ -145,9 +142,7 @@ mod hex_opt {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<Option<[u8; 32]>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
         let s: Option<String> = Option::deserialize(d)?;
         match s {
             None => Ok(None),
@@ -178,7 +173,11 @@ mod tests {
     use super::*;
 
     fn id(path: Vec<PathSegment>, coords: &str, hash: Option<[u8; 32]>) -> PhaseIdentity {
-        PhaseIdentity { yaml_path: path, coords: coords.to_string(), phase_hash: hash }
+        PhaseIdentity {
+            yaml_path: path,
+            coords: coords.to_string(),
+            phase_hash: hash,
+        }
     }
 
     #[test]
@@ -220,7 +219,9 @@ mod tests {
         let original = id(
             vec![
                 PathSegment::Scenario("fulltest".into()),
-                PathSegment::ForEach { var: "profile".into() },
+                PathSegment::ForEach {
+                    var: "profile".into(),
+                },
                 PathSegment::Phase("rampup".into()),
             ],
             "(profile=label_03)",
@@ -228,7 +229,10 @@ mod tests {
         );
         let json = serde_json::to_string(&original).expect("serialize");
         // The hash should appear as 64 hex chars.
-        assert!(json.contains(&"ab".repeat(32)), "expected hex hash in JSON: {json}");
+        assert!(
+            json.contains(&"ab".repeat(32)),
+            "expected hex hash in JSON: {json}"
+        );
         let parsed: PhaseIdentity = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, original);
     }

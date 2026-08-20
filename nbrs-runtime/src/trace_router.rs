@@ -104,12 +104,12 @@ impl TemporalParts {
     fn apply(&self, mut s: String) -> String {
         for (tok, val) in [
             ("YYYY", &self.yyyy),
-            ("YY",   &self.yy),
-            ("MM",   &self.mm),
-            ("DD",   &self.dd),
-            ("HH",   &self.hh),
-            ("MI",   &self.mi),
-            ("SS",   &self.ss),
+            ("YY", &self.yy),
+            ("MM", &self.mm),
+            ("DD", &self.dd),
+            ("HH", &self.hh),
+            ("MI", &self.mi),
+            ("SS", &self.ss),
         ] {
             s = s.replace(tok, val);
         }
@@ -152,11 +152,16 @@ impl TraceRoute {
                 let after = &rest[close + 1..];
                 if let Some((k, v)) = inside.split_once('=') {
                     // Has `=` → label filter.
-                    let after = after.strip_prefix(':').ok_or_else(|| format!(
-                        "trace spec: filter '[{inside}]' must be followed by ':path' \
+                    let after = after.strip_prefix(':').ok_or_else(|| {
+                        format!(
+                            "trace spec: filter '[{inside}]' must be followed by ':path' \
                          (got '{spec}')"
-                    ))?;
-                    (Some((k.trim().to_string(), v.trim().to_string())), after.to_string())
+                        )
+                    })?;
+                    (
+                        Some((k.trim().to_string(), v.trim().to_string())),
+                        after.to_string(),
+                    )
                 } else {
                     // No `=` → this is a path-template `[KEY]`
                     // placeholder, not a filter. The spec
@@ -176,7 +181,11 @@ impl TraceRoute {
         // Eager substitutions: SDIR + temporal tokens.
         let with_sdir = path_part.replace("SDIR", session_dir);
         let template = temporal.apply(with_sdir);
-        Ok(Self { filter, template, handles: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            filter,
+            template,
+            handles: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Determine whether this route matches the event's labels.
@@ -210,7 +219,9 @@ impl TraceRoute {
         // post-expansion — a pathological label value mustn't
         // escape the templated parent.
         let p = PathBuf::from(&out);
-        if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        if p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return None;
         }
         Some(p)
@@ -363,12 +374,8 @@ mod tests {
 
     #[test]
     fn parse_template_with_temporal() {
-        let r = TraceRoute::parse(
-            "SDIR/[optimize_for]_YYMMDD.trace",
-            "/s",
-            &temporal_stub(),
-        )
-        .unwrap();
+        let r =
+            TraceRoute::parse("SDIR/[optimize_for]_YYMMDD.trace", "/s", &temporal_stub()).unwrap();
         assert!(r.filter.is_none());
         assert_eq!(r.template, "/s/[optimize_for]_260512.trace");
     }
@@ -396,7 +403,10 @@ mod tests {
         // Separator replaced, parent-dir token broken up:
         // `evil_.._.._etc.trace` — no `..` segment survives.
         assert!(p.to_string_lossy().contains("evil_"));
-        assert!(!p.components().any(|c| matches!(c, std::path::Component::ParentDir)));
+        assert!(
+            !p.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        );
     }
 
     #[test]

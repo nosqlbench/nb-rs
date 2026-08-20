@@ -15,23 +15,23 @@
 //! a write lock. See SRD-02 §"Display and Diagnostic Decoupling".
 
 use std::io;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use crossterm::ExecutableCommand;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
+use crate::run_state_actor::{RunStateCmd, RunStateHandle};
+use crate::state::{PhaseStatus, RunState};
+use crate::widgets::{self, colors};
 use nbrs_metrics::metrics_query::MetricsQuery;
 use nbrs_metrics::snapshot::MetricSet;
-use crate::run_state_actor::{RunStateCmd, RunStateHandle};
-use crate::state::{RunState, PhaseStatus};
-use crate::widgets::{self, colors};
 
 /// Which scrollable pane currently owns mouse-wheel input.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -304,7 +304,10 @@ pub struct ControlEditPrompt {
 
 impl ControlEditPrompt {
     fn new() -> Self {
-        Self { buffer: String::new(), last_result: None }
+        Self {
+            buffer: String::new(),
+            last_result: None,
+        }
     }
 }
 
@@ -321,17 +324,15 @@ impl ControlEditPrompt {
 ///
 /// This is the TUI-side counterpart to the Polydat `control_set`
 /// node (SRD 23 §"Mutation entry points → TUI").
-pub fn write_control_f64_from_tui(
-    name: String,
-    value: f64,
-) -> Result<(), String> {
+pub fn write_control_f64_from_tui(name: String, value: f64) -> Result<(), String> {
     let root = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle()
         .ok_or_else(|| "no session root installed — TUI cannot resolve controls".to_string())?;
     let erased = {
         let Ok(guard) = root.read() else {
             return Err("session root is poisoned".into());
         };
-        guard.find_control_erased_up(&name)
+        guard
+            .find_control_erased_up(&name)
             .ok_or_else(|| format!("no control named '{name}' via walk-up"))?
     };
     if !erased.accepts_f64_writes() {
@@ -379,13 +380,20 @@ fn latency_detail_lines(
     peak_5s: Option<u64>,
     peak_10s: Option<u64>,
 ) -> Vec<Line<'static>> {
-    let max_val = max_ns.max(p999_ns).max(p99_ns).max(p90_ns).max(p50_ns).max(1);
+    let max_val = max_ns
+        .max(p999_ns)
+        .max(p99_ns)
+        .max(p90_ns)
+        .max(p50_ns)
+        .max(1);
     // Fixed bar width so the detail block lines up predictably
     // regardless of terminal size. 60 cells is wide enough to show
     // percentile spread without eating the whole 120-col budget.
     let bar_w: usize = 60;
     let pos = |nanos: u64| -> usize {
-        if max_val == 0 { return 0; }
+        if max_val == 0 {
+            return 0;
+        }
         ((nanos as f64 / max_val as f64) * bar_w as f64).round() as usize
     };
 
@@ -393,8 +401,7 @@ fn latency_detail_lines(
 
     // Range row: colored distribution bar with segment transitions
     // at each percentile boundary.
-    let mut cells: Vec<(char, ratatui::style::Color)> =
-        vec![('╌', colors::BORDER); bar_w];
+    let mut cells: Vec<(char, ratatui::style::Color)> = vec![('╌', colors::BORDER); bar_w];
     let points = [
         (0u64, colors::LAT_P50),
         (p50_ns, colors::LAT_P50),
@@ -416,7 +423,9 @@ fn latency_detail_lines(
     //   ╫  10s peak
     //   ╬  both peaks share the same cell (collapsed)
     let peak_pos = |nanos: u64| -> Option<usize> {
-        if nanos == 0 || bar_w == 0 { return None; }
+        if nanos == 0 || bar_w == 0 {
+            return None;
+        }
         Some(pos(nanos).min(bar_w.saturating_sub(1)))
     };
     let p5 = peak_5s.and_then(peak_pos);
@@ -426,22 +435,31 @@ fn latency_detail_lines(
             cells[a] = ('╬', colors::EMPHASIS);
         }
         _ => {
-            if let Some(p) = p10 { cells[p] = ('╫', colors::LAT_MAX); }
-            if let Some(p) = p5  { cells[p] = ('╪', colors::EMPHASIS); }
+            if let Some(p) = p10 {
+                cells[p] = ('╫', colors::LAT_MAX);
+            }
+            if let Some(p) = p5 {
+                cells[p] = ('╪', colors::EMPHASIS);
+            }
         }
     }
     // Group adjacent cells of the same color into one span so the
     // render is O(bands) not O(cells).
     let range_label = if min_ns > 0 {
-        format!("{}..{}", widgets::format_nanos(min_ns),
-                          widgets::format_nanos(max_val))
+        format!(
+            "{}..{}",
+            widgets::format_nanos(min_ns),
+            widgets::format_nanos(max_val)
+        )
     } else {
         format!("0..{}", widgets::format_nanos(max_val))
     };
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(" range", Style::default().fg(colors::DIM)),
-        Span::styled(format!(" {:>14}  ", range_label),
-            Style::default().fg(colors::DIM)),
+        Span::styled(
+            format!(" {:>14}  ", range_label),
+            Style::default().fg(colors::DIM),
+        ),
     ];
     let mut i = 0;
     while i < cells.len() {
@@ -459,15 +477,17 @@ fn latency_detail_lines(
 
     // One row per percentile; skip if the value is zero (no data).
     let rows: [(&str, u64, ratatui::style::Color); 6] = [
-        ("min ", min_ns,  colors::LAT_P50),
-        ("p50 ", p50_ns,  colors::LAT_P50),
-        ("p90 ", p90_ns,  colors::LAT_P90),
-        ("p99 ", p99_ns,  colors::LAT_P99),
+        ("min ", min_ns, colors::LAT_P50),
+        ("p50 ", p50_ns, colors::LAT_P50),
+        ("p90 ", p90_ns, colors::LAT_P90),
+        ("p99 ", p99_ns, colors::LAT_P99),
         ("p999", p999_ns, colors::LAT_MAX),
-        ("max ", max_ns,  colors::LAT_MAX),
+        ("max ", max_ns, colors::LAT_MAX),
     ];
     for (label, nanos, color) in rows.iter() {
-        if *nanos == 0 { continue; }
+        if *nanos == 0 {
+            continue;
+        }
         let frac = *nanos as f64 / max_val as f64;
         let bar = widgets::bar_str(frac.min(1.0), bar_w);
         out.push(Line::from(vec![
@@ -601,9 +621,7 @@ impl App {
             metrics_query,
             edit_prompt: None,
             frame_sync,
-            readout_binder: std::cell::RefCell::new(
-                nbrs_runtime::readouts::TuiReadoutBinder::new(),
-            ),
+            readout_binder: std::cell::RefCell::new(nbrs_runtime::readouts::TuiReadoutBinder::new()),
             frame_tick: std::cell::Cell::new(0),
         }
     }
@@ -662,9 +680,7 @@ impl App {
         let (name, value_str) = match buf.split_once('=') {
             Some((n, v)) => (n.trim().to_string(), v.trim().to_string()),
             None => {
-                p.last_result = Some(Err(
-                    "expected 'name=value' (e.g. rate=500)".into(),
-                ));
+                p.last_result = Some(Err("expected 'name=value' (e.g. rate=500)".into()));
                 return None;
             }
         };
@@ -788,13 +804,18 @@ impl App {
             // the process with exit code 130 if no handler is
             // installed, matching what a Ctrl+C outside the TUI
             // would have done.
-            unsafe { libc::raise(libc::SIGINT); }
+            unsafe {
+                libc::raise(libc::SIGINT);
+            }
         }
 
         result
     }
 
-    fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -> io::Result<()> {
+    fn event_loop(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stderr>>,
+    ) -> io::Result<()> {
         let mut last_drain = Instant::now();
 
         loop {
@@ -918,7 +939,9 @@ impl App {
             // bypassing `tick_rate` for the one frame the executor
             // is blocked on. The flag self-clears in
             // `signal_post_draw` after the draw completes.
-            let force = self.frame_sync.force_redraw
+            let force = self
+                .frame_sync
+                .force_redraw
                 .load(std::sync::atomic::Ordering::Acquire);
             let effective_rate = if force {
                 Duration::ZERO
@@ -978,7 +1001,9 @@ impl App {
                         if self.is_editing() {
                             match key.code {
                                 KeyCode::Esc => self.close_control_edit_prompt(),
-                                KeyCode::Enter => { let _ = self.submit_control_edit(); }
+                                KeyCode::Enter => {
+                                    let _ = self.submit_control_edit();
+                                }
                                 KeyCode::Backspace => self.edit_pop_char(),
                                 KeyCode::Char(c) => self.edit_push_char(c),
                                 _ => {}
@@ -1006,7 +1031,7 @@ impl App {
                             // the most-recently-fired event slot;
                             // Shift-Tab cycles backward; +/-
                             // cycle the focused body's LOD.
-                            KeyCode::Tab     => self.cycle_readout_focus_next(),
+                            KeyCode::Tab => self.cycle_readout_focus_next(),
                             KeyCode::BackTab => self.cycle_readout_focus_prev(),
                             KeyCode::Char('+') => self.cycle_readout_lod_up(),
                             KeyCode::Char('-') => self.cycle_readout_lod_down(),
@@ -1038,7 +1063,8 @@ impl App {
             self.poll_q_tap_timeout();
 
             // Check if run finished
-            { let state = self.run_state.load();
+            {
+                let state = self.run_state.load();
                 if state.finished {
                     // Show final state for a moment then exit
                     std::thread::sleep(Duration::from_millis(500));
@@ -1053,7 +1079,10 @@ impl App {
             // the supervisor reads `yielded_to_terminal`
             // separately to decide whether to bring up
             // LogOnlySink afterwards.
-            if self.external_quit.load(std::sync::atomic::Ordering::Acquire) {
+            if self
+                .external_quit
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
                 self.should_quit = true;
             }
 
@@ -1077,18 +1106,15 @@ impl App {
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),   // header
-                Constraint::Min(3),      // scenario (+ log panel)
-                Constraint::Length(1),   // footer
+                Constraint::Length(3), // header
+                Constraint::Min(3),    // scenario (+ log panel)
+                Constraint::Length(1), // footer
             ])
             .split(area);
         if self.show_log {
             let bottom = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ])
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(sections[1]);
             bottom[0]
         } else {
@@ -1098,8 +1124,7 @@ impl App {
 
     /// Is (col, row) inside `rect`?
     fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
-        col >= rect.x && col < rect.x + rect.width
-            && row >= rect.y && row < rect.y + rect.height
+        col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
     }
 
     /// Dispatch a mouse event to the focused scrollable pane.
@@ -1200,7 +1225,11 @@ impl App {
         // run. If it's not there yet (very early failure), fall back
         // to the sessions root so the timestamped archive still lands
         // somewhere visible.
-        let target_dir = if session_dir.exists() { &session_dir } else { &logs_dir };
+        let target_dir = if session_dir.exists() {
+            &session_dir
+        } else {
+            &logs_dir
+        };
         let fname_ts = ts.replace([':', ' ', '.'], "_").replace('-', "");
         let archive_name = format!("tui_{fname_ts}.dump");
         let archive_path = target_dir.join(&archive_name);
@@ -1211,8 +1240,11 @@ impl App {
             (Ok(()), Ok(())) => {
                 nbrs_runtime::observer::log(
                     nbrs_runtime::observer::LogLevel::Info,
-                    &format!("tui dump written to {} (also {})",
-                        archive_path.display(), stable_path.display()),
+                    &format!(
+                        "tui dump written to {} (also {})",
+                        archive_path.display(),
+                        stable_path.display()
+                    ),
                 );
                 // Convenience symlink lives at `logs/tui.dump`.
                 nbrs_runtime::session::Session::link_artifact("tui.dump");
@@ -1260,7 +1292,8 @@ impl App {
     /// exit the whole nbrs process after the terminal is restored.
     fn handle_q_tap(&mut self) {
         let now = Instant::now();
-        let in_streak = self.q_tap_last
+        let in_streak = self
+            .q_tap_last
             .map(|prev| now.duration_since(prev).as_millis() <= Self::Q_TAP_WINDOW_MS)
             .unwrap_or(false);
         self.q_tap_count = if in_streak { self.q_tap_count + 1 } else { 1 };
@@ -1278,9 +1311,15 @@ impl App {
     /// the window has expired with 1 or 2 presses, apply the deferred
     /// TUI dismiss. Three-press streaks already acted inline.
     fn poll_q_tap_timeout(&mut self) {
-        let Some(last) = self.q_tap_last else { return; };
-        if self.q_tap_count == 0 { return; }
-        if last.elapsed().as_millis() < Self::Q_TAP_WINDOW_MS { return; }
+        let Some(last) = self.q_tap_last else {
+            return;
+        };
+        if self.q_tap_count == 0 {
+            return;
+        }
+        if last.elapsed().as_millis() < Self::Q_TAP_WINDOW_MS {
+            return;
+        }
         if self.q_tap_count < Self::Q_TAP_EXIT_COUNT {
             self.should_quit = true;
         }
@@ -1340,9 +1379,10 @@ impl App {
         }
         self.tree_selection_auto = false;
         if let Some(start) = self.tree_selected
-            && let Some(next) = self.step_selectable_for_lod(start, delta) {
-                self.tree_selected = Some(next);
-            }
+            && let Some(next) = self.step_selectable_for_lod(start, delta)
+        {
+            self.tree_selected = Some(next);
+        }
         self.scroll_selection_into_view();
     }
 
@@ -1352,7 +1392,9 @@ impl App {
     fn tree_right_arrow(&mut self) {
         // If already drilled, no-op (Right has no further meaning
         // inside the op list).
-        if self.tree_drilled.is_some() { return; }
+        if self.tree_drilled.is_some() {
+            return;
+        }
         let Some(sel) = self.tree_selected else {
             self.adjust_tree_lod(1);
             return;
@@ -1362,9 +1404,9 @@ impl App {
         if self.tree_expanded == Some(sel) {
             let has_ops = {
                 let s = self.run_state.load();
-                s.phases.get(sel)
-                    .map(|p| p.kind == crate::state::EntryKind::Phase
-                          && !p.op_names.is_empty())
+                s.phases
+                    .get(sel)
+                    .map(|p| p.kind == crate::state::EntryKind::Phase && !p.op_names.is_empty())
                     .unwrap_or(false)
             };
             if has_ops {
@@ -1399,14 +1441,15 @@ impl App {
     fn step_selectable_for_lod(&self, start: usize, delta: i32) -> Option<usize> {
         let s = self.run_state.load();
         let len = s.phases.len() as i32;
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let step = if delta >= 0 { 1 } else { -1 };
         let mut idx = start as i32 + step;
         while idx >= 0 && idx < len {
             let i = idx as usize;
             let phase = &s.phases[i];
-            if phase.kind == crate::state::EntryKind::Phase
-                && self.rendered_lines_for(i, phase) > 0
+            if phase.kind == crate::state::EntryKind::Phase && self.rendered_lines_for(i, phase) > 0
             {
                 return Some(i);
             }
@@ -1420,13 +1463,19 @@ impl App {
     /// into view. Top-aligned if the selection is above the window,
     /// bottom-aligned if below. No-op when already in view.
     fn scroll_selection_into_view(&mut self) {
-        let Some(sel) = self.tree_selected else { return; };
+        let Some(sel) = self.tree_selected else {
+            return;
+        };
         let visible = self.last_tree_rect.height.saturating_sub(2) as usize;
-        if visible == 0 { return; }
+        if visible == 0 {
+            return;
+        }
 
         // Rendered-line index of the selected entry, accounting for any
         // currently expanded detail block above it.
-        let Some(line) = self.entry_to_line_index(sel) else { return; };
+        let Some(line) = self.entry_to_line_index(sel) else {
+            return;
+        };
 
         let total = self.total_rendered_lines();
         let tail = total.saturating_sub(visible);
@@ -1451,7 +1500,9 @@ impl App {
     /// rows of any expanded entry). Matches the iteration in `draw_tree`.
     fn total_rendered_lines(&self) -> usize {
         let s = self.run_state.load();
-        s.phases.iter().enumerate()
+        s.phases
+            .iter()
+            .enumerate()
             .map(|(i, p)| self.rendered_lines_for(i, p))
             .sum()
     }
@@ -1461,7 +1512,9 @@ impl App {
     /// the entry doesn't exist.
     fn entry_to_line_index(&self, entry: usize) -> Option<usize> {
         let s = self.run_state.load();
-        if entry >= s.phases.len() { return None; }
+        if entry >= s.phases.len() {
+            return None;
+        }
         // Entries that render zero rows (scope headers in Minimal) have
         // no line position — treat them as absent for navigation.
         if self.rendered_lines_for(entry, &s.phases[entry]) == 0 {
@@ -1469,12 +1522,13 @@ impl App {
         }
         let mut cursor = 0usize;
         for (i, phase) in s.phases.iter().enumerate() {
-            if i == entry { return Some(cursor); }
+            if i == entry {
+                return Some(cursor);
+            }
             cursor += self.rendered_lines_for(i, phase);
         }
         None
     }
-
 
     /// Default tree selection when focus is first grabbed: the most
     /// recently active phase. Prefers the current Running entry, falls
@@ -1486,17 +1540,21 @@ impl App {
         // current LOD — Focus hides non-running phases, so the
         // default selection can't usefully land on one.
         let renderable = |(i, p): &(usize, &crate::state::PhaseEntry)| {
-            p.kind == crate::state::EntryKind::Phase
-                && self.rendered_lines_for(*i, p) > 0
+            p.kind == crate::state::EntryKind::Phase && self.rendered_lines_for(*i, p) > 0
         };
-        phases.iter().enumerate()
+        phases
+            .iter()
+            .enumerate()
             .filter(renderable)
             .rfind(|(_, p)| matches!(p.status, crate::state::PhaseStatus::Running))
-            .or_else(|| phases.iter().enumerate()
-                .filter(renderable)
-                .rfind(|(_, p)| matches!(p.status, crate::state::PhaseStatus::Completed)))
-            .or_else(|| phases.iter().enumerate()
-                .find(renderable))
+            .or_else(|| {
+                phases
+                    .iter()
+                    .enumerate()
+                    .filter(renderable)
+                    .rfind(|(_, p)| matches!(p.status, crate::state::PhaseStatus::Completed))
+            })
+            .or_else(|| phases.iter().enumerate().find(renderable))
             .map(|(i, _)| i)
     }
 
@@ -1514,7 +1572,11 @@ impl App {
             self.tree_selected = self.default_tree_selection();
             self.tree_selection_auto = false;
         }
-        self.tree_lod = if delta > 0 { self.tree_lod.next() } else { self.tree_lod.prev() };
+        self.tree_lod = if delta > 0 {
+            self.tree_lod.next()
+        } else {
+            self.tree_lod.prev()
+        };
         self.scroll_selection_into_view();
     }
 
@@ -1577,8 +1639,10 @@ impl App {
     /// drill), so they're added to both branches of
     /// `rendered_lines_for` to keep scroll / hit-test math consistent.
     fn op_rows_for(&self, phase: &crate::state::PhaseEntry) -> usize {
-        self.run_state.load()
-            .phase_ops.get(&phase.node_id)
+        self.run_state
+            .load()
+            .phase_ops
+            .get(&phase.node_id)
             .map(|v| v.len())
             .unwrap_or(0)
     }
@@ -1588,7 +1652,8 @@ impl App {
     /// `total_rendered_lines` / `entry_to_line_index` /
     /// `line_to_entry_index` consistent with `draw_tree` output.
     fn detail_line_count_for(&self, phase: &crate::state::PhaseEntry) -> usize {
-        { let s = self.run_state.load();
+        {
+            let s = self.run_state.load();
             if let Some(a) = s.active_phase(&phase.name, &phase.labels) {
                 // Clone the active snapshot out of the read guard so we
                 // can drop the lock before calling format_phase_detail.
@@ -1606,8 +1671,12 @@ impl App {
     /// Default LOD renders no details, Maximal renders them for every
     /// phase that has data.
     fn show_detail_for(&self, entry_idx: usize, phase: &crate::state::PhaseEntry) -> bool {
-        if phase.kind != crate::state::EntryKind::Phase { return false; }
-        if self.tree_expanded == Some(entry_idx) { return true; }
+        if phase.kind != crate::state::EntryKind::Phase {
+            return false;
+        }
+        if self.tree_expanded == Some(entry_idx) {
+            return true;
+        }
         match self.tree_lod {
             TreeLod::Hidden => false,
             // ActivePhase uses the dedicated panel renderer — the
@@ -1625,14 +1694,19 @@ impl App {
     /// user-pinned expansion overrides the LOD baseline, so in Minimal
     /// or Maximal the selected phase still gets its full detail block.
     fn toggle_tree_expansion(&mut self) {
-        let Some(sel) = self.tree_selected else { return; };
+        let Some(sel) = self.tree_selected else {
+            return;
+        };
         let is_phase = {
             let s = self.run_state.load();
-            s.phases.get(sel)
+            s.phases
+                .get(sel)
                 .map(|p| p.kind == crate::state::EntryKind::Phase)
                 .unwrap_or(false)
         };
-        if !is_phase { return; }
+        if !is_phase {
+            return;
+        }
         self.tree_expanded = match self.tree_expanded {
             Some(i) if i == sel => None,
             _ => Some(sel),
@@ -1657,7 +1731,9 @@ impl App {
         let mut cursor = 0usize;
         for (i, phase) in s.phases.iter().enumerate() {
             let rendered_rows = self.rendered_lines_for(i, phase);
-            if rendered_rows == 0 { continue; }
+            if rendered_rows == 0 {
+                continue;
+            }
             if line < cursor + rendered_rows {
                 return Some(i);
             }
@@ -1697,10 +1773,16 @@ impl App {
     /// Pin the currently selected entry's rendered line to the top of
     /// the tree viewport by retargeting the scroll animation.
     fn scroll_selection_to_top(&mut self) {
-        let Some(sel) = self.tree_selected else { return; };
-        let Some(line) = self.entry_to_line_index(sel) else { return; };
+        let Some(sel) = self.tree_selected else {
+            return;
+        };
+        let Some(line) = self.entry_to_line_index(sel) else {
+            return;
+        };
         let visible = self.last_tree_rect.height.saturating_sub(2) as usize;
-        if visible == 0 { return; }
+        if visible == 0 {
+            return;
+        }
         let total = self.total_rendered_lines();
         let tail = total.saturating_sub(visible);
         // Always pin the selected entry's first line to the top row
@@ -1736,10 +1818,7 @@ impl App {
     /// detail reads from that live snapshot (matches the non-TUI
     /// progress bar exactly); otherwise it reads from
     /// `phase.summary` (captured at phase_completed time).
-    fn format_phase_detail(
-        &self,
-        phase: &crate::state::PhaseEntry,
-    ) -> Vec<Line<'static>> {
+    fn format_phase_detail(&self, phase: &crate::state::PhaseEntry) -> Vec<Line<'static>> {
         self.format_phase_detail_with_live(phase, None)
     }
 
@@ -1762,7 +1841,9 @@ impl App {
         let refresh_tick = self.frame_tick.get();
         let (readout_lines, _evt) = crate::readout_panel::render_phase_readouts(
             &mut self.readout_binder.borrow_mut(),
-            phase, live, refresh_tick,
+            phase,
+            live,
+            refresh_tick,
         );
         out.extend(readout_lines);
 
@@ -1772,12 +1853,18 @@ impl App {
             PhaseStatus::Pending => "pending — not yet started".to_string(),
             PhaseStatus::Running => "running…".to_string(),
             PhaseStatus::Completed => {
-                let dur = phase.duration_secs.map(|d| format!(" in {d:.2}s")).unwrap_or_default();
+                let dur = phase
+                    .duration_secs
+                    .map(|d| format!(" in {d:.2}s"))
+                    .unwrap_or_default();
                 format!("completed{dur}")
             }
             PhaseStatus::Failed(err) => format!("failed: {err}"),
         };
-        out.push(Line::from(Span::styled(status_text, Style::default().fg(colors::DIM))));
+        out.push(Line::from(Span::styled(
+            status_text,
+            Style::default().fg(colors::DIM),
+        )));
 
         if !phase.labels.is_empty() {
             out.push(Line::from(Span::styled(
@@ -1877,18 +1964,19 @@ impl App {
             // (8 pips/cell × 100 cells = 800 sub-positions) is
             // worth the extra horizontal real estate.
             const CURSOR_BAR_W: usize = 100;
-            let (bar_filled, bar_unfilled) =
-                widgets::bar_str_braille(pct / 100.0, CURSOR_BAR_W);
+            let (bar_filled, bar_unfilled) = widgets::bar_str_braille(pct / 100.0, CURSOR_BAR_W);
             let cursor_label = if s.cursor_name.is_empty() {
                 "cursor".to_string()
             } else {
                 format!("cursor {}", s.cursor_name)
             };
             out.push(Line::from(Span::styled(
-                format!("{cursor_label}:  {} of {}  ({:.2}%)",
+                format!(
+                    "{cursor_label}:  {} of {}  ({:.2}%)",
                     widgets::format_count(complete),
                     widgets::format_count(s.cursor_extent),
-                    pct),
+                    pct
+                ),
                 Style::default().fg(colors::TEXT),
             )));
             // Two-span line: bright Braille pips for the
@@ -1898,23 +1986,19 @@ impl App {
             // track the bar's full width was invisible until
             // a fill appeared.
             out.push(Line::from(vec![
-                Span::styled(
-                    bar_filled,
-                    Style::default().fg(colors::PROGRESS_HIGH),
-                ),
-                Span::styled(
-                    bar_unfilled,
-                    Style::default().fg(colors::DIM),
-                ),
+                Span::styled(bar_filled, Style::default().fg(colors::PROGRESS_HIGH)),
+                Span::styled(bar_unfilled, Style::default().fg(colors::DIM)),
             ]));
 
             // Line 2: named breakdown of the same numbers.
             out.push(Line::from(Span::styled(
-                format!("  pending: {}  •  active: {}  •  complete: {}  (extent: {})",
+                format!(
+                    "  pending: {}  •  active: {}  •  complete: {}  (extent: {})",
                     widgets::format_count(pending),
                     widgets::format_count(active),
                     widgets::format_count(complete),
-                    widgets::format_count(s.cursor_extent)),
+                    widgets::format_count(s.cursor_extent)
+                ),
                 Style::default().fg(colors::DIM),
             )));
 
@@ -1952,20 +2036,33 @@ impl App {
             // inline under this phase's detail. Running phases pull
             // live values from the TUI's drained state; completed
             // phases use their `summary.*_nanos` snapshot.
-            let (min_ns, p50_ns, p90_ns, p99_ns, p999_ns, max_ns, lat_src) =
-                if live.is_some() {
-                    let sr = self.run_state.load();
-                    (sr.min_nanos, sr.p50_nanos, sr.p90_nanos,
-                     sr.p99_nanos, sr.p999_nanos, sr.max_nanos, "live")
-                } else if let Some(ref sm) = phase.summary {
-                    // `summary` only captures min/p50/p99/max today —
-                    // p90/p999 default to 0 and the bar renderer
-                    // skips zero-valued rows.
-                    (sm.min_nanos, sm.p50_nanos, 0, sm.p99_nanos,
-                     0, sm.max_nanos, "summary")
-                } else {
-                    (0, 0, 0, 0, 0, 0, "")
-                };
+            let (min_ns, p50_ns, p90_ns, p99_ns, p999_ns, max_ns, lat_src) = if live.is_some() {
+                let sr = self.run_state.load();
+                (
+                    sr.min_nanos,
+                    sr.p50_nanos,
+                    sr.p90_nanos,
+                    sr.p99_nanos,
+                    sr.p999_nanos,
+                    sr.max_nanos,
+                    "live",
+                )
+            } else if let Some(ref sm) = phase.summary {
+                // `summary` only captures min/p50/p99/max today —
+                // p90/p999 default to 0 and the bar renderer
+                // skips zero-valued rows.
+                (
+                    sm.min_nanos,
+                    sm.p50_nanos,
+                    0,
+                    sm.p99_nanos,
+                    0,
+                    sm.max_nanos,
+                    "summary",
+                )
+            } else {
+                (0, 0, 0, 0, 0, 0, "")
+            };
             let _ = lat_src;
             // Peak cross-bar markers come from the phase's
             // PeakTracker summaries when live; completed phases
@@ -1974,8 +2071,9 @@ impl App {
             let peak_5s = live.and_then(|a| a.latency_peak_5s.peek(now));
             let peak_10s = live.and_then(|a| a.latency_peak_10s.peek(now));
             if max_ns > 0 || p99_ns > 0 || p50_ns > 0 {
-                out.extend(latency_detail_lines(min_ns, p50_ns, p90_ns,
-                    p99_ns, p999_ns, max_ns, peak_5s, peak_10s));
+                out.extend(latency_detail_lines(
+                    min_ns, p50_ns, p90_ns, p99_ns, p999_ns, max_ns, peak_5s, peak_10s,
+                ));
             }
 
             // Throughput sparkline. Two sources, one render:
@@ -2005,24 +2103,28 @@ impl App {
                         Style::default().fg(colors::SPARK).bold(),
                     ),
                     Span::styled(spark, Style::default().fg(colors::SPARK)),
-                    Span::styled(format!("  {rate_label}"),
-                        Style::default().fg(colors::DIM)),
+                    Span::styled(format!("  {rate_label}"), Style::default().fg(colors::DIM)),
                 ]));
             }
 
-            if phase.summary.as_ref()
+            if phase
+                .summary
+                .as_ref()
                 .map(|sm| sm.p50_nanos > 0 || sm.p99_nanos > 0 || sm.max_nanos > 0)
                 .unwrap_or(false)
-                && let Some(ref sm) = phase.summary {
-                    out.push(Line::from(Span::styled(
-                        format!("latency: min {}  p50 {}  p99 {}  max {}",
-                            widgets::format_nanos(sm.min_nanos),
-                            widgets::format_nanos(sm.p50_nanos),
-                            widgets::format_nanos(sm.p99_nanos),
-                            widgets::format_nanos(sm.max_nanos)),
-                        Style::default().fg(colors::LAT_P50),
-                    )));
-                }
+                && let Some(ref sm) = phase.summary
+            {
+                out.push(Line::from(Span::styled(
+                    format!(
+                        "latency: min {}  p50 {}  p99 {}  max {}",
+                        widgets::format_nanos(sm.min_nanos),
+                        widgets::format_nanos(sm.p50_nanos),
+                        widgets::format_nanos(sm.p99_nanos),
+                        widgets::format_nanos(sm.max_nanos)
+                    ),
+                    Style::default().fg(colors::LAT_P50),
+                )));
+            }
 
             // Relevancy aggregates (recall / precision / f1 / …), one
             // line per metric. Shows the moving-window mean (last N
@@ -2039,8 +2141,10 @@ impl App {
             };
             for (name, window_mean, total_mean, total_count, window_len) in relevancy {
                 out.push(Line::from(Span::styled(
-                    format!("{name}: all-time {:.4}  •  last {window_len}: {:.4}  (n={total_count})",
-                        total_mean, window_mean),
+                    format!(
+                        "{name}: all-time {:.4}  •  last {window_len}: {:.4}  (n={total_count})",
+                        total_mean, window_mean
+                    ),
                     Style::default().fg(colors::EMPHASIS),
                 )));
             }
@@ -2052,10 +2156,14 @@ impl App {
                 for (name, total, rate) in &s.adapter_counters {
                     // Internal counters (`_batch_writes`) back a derived metric
                     // only — never their own chip. See `is_internal_counter`.
-                    if nbrs_runtime::is_internal_counter(name) { continue; }
-                    parts.push(format!("{name}: {} @ {}/s",
+                    if nbrs_runtime::is_internal_counter(name) {
+                        continue;
+                    }
+                    parts.push(format!(
+                        "{name}: {} @ {}/s",
                         widgets::format_count(*total),
-                        widgets::format_rate(*rate)));
+                        widgets::format_rate(*rate)
+                    ));
                 }
                 out.push(Line::from(Span::styled(
                     format!("adapter: {}", parts.join("   ")),
@@ -2098,8 +2206,12 @@ impl App {
             // combined effect on the next snapshot load.
             if let Some(w) = extract_latency_from_frame(&frame) {
                 self.run_state.send(RunStateCmd::LatencyFrame {
-                    min: w.min, p50: w.p50, p90: w.p90,
-                    p99: w.p99, p999: w.p999, max: w.max,
+                    min: w.min,
+                    p50: w.p50,
+                    p90: w.p90,
+                    p99: w.p99,
+                    p999: w.p999,
+                    max: w.max,
                 });
             }
 
@@ -2110,7 +2222,9 @@ impl App {
             // reported, the secondary sparkline stays empty.
             let snap = self.run_state.load();
             let (ops_sample, rows_sample, rows_name) = if let Some(active) = snap.first_active() {
-                let (rate, name) = active.adapter_counters.first()
+                let (rate, name) = active
+                    .adapter_counters
+                    .first()
                     .map(|(n, _, r)| (*r, Some(n.clone())))
                     .unwrap_or((0.0, None));
                 let sample: Option<f64> = name.as_ref().map(|_| rate);
@@ -2159,9 +2273,9 @@ impl App {
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),   // header
-                Constraint::Min(3),      // scenario (+ log panel)
-                Constraint::Length(1),   // footer
+                Constraint::Length(3), // header
+                Constraint::Min(3),    // scenario (+ log panel)
+                Constraint::Length(1), // footer
             ])
             .split(area);
 
@@ -2178,10 +2292,7 @@ impl App {
         } else if self.show_log {
             let bottom = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ])
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(sections[1]);
             self.draw_tree(frame, bottom[0], state);
             self.draw_log(frame, bottom[1], state);
@@ -2198,11 +2309,18 @@ impl App {
             let w = banner.chars().count() as u16;
             if sections[0].width > w + 2 {
                 let x = sections[0].x + sections[0].width - w - 1;
-                let r = Rect { x, y: sections[0].y, width: w, height: 1 };
+                let r = Rect {
+                    x,
+                    y: sections[0].y,
+                    width: w,
+                    height: 1,
+                };
                 frame.render_widget(Clear, r);
                 frame.render_widget(
-                    Paragraph::new(Span::styled(banner,
-                        Style::default().fg(colors::PHASE_FAILED).bold())),
+                    Paragraph::new(Span::styled(
+                        banner,
+                        Style::default().fg(colors::PHASE_FAILED).bold(),
+                    )),
                     r,
                 );
             }
@@ -2233,8 +2351,7 @@ impl App {
                     .constraints([Constraint::Length(1), Constraint::Length(1)])
                     .split(r);
                 frame.render_widget(
-                    Paragraph::new(Span::styled(input_line,
-                        Style::default().bold())),
+                    Paragraph::new(Span::styled(input_line, Style::default().bold())),
                     rows[0],
                 );
                 let result_style = match &prompt.last_result {
@@ -2259,35 +2376,54 @@ impl App {
     /// `?` (toggle) or `Esc`.
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         let entries: &[(&str, &str)] = &[
-            ("q",     "dismiss TUI (single tap); triple-tap to exit nbrs"),
-            ("C-c",   "interrupt: restores the terminal and sends SIGINT"),
-            ("?",     "toggle this help panel"),
-            ("␣",     "focus tree, snap LOD=Default, track active phase"),
+            ("q", "dismiss TUI (single tap); triple-tap to exit nbrs"),
+            ("C-c", "interrupt: restores the terminal and sends SIGINT"),
+            ("?", "toggle this help panel"),
+            ("␣", "focus tree, snap LOD=Default, track active phase"),
             ("↑ / ↓", "move tree selection"),
             ("← / →", "decrease / increase tree level of detail"),
-            ("⏎",     "expand / collapse selected phase"),
-            ("esc",   "close help, then collapse, then unfocus, then quit"),
-            ("l",     "toggle log panel"),
-            ("C-l",   "force a full screen redraw"),
-            ("p",     "pause / resume the display"),
-            ("P",     "dump the current screen to logs/<session>/tui_<ts>.dump"),
+            ("⏎", "expand / collapse selected phase"),
+            ("esc", "close help, then collapse, then unfocus, then quit"),
+            ("l", "toggle log panel"),
+            ("C-l", "force a full screen redraw"),
+            ("p", "pause / resume the display"),
+            (
+                "P",
+                "dump the current screen to logs/<session>/tui_<ts>.dump",
+            ),
             ("click", "focus tree at the clicked phase"),
-            ("wheel", "scroll tree (tweened); snaps back to tail at bottom"),
-            ("╪",     "latency range: peak over the last 5s"),
-            ("╫",     "latency range: peak over the last 10s"),
-            ("╬",     "latency range: 5s + 10s peaks on the same cell"),
+            (
+                "wheel",
+                "scroll tree (tweened); snaps back to tail at bottom",
+            ),
+            ("╪", "latency range: peak over the last 5s"),
+            ("╫", "latency range: peak over the last 10s"),
+            ("╬", "latency range: 5s + 10s peaks on the same cell"),
         ];
 
         // Size the panel around the content: widest "key" + " │ " + widest desc.
-        let key_w = entries.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(3);
-        let desc_w = entries.iter().map(|(_, d)| d.chars().count()).max().unwrap_or(0);
+        let key_w = entries
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(3);
+        let desc_w = entries
+            .iter()
+            .map(|(_, d)| d.chars().count())
+            .max()
+            .unwrap_or(0);
         let inner_w = key_w + 3 + desc_w; // "key │ desc"
         let panel_w = (inner_w as u16 + 4).min(area.width.saturating_sub(4));
         let panel_h = (entries.len() as u16 + 4).min(area.height.saturating_sub(2));
 
         let x = area.x + area.width.saturating_sub(panel_w) / 2;
         let y = area.y + area.height.saturating_sub(panel_h) / 2;
-        let rect = Rect { x, y, width: panel_w, height: panel_h };
+        let rect = Rect {
+            x,
+            y,
+            width: panel_w,
+            height: panel_h,
+        };
 
         // Clear underneath so the overlay reads cleanly over whatever
         // was drawn below.
@@ -2296,15 +2432,20 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(colors::EMPHASIS))
-            .title(Span::styled(" Help ", Style::default().fg(colors::EMPHASIS).bold()));
+            .title(Span::styled(
+                " Help ",
+                Style::default().fg(colors::EMPHASIS).bold(),
+            ));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
 
         let mut lines: Vec<Line> = Vec::with_capacity(entries.len());
         for (key, desc) in entries {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {:key_w$} ", key, key_w = key_w),
-                    Style::default().fg(colors::EMPHASIS).bold()),
+                Span::styled(
+                    format!(" {:key_w$} ", key, key_w = key_w),
+                    Style::default().fg(colors::EMPHASIS).bold(),
+                ),
                 Span::styled("│ ", Style::default().fg(colors::BORDER)),
                 Span::styled(*desc, Style::default().fg(colors::TEXT)),
             ]));
@@ -2327,14 +2468,21 @@ impl App {
                 if fraction > 0.01 {
                     let total_est = phase_elapsed / fraction;
                     Some(widgets::format_elapsed(total_est - phase_elapsed))
-                } else { None }
-            } else { None }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         });
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(colors::BORDER))
-            .title(Span::styled(" nbrs ", Style::default().fg(colors::EMPHASIS).bold()));
+            .title(Span::styled(
+                " nbrs ",
+                Style::default().fg(colors::EMPHASIS).bold(),
+            ));
 
         let mut spans = vec![
             Span::styled(" workload: ", Style::default().fg(colors::DIM)),
@@ -2354,7 +2502,9 @@ impl App {
         // so we don't print `phase 0/0` during scenario startup.
         let total = state.total_phases();
         if total > 0 {
-            let current = state.phases.iter()
+            let current = state
+                .phases
+                .iter()
                 .filter(|p| p.kind == crate::state::EntryKind::Phase)
                 .filter(|p| !matches!(p.status, PhaseStatus::Pending))
                 .filter_map(|p| p.seq)
@@ -2368,7 +2518,10 @@ impl App {
         }
 
         if let Some(eta) = phase_eta {
-            spans.push(Span::styled("  phase ETA: ", Style::default().fg(colors::DIM)));
+            spans.push(Span::styled(
+                "  phase ETA: ",
+                Style::default().fg(colors::DIM),
+            ));
             spans.push(Span::styled(eta, Style::default().fg(colors::PHASE_ACTIVE)));
         }
         let line1 = Line::from(spans);
@@ -2401,12 +2554,14 @@ impl App {
         };
         let (leaf, sess): (Option<f64>, Option<f64>) = match &phase.status {
             PhaseStatus::Running => (
-                state.active_phase(&phase.name, &phase.labels)
+                state
+                    .active_phase(&phase.name, &phase.labels)
                     .map(|a| (state.elapsed_secs() - a.session_started).max(0.0)),
                 Some(state.elapsed_secs()),
             ),
-            PhaseStatus::Completed | PhaseStatus::Failed(_) =>
-                (phase.duration_secs, phase.session_elapsed),
+            PhaseStatus::Completed | PhaseStatus::Failed(_) => {
+                (phase.duration_secs, phase.session_elapsed)
+            }
             PhaseStatus::Pending => (None, None),
         };
         Self::margin_fmt(total, &count, leaf, sess)
@@ -2416,14 +2571,22 @@ impl App {
     /// same fixed width as the phase margin (so the `│` column stays aligned),
     /// specialized: count = `[i/N]` within the phase, leaf-time = the op's
     /// execution time, session-time = the session clock at the op.
-    fn op_status_margin(&self, op: &crate::state::OpEntry, op_total: usize, state: &RunState) -> String {
+    fn op_status_margin(
+        &self,
+        op: &crate::state::OpEntry,
+        op_total: usize,
+        state: &RunState,
+    ) -> String {
         use crate::state::PhaseStatus;
         let count = format!("[{}/{}]", op.seq + 1, op_total);
         let (leaf, sess): (Option<f64>, Option<f64>) = match &op.status {
-            PhaseStatus::Running =>
-                (Some((state.elapsed_secs() - op.session_started).max(0.0)), Some(state.elapsed_secs())),
-            PhaseStatus::Completed | PhaseStatus::Failed(_) =>
-                (op.duration_secs, op.session_elapsed),
+            PhaseStatus::Running => (
+                Some((state.elapsed_secs() - op.session_started).max(0.0)),
+                Some(state.elapsed_secs()),
+            ),
+            PhaseStatus::Completed | PhaseStatus::Failed(_) => {
+                (op.duration_secs, op.session_elapsed)
+            }
             PhaseStatus::Pending => (None, None),
         };
         Self::margin_fmt(state.total_phases(), &count, leaf, sess)
@@ -2441,12 +2604,24 @@ impl App {
 
     /// Format the margin from parts: `count` left-padded to the fixed count
     /// field, then the two right-aligned time slots (`—` when absent).
-    fn margin_fmt(total_phases: usize, count: &str, leaf: Option<f64>, sess: Option<f64>) -> String {
+    fn margin_fmt(
+        total_phases: usize,
+        count: &str,
+        leaf: Option<f64>,
+        sess: Option<f64>,
+    ) -> String {
         let tw = total_phases.to_string().len().max(1);
         let count_w = tw * 2 + 3;
-        let leaf_s = leaf.map(widgets::format_dur_compact).unwrap_or_else(|| "—".into());
-        let sess_s = sess.map(widgets::format_dur_compact).unwrap_or_else(|| "—".into());
-        format!("{} {count:<count_w$} {leaf_s:>8} {sess_s:>8}", widgets::TIMING_MARK)
+        let leaf_s = leaf
+            .map(widgets::format_dur_compact)
+            .unwrap_or_else(|| "—".into());
+        let sess_s = sess
+            .map(widgets::format_dur_compact)
+            .unwrap_or_else(|| "—".into());
+        format!(
+            "{} {count:<count_w$} {leaf_s:>8} {sess_s:>8}",
+            widgets::TIMING_MARK
+        )
     }
 
     fn draw_tree(&self, frame: &mut Frame, area: Rect, state: &RunState) {
@@ -2469,9 +2644,11 @@ impl App {
         let lod_tag = format!(" [LOD:{}] ", self.tree_lod.label());
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(
-                if has_focus { colors::EMPHASIS } else { colors::BORDER }
-            ))
+            .border_style(Style::default().fg(if has_focus {
+                colors::EMPHASIS
+            } else {
+                colors::BORDER
+            }))
             .title(Line::from(vec![
                 Span::styled(" Scenario Tree ", title_style),
                 Span::styled(lod_tag, Style::default().fg(colors::DIM)),
@@ -2549,7 +2726,10 @@ impl App {
                     // Scopes are containers, not execution leaves — blank
                     // margin, but keep the divider so the `│` column stays
                     // unbroken down the tree.
-                    Span::styled(self.status_margin(phase, state), Style::default().fg(colors::DIM)),
+                    Span::styled(
+                        self.status_margin(phase, state),
+                        Style::default().fg(colors::DIM),
+                    ),
                     Span::styled(" │ ", Style::default().fg(colors::BORDER)),
                     marker,
                     Span::styled(format!("{indent}┬ "), Style::default().fg(colors::BORDER)),
@@ -2582,7 +2762,11 @@ impl App {
             // Labels stay dim for completed so the health color on the
             // phase name is the eye-catching cue; for running they pick
             // up the yellow tint too so the whole live line reads hot.
-            let label_color = if is_running { health_color } else { colors::DIM };
+            let label_color = if is_running {
+                health_color
+            } else {
+                colors::DIM
+            };
 
             // Left status margin: a fixed-width column of
             // count · leaf-time · session-time, then the `│` that
@@ -2590,7 +2774,10 @@ impl App {
             // view. The `[N/T]` count and this leaf's cumulative time
             // live here now (persisted), not inline on the right.
             let mut spans = vec![
-                Span::styled(self.status_margin(phase, state), Style::default().fg(colors::DIM)),
+                Span::styled(
+                    self.status_margin(phase, state),
+                    Style::default().fg(colors::DIM),
+                ),
                 Span::styled(" │ ", Style::default().fg(colors::BORDER)),
                 marker,
                 Span::styled(format!("{indent}{icon} "), Style::default().fg(icon_color)),
@@ -2613,9 +2800,15 @@ impl App {
                 // a count of executed queries. Plural matches
                 // the count.
                 spans.push(Span::styled(
-                    format!("  [{} op {}]",
+                    format!(
+                        "  [{} op {}]",
                         phase.op_count,
-                        if phase.op_count == 1 { "template" } else { "templates" }),
+                        if phase.op_count == 1 {
+                            "template"
+                        } else {
+                            "templates"
+                        }
+                    ),
                     Style::default().fg(colors::DIM),
                 ));
             }
@@ -2646,9 +2839,11 @@ impl App {
                             // separately below.
                             let unit = cursor_count_label(&sm.cursor_name);
                             spans.push(Span::styled(
-                                format!("  {unit}:{} @{}/s",
+                                format!(
+                                    "  {unit}:{} @{}/s",
                                     widgets::format_count(sm.ops_finished),
-                                    widgets::format_rate(sm.ops_per_sec)),
+                                    widgets::format_rate(sm.ops_per_sec)
+                                ),
                                 Style::default().fg(colors::TEXT),
                             ));
                         }
@@ -2656,14 +2851,20 @@ impl App {
                         // — this is "rows/s" for CQL INSERT workloads,
                         // "queries/s" for search workloads, etc.
                         for (name, total, rate) in &sm.adapter_counters {
-                            if *total == 0 { continue; }
+                            if *total == 0 {
+                                continue;
+                            }
                             // `_batch_writes` and friends are derived-metric
                             // denominators — hidden from the chip row.
-                            if nbrs_runtime::is_internal_counter(name) { continue; }
+                            if nbrs_runtime::is_internal_counter(name) {
+                                continue;
+                            }
                             spans.push(Span::styled(
-                                format!("  {name}:{}@{}/s",
+                                format!(
+                                    "  {name}:{}@{}/s",
                                     widgets::format_count(*total),
-                                    widgets::format_rate(*rate)),
+                                    widgets::format_rate(*rate)
+                                ),
                                 Style::default().fg(colors::PHASE_ACTIVE),
                             ));
                         }
@@ -2671,18 +2872,24 @@ impl App {
                         // headline metric for ANN workloads. Rendered
                         // in EMPHASIS + bold so it reads louder than
                         // plain counts.
-                        for (name, _window_mean, total_mean, total_count, _window_len) in &sm.relevancy {
-                            if *total_count == 0 { continue; }
+                        for (name, _window_mean, total_mean, total_count, _window_len) in
+                            &sm.relevancy
+                        {
+                            if *total_count == 0 {
+                                continue;
+                            }
                             spans.push(Span::styled(
-                                format!("  {name}:{:.4}",  total_mean),
+                                format!("  {name}:{:.4}", total_mean),
                                 Style::default().fg(colors::EMPHASIS).bold(),
                             ));
                         }
                         if sm.p50_nanos > 0 {
                             spans.push(Span::styled(
-                                format!("  p50:{}  p99:{}",
+                                format!(
+                                    "  p50:{}  p99:{}",
                                     widgets::format_nanos(sm.p50_nanos),
-                                    widgets::format_nanos(sm.p99_nanos)),
+                                    widgets::format_nanos(sm.p99_nanos)
+                                ),
                                 Style::default().fg(colors::LAT_P50),
                             ));
                         }
@@ -2719,9 +2926,8 @@ impl App {
                 //   character, matching the tree's visual rhythm.
                 let detail_indent = format!("{indent}  ");
                 for detail_line in self.format_phase_detail_with_live(phase, live) {
-                    let mut spans: Vec<Span<'static>> = Vec::with_capacity(
-                        detail_line.spans.len() + 2,
-                    );
+                    let mut spans: Vec<Span<'static>> =
+                        Vec::with_capacity(detail_line.spans.len() + 2);
                     spans.push(Span::raw("  "));
                     spans.push(Span::styled(
                         format!("{detail_indent}│ "),
@@ -2747,8 +2953,7 @@ impl App {
                             format!("{detail_indent}│ "),
                             Style::default().fg(colors::BORDER),
                         ),
-                        Span::styled("ops:", Style::default()
-                            .fg(colors::DIM).italic()),
+                        Span::styled("ops:", Style::default().fg(colors::DIM).italic()),
                     ]));
                     for (op_idx, op_name) in phase.op_names.iter().enumerate() {
                         let is_drill_sel = op_idx == self.drill_op_idx;
@@ -2794,11 +2999,9 @@ impl App {
                         PhaseStatus::Failed(_) => ("✗", colors::PHASE_FAILED),
                     };
                     let op_name_style = match &op.status {
-                        PhaseStatus::Running =>
-                            Style::default().fg(colors::PHASE_ACTIVE).bold(),
+                        PhaseStatus::Running => Style::default().fg(colors::PHASE_ACTIVE).bold(),
                         PhaseStatus::Completed => Style::default().fg(colors::TEXT),
-                        PhaseStatus::Failed(_) =>
-                            Style::default().fg(colors::PHASE_FAILED).bold(),
+                        PhaseStatus::Failed(_) => Style::default().fg(colors::PHASE_FAILED).bold(),
                         _ => Style::default().fg(colors::DIM),
                     };
                     let mut op_spans = vec![
@@ -2838,9 +3041,10 @@ impl App {
         //   Done   → neither — scenario has nothing left to do.
         if self.tree_lod == TreeLod::Focus && !focus_emitted_any {
             let live = self.metrics_query.running_phase_count() > 0;
-            let any_pending = state.phases.iter()
-                .any(|p| p.kind == crate::state::EntryKind::Phase
-                    && matches!(p.status, crate::state::PhaseStatus::Pending));
+            let any_pending = state.phases.iter().any(|p| {
+                p.kind == crate::state::EntryKind::Phase
+                    && matches!(p.status, crate::state::PhaseStatus::Pending)
+            });
             let (glyph, msg, color) = if live {
                 // Running phases exist in the component tree but
                 // haven't appeared in `state.phases` yet — a tiny
@@ -2906,9 +3110,12 @@ impl App {
                 // If the live target drifted away from the anim's `to`,
                 // rewrite `to`. Don't restart the clock; the motion just
                 // glides to the new endpoint.
-                let to = if (to - target).abs() > 0.01 { target } else { to };
-                let t = (started.elapsed().as_secs_f32() / duration.as_secs_f32())
-                    .clamp(0.0, 1.0);
+                let to = if (to - target).abs() > 0.01 {
+                    target
+                } else {
+                    to
+                };
+                let t = (started.elapsed().as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
                 let eased = Self::smoothstep(t);
                 self.tree_display = from + (to - from) * eased;
                 if t >= 1.0 {
@@ -2936,9 +3143,13 @@ impl App {
     fn draw_active_phase_panel(&self, frame: &mut Frame, area: Rect, state: &RunState) {
         // Collect running phase entries in declaration order so the
         // panel reads top-to-bottom matching the tree in other LODs.
-        let running: Vec<&crate::state::PhaseEntry> = state.phases.iter()
-            .filter(|p| p.kind == crate::state::EntryKind::Phase
-                && matches!(p.status, crate::state::PhaseStatus::Running))
+        let running: Vec<&crate::state::PhaseEntry> = state
+            .phases
+            .iter()
+            .filter(|p| {
+                p.kind == crate::state::EntryKind::Phase
+                    && matches!(p.status, crate::state::PhaseStatus::Running)
+            })
             .collect();
 
         let has_focus = self.focused == Some(FocusedPane::Tree);
@@ -2967,9 +3178,11 @@ impl App {
         };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(
-                if has_focus { colors::EMPHASIS } else { colors::BORDER }
-            ))
+            .border_style(Style::default().fg(if has_focus {
+                colors::EMPHASIS
+            } else {
+                colors::BORDER
+            }))
             .title(Line::from(vec![
                 Span::styled(title_text, title_style),
                 Span::styled(lod_tag, Style::default().fg(colors::DIM)),
@@ -2985,9 +3198,10 @@ impl App {
         if running.is_empty() {
             // Empty state — same live/waiting/done logic as Focus.
             let live_count = self.metrics_query.running_phase_count();
-            let any_pending = state.phases.iter()
-                .any(|p| p.kind == crate::state::EntryKind::Phase
-                    && matches!(p.status, crate::state::PhaseStatus::Pending));
+            let any_pending = state.phases.iter().any(|p| {
+                p.kind == crate::state::EntryKind::Phase
+                    && matches!(p.status, crate::state::PhaseStatus::Pending)
+            });
             let (glyph, msg, color) = if live_count > 0 || any_pending {
                 ("○", "waiting for phase…", colors::PHASE_PENDING)
             } else {
@@ -3020,10 +3234,7 @@ impl App {
                 };
                 let mut header_spans = vec![
                     Span::raw("  "),
-                    Span::styled(
-                        seq_prefix,
-                        Style::default().fg(colors::DIM),
-                    ),
+                    Span::styled(seq_prefix, Style::default().fg(colors::DIM)),
                     Span::styled(
                         format!("[{}]", phase.name),
                         Style::default().fg(colors::LOG_INFO).bold(),
@@ -3060,8 +3271,8 @@ impl App {
         // appear; the `D` keybinding cycles the level.
         let level_label = match self.log_level_filter {
             crate::state::LogSeverity::Debug => "≥DBG",
-            crate::state::LogSeverity::Info  => "≥INF",
-            crate::state::LogSeverity::Warn  => "≥WRN",
+            crate::state::LogSeverity::Info => "≥INF",
+            crate::state::LogSeverity::Warn => "≥WRN",
             crate::state::LogSeverity::Error => "≥ERR",
         };
         let mut title: Vec<Span> = vec![
@@ -3075,10 +3286,7 @@ impl App {
             // Tree-hidden hint: pinned to the right of the level
             // tag so the operator sees both pieces of context.
             title.extend([
-                Span::styled(
-                    "— tree hidden: ",
-                    Style::default().fg(colors::DIM),
-                ),
+                Span::styled("— tree hidden: ", Style::default().fg(colors::DIM)),
                 Span::styled("→", Style::default().fg(colors::EMPHASIS).bold()),
                 Span::styled(" to restore, ", Style::default().fg(colors::DIM)),
                 Span::styled("?", Style::default().fg(colors::EMPHASIS).bold()),
@@ -3103,24 +3311,29 @@ impl App {
         // belong in the tree / active-phase panel (rendered natively
         // via `TuiReadoutSink`), not here — a multi-line ANSI outcome
         // render would otherwise garble as a single un-split `Span`.
-        let filtered: Vec<&crate::state::LogEntry> = state.log_messages.iter()
+        let filtered: Vec<&crate::state::LogEntry> = state
+            .log_messages
+            .iter()
             .filter(|e| e.category == crate::state::LogCategory::Diagnostic)
             .filter(|e| e.severity >= self.log_level_filter)
             .collect();
         let visible = inner.height as usize;
         let start = filtered.len().saturating_sub(visible);
-        let lines: Vec<Line> = filtered[start..].iter().map(|entry| {
-            let (prefix, color) = match entry.severity {
-                crate::state::LogSeverity::Debug => ("DBG", colors::LOG_DEBUG),
-                crate::state::LogSeverity::Info  => ("INF", colors::LOG_INFO),
-                crate::state::LogSeverity::Warn  => ("WRN", colors::LOG_WARN),
-                crate::state::LogSeverity::Error => ("ERR", colors::LOG_ERROR),
-            };
-            Line::from(vec![
-                Span::styled(format!("  {prefix} "), Style::default().fg(color).bold()),
-                Span::styled(&entry.message, Style::default().fg(colors::TEXT)),
-            ])
-        }).collect();
+        let lines: Vec<Line> = filtered[start..]
+            .iter()
+            .map(|entry| {
+                let (prefix, color) = match entry.severity {
+                    crate::state::LogSeverity::Debug => ("DBG", colors::LOG_DEBUG),
+                    crate::state::LogSeverity::Info => ("INF", colors::LOG_INFO),
+                    crate::state::LogSeverity::Warn => ("WRN", colors::LOG_WARN),
+                    crate::state::LogSeverity::Error => ("ERR", colors::LOG_ERROR),
+                };
+                Line::from(vec![
+                    Span::styled(format!("  {prefix} "), Style::default().fg(color).bold()),
+                    Span::styled(&entry.message, Style::default().fg(colors::TEXT)),
+                ])
+            })
+            .collect();
 
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -3132,9 +3345,9 @@ impl App {
     fn cycle_log_level_filter(&mut self) {
         use crate::state::LogSeverity::*;
         self.log_level_filter = match self.log_level_filter {
-            Info  => Debug,
+            Info => Debug,
             Debug => Warn,
-            Warn  => Error,
+            Warn => Error,
             Error => Info,
         };
     }
@@ -3147,14 +3360,18 @@ impl App {
     /// yet (no slot context).
     pub fn cycle_readout_focus_next(&mut self) {
         use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
-        self.readout_binder.borrow_mut().on_key(BinderKey::CycleFocusNext);
+        self.readout_binder
+            .borrow_mut()
+            .on_key(BinderKey::CycleFocusNext);
     }
 
     /// Cycle focus backward through the most-recent slot's
     /// readouts. Bound to Shift-Tab.
     pub fn cycle_readout_focus_prev(&mut self) {
         use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
-        self.readout_binder.borrow_mut().on_key(BinderKey::CycleFocusPrev);
+        self.readout_binder
+            .borrow_mut()
+            .on_key(BinderKey::CycleFocusPrev);
     }
 
     /// Cycle the focused readout's LOD up
@@ -3162,13 +3379,17 @@ impl App {
     /// `+`. No-op when no readout is focused.
     pub fn cycle_readout_lod_up(&mut self) {
         use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
-        self.readout_binder.borrow_mut().on_key(BinderKey::CycleLodUp);
+        self.readout_binder
+            .borrow_mut()
+            .on_key(BinderKey::CycleLodUp);
     }
 
     /// Cycle the focused readout's LOD down. Bound to `-`.
     pub fn cycle_readout_lod_down(&mut self) {
         use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
-        self.readout_binder.borrow_mut().on_key(BinderKey::CycleLodDown);
+        self.readout_binder
+            .borrow_mut()
+            .on_key(BinderKey::CycleLodDown);
     }
 
     /// Toggle the explanation-overlay flag. While set, every
@@ -3193,7 +3414,11 @@ impl App {
     }
 
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
-        let overlay = if self.readout_overlay_active() { " 📖 explain" } else { "" };
+        let overlay = if self.readout_overlay_active() {
+            " 📖 explain"
+        } else {
+            ""
+        };
         let line = Line::from(vec![
             Span::styled(" q", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": quit  ", Style::default().fg(colors::DIM)),
@@ -3246,17 +3471,18 @@ fn extract_latency_from_frame(snapshot: &MetricSet) -> Option<LiveLatency> {
     let family = snapshot.family("cycles_servicetime")?;
     for metric in family.metrics() {
         if let Some(point) = metric.point()
-            && let MetricValue::Histogram(h) = point.value() {
-                let r = &h.reservoir;
-                return Some(LiveLatency {
-                    min:  r.min(),
-                    p50:  r.value_at_quantile(0.50),
-                    p90:  r.value_at_quantile(0.90),
-                    p99:  r.value_at_quantile(0.99),
-                    p999: r.value_at_quantile(0.999),
-                    max:  r.max(),
-                });
-            }
+            && let MetricValue::Histogram(h) = point.value()
+        {
+            let r = &h.reservoir;
+            return Some(LiveLatency {
+                min: r.min(),
+                p50: r.value_at_quantile(0.50),
+                p90: r.value_at_quantile(0.90),
+                p99: r.value_at_quantile(0.99),
+                p999: r.value_at_quantile(0.999),
+                max: r.max(),
+            });
+        }
     }
     None
 }
@@ -3334,9 +3560,7 @@ pub(crate) fn install_signal_terminal_restore() {}
 /// used by the signal handler to restore cooked-mode line
 /// discipline. Wrapped in `OnceLock` so the first TUI startup wins.
 #[cfg(unix)]
-static PRETUI_TERMIOS: std::sync::OnceLock<libc::termios>
-    = std::sync::OnceLock::new();
-
+static PRETUI_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
 #[cfg(unix)]
 pub(crate) fn save_pretui_termios() {
@@ -3370,11 +3594,7 @@ pub(crate) fn install_signal_terminal_restore() {
 
     // Cast through a typed `extern "C" fn` first so the integer
     // cast is unambiguous (lints reject the direct `fn -> usize`).
-    type SaHandler = extern "C" fn(
-        libc::c_int,
-        *mut libc::siginfo_t,
-        *mut libc::c_void,
-    );
+    type SaHandler = extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
     let handler: SaHandler = signal_terminal_restore;
     let mut act: libc::sigaction = unsafe { std::mem::zeroed() };
     act.sa_sigaction = handler as usize;
@@ -3426,7 +3646,8 @@ extern "C" fn signal_terminal_restore(
         "\x1b[0m",     // reset SGR
         "\x1b[999;1H", // park at absolute bottom-left (terminal clamps)
         "\r\n",        // fresh line for the shell prompt
-    ).as_bytes();
+    )
+    .as_bytes();
     unsafe {
         libc::write(
             libc::STDERR_FILENO,
@@ -3483,15 +3704,20 @@ pub(crate) fn install_tui_panic_hook() {
         // user can see what happened post-mortem even when the
         // terminal was repainted by a worker thread that out-raced
         // the cleanup. See SRD 41 §"Diagnostic Log Routing".
-        let location = info.location()
+        let location = info
+            .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "<unknown>".into());
-        let message = info.payload()
-            .downcast_ref::<&'static str>().map(|s| (*s).to_string())
+        let message = info
+            .payload()
+            .downcast_ref::<&'static str>()
+            .map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<non-string panic payload>".into());
         let thread = std::thread::current()
-            .name().unwrap_or("<unnamed>").to_string();
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string();
         nbrs_runtime::observer::log(
             nbrs_runtime::observer::LogLevel::Error,
             &format!("PANIC at {location} on thread '{thread}': {message}"),

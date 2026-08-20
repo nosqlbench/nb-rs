@@ -12,28 +12,28 @@ mod bench;
 mod blueprint_cmd;
 mod bundled;
 mod check_cmd;
-mod copy_cmd;
-mod diag_cmd;
 mod checkpoint_cmd;
 mod cli;
 mod cli_spec;
 mod completion;
+mod copy_cmd;
 mod daemon;
-mod describe;
-mod inspector;
 mod db_merge;
+mod describe;
+mod diag_cmd;
+mod inspector;
 mod metrics_cache;
 mod metrics_cmd;
 mod metricsql_cmd;
 mod palette;
 mod plot;
 mod plot_metrics;
+mod refine;
 mod replay;
 mod report;
 mod report_build;
 mod report_cmd;
 mod report_scratch;
-mod refine;
 mod run;
 mod session_cmd;
 mod summary;
@@ -107,7 +107,8 @@ fn main() {
     // the next writing command does it).
     let creates_session = matches!(
         args.first().map(String::as_str),
-        Some("run" | "check" | "refine" | "session" | "bench" | "daemon"));
+        Some("run" | "check" | "refine" | "session" | "bench" | "daemon")
+    );
     nbrs_runtime::session::purge_stale_sessions_at_startup(&args, creates_session);
 
     // SRD-102: resolve the physical thread-pool config — CLI `--threads.*`
@@ -170,8 +171,7 @@ fn main() {
     // help flag, so `nbrs --help`, `nbrs metrics --help`, and
     // `nbrs metrics list --help` each render the right slice.
     if parsed.help_requested {
-        let sub_path: Vec<&str> = parsed.path[1..]
-            .iter().map(String::as_str).collect();
+        let sub_path: Vec<&str> = parsed.path[1..].iter().map(String::as_str).collect();
         cli_spec::help::render_usage(&root, &sub_path);
         return;
     }
@@ -186,9 +186,17 @@ fn main() {
             rt.block_on(f(parsed))
         }
         None => {
-            eprintln!("nbrs: command at `{}` has no handler", parsed.path.join(" "));
-            cli_spec::help::render_usage(&root, &parsed.path[1..]
-                .iter().map(String::as_str).collect::<Vec<_>>());
+            eprintln!(
+                "nbrs: command at `{}` has no handler",
+                parsed.path.join(" ")
+            );
+            cli_spec::help::render_usage(
+                &root,
+                &parsed.path[1..]
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            );
             std::process::exit(2);
         }
     };
@@ -209,8 +217,12 @@ fn extract_thread_overrides(
 ) -> nbrs_metrics::thread_pools::CliThreadOverrides {
     let mut ov = nbrs_metrics::thread_pools::CliThreadOverrides::default();
     args.retain(|a| {
-        let Some(rest) = a.strip_prefix("--threads.") else { return true; };
-        let Some((key, val)) = rest.split_once('=') else { return true; };
+        let Some(rest) = a.strip_prefix("--threads.") else {
+            return true;
+        };
+        let Some((key, val)) = rest.split_once('=') else {
+            return true;
+        };
         let slot = match key {
             "timing" => &mut ov.timing,
             "io" => &mut ov.io,
@@ -249,7 +261,10 @@ fn build_workers_runtime() -> tokio::runtime::Runtime {
 fn lookup_handler(root: &cli_spec::Command, path: &[String]) -> Option<cli_spec::Handler> {
     let mut current = root;
     for seg in path {
-        current = current.subcommands.iter().find(|s| s.name == seg.as_str())?;
+        current = current
+            .subcommands
+            .iter()
+            .find(|s| s.name == seg.as_str())?;
     }
     current.handler
 }
@@ -266,9 +281,13 @@ fn print_version() {
 /// shape (it would otherwise trip on the bare-yaml positional).
 fn build_bare_workload_args(path: &str, tail: &[String]) -> Vec<String> {
     const VALUE_FLAGS: &[&str] = &[
-        "--session", "--session-name", "--session-path",
-        "--session-reuse", "--session-keep",
-        "--session-shelflife", "--readout",
+        "--session",
+        "--session-name",
+        "--session-path",
+        "--session-reuse",
+        "--session-keep",
+        "--session-shelflife",
+        "--readout",
     ];
     let mut run_args = vec![format!("workload={path}")];
     let mut scenario_set = false;
@@ -290,4 +309,3 @@ fn build_bare_workload_args(path: &str, tail: &[String]) -> Vec<String> {
     }
     run_args
 }
-

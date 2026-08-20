@@ -30,9 +30,7 @@
 //! `exec_id`, constructs a `Session::refine`, and threads the
 //! plan onto the executor context.
 
-use crate::cli_spec::{
-    Category, Command, Handler, Level, ParsedCommand,
-};
+use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
 
 /// `nbrs refine` — same flag surface as `run`. Workload args
 /// (`key=value`, `--session-path`, …) pass through; the only
@@ -61,9 +59,9 @@ pub fn spec() -> Command {
     }
 }
 
-fn refine_handler(p: ParsedCommand)
-    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>
-{
+fn refine_handler(
+    p: ParsedCommand,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>> {
     Box::pin(async move {
         refine_command(&p.raw).await;
         Ok(())
@@ -88,9 +86,9 @@ pub async fn refine_command(args: &[String]) {
     // that — `--resume-latest` would override it. Otherwise
     // default to `--resume-latest` so the implicit target is
     // the most-recent session.
-    let explicit_target = args.iter().any(|a| {
-        a == "--session" || a == "--session-path" || a == "--resume"
-    });
+    let explicit_target = args
+        .iter()
+        .any(|a| a == "--session" || a == "--session-path" || a == "--resume");
 
     // The run pipeline's argv-shape contract puts the verb
     // token first ("run"); `run_with_observer` strips it

@@ -89,11 +89,14 @@ fn spawn_mock_endpoint() -> u16 {
                 // Read until the full head + declared body arrive.
                 loop {
                     let Ok(n) = sock.read(&mut chunk) else { return };
-                    if n == 0 { break }
+                    if n == 0 {
+                        break;
+                    }
                     buf.extend_from_slice(&chunk[..n]);
                     let text = String::from_utf8_lossy(&buf);
                     if let Some(head_end) = text.find("\r\n\r\n") {
-                        let content_len = text.lines()
+                        let content_len = text
+                            .lines()
                             .find_map(|l| l.strip_prefix("Content-Length: "))
                             .and_then(|v| v.trim().parse::<usize>().ok())
                             .unwrap_or(0);
@@ -107,8 +110,7 @@ fn spawn_mock_endpoint() -> u16 {
                 let authed = text.lines().any(|l| l == "api-key: tok-123");
                 let (status, body) = match path {
                     "/auth/login" => ("200 OK", r#"{"token":"tok-123"}"#),
-                    "/search" if authed =>
-                        ("200 OK", r#"{"result":[{"id":7},{"id":3}]}"#),
+                    "/search" if authed => ("200 OK", r#"{"result":[{"id":7},{"id":3}]}"#),
                     "/search" => ("401 Unauthorized", r#"{"error":"no api-key"}"#),
                     _ => ("404 Not Found", r#"{"error":"unknown path"}"#),
                 };
@@ -134,8 +136,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-webdrv-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-webdrv-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -173,23 +175,29 @@ impl Drop for Sandbox {
 fn auth_flow_and_results_projection_against_live_endpoint() {
     let port = spawn_mock_endpoint();
     let sandbox = Sandbox::new("live");
-    std::fs::write(sandbox.dir.join("blueprint.yaml"), BLUEPRINT)
-        .expect("write blueprint");
+    std::fs::write(sandbox.dir.join("blueprint.yaml"), BLUEPRINT).expect("write blueprint");
     std::fs::write(sandbox.dir.join("impl.yaml"), IMPL).expect("write impl");
     let (stdout, stderr, ok) = sandbox.run(&[
         "workload=impl.yaml",
         "adapter=http",
         &format!("base_url=http://127.0.0.1:{port}"),
     ]);
-    assert!(ok, "bound run must complete; stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        ok,
+        "bound run must complete; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     let all = format!("{stdout}\n{stderr}");
-    assert!(all.contains("2 completed, 0 failed"),
-        "both phases complete; output:\n{all}");
+    assert!(
+        all.contains("2 completed, 0 failed"),
+        "both phases complete; output:\n{all}"
+    );
     // The relevancy summary goes to session.log.
-    let log = std::fs::read_to_string(sandbox.dir.join("session/session.log"))
-        .expect("read session.log");
-    assert!(log.contains("recall: mean=100.00%"),
-        "projection feeds relevancy at 100% recall; session.log:\n{log}");
+    let log =
+        std::fs::read_to_string(sandbox.dir.join("session/session.log")).expect("read session.log");
+    assert!(
+        log.contains("recall: mean=100.00%"),
+        "projection feeds relevancy at 100% recall; session.log:\n{log}"
+    );
 }
 
 /// `driver=vendorx` resolves the BUNDLED manifest: adapter=http,
@@ -198,17 +206,21 @@ fn auth_flow_and_results_projection_against_live_endpoint() {
 #[test]
 fn bundled_vendorx_driver_binds_and_traverses() {
     let sandbox = Sandbox::new("vendorx");
-    let (stdout, stderr, ok) = sandbox.run(&[
-        "driver=vendorx",
-        "scenario=search_perf",
-        "dryrun=phases",
-    ]);
-    assert!(ok, "dryrun must complete; stdout:\n{stdout}\nstderr:\n{stderr}");
+    let (stdout, stderr, ok) =
+        sandbox.run(&["driver=vendorx", "scenario=search_perf", "dryrun=phases"]);
+    assert!(
+        ok,
+        "dryrun must complete; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     let all = format!("{stdout}\n{stderr}");
-    assert!(all.contains("into blueprint 'vector_suite_blueprint'"),
-        "the driver's library binds into the blueprint; output:\n{all}");
-    assert!(all.contains("12 completed, 0 failed"),
-        "all blueprint phases traverse; output:\n{all}");
+    assert!(
+        all.contains("into blueprint 'vector_suite_blueprint'"),
+        "the driver's library binds into the blueprint; output:\n{all}"
+    );
+    assert!(
+        all.contains("12 completed, 0 failed"),
+        "all blueprint phases traverse; output:\n{all}"
+    );
 }
 
 /// A wrong token fails the probe with the endpoint's 401 —
@@ -221,12 +233,10 @@ fn bundled_vendorx_driver_binds_and_traverses() {
 fn missing_auth_flow_is_rejected_by_the_endpoint() {
     let port = spawn_mock_endpoint();
     let sandbox = Sandbox::new("noauth");
-    std::fs::write(sandbox.dir.join("blueprint.yaml"), BLUEPRINT)
-        .expect("write blueprint");
+    std::fs::write(sandbox.dir.join("blueprint.yaml"), BLUEPRINT).expect("write blueprint");
     // Same implementation, but the search presents a wrong
     // literal token instead of the captured one.
-    let broken = IMPL.replace(
-        "api-key: {auth_token}", "api-key: not-the-token");
+    let broken = IMPL.replace("api-key: {auth_token}", "api-key: not-the-token");
     std::fs::write(sandbox.dir.join("impl.yaml"), broken).expect("write impl");
     let (stdout, stderr, ok) = sandbox.run(&[
         "workload=impl.yaml",
@@ -234,7 +244,12 @@ fn missing_auth_flow_is_rejected_by_the_endpoint() {
         &format!("base_url=http://127.0.0.1:{port}"),
     ]);
     let all = format!("{stdout}\n{stderr}");
-    assert!(!ok, "unauthenticated search must fail the run; output:\n{all}");
-    assert!(all.contains("HttpStatus401"),
-        "the endpoint's 401 names the failure; output:\n{all}");
+    assert!(
+        !ok,
+        "unauthenticated search must fail the run; output:\n{all}"
+    );
+    assert!(
+        all.contains("HttpStatus401"),
+        "the endpoint's 401 names the failure; output:\n{all}"
+    );
 }

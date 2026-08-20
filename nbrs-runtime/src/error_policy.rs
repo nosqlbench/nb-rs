@@ -93,8 +93,8 @@ impl ErrorPolicy {
     }
 
     fn build(config: PolicyConfig) -> Self {
-        let router = ErrorRouter::parse(config.error_spec())
-            .unwrap_or_else(|_| ErrorRouter::default_stop());
+        let router =
+            ErrorRouter::parse(config.error_spec()).unwrap_or_else(|_| ErrorRouter::default_stop());
         ErrorPolicy {
             config,
             router,
@@ -134,14 +134,20 @@ mod tests {
     fn inherits_parent_on_no_override() {
         let root = ErrorPolicy::root(cfg(".*:warn,stop", Some(0.1)));
         let child = root.resolve_child(None);
-        assert!(Arc::ptr_eq(&root, &child), "no override inherits the parent (depth)");
+        assert!(
+            Arc::ptr_eq(&root, &child),
+            "no override inherits the parent (depth)"
+        );
     }
 
     #[test]
     fn inherits_parent_on_equal_config() {
         let root = ErrorPolicy::root(cfg(".*:warn,stop", Some(0.1)));
         let child = root.resolve_child(Some(cfg(".*:warn,stop", Some(0.1))));
-        assert!(Arc::ptr_eq(&root, &child), "equal config inherits, no new instance");
+        assert!(
+            Arc::ptr_eq(&root, &child),
+            "equal config inherits, no new instance"
+        );
     }
 
     #[test]
@@ -150,8 +156,14 @@ mod tests {
         // Two siblings both override with the same config.
         let a = root.resolve_child(Some(cfg("Timeout:retry;.*:stop", Some(0.2))));
         let b = root.resolve_child(Some(cfg("Timeout:retry;.*:stop", Some(0.2))));
-        assert!(Arc::ptr_eq(&a, &b), "equal overrides share one derived instance (breadth)");
-        assert!(!Arc::ptr_eq(&root, &a), "an override is a new instance, not the parent");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "equal overrides share one derived instance (breadth)"
+        );
+        assert!(
+            !Arc::ptr_eq(&root, &a),
+            "an override is a new instance, not the parent"
+        );
     }
 
     #[test]
@@ -161,5 +173,4 @@ mod tests {
         let b = root.resolve_child(Some(cfg(".*:warn", Some(0.3))));
         assert!(!Arc::ptr_eq(&a, &b));
     }
-
 }

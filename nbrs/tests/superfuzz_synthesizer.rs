@@ -84,12 +84,18 @@ impl Rng {
 /// that axiom — every entry is a construction whose validity is
 /// not yet demonstrated by fuzzing.
 const NOT_YET_SYNTHESIZED: &[(&str, &str)] = &[
-    ("phase:interval", "declarative-only today (phase-interval cascade not built)"),
+    (
+        "phase:interval",
+        "declarative-only today (phase-interval cascade not built)",
+    ),
     ("phase:repeat", "rides on phase:interval"),
     ("phase:continue_if", "needs bounded pre-entry predicates"),
     ("phase:dimensions", "needs metric-cell label interplay"),
     ("phase:optimize", "needs optimizer axes and objective wires"),
-    ("phase:tags", "selector-only phases need block-op synthesis (SRD-108 Part A)"),
+    (
+        "phase:tags",
+        "selector-only phases need block-op synthesis (SRD-108 Part A)",
+    ),
     ("op:name", "implicit — set by the op's map key"),
     ("op:desc", "legacy alias of op:description"),
     ("op:params", "per-adapter param semantics vary"),
@@ -97,7 +103,10 @@ const NOT_YET_SYNTHESIZED: &[(&str, &str)] = &[
     ("op:traverse", "specialized result-traversal config"),
     ("op:measure", "specialized measurement config"),
     ("op:abstract", "needs blueprint/implements pair synthesis"),
-    ("op:evaluations", "needs ground-truth wires over testkit bodies"),
+    (
+        "op:evaluations",
+        "needs ground-truth wires over testkit bodies",
+    ),
     ("op:daemon", "op-level daemons need bounded-guard synthesis"),
     ("op:daemon_cancel_grace_ms", "rides on op:daemon"),
     ("op:while", "op-level loops need bounded-guard synthesis"),
@@ -108,8 +117,14 @@ const NOT_YET_SYNTHESIZED: &[(&str, &str)] = &[
     ("scenario:counter", "rides on do_while / do_until"),
     ("scenario:bindings", "scenario-node bindings"),
     ("poll:require", "needs live metric selectors"),
-    ("binding:input", "kernel-plane declaration, not workload-authored"),
-    ("evaluations:relevancy", "needs ground-truth wires over testkit bodies"),
+    (
+        "binding:input",
+        "kernel-plane declaration, not workload-authored",
+    ),
+    (
+        "evaluations:relevancy",
+        "needs ground-truth wires over testkit bodies",
+    ),
     ("evaluations:verify", "needs verify field synthesis"),
 ];
 
@@ -191,13 +206,16 @@ fn synthesize(rng: &mut Rng, cov: &mut BTreeSet<String>) -> Synthesized {
                     hit(cov, "binding:const");
                 }
                 1 => {
-                    let _ = writeln!(y, "  const {name} := add({}, {})",
-                        rng.range(10), rng.range(10));
+                    let _ = writeln!(
+                        y,
+                        "  const {name} := add({}, {})",
+                        rng.range(10),
+                        rng.range(10)
+                    );
                     hit(cov, "binding:const");
                 }
                 _ => {
-                    let _ = writeln!(y, "  const {name} := mod(hash({}), 10)",
-                        rng.range(50));
+                    let _ = writeln!(y, "  const {name} := mod(hash({}), 10)", rng.range(50));
                     hit(cov, "binding:const");
                 }
             }
@@ -265,8 +283,11 @@ fn synthesize(rng: &mut Rng, cov: &mut BTreeSet<String>) -> Synthesized {
         hit(cov, "phase:concurrency");
 
         if rng.chance(20) {
-            let _ = writeln!(y, "    errors: \"{}\"",
-                rng.pick(&["count", "count,retry", ".*:counter"]));
+            let _ = writeln!(
+                y,
+                "    errors: \"{}\"",
+                rng.pick(&["count", "count,retry", ".*:counter"])
+            );
             hit(cov, "phase:errors");
         }
         if rng.chance(15) {
@@ -314,7 +335,9 @@ fn synthesize(rng: &mut Rng, cov: &mut BTreeSet<String>) -> Synthesized {
                 1 => binding_lines.push(format!("{name} := mod(cycle, {})", 2 + rng.range(5))),
                 _ => {
                     binding_lines.push(format!(
-                        "const {name} := format_u64({}, 6)", rng.range(1000)));
+                        "const {name} := format_u64({}, 6)",
+                        rng.range(1000)
+                    ));
                     hit(cov, "binding:const");
                 }
             }
@@ -498,7 +521,14 @@ fn synthesize(rng: &mut Rng, cov: &mut BTreeSet<String>) -> Synthesized {
             for p in &phase_names {
                 let _ = writeln!(y, "        - {p}");
             }
-            hit(cov, if key == "for" { "scenario:for" } else { "scenario:for_each" });
+            hit(
+                cov,
+                if key == "for" {
+                    "scenario:for"
+                } else {
+                    "scenario:for_each"
+                },
+            );
             hit(cov, "scenario:phases");
         }
         // set: shadow over an existing param (when one exists).
@@ -551,7 +581,10 @@ fn synthesize(rng: &mut Rng, cov: &mut BTreeSet<String>) -> Synthesized {
         let _ = writeln!(y, "      query: c: sum(cycles_total)");
     }
 
-    Synthesized { yaml: y, intended_invalid }
+    Synthesized {
+        yaml: y,
+        intended_invalid,
+    }
 }
 
 // ─── Execution + classification ──────────────────────────────────
@@ -566,8 +599,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-synth-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-synth-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -644,8 +677,13 @@ fn run_one(sandbox: &Sandbox, yaml: &str, idx: usize) -> Outcome {
     };
 
     let lower = all.to_lowercase();
-    for marker in ["panicked at", "rust_backtrace", "internal error",
-                   "index out of bounds", "not yet implemented"] {
+    for marker in [
+        "panicked at",
+        "rust_backtrace",
+        "internal error",
+        "index out of bounds",
+        "not yet implemented",
+    ] {
         if lower.contains(marker) {
             return Outcome::Violation(format!("output contains '{marker}'"));
         }
@@ -659,7 +697,9 @@ fn run_one(sandbox: &Sandbox, yaml: &str, idx: usize) -> Outcome {
         Outcome::CleanError
     } else {
         Outcome::Violation(format!(
-            "exit {:?} with no recognisable error line", status.code()))
+            "exit {:?} with no recognisable error line",
+            status.code()
+        ))
     }
 }
 
@@ -682,13 +722,16 @@ fn run_sweep(seed: u64, iterations: usize, tag: &str) -> (usize, usize, Vec<Stri
                      reproduce: SYNTH_SEED={seed} SYNTH_ITERATIONS={} \
                      cargo test -p nbrs --test superfuzz_synthesizer -- --ignored\n  \
                      yaml:\n{}",
-                    if synth.intended_invalid { "intended-invalid" } else { "intended-valid" },
+                    if synth.intended_invalid {
+                        "intended-invalid"
+                    } else {
+                        "intended-valid"
+                    },
                     i + 1,
                     synth.yaml,
                 ));
                 if violations.len() >= 8 {
-                    violations.push(format!(
-                        "[seed {seed:#x}] … stopping after 8 violations"));
+                    violations.push(format!("[seed {seed:#x}] … stopping after 8 violations"));
                     break;
                 }
             }
@@ -703,8 +746,11 @@ fn run_sweep(seed: u64, iterations: usize, tag: &str) -> (usize, usize, Vec<Stri
 fn synthesizer_smoke() {
     let (completed, clean_errors, violations) = run_sweep(0xC0FFEE, 4, "smoke");
     eprintln!("synthesizer smoke: {completed} completed, {clean_errors} clean errors");
-    assert!(violations.is_empty(),
-        "synthesizer smoke violations:\n\n{}", violations.join("\n---\n"));
+    assert!(
+        violations.is_empty(),
+        "synthesizer smoke violations:\n\n{}",
+        violations.join("\n---\n")
+    );
 }
 
 /// Per-commit vocabulary drift-guard: pure generation (no binary
@@ -729,34 +775,33 @@ fn synthesizer_covers_the_vocabulary() {
         .iter()
         .filter(|k| !cov.contains(*k) && !deferred.contains(*k))
         .collect();
-    assert!(uncovered.is_empty(),
+    assert!(
+        uncovered.is_empty(),
         "vocabulary constructs neither synthesized nor consciously deferred \
          (teach the generator, or add to NOT_YET_SYNTHESIZED with a reason): \
-         {uncovered:?}");
+         {uncovered:?}"
+    );
 
-    let stale: Vec<&String> = deferred
-        .iter()
-        .filter(|k| cov.contains(*k))
-        .collect();
-    assert!(stale.is_empty(),
-        "NOT_YET_SYNTHESIZED entries are now covered — remove them: {stale:?}");
+    let stale: Vec<&String> = deferred.iter().filter(|k| cov.contains(*k)).collect();
+    assert!(
+        stale.is_empty(),
+        "NOT_YET_SYNTHESIZED entries are now covered — remove them: {stale:?}"
+    );
 
-    let unknown: Vec<&String> = deferred
-        .iter()
-        .filter(|k| !universe.contains(*k))
-        .collect();
-    assert!(unknown.is_empty(),
+    let unknown: Vec<&String> = deferred.iter().filter(|k| !universe.contains(*k)).collect();
+    assert!(
+        unknown.is_empty(),
         "NOT_YET_SYNTHESIZED entries not present in the vocabulary universe \
-         (typo, or the vocab entry was removed): {unknown:?}");
+         (typo, or the vocab entry was removed): {unknown:?}"
+    );
 
     // Emitted constructs must exist in the universe — a ledger
     // key outside it is a typo in the generator.
-    let rogue: Vec<&String> = cov
-        .iter()
-        .filter(|k| !universe.contains(*k))
-        .collect();
-    assert!(rogue.is_empty(),
-        "generator recorded constructs outside the vocabulary universe: {rogue:?}");
+    let rogue: Vec<&String> = cov.iter().filter(|k| !universe.contains(*k)).collect();
+    assert!(
+        rogue.is_empty(),
+        "generator recorded constructs outside the vocabulary universe: {rogue:?}"
+    );
 }
 
 /// MANUAL SUPERFUZZ (workload plane) — run deliberately:
@@ -771,21 +816,32 @@ fn synthesizer_covers_the_vocabulary() {
 #[test]
 #[ignore = "manual superfuzz — minutes of runtime; run with `-- --ignored`"]
 fn superfuzz_synthesizer() {
-    let seed: u64 = std::env::var("SYNTH_SEED").ok()
-        .and_then(|s| s.parse().ok()).unwrap_or(0xC0FFEE);
-    let iterations: usize = std::env::var("SYNTH_ITERATIONS").ok()
-        .and_then(|s| s.parse().ok()).unwrap_or(150);
+    let seed: u64 = std::env::var("SYNTH_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0xC0FFEE);
+    let iterations: usize = std::env::var("SYNTH_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(150);
 
     let (completed, clean_errors, violations) = run_sweep(seed, iterations, "sweep");
     eprintln!(
         "superfuzz_synthesizer: {iterations} workloads — {completed} completed, \
-         {clean_errors} clean errors, {} violation(s)", violations.len());
+         {clean_errors} clean errors, {} violation(s)",
+        violations.len()
+    );
     // Generator sanity: a synthesizer that only ever produces
     // failing documents has rotted — the sweep must exercise the
     // RUN path, not just the load-error path.
-    assert!(completed > 0,
-        "no synthesized workload completed — the generator has rotted");
-    assert!(violations.is_empty(),
+    assert!(
+        completed > 0,
+        "no synthesized workload completed — the generator has rotted"
+    );
+    assert!(
+        violations.is_empty(),
         "superfuzz_synthesizer violations ({}):\n\n{}",
-        violations.len(), violations.join("\n---\n"));
+        violations.len(),
+        violations.join("\n---\n")
+    );
 }

@@ -105,7 +105,8 @@ async fn settled_screen(
             pty_support::kill_and_panic(
                 stepper,
                 &format!("screen never settled into expected state: {what}"),
-            ).await;
+            )
+            .await;
         }
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
@@ -130,7 +131,8 @@ async fn sysmon_detail_line_renders_under_the_active_phase() {
     // Drive the REAL sink: install a tree, start a phase, feed one sysmon
     // sample, and assert the phase block grew the utilization detail line —
     // body naming the subjects, gutter carrying glyph + braille meter.
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
     // An active phase with a literal render body — the harness's canonical
     // way to make the fold produce a phase block (a bare `start` carries no
@@ -144,27 +146,39 @@ async fn sysmon_detail_line_renders_under_the_active_phase() {
         "sysmon detail line rendered",
         |s| s.contains("\u{26C3} io nvme1n1 97%"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
 
-    assert!(screen.contains("\u{2699} cpu 34% (max c7 89%)"),
-        "body must name the hot core:\n{screen}");
-    assert!(screen.contains("\u{25A4} ram 41% (+cache 93%)"),
-        "body must carry both memory measures:\n{screen}");
+    assert!(
+        screen.contains("\u{2699} cpu 34% (max c7 89%)"),
+        "body must name the hot core:\n{screen}"
+    );
+    assert!(
+        screen.contains("\u{25A4} ram 41% (+cache 93%)"),
+        "body must carry both memory measures:\n{screen}"
+    );
     for glyph in ['⛃', '⚙', '▤'] {
-        assert!(screen.contains(glyph),
-            "gutter must carry the {glyph} item:\n{screen}");
+        assert!(
+            screen.contains(glyph),
+            "gutter must carry the {glyph} item:\n{screen}"
+        );
     }
     // The braille meter for 97% disk is a solid-plus cell; at minimum SOME
     // braille dots must be on screen (U+2800 block, nonzero pattern).
-    assert!(screen.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)),
-        "at least one non-empty braille meter cell must render:\n{screen}");
+    assert!(
+        screen
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)),
+        "at least one non-empty braille meter cell must render:\n{screen}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_output_is_contained_in_frame() {
     const MARKER: &str = "CONSOLEMARKERZZ";
 
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
 
     // A plain scrollback log line is the stable primary surface.
@@ -174,7 +188,8 @@ async fn console_output_is_contained_in_frame() {
         "baseline anchor rendered",
         |s| s.contains("baseline-anchor-line"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
     assert!(!primary.contains(MARKER));
 
     // Open the console; emit output — it renders inside the
@@ -193,12 +208,17 @@ async fn console_output_is_contained_in_frame() {
         "primary restored without console output",
         |s| s == primary,
         Duration::from_secs(5),
-    ).await;
-    assert!(!after.contains(MARKER),
+    )
+    .await;
+    assert!(
+        !after.contains(MARKER),
         "console output must not leak onto the primary surface\n\
-         --- screen ---\n{after}");
-    assert_eq!(after, primary,
-        "primary surface must be restored byte-exact after console close");
+         --- screen ---\n{after}"
+    );
+    assert_eq!(
+        after, primary,
+        "primary surface must be restored byte-exact after console close"
+    );
 
     let _ = stepper.kill();
 }
@@ -213,7 +233,8 @@ async fn console_output_is_contained_in_frame() {
 /// `` ` `` window — both live on the alternate screen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_toggle_restores_surface_byte_exact() {
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
     for i in 0..6 {
         cmd(&stepper, &format!("log scrollback-line-{i}"));
@@ -223,7 +244,8 @@ async fn console_toggle_restores_surface_byte_exact() {
         "scrollback baseline rendered",
         |s| s.contains("scrollback-line-5"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
 
     // --- window (`) open + close ---
     cmd(&stepper, "window");
@@ -235,9 +257,12 @@ async fn console_toggle_restores_surface_byte_exact() {
         "surface restored byte-exact after window close",
         |s| s == s0,
         Duration::from_secs(5),
-    ).await;
-    assert_eq!(s0, after_window,
-        "closing the window console must restore the surface byte-exact");
+    )
+    .await;
+    assert_eq!(
+        s0, after_window,
+        "closing the window console must restore the surface byte-exact"
+    );
 
     // --- bar (~) open + close ---
     tokio::time::sleep(TOGGLE_GAP).await;
@@ -250,9 +275,12 @@ async fn console_toggle_restores_surface_byte_exact() {
         "surface restored byte-exact after bar close",
         |s| s == s0,
         Duration::from_secs(5),
-    ).await;
-    assert_eq!(s0, after_bar,
-        "closing the bar console must restore the surface byte-exact");
+    )
+    .await;
+    assert_eq!(
+        s0, after_bar,
+        "closing the bar console must restore the surface byte-exact"
+    );
 
     let _ = stepper.kill();
 }
@@ -273,7 +301,8 @@ async fn console_toggle_restores_surface_byte_exact() {
 /// status / between events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_height_change_leaves_no_blank_gap() {
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
 
     // Fill the viewport so the content is contiguous (no natural top
@@ -300,15 +329,18 @@ async fn status_height_change_leaves_no_blank_gap() {
         "status shrink applied (STAT-C gone)",
         |s| !s.contains("STAT-C") && s.contains("STAT-B"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
 
     // No fully-blank line may sit between two content lines.
     let lines: Vec<&str> = s.lines().collect();
     for w in lines.windows(3) {
         let mid_blank = w[1].trim().is_empty();
         let neighbors_content = !w[0].trim().is_empty() && !w[2].trim().is_empty();
-        assert!(!(mid_blank && neighbors_content),
-            "status height change left a blank gap between content lines:\n{s}");
+        assert!(
+            !(mid_blank && neighbors_content),
+            "status height change left a blank gap between content lines:\n{s}"
+        );
     }
 
     let _ = stepper.kill();
@@ -323,7 +355,8 @@ async fn status_height_change_leaves_no_blank_gap() {
 /// log and leaves no gap between content.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn log_status_collision_keeps_logs_without_gap() {
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
 
     for i in 0..6 {
@@ -350,18 +383,27 @@ async fn log_status_collision_keeps_logs_without_gap() {
         "shrink-colliding log rendered (MEMO gone, EVENT-BETA in)",
         |s| s.contains("EVENT-BETA") && !s.contains("MEMO"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
 
     // Both colliding logs survived (the old renderer dropped them).
-    assert!(s.contains("EVENT-ALPHA"), "grow-colliding log was dropped:\n{s}");
-    assert!(s.contains("EVENT-BETA"), "shrink-colliding log was dropped:\n{s}");
+    assert!(
+        s.contains("EVENT-ALPHA"),
+        "grow-colliding log was dropped:\n{s}"
+    );
+    assert!(
+        s.contains("EVENT-BETA"),
+        "shrink-colliding log was dropped:\n{s}"
+    );
     // No fully-blank line wedged between two content lines.
     let lines: Vec<&str> = s.lines().collect();
     for w in lines.windows(3) {
         let mid_blank = w[1].trim().is_empty();
         let neighbors_content = !w[0].trim().is_empty() && !w[2].trim().is_empty();
-        assert!(!(mid_blank && neighbors_content),
-            "status/log collision left a blank gap between content:\n{s}");
+        assert!(
+            !(mid_blank && neighbors_content),
+            "status/log collision left a blank gap between content:\n{s}"
+        );
     }
 
     let _ = stepper.kill();
@@ -379,7 +421,8 @@ async fn log_status_collision_keeps_logs_without_gap() {
 /// line between content.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multiline_error_block_emits_fully_with_status_change() {
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
 
     // Fill the viewport so this mirrors a live run (status pinned at
@@ -403,7 +446,8 @@ async fn multiline_error_block_emits_fully_with_status_change() {
         "error block + grown status rendered",
         |s| s.contains("MEMO") && s.contains("ERRPLUS63"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
 
     // Every line of the block survived — including the TAIL, which the
     // old renderer could overwrite.
@@ -411,16 +455,20 @@ async fn multiline_error_block_emits_fully_with_status_change() {
         assert!(s.contains(line), "error-block line {line:?} dropped:\n{s}");
     }
     // The status block landed too.
-    assert!(s.contains("MEMO") && s.contains("RUNNING-B"),
-        "status not drawn beneath the error block:\n{s}");
+    assert!(
+        s.contains("MEMO") && s.contains("RUNNING-B"),
+        "status not drawn beneath the error block:\n{s}"
+    );
     // No fully-blank (no-margin) line wedged between content — the
     // embedded `||` blank carries the margin so it is NOT flagged.
     let lines: Vec<&str> = s.lines().collect();
     for w in lines.windows(3) {
         let mid_blank = w[1].trim().is_empty();
         let neighbors_content = !w[0].trim().is_empty() && !w[2].trim().is_empty();
-        assert!(!(mid_blank && neighbors_content),
-            "multi-line error block left a blank gap between content:\n{s}");
+        assert!(
+            !(mid_blank && neighbors_content),
+            "multi-line error block left a blank gap between content:\n{s}"
+        );
     }
 
     let _ = stepper.kill();
@@ -440,7 +488,8 @@ async fn multiline_error_block_emits_fully_with_status_change() {
 /// accumulation regression still needs a faithful reproduction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn swap_re_renders_surface_byte_identically() {
-    let mut stepper = SteppableTerminal::start(harness_config()).await
+    let mut stepper = SteppableTerminal::start(harness_config())
+        .await
         .expect("spawn harness under shadow terminal");
 
     // Scrollback logs + a 2-row live status block (the `|` splits
@@ -453,10 +502,14 @@ async fn swap_re_renders_surface_byte_identically() {
         "status + scrollback baseline rendered",
         |s| s.contains("RUNNING phase") && s.contains("scroll-line-two"),
         Duration::from_secs(5),
-    ).await;
+    )
+    .await;
     let shape0 = blank_shape(&s0);
 
-    assert!(s0.contains("scroll-line-two"), "top log line visible in s0: {s0}");
+    assert!(
+        s0.contains("scroll-line-two"),
+        "top log line visible in s0: {s0}"
+    );
 
     // Three swaps; the snapshot never changes, so each must re-render
     // the same blank-line structure with the top log line still
@@ -478,13 +531,19 @@ async fn swap_re_renders_surface_byte_identically() {
                     && blank_shape(s) == shape0
             },
             Duration::from_secs(5),
-        ).await;
-        assert_eq!(blank_shape(&after), shape0,
+        )
+        .await;
+        assert_eq!(
+            blank_shape(&after),
+            shape0,
             "swap #{i} must not change the blank-line structure \
              (no injected/accumulated blanks)\n--- s0 ---\n{s0}\n\
-             --- after swap #{i} ---\n{after}");
-        assert!(after.contains("scroll-line-two"),
-            "swap #{i} must not scroll the top log line off the surface\n{after}");
+             --- after swap #{i} ---\n{after}"
+        );
+        assert!(
+            after.contains("scroll-line-two"),
+            "swap #{i} must not scroll the top log line off the surface\n{after}"
+        );
     }
 
     let _ = stepper.kill();
@@ -514,8 +573,7 @@ fn scrollback_burst_emits_every_line_without_drop() {
 
     // Per-test sandbox cwd under target (the harness is a mock and
     // writes nothing to disk, but keep the run out of the repo root).
-    let cwd = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("scrollback_burst");
+    let cwd = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scrollback_burst");
     let _ = std::fs::create_dir_all(&cwd);
 
     let mut child = Command::new(harness_binary())
@@ -541,13 +599,17 @@ fn scrollback_burst_emits_every_line_without_drop() {
     let out = child.wait_with_output().expect("await harness");
     let err = String::from_utf8_lossy(&out.stderr);
 
-    assert!(!err.contains("dropped"),
+    assert!(
+        !err.contains("dropped"),
         "the durable scrollback stream must never drop a line — found a \
-         drop banner in the harness output");
+         drop banner in the harness output"
+    );
     // Every single line reached the scrollback, in order.
     for i in 0..N {
-        assert!(err.contains(&format!("burst-{i:04}")),
+        assert!(
+            err.contains(&format!("burst-{i:04}")),
             "scrollback line burst-{i:04} was dropped (renderer lag must \
-             not lose lines)");
+             not lose lines)"
+        );
     }
 }

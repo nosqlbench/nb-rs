@@ -78,7 +78,8 @@ pub fn timestamp_id() -> String {
     // in `nbrs_runtime::session`, kept inline so this
     // module doesn't pull in nbrs-runtime for one helper.
     let (y, mo, d, h, mi, s) = ymd_hms(secs);
-    let tail = ((pid as u64).wrapping_mul(1_000_003)
+    let tail = ((pid as u64)
+        .wrapping_mul(1_000_003)
         .wrapping_add(nanos as u64))
         & 0xFF_FFFF;
     format!("{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}_{tail:06x}")
@@ -157,8 +158,10 @@ fn list(scratch_dir: &Path) {
     for e in entries {
         let path = e.path();
         let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-        println!("  {}  ({size} bytes)",
-            path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
+        println!(
+            "  {}  ({size} bytes)",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+        );
     }
 }
 
@@ -179,9 +182,7 @@ mod tests {
     use super::*;
 
     fn temp_session(label: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "nbrs-scratch-{label}-{}", std::process::id(),
-        ));
+        let p = std::env::temp_dir().join(format!("nbrs-scratch-{label}-{}", std::process::id(),));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
@@ -198,8 +199,7 @@ mod tests {
         let p = scratch_paths(&dir, &item).unwrap();
         assert_eq!(p.md, dir.join("scratch/demo.md"));
         assert_eq!(p.png, Some(dir.join("plot_demo.png")));
-        assert!(dir.join("scratch").exists(),
-            "scratch dir created");
+        assert!(dir.join("scratch").exists(), "scratch dir created");
     }
 
     #[test]
@@ -233,11 +233,15 @@ mod tests {
         let id = timestamp_id();
         // YYYYMMDD prefix is 8 digits; underscore; HHmmss; underscore; 6 hex.
         assert_eq!(id.len(), 8 + 1 + 6 + 1 + 6);
-        assert!(id[0..4].parse::<u32>().is_ok(),
-            "year prefix should parse: {id}");
+        assert!(
+            id[0..4].parse::<u32>().is_ok(),
+            "year prefix should parse: {id}"
+        );
         let tail = &id[16..22];
-        assert!(tail.chars().all(|c| c.is_ascii_hexdigit()),
-            "tail '{tail}' must be hex");
+        assert!(
+            tail.chars().all(|c| c.is_ascii_hexdigit()),
+            "tail '{tail}' must be hex"
+        );
     }
 
     #[test]
@@ -251,8 +255,7 @@ mod tests {
         let c = timestamp_id();
         // At least two of the three must differ, even if
         // the seconds-resolution prefix matches.
-        assert!(a != b || b != c,
-            "all three IDs collided: {a} {b} {c}");
+        assert!(a != b || b != c, "all three IDs collided: {a} {b} {c}");
     }
 
     #[test]

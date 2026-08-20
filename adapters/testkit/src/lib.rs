@@ -42,16 +42,16 @@
 pub mod polydat_fixtures;
 
 use std::collections::HashMap;
-use std::io::{self, Write, BufWriter};
-use std::sync::{Arc, Mutex};
+use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
+use nbrs_adapter_stdout::{StdoutConfig, StdoutFormat};
 use nbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, TextBody,
 };
 use nbrs_workload::model::ParsedOp;
-use nbrs_adapter_stdout::{StdoutFormat, StdoutConfig};
 use xxhash_rust::xxh3;
 
 /// Distinct xxh3 seed for the `panic_rate` injection stream, so injected
@@ -67,7 +67,6 @@ pub struct ModelConfig {
     /// Whether to print diagnostic output (--diagnose).
     pub diagnose: bool,
 }
-
 
 /// Simulated result definition for a single op.
 ///
@@ -207,8 +206,12 @@ impl ModelAdapter {
         let writer = if config.stdout.filename.eq_ignore_ascii_case("stdout") {
             OutputTarget::Stdout(BufWriter::new(io::stdout()))
         } else {
-            let file = std::fs::File::create(&config.stdout.filename)
-                .unwrap_or_else(|e| panic!("failed to create output file '{}': {e}", config.stdout.filename));
+            let file = std::fs::File::create(&config.stdout.filename).unwrap_or_else(|e| {
+                panic!(
+                    "failed to create output file '{}': {e}",
+                    config.stdout.filename
+                )
+            });
             OutputTarget::File(BufWriter::new(file))
         };
         Self {
@@ -221,13 +224,17 @@ impl ModelAdapter {
 }
 
 impl DriverAdapter for ModelAdapter {
-    fn name(&self) -> &str { "testkit" }
+    fn name(&self) -> &str {
+        "testkit"
+    }
 
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
         parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // The yaml parser routes unknown top-level op keys into
             // `template.op`, while a nested `params:` block lands in
@@ -245,7 +252,9 @@ impl DriverAdapter for ModelAdapter {
             let semaphore = model_params.capacity.map(|n| Arc::new(Semaphore::new(n)));
             // SRD-68 Push 5: snapshot op-field templates for cycle-time
             // resolution through the generic wires API.
-            let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            let op_fields: Vec<(String, serde_json::Value)> = template
+                .op
+                .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             Ok(Box::new(ModelDispenser {
@@ -307,15 +316,19 @@ impl OpDispenser for ModelDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             let resolved = nbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
-                .map_err(|msg| ExecutionError::Op(AdapterError {
-                    error_name: "BindError".into(),
-                    message: msg,
-                    retryable: false,
-                }))?;
+                .map_err(|msg| {
+                    ExecutionError::Op(AdapterError {
+                        error_name: "BindError".into(),
+                        message: msg,
+                        retryable: false,
+                    })
+                })?;
             let text = self.format.render(&resolved, ",");
 
             // Write the resolved op (same as stdout). Done before
@@ -333,8 +346,7 @@ impl OpDispenser for ModelDispenser {
                 if to_stdout {
                     nbrs_runtime::observer::op_output(&text);
                 } else {
-                    let mut writer = self.writer.lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
                     let write_result = if self.newline {
                         writeln!(writer, "{text}")
                     } else {
@@ -414,12 +426,13 @@ impl OpDispenser for ModelDispenser {
             // point — queueing delay is what the caller sees when
             // the backend is oversaturated.
             let _permit = match &self.semaphore {
-                Some(sem) => Some(sem.clone().acquire_owned().await
-                    .map_err(|e| ExecutionError::Op(AdapterError {
+                Some(sem) => Some(sem.clone().acquire_owned().await.map_err(|e| {
+                    ExecutionError::Op(AdapterError {
                         error_name: "SemaphoreClosed".into(),
                         message: format!("testkit semaphore closed: {e}"),
                         retryable: false,
-                    }))?),
+                    })
+                })?),
                 None => None,
             };
 
@@ -457,7 +470,8 @@ impl OpDispenser for ModelDispenser {
                         nbrs_runtime::diag!(
                             nbrs_runtime::observer::LogLevel::Info,
                             "model: ERROR injected (cycle={}, rate={:.2}%)",
-                            cycle, self.model_params.error_rate * 100.0
+                            cycle,
+                            self.model_params.error_rate * 100.0
                         );
                     }
                     return Err(ExecutionError::Op(AdapterError {
@@ -487,10 +501,11 @@ impl OpDispenser for ModelDispenser {
             // later ops wait in the semaphore queue rather than
             // racing through.
             if let Some(ms) = self.model_params.latency_ms
-                && ms > 0.0 {
-                    let duration = std::time::Duration::from_micros((ms * 1000.0) as u64);
-                    tokio::time::sleep(duration).await;
-                }
+                && ms > 0.0
+            {
+                let duration = std::time::Duration::from_micros((ms * 1000.0) as u64);
+                tokio::time::sleep(duration).await;
+            }
 
             // A declared `result:` becomes the op's structured body
             // (so captures / `verify:` can address it); otherwise the
@@ -499,7 +514,10 @@ impl OpDispenser for ModelDispenser {
                 Some(ResultDef::Json(v)) => Box::new(JsonBody(v.clone())),
                 None => Box::new(TextBody(text)),
             };
-            Ok(OpResult { body: Some(body), skipped: false })
+            Ok(OpResult {
+                body: Some(body),
+                skipped: false,
+            })
         })
     }
 }
@@ -507,10 +525,7 @@ impl OpDispenser for ModelDispenser {
 /// A per-cycle resolved op field as f64, or `None` if absent / non-numeric.
 /// Used to read the synthetic `result-load` (resolved through the wires each
 /// cycle, so it tracks the live searched coordinate, e.g. `{conc}`).
-fn resolved_field_f64(
-    resolved: &nbrs_runtime::adapter::ResolvedFields,
-    name: &str,
-) -> Option<f64> {
+fn resolved_field_f64(resolved: &nbrs_runtime::adapter::ResolvedFields, name: &str) -> Option<f64> {
     let idx = resolved.names.iter().position(|n| n == name)?;
     match resolved.values.get(idx)? {
         polydat::ast::Value::F64(f) => Some(*f),
@@ -549,19 +564,22 @@ pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> Mode
     }
 
     if let Some(val) = params.get("result-error-rate")
-        && let Some(n) = val.as_f64() {
-            mp.error_rate = n;
-        }
+        && let Some(n) = val.as_f64()
+    {
+        mp.error_rate = n;
+    }
 
     if let Some(val) = params.get("result-error-name")
-        && let Some(s) = val.as_str() {
-            mp.error_name = s.to_string();
-        }
+        && let Some(s) = val.as_str()
+    {
+        mp.error_name = s.to_string();
+    }
 
     if let Some(val) = params.get("result-error-message")
-        && let Some(s) = val.as_str() {
-            mp.error_message = s.to_string();
-        }
+        && let Some(s) = val.as_str()
+    {
+        mp.error_message = s.to_string();
+    }
 
     // result-panic-rate: deterministic per-cycle PANIC injection (the op
     // unwinds out of `execute` instead of returning). Accepts a JSON number
@@ -575,19 +593,22 @@ pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> Mode
     }
 
     if let Some(val) = params.get("result-panic-message")
-        && let Some(s) = val.as_str() {
-            mp.panic_message = s.to_string();
-        }
+        && let Some(s) = val.as_str()
+    {
+        mp.panic_message = s.to_string();
+    }
 
     if let Some(n) = params.get("result-capacity").and_then(parse_usize_param)
-        && n > 0 {
-            mp.capacity = Some(n);
-        }
+        && n > 0
+    {
+        mp.capacity = Some(n);
+    }
 
     if let Some(n) = params.get("result-overload").and_then(parse_usize_param)
-        && n > 0 {
-            mp.overload = Some(n);
-        }
+        && n > 0
+    {
+        mp.overload = Some(n);
+    }
 
     // result-throw-at: fail on the cycle whose value equals this
     // threshold. Accepts either a JSON number or a numeric string
@@ -643,9 +664,7 @@ mod tests {
     /// Minimal kernel used as the `parent` argument to `map_op`
     /// in tests that don't need a richer Polydat context (SRD-68 Push 2).
     fn test_kernel() -> std::sync::Arc<polydat::kernel::PolydatKernel> {
-        std::sync::Arc::new(
-            polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap()
-        )
+        std::sync::Arc::new(polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap())
     }
 
     #[test]
@@ -673,7 +692,9 @@ mod tests {
         params.insert("result-body".into(), serde_json::Value::Object(result_map));
 
         let mp = extract_model_params(&params);
-        let Some(ResultDef::Json(v)) = &mp.result else { panic!("expected Json result") };
+        let Some(ResultDef::Json(v)) = &mp.result else {
+            panic!("expected Json result")
+        };
         assert_eq!(v["user_id"], serde_json::Value::from(42));
         assert_eq!(v["name"], serde_json::Value::from("alice"));
     }
@@ -689,7 +710,9 @@ mod tests {
             serde_json::json!([{ "value": 1 }, { "value": [] }, { "value": 0 }]),
         );
         let mp = extract_model_params(&params);
-        let Some(ResultDef::Json(v)) = &mp.result else { panic!("expected Json result") };
+        let Some(ResultDef::Json(v)) = &mp.result else {
+            panic!("expected Json result")
+        };
         assert_eq!(v.pointer("/0/value"), Some(&serde_json::Value::from(1)));
         assert_eq!(v.pointer("/2/value"), Some(&serde_json::Value::from(0)));
     }
@@ -705,7 +728,10 @@ mod tests {
     fn extract_error_params() {
         let mut params = HashMap::new();
         params.insert("result-error-rate".into(), serde_json::Value::from(0.05));
-        params.insert("result-error-name".into(), serde_json::Value::from("Timeout"));
+        params.insert(
+            "result-error-name".into(),
+            serde_json::Value::from("Timeout"),
+        );
 
         let mp = extract_model_params(&params);
         assert_eq!(mp.error_rate, 0.05);
@@ -742,11 +768,15 @@ mod tests {
         // queued). A third concurrent op must reject with Overload.
         let adapter = ModelAdapter::new();
         let mut op = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
-        op.params.insert("result-latency".into(), serde_json::Value::from("50ms"));
-        op.params.insert("result-capacity".into(), serde_json::Value::from(1));
-        op.params.insert("result-overload".into(), serde_json::Value::from(2));
+        op.params
+            .insert("result-latency".into(), serde_json::Value::from("50ms"));
+        op.params
+            .insert("result-capacity".into(), serde_json::Value::from(1));
+        op.params
+            .insert("result-overload".into(), serde_json::Value::from(2));
 
-        let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op, test_kernel()).await.unwrap());
+        let dispenser: Arc<dyn OpDispenser> =
+            Arc::from(adapter.map_op(&op, test_kernel()).await.unwrap());
         let fields = Arc::new(ResolvedFields::new(
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
@@ -766,12 +796,15 @@ mod tests {
         for h in handles {
             let res = h.await.expect("task panicked");
             if let Err(ExecutionError::Op(e)) = &res
-                && e.error_name == "Overload" {
+                && e.error_name == "Overload"
+            {
                 overload_count += 1;
             }
         }
-        assert_eq!(overload_count, 1,
-            "expected exactly one op to be rejected with Overload, got {overload_count}");
+        assert_eq!(
+            overload_count, 1,
+            "expected exactly one op to be rejected with Overload, got {overload_count}"
+        );
     }
 
     #[tokio::test]
@@ -805,7 +838,10 @@ mod tests {
         // which arrives at the adapter as a string after expansion.
         let mut params = HashMap::new();
         params.insert("result-throw-at".into(), serde_json::Value::from("17"));
-        params.insert("result-throw-name".into(), serde_json::Value::from("staircase"));
+        params.insert(
+            "result-throw-name".into(),
+            serde_json::Value::from("staircase"),
+        );
         let mp = extract_model_params(&params);
         assert_eq!(mp.throw_at_cycle, Some(17));
         assert_eq!(mp.throw_name, "staircase");
@@ -815,7 +851,10 @@ mod tests {
     async fn driver_level_throw_at_fires_on_threshold_cycle() {
         let mut params = HashMap::new();
         params.insert("result-throw-at".into(), serde_json::Value::from(3u64));
-        params.insert("result-throw-name".into(), serde_json::Value::from("staircase"));
+        params.insert(
+            "result-throw-name".into(),
+            serde_json::Value::from("staircase"),
+        );
 
         let adapter = ModelAdapter::new();
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
@@ -839,7 +878,11 @@ mod tests {
         match r {
             Err(ExecutionError::Op(e)) => {
                 assert_eq!(e.error_name, "staircase");
-                assert!(e.message.contains("3"), "message should name the cycle: {}", e.message);
+                assert!(
+                    e.message.contains("3"),
+                    "message should name the cycle: {}",
+                    e.message
+                );
             }
             other => panic!("expected throw-at op error, got {other:?}"),
         }

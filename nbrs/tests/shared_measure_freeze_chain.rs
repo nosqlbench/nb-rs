@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use nbrs_runtime::observer::{LogLevel, PhaseProgressUpdate, RunObserver};
 use nbrs_runtime::output_channel::{CaptureChannel, OutputChannel};
-use nbrs_runtime::runner::{run_executions, ExecutionSpec};
+use nbrs_runtime::runner::{ExecutionSpec, run_executions};
 
 struct TempDir {
     path: PathBuf,
@@ -59,7 +59,9 @@ struct LogObserver {
 }
 impl LogObserver {
     fn new() -> Self {
-        Self { logs: Mutex::new(Vec::new()) }
+        Self {
+            logs: Mutex::new(Vec::new()),
+        }
     }
 }
 impl RunObserver for LogObserver {
@@ -71,14 +73,16 @@ impl RunObserver for LogObserver {
         _op_templates: usize,
         _total_cycles: u64,
         _concurrency: usize,
-    ) {}
+    ) {
+    }
     fn phase_completed(
         &self,
         _scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
         _name: &str,
         _labels: &str,
         _duration_secs: f64,
-    ) {}
+    ) {
+    }
     fn phase_failed(
         &self,
         _scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
@@ -94,7 +98,10 @@ impl RunObserver for LogObserver {
     fn phase_progress(&self, _update: &PhaseProgressUpdate) {}
     fn run_finished(&self) {}
     fn log(&self, _level: LogLevel, message: &str) {
-        self.logs.lock().unwrap_or_else(|e| e.into_inner()).push(message.to_string());
+        self.logs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(message.to_string());
     }
 }
 
@@ -102,7 +109,10 @@ impl RunObserver for LogObserver {
 /// floor_decade(42) == 40.
 fn workload_yaml() -> String {
     // 42 array elements (content irrelevant — element_count == len).
-    let body_elems = std::iter::repeat("0").take(42).collect::<Vec<_>>().join(", ");
+    let body_elems = std::iter::repeat("0")
+        .take(42)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"
 bindings: |
@@ -187,9 +197,7 @@ fn measure_writes_shared_cell_then_const_freezes_it_for_later_phase() {
 
     let op_lines = cap.op_lines();
     let logs = obs.logs.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let diag = format!(
-        "exec_result={exec_result:?}\nop_lines={op_lines:#?}\nlogs={logs:#?}",
-    );
+    let diag = format!("exec_result={exec_result:?}\nop_lines={op_lines:#?}\nlogs={logs:#?}",);
 
     assert!(exec_result.is_ok(), "execution errored:\n{diag}");
 

@@ -46,9 +46,12 @@ fn build_run_args(raw: &[String]) -> Result<Vec<String>, String> {
                 "auto" | "plot" | "parametric" | "xy" | "polar" => {
                     out.push(format!("mode={v}"));
                 }
-                other => return Err(format!(
-                    "unsupported --mode='{other}' \
-                     (the plotter adapter renders: auto, plot, parametric, polar)")),
+                other => {
+                    return Err(format!(
+                        "unsupported --mode='{other}' \
+                     (the plotter adapter renders: auto, plot, parametric, polar)"
+                    ));
+                }
             }
         } else if let Some(v) = arg.strip_prefix("--width=") {
             out.push(format!("width={v}"));
@@ -65,7 +68,8 @@ fn build_run_args(raw: &[String]) -> Result<Vec<String>, String> {
             return Err(format!(
                 "unrecognized argument '{arg}'. wiring visualize accepts: \
                  <expr|file.polydat> cycles= output= --mode= --width= \
-                 --height= --no-color"));
+                 --height= --no-color"
+            ));
         }
     }
     let expr = expr.ok_or("missing wiring expression or .polydat file argument")?;
@@ -81,8 +85,7 @@ fn build_run_args(raw: &[String]) -> Result<Vec<String>, String> {
 /// bindings and auto-binds `cycle`).
 fn read_expr_or_file(arg: &str) -> Result<String, String> {
     if arg.ends_with(".polydat") {
-        std::fs::read_to_string(arg)
-            .map_err(|e| format!("failed to read '{arg}': {e}"))
+        std::fs::read_to_string(arg).map_err(|e| format!("failed to read '{arg}': {e}"))
     } else {
         Ok(arg.to_string())
     }
@@ -97,8 +100,8 @@ pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
     fn handle_visualize(p: ParsedCommand) -> Result<(), String> {
         let argv = build_run_args(&p.raw)?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("failed to start runtime: {e}"))?;
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("failed to start runtime: {e}"))?;
         rt.block_on(crate::run::run_command(&argv));
         Ok(())
     }
@@ -124,8 +127,8 @@ pub fn spec() -> crate::cli_spec::Command {
             level: Level::FullSurface,
             flags: Vec::new(),
             kv_params: &[],
-        dynamic_options: None,
-        positionals: Vec::new(),
+            dynamic_options: None,
+            positionals: Vec::new(),
             subcommands: Vec::new(),
             handler: Some(Handler::Sync(handle_visualize)),
             raw_args: true,
@@ -159,8 +162,14 @@ mod tests {
 
     #[test]
     fn maps_visualize_flags_to_plotter_config() {
-        let a = args(&["x:=cos(cycle); y:=sin(cycle)", "--mode=parametric",
-                       "--width=80", "--no-color", "output=x,y"]).unwrap();
+        let a = args(&[
+            "x:=cos(cycle); y:=sin(cycle)",
+            "--mode=parametric",
+            "--width=80",
+            "--no-color",
+            "output=x,y",
+        ])
+        .unwrap();
         assert!(a.contains(&"mode=parametric".to_string()));
         assert!(a.contains(&"width=80".to_string()));
         assert!(a.contains(&"no_color=true".to_string()));

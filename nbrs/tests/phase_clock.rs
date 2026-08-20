@@ -126,28 +126,42 @@ phases:
     );
     let out = sb.run("clock.yaml");
 
-    let (p1_start, p1_elapsed) = (field(&out, "P1", "phase_start"), field(&out, "P1", "phase_elapsed"));
-    let (p2_start, p2_elapsed) = (field(&out, "P2", "phase_start"), field(&out, "P2", "phase_elapsed"));
+    let (p1_start, p1_elapsed) = (
+        field(&out, "P1", "phase_start"),
+        field(&out, "P1", "phase_elapsed"),
+    );
+    let (p2_start, p2_elapsed) = (
+        field(&out, "P2", "phase_start"),
+        field(&out, "P2", "phase_elapsed"),
+    );
     let p2_session = field(&out, "P2", "session_elapsed");
 
     // A real wall-clock origin, not the epoch default that the broken extern
     // handed out.
-    assert!(p1_start > 1_700_000_000_000,
-        "phase_start must be a real epoch-ms origin, got {p1_start}:\n{out}");
+    assert!(
+        p1_start > 1_700_000_000_000,
+        "phase_start must be a real epoch-ms origin, got {p1_start}:\n{out}"
+    );
 
     // The second phase starts ~3s after the first: the origin follows the phase.
     let origin_gap = p2_start.saturating_sub(p1_start);
-    assert!((2_500..=8_000).contains(&origin_gap),
-        "the second phase's origin should trail the first by the ~3s delay, got {origin_gap}ms:\n{out}");
+    assert!(
+        (2_500..=8_000).contains(&origin_gap),
+        "the second phase's origin should trail the first by the ~3s delay, got {origin_gap}ms:\n{out}"
+    );
 
     // ...and the phase-relative elapsed does NOT accumulate that delay.
-    assert!(p1_elapsed < 2_000 && p2_elapsed < 2_000,
-        "phase_elapsed must restart per phase, got {p1_elapsed} then {p2_elapsed}:\n{out}");
+    assert!(
+        p1_elapsed < 2_000 && p2_elapsed < 2_000,
+        "phase_elapsed must restart per phase, got {p1_elapsed} then {p2_elapsed}:\n{out}"
+    );
 
     // The session clock, by contrast, has absorbed the delay — proving the two
     // are distinct and that this test is not passing on a session-scoped value.
-    assert!(p2_session >= 2_500,
-        "session_elapsed must span the whole run, got {p2_session}:\n{out}");
+    assert!(
+        p2_session >= 2_500,
+        "session_elapsed must span the whole run, got {p2_session}:\n{out}"
+    );
 }
 
 /// The regression itself: an op in a phase that declares `metrics:` reads the
@@ -178,9 +192,11 @@ phases:
 
     // The memo is rendered through the wires, which is the path that works
     // regardless of bind-point resolution; it lands in the session log.
-    let log = std::fs::read_to_string(sb.path.join("sessions/latest/session.log"))
-        .expect("session log");
+    let log =
+        std::fs::read_to_string(sb.path.join("sessions/latest/session.log")).expect("session log");
     let seen = field(&log, "[[ SEEN", "phase_start");
-    assert!(seen > 1_700_000_000_000,
-        "an op must see the real phase origin, not the 0 default; got {seen}:\n{out}");
+    assert!(
+        seen > 1_700_000_000_000,
+        "an op must see the real phase origin, not the 0 default; got {seen}:\n{out}"
+    );
 }

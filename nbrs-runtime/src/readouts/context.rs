@@ -77,7 +77,9 @@ pub trait ReadoutContext {
     /// TUI tree row and post-run summary numbering. `None`
     /// when no scene tree is available (inline-CLI form,
     /// pre-map didn't run) or the kind doesn't carry a seq.
-    fn subject_seq(&self) -> Option<(usize, usize)> { None }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        None
+    }
 
     /// Root-first display form of the subject's scope
     /// coords, already produced by
@@ -85,7 +87,9 @@ pub trait ReadoutContext {
     /// applied to the reversed
     /// `parent_kernel.scope_coordinates()`. Empty for root-
     /// scope subjects.
-    fn subject_labels(&self) -> &str { "" }
+    fn subject_labels(&self) -> &str {
+        ""
+    }
 
     /// The execution this subject belongs to (SRD-88 `exec_id`,
     /// SRD-100 §9). Part of the snapshot key so concurrent executions
@@ -118,23 +122,31 @@ pub trait ReadoutContext {
     /// (e.g. `run (profile=alpha, bucket=1, kind=READ)`).
     /// Defaults to [`subject_name`](Self::subject_name) —
     /// override gives the inline form what it expected.
-    fn activity_name(&self) -> &str { self.subject_name() }
+    fn activity_name(&self) -> &str {
+        self.subject_name()
+    }
 
     // ── Lifecycle / counters (Phase) ──────────────────────
 
     /// Cycles completed in this phase (from
     /// `ActivityMetrics::cycles_completed`). Default 0 —
     /// non-Phase contexts return 0.
-    fn cycles_completed(&self) -> u64 { 0 }
+    fn cycles_completed(&self) -> u64 {
+        0
+    }
 
     /// Total extent the phase planned to consume — either
     /// the source-driven extent or the configured
     /// `cycles=N`. Used for `pct` denominator. Default 0.
-    fn cycles_total(&self) -> u64 { 0 }
+    fn cycles_total(&self) -> u64 {
+        0
+    }
 
     /// Cumulative success count (counter, not delta).
     /// Default 0.
-    fn ops_ok(&self) -> u64 { 0 }
+    fn ops_ok(&self) -> u64 {
+        0
+    }
 
     /// Cumulative count of SKIPPED ops (`skips_total`) — ops whose
     /// `if:` gate was false, so no adapter call ran. A skip is
@@ -142,15 +154,21 @@ pub trait ReadoutContext {
     /// `ok%` denominator (`cycles_total == result_total + skips_total`,
     /// so the success-rate basis is `cycles_completed - skips`).
     /// Default 0.
-    fn skips(&self) -> u64 { 0 }
+    fn skips(&self) -> u64 {
+        0
+    }
 
     /// Cumulative error count (includes retries). Default 0.
-    fn errors(&self) -> u64 { 0 }
+    fn errors(&self) -> u64 {
+        0
+    }
 
     /// Retries — derived as `errors - failed_ops` per the
     /// existing convention in `nbrs-runtime::activity`.
     /// Default 0.
-    fn retries(&self) -> u64 { 0 }
+    fn retries(&self) -> u64 {
+        0
+    }
 
     /// Cumulative count of successful ATTEMPTS (SRD-91
     /// `attempt_success`), observed when the attempt returns.
@@ -158,7 +176,9 @@ pub trait ReadoutContext {
     /// final attempt, so this coincides with
     /// [`ops_ok`](Self::ops_ok) when no retry ever fired.
     /// Default 0.
-    fn attempt_ok(&self) -> u64 { 0 }
+    fn attempt_ok(&self) -> u64 {
+        0
+    }
 
     /// Cumulative count of FAILED attempts (SRD-91
     /// `attempt_failure`), observed when the attempt returns.
@@ -171,14 +191,20 @@ pub trait ReadoutContext {
     /// would. It coincides with `ok%` when no retry fires and
     /// falls below it under retry pressure (results still
     /// succeed, but only after wasted attempts). Default 0.
-    fn attempt_failed(&self) -> u64 { 0 }
+    fn attempt_failed(&self) -> u64 {
+        0
+    }
 
     /// Effective fiber count (concurrency). Default 0.
-    fn concurrency(&self) -> usize { 0 }
+    fn concurrency(&self) -> usize {
+        0
+    }
 
     /// Wallclock seconds since the subject started.
     /// Default 0.0.
-    fn elapsed_secs(&self) -> f64 { 0.0 }
+    fn elapsed_secs(&self) -> f64 {
+        0.0
+    }
 
     /// Items consumed from the source factory — drives the
     /// throughput rate. Distinct from `cycles_completed`
@@ -186,7 +212,9 @@ pub trait ReadoutContext {
     /// per op while the cycle counter tracks ops finished;
     /// for sourceless phases the two are identical.
     /// Default 0.
-    fn consumed(&self) -> u64 { 0 }
+    fn consumed(&self) -> u64 {
+        0
+    }
 
     /// Cursor ordinals CONSUMED (row-level progress) for a
     /// data-driven phase — polydat `global_consumed()`. Distinct
@@ -194,7 +222,9 @@ pub trait ReadoutContext {
     /// stride N ordinals, so this is the authoritative row count.
     /// `0` for non-cursor phases. Drives the numerator of the
     /// `rows:{consumed}/{total}` progress chip. Default 0.
-    fn rows_consumed(&self) -> u64 { 0 }
+    fn rows_consumed(&self) -> u64 {
+        0
+    }
 
     /// Cursor ordinal EXTENT for a data-driven phase
     /// (`global_extent()`). `0` for non-cursor phases (plain
@@ -202,7 +232,9 @@ pub trait ReadoutContext {
     /// to pick the row-denominated `rows:` chip over the
     /// op-denominated `cycles:` chip, so a stride-driven phase's
     /// progress and its rows/s rate agree. Default 0.
-    fn rows_total(&self) -> u64 { 0 }
+    fn rows_total(&self) -> u64 {
+        0
+    }
 
     /// Ops dispatched to the adapter. Distinct from
     /// `consumed`: ops_started increments at dispatch,
@@ -212,7 +244,9 @@ pub trait ReadoutContext {
     /// vs. finished correctly. Default 0 — context impls
     /// that don't track this just see "no progress" in the
     /// inline line, which is correct for them.
-    fn ops_started(&self) -> u64 { 0 }
+    fn ops_started(&self) -> u64 {
+        0
+    }
 
     /// Ops returned from the adapter (atomic, not the
     /// histogram counter). Distinct from
@@ -224,26 +258,36 @@ pub trait ReadoutContext {
     /// preserve. Default falls through to `cycles_completed`
     /// so contexts without the atomic split see equivalent
     /// behaviour.
-    fn ops_finished(&self) -> u64 { self.cycles_completed() }
+    fn ops_finished(&self) -> u64 {
+        self.cycles_completed()
+    }
 
     /// Estimated remaining seconds until the phase finishes,
     /// or `None` when not computable (no `cycles_total` or
     /// `rate` is zero). Used by readouts that show ETA;
     /// readouts decide whether to render anything when
     /// `None`.
-    fn eta_secs(&self) -> Option<f64> { None }
+    fn eta_secs(&self) -> Option<f64> {
+        None
+    }
 
     /// True for an OPEN-ENDED subject — a daemon / background poll with
     /// no meaningful completion total. Displays render a latency summary
     /// in place of a progress meter (there is no "done" to meter).
     /// Default false.
-    fn open_ended(&self) -> bool { false }
+    fn open_ended(&self) -> bool {
+        false
+    }
 
     /// Live service-time percentiles (nanoseconds) for the subject, 0
     /// when unavailable. Rendered by open-ended subjects in the space a
     /// progress meter would otherwise occupy.
-    fn latency_p50_nanos(&self) -> u64 { 0 }
-    fn latency_p99_nanos(&self) -> u64 { 0 }
+    fn latency_p50_nanos(&self) -> u64 {
+        0
+    }
+    fn latency_p99_nanos(&self) -> u64 {
+        0
+    }
 
     /// The subject's completion fraction on the CORRECT basis, or
     /// `None` when progress is not meaningful (open-ended subjects).
@@ -280,7 +324,9 @@ pub trait ReadoutContext {
     /// `cycles_completed / cycles_total` — which pins at 0% for a
     /// single long op no matter how far along the measured work is.
     /// Default `None` (cycle accounting applies).
-    fn progress_override(&self) -> Option<f64> { None }
+    fn progress_override(&self) -> Option<f64> {
+        None
+    }
 
     // ── Workload-emphasised metrics ───────────────────────
 
@@ -288,17 +334,23 @@ pub trait ReadoutContext {
     /// ` recall_at_10:79.62% latency_p99:1.23ms`).
     /// Matches today's `ActivityMetrics::collect_status_values`
     /// output concatenated. Default empty.
-    fn status_metric_chips(&self) -> String { String::new() }
+    fn status_metric_chips(&self) -> String {
+        String::new()
+    }
 
     /// Pre-formatted adapter-counter tail. Today's
     /// inline-status line builds this by iterating
     /// `progress_metrics.dispensers` and concatenating
     /// `name=<count>/s` chips. Default empty.
-    fn adapter_counters_text(&self) -> String { String::new() }
+    fn adapter_counters_text(&self) -> String {
+        String::new()
+    }
 
     /// Pre-formatted batching tail (`r/b=12.5` style).
     /// Default empty.
-    fn batch_info_text(&self) -> String { String::new() }
+    fn batch_info_text(&self) -> String {
+        String::new()
+    }
 
     // ── Surface conveniences ──────────────────────────────
 
@@ -306,7 +358,9 @@ pub trait ReadoutContext {
     /// the scene tree. Matches the value
     /// `nbrs_runtime::scene_tree::running_phase_indent`
     /// produces today. Default empty.
-    fn depth_indent(&self) -> &str { "" }
+    fn depth_indent(&self) -> &str {
+        ""
+    }
 
     /// True when the surface accepts ANSI styling. Honours
     /// `NO_COLOR`, TTY presence, and explicit operator
@@ -315,14 +369,18 @@ pub trait ReadoutContext {
     /// returned bool. The §5.2 colour / style sub-language
     /// (Push 4) replaces inline ANSI with typed style tokens.
     /// Default false.
-    fn use_color(&self) -> bool { false }
+    fn use_color(&self) -> bool {
+        false
+    }
 
     /// Operator-visible phase memo — short string published by
     /// the `memo` wrapper via `before:` / `after:` templates.
     /// Default empty (no memo configured / nothing published).
     /// Surfaced by phase displays as `[[ <memo> ]]` above the
     /// status line when non-empty.
-    fn phase_memo(&self) -> &str { "" }
+    fn phase_memo(&self) -> &str {
+        ""
+    }
 
     // ── Event / refresh ───────────────────────────────────
 
@@ -339,7 +397,9 @@ pub trait ReadoutContext {
     /// refresh fire of the same subject. Used by readouts
     /// that animate (the spinner glyph in `phase_status`).
     /// Default 0 — fine for one-shot lifecycle renders.
-    fn refresh_tick(&self) -> u64 { 0 }
+    fn refresh_tick(&self) -> u64 {
+        0
+    }
 
     // ── Lifecycle state ───────────────────────────────────
 
@@ -348,7 +408,9 @@ pub trait ReadoutContext {
     /// `on_update` fire. Lifecycle readouts (`phase_outcome`,
     /// `phase_summary`) branch on this to pick markers /
     /// glyphs / coloration.
-    fn subject_state(&self) -> LifecycleState { LifecycleState::Running }
+    fn subject_state(&self) -> LifecycleState {
+        LifecycleState::Running
+    }
 
     // ── SRD-76 structured outcome ─────────────────────────
 
@@ -384,31 +446,45 @@ pub trait ReadoutContext {
     /// Scenario name for the current run. Used by
     /// `session_banner`. Default empty — only session-scoped
     /// contexts populate it.
-    fn session_scenario_name(&self) -> &str { "" }
+    fn session_scenario_name(&self) -> &str {
+        ""
+    }
 
     /// Workload file path for the current run. Used by
     /// `session_banner`. Default empty.
-    fn session_workload_file(&self) -> &str { "" }
+    fn session_workload_file(&self) -> &str {
+        ""
+    }
 
     /// SRD-106 — the session id the `stick_session` rung
     /// re-attached to; empty when stick did not engage. Used by
     /// `session_notice` (which renders nothing when empty).
-    fn stick_reattached_session(&self) -> &str { "" }
+    fn stick_reattached_session(&self) -> &str {
+        ""
+    }
 
     // ── Session-scope totals ──────────────────────────────
 
     /// Total phases that completed cleanly across the run.
     /// Default 0 — only session-scoped readouts use this.
-    fn session_phases_completed(&self) -> usize { 0 }
+    fn session_phases_completed(&self) -> usize {
+        0
+    }
 
     /// Total phases that failed across the run.
-    fn session_phases_failed(&self) -> usize { 0 }
+    fn session_phases_failed(&self) -> usize {
+        0
+    }
 
     /// Total phases that didn't run (pre-mapped but skipped).
-    fn session_phases_pending(&self) -> usize { 0 }
+    fn session_phases_pending(&self) -> usize {
+        0
+    }
 
     /// Total phases the scenario tree planned.
-    fn session_phases_total(&self) -> usize { 0 }
+    fn session_phases_total(&self) -> usize {
+        0
+    }
 
     /// Number of phases that were truncated from the
     /// post-run summary tail because they followed the last
@@ -417,7 +493,9 @@ pub trait ReadoutContext {
     /// without scaling display to thousands of pending
     /// rows on a long-running scenario that failed early.
     /// Default 0 — no truncation.
-    fn session_phases_truncated(&self) -> usize { 0 }
+    fn session_phases_truncated(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -425,16 +503,28 @@ mod tests {
     use super::*;
     use crate::lifecycle::SubjectKind;
 
-    struct PhaseLikeCtx { name: String, labels: String }
+    struct PhaseLikeCtx {
+        name: String,
+        labels: String,
+    }
     impl ReadoutContext for PhaseLikeCtx {
-        fn subject_name(&self) -> &str { &self.name }
-        fn subject_labels(&self) -> &str { &self.labels }
-        fn event(&self) -> EventType { EventType::PhaseEnd }
+        fn subject_name(&self) -> &str {
+            &self.name
+        }
+        fn subject_labels(&self) -> &str {
+            &self.labels
+        }
+        fn event(&self) -> EventType {
+            EventType::PhaseEnd
+        }
     }
 
     #[test]
     fn default_subject_id_collapses_to_name_when_no_labels() {
-        let ctx = PhaseLikeCtx { name: "setup".into(), labels: String::new() };
+        let ctx = PhaseLikeCtx {
+            name: "setup".into(),
+            labels: String::new(),
+        };
         assert_eq!(ctx.subject_id(), "setup");
     }
 
@@ -449,9 +539,15 @@ mod tests {
 
     struct SessionLikeCtx;
     impl ReadoutContext for SessionLikeCtx {
-        fn subject_name(&self) -> &str { "session" }
-        fn subject_id(&self) -> String { "session".to_string() }
-        fn event(&self) -> EventType { EventType::SessionEnd }
+        fn subject_name(&self) -> &str {
+            "session"
+        }
+        fn subject_id(&self) -> String {
+            "session".to_string()
+        }
+        fn event(&self) -> EventType {
+            EventType::SessionEnd
+        }
     }
 
     #[test]

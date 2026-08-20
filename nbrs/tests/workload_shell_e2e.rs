@@ -23,7 +23,8 @@ use std::process::Command;
 fn nbrs() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd
 }
@@ -32,11 +33,9 @@ fn write_workload(label: &str, body: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
     // `.cargo/config.toml` redirects TMPDIR to `target/test-tmp/`,
     // which cargo doesn't create — make it on demand.
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
     dir.push(format!("nbrs_wlshell_{label}_{}.yaml", std::process::id()));
-    let mut f = std::fs::File::create(&dir)
-        .unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
+    let mut f = std::fs::File::create(&dir).unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
     f.write_all(body.as_bytes())
         .unwrap_or_else(|e| panic!("write {dir:?}: {e}"));
     dir
@@ -50,7 +49,9 @@ fn run(workload: &Path, extra: &[&str]) -> (String, String, bool) {
         "nbrs-wlshell-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -68,8 +69,7 @@ fn run(workload: &Path, extra: &[&str]) -> (String, String, bool) {
     // surface, so in-run diagnostics (✓ outcome blocks, graceful
     // workload-stop lines) land in session.log and are deliberately
     // suppressed from the console.
-    let session_log = std::fs::read_to_string(session_path.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session_path.join("session.log")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&session_parent);
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
@@ -95,7 +95,9 @@ fn run(workload: &Path, extra: &[&str]) -> (String, String, bool) {
 /// errored.
 #[test]
 fn workload_stop_when_halts_later_phase() {
-    let wl = write_workload("opcount", r#"
+    let wl = write_workload(
+        "opcount",
+        r#"
 stop_when:
   - when: "cycles_total > 5"
     each: workload
@@ -114,25 +116,40 @@ phases:
         stmt: "PHASE_TWO_OP"
 scenarios:
   default: [phase_one, phase_two]
-"#);
+"#,
+    );
     let (stdout, stderr, _ok) = run(&wl, &["adapter=testkit"]);
 
-    let p1 = stdout.lines().filter(|l| l.trim() == "PHASE_ONE_OP").count();
-    let p2 = stdout.lines().filter(|l| l.trim() == "PHASE_TWO_OP").count();
-    assert_eq!(p1, 10,
-        "phase_one should have run all 10 ops; stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(p2, 0,
+    let p1 = stdout
+        .lines()
+        .filter(|l| l.trim() == "PHASE_ONE_OP")
+        .count();
+    let p2 = stdout
+        .lines()
+        .filter(|l| l.trim() == "PHASE_TWO_OP")
+        .count();
+    assert_eq!(
+        p1, 10,
+        "phase_one should have run all 10 ops; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        p2, 0,
         "phase_two must NOT run — the workload stop condition should have \
-         halted the walk; stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(stderr.contains("workload stop condition tripped"),
-        "expected the workload-shell stop log; stderr:\n{stderr}");
+         halted the walk; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("workload stop condition tripped"),
+        "expected the workload-shell stop log; stderr:\n{stderr}"
+    );
 }
 
 /// Without a tripping `stop_when:`, every phase runs — the shell folds
 /// outcomes into its aggregate but never latches the walk-stop.
 #[test]
 fn no_trip_runs_all_phases() {
-    let wl = write_workload("notrip", r#"
+    let wl = write_workload(
+        "notrip",
+        r#"
 stop_when:
   - when: "cycles_total > 1000000"
     each: workload
@@ -151,17 +168,28 @@ phases:
         stmt: "PHASE_TWO_OP"
 scenarios:
   default: [phase_one, phase_two]
-"#);
+"#,
+    );
     let (stdout, stderr, ok) = run(&wl, &["adapter=testkit"]);
     assert!(ok, "run should succeed; stderr:\n{stderr}");
 
-    let p1 = stdout.lines().filter(|l| l.trim() == "PHASE_ONE_OP").count();
-    let p2 = stdout.lines().filter(|l| l.trim() == "PHASE_TWO_OP").count();
+    let p1 = stdout
+        .lines()
+        .filter(|l| l.trim() == "PHASE_ONE_OP")
+        .count();
+    let p2 = stdout
+        .lines()
+        .filter(|l| l.trim() == "PHASE_TWO_OP")
+        .count();
     assert_eq!(p1, 4, "phase_one should run; stdout:\n{stdout}");
-    assert_eq!(p2, 4,
-        "phase_two should run — the condition never trips; stdout:\n{stdout}");
-    assert!(!stderr.contains("workload stop condition tripped"),
-        "no stop should have fired; stderr:\n{stderr}");
+    assert_eq!(
+        p2, 4,
+        "phase_two should run — the condition never trips; stdout:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains("workload stop condition tripped"),
+        "no stop should have fired; stderr:\n{stderr}"
+    );
 }
 
 /// SRD-82 Part 4/6 — the scenario-graph default `*Failed:stop`. A phase
@@ -175,7 +203,9 @@ scenarios:
 /// "workload stop condition tripped" wording.
 #[test]
 fn failed_phase_halts_walk_with_fault() {
-    let wl = write_workload("faultstop", r#"
+    let wl = write_workload(
+        "faultstop",
+        r#"
 phases:
   boom:
     cycles: 1
@@ -193,21 +223,30 @@ phases:
         stmt: "AFTER_OP"
 scenarios:
   default: [boom, after]
-"#);
+"#,
+    );
     let (stdout, stderr, ok) = run(&wl, &["adapter=testkit"]);
 
-    assert!(!ok,
+    assert!(
+        !ok,
         "a failed phase must make the run exit non-zero (fault); \
-         stdout:\n{stdout}\nstderr:\n{stderr}");
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     let after = stdout.lines().filter(|l| l.trim() == "AFTER_OP").count();
-    assert_eq!(after, 0,
+    assert_eq!(
+        after, 0,
         "after-phase must NOT run — the failed phase halts the walk; \
-         stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(stderr.contains("scenario stop-on-error"),
-        "expected the scenario stop-on-error (fault) log; stderr:\n{stderr}");
-    assert!(!stderr.contains("pre-mapped phase(s) were not executed"),
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("scenario stop-on-error"),
+        "expected the scenario stop-on-error (fault) log; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("pre-mapped phase(s) were not executed"),
         "the deliberately-skipped tail must not be reported as stranded; \
-         stderr:\n{stderr}");
+         stderr:\n{stderr}"
+    );
 }
 
 /// SRD-82 Part 4 — cooperative abort of an ALREADY-IN-FLIGHT concurrent
@@ -220,7 +259,9 @@ scenarios:
 /// drained (un-aborted) `slow` would emit exactly 20 markers.
 #[test]
 fn inflight_concurrent_sibling_aborts_on_fault() {
-    let wl = write_workload("inflight", r#"
+    let wl = write_workload(
+        "inflight",
+        r#"
 phases:
   slow:
     concurrency: 1
@@ -239,15 +280,18 @@ phases:
         stmt: "BOOM_OP x={x}"
 scenarios:
   default: [slow, boom]
-"#);
+"#,
+    );
     let (stdout, stderr, ok) = run(&wl, &["adapter=testkit", "schedule=*"]);
 
     assert!(!ok, "the fault must fail the run; stderr:\n{stderr}");
     let slow = stdout.lines().filter(|l| l.trim() == "SLOW_OP").count();
-    assert!(slow < 20,
+    assert!(
+        slow < 20,
         "the in-flight `slow` phase must abort mid-flight when the concurrent \
          `boom` phase faults — it ran {slow}/20 ops (20 = drained, no abort); \
-         stdout:\n{stdout}\nstderr:\n{stderr}");
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 /// SRD-82 Part 6 — a DAEMON phase runs CONCURRENTLY with its foreground
@@ -260,7 +304,9 @@ scenarios:
 /// budget by construction.
 #[test]
 fn daemon_phase_runs_concurrently_and_stops_with_foreground() {
-    let wl = write_workload("daemon", r#"
+    let wl = write_workload(
+        "daemon",
+        r#"
 phases:
   work:
     concurrency: 1
@@ -279,19 +325,29 @@ phases:
         stmt: "MONITOR_OP"
 scenarios:
   default: [work, monitor]
-"#);
+"#,
+    );
     let (stdout, stderr, ok) = run(&wl, &["adapter=testkit"]);
-    assert!(ok, "a cleanly-stopped daemon must not fail the run; stderr:\n{stderr}");
+    assert!(
+        ok,
+        "a cleanly-stopped daemon must not fail the run; stderr:\n{stderr}"
+    );
     let work = stdout.lines().filter(|l| l.trim() == "WORK_OP").count();
     let monitor = stdout.lines().filter(|l| l.trim() == "MONITOR_OP").count();
-    assert_eq!(work, 6,
-        "the foreground phase should complete; stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(monitor > 0,
+    assert_eq!(
+        work, 6,
+        "the foreground phase should complete; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        monitor > 0,
         "the daemon must run concurrently with the foreground (ran {monitor}); \
-         stdout:\n{stdout}");
-    assert!(monitor < 1000,
+         stdout:\n{stdout}"
+    );
+    assert!(
+        monitor < 1000,
         "the daemon must STOP when the foreground completes, not run its full \
-         budget (ran {monitor}/1000); stdout:\n{stdout}");
+         budget (ran {monitor}/1000); stdout:\n{stdout}"
+    );
 }
 
 /// SRD-82 Part 6 regression — a daemon phase inside a `for:` loop must
@@ -304,7 +360,9 @@ scenarios:
 /// daemon.)
 #[test]
 fn daemon_does_not_spawn_after_walk_halt() {
-    let wl = write_workload("daemonhalt", r#"
+    let wl = write_workload(
+        "daemonhalt",
+        r#"
 phases:
   work:
     concurrency: 1
@@ -326,19 +384,27 @@ scenarios:
   default:
     - for: "i in 0..4"
       phases: [mon, work]
-"#);
+"#,
+    );
     let (stdout, stderr, ok) = run(&wl, &["adapter=testkit"]);
-    assert!(!ok, "the failing foreground must fail the run; stderr:\n{stderr}");
-    assert!(!stdout.contains("MON i=3"),
+    assert!(
+        !ok,
+        "the failing foreground must fail the run; stderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("MON i=3"),
         "the daemon must NOT spawn for post-halt for-loop iterations \
-         (found `MON i=3`); stdout:\n{stdout}\nstderr:\n{stderr}");
+         (found `MON i=3`); stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 /// SRD-82 Part 6 — a daemon phase whose ops ERROR bubbles up and fails
 /// the run (failures stay in scope, as for an op-daemon).
 #[test]
 fn daemon_phase_failure_bubbles_up() {
-    let wl = write_workload("daemonfail", r#"
+    let wl = write_workload(
+        "daemonfail",
+        r#"
 phases:
   work:
     concurrency: 1
@@ -358,10 +424,13 @@ phases:
         stmt: "MON_OP x={x}"
 scenarios:
   default: [work, monitor]
-"#);
+"#,
+    );
     let (_stdout, stderr, ok) = run(&wl, &["adapter=testkit"]);
-    assert!(!ok,
-        "a failing daemon phase must fail the run; stderr:\n{stderr}");
+    assert!(
+        !ok,
+        "a failing daemon phase must fail the run; stderr:\n{stderr}"
+    );
 }
 
 /// Bare-name config scalars resolve scope-aware: `concurrency:
@@ -370,7 +439,9 @@ scenarios:
 /// invisibly — while braces worked).
 #[test]
 fn bare_name_concurrency_resolves() {
-    let wl = write_workload("bare_conc", r#"
+    let wl = write_workload(
+        "bare_conc",
+        r#"
 params:
   concurrency: 3
 scenarios:
@@ -386,11 +457,18 @@ phases:
     ops:
       insert:
         stmt: "load i={i}"
-"#);
+"#,
+    );
     let (_stdout, stderr, ok) = run(&wl, &[]);
     assert!(ok, "bare-name concurrency must resolve: {stderr}");
-    let loads = stderr.lines().filter(|l| l.contains("[loader]") && l.contains("✓")).count();
-    assert!(loads >= 2, "loader runs every iteration ({loads}): {stderr}");
+    let loads = stderr
+        .lines()
+        .filter(|l| l.contains("[loader]") && l.contains("✓"))
+        .count();
+    assert!(
+        loads >= 2,
+        "loader runs every iteration ({loads}): {stderr}"
+    );
 }
 
 /// An early CONFIG failure (pre-activity: unresolvable concurrency,
@@ -401,7 +479,9 @@ phases:
 /// process exit.
 #[test]
 fn early_config_failure_is_loud_and_halts_the_walk() {
-    let wl = write_workload("bad_conc", r#"
+    let wl = write_workload(
+        "bad_conc",
+        r#"
 scenarios:
   default:
     - for: "i in 1, 2, 3"
@@ -415,14 +495,21 @@ phases:
     ops:
       insert:
         stmt: "load i={i}"
-"#);
+"#,
+    );
     let (_stdout, stderr, ok) = run(&wl, &[]);
     assert!(!ok, "invalid concurrency must fail the run: {stderr}");
-    assert!(stderr.contains("failing phase (config)"),
-        "mid-run ERR line expected: {stderr}");
-    assert!(stderr.contains("halting remaining walk"),
-        "stop-on-error must trip on the config failure: {stderr}");
+    assert!(
+        stderr.contains("failing phase (config)"),
+        "mid-run ERR line expected: {stderr}"
+    );
+    assert!(
+        stderr.contains("halting remaining walk"),
+        "stop-on-error must trip on the config failure: {stderr}"
+    );
     let tiers = stderr.lines().filter(|l| l.contains("· i=")).count();
-    assert!(tiers <= 2,
-        "the walk must halt at the first failed iteration          (live + log-tail replay = at most 2 mentions), saw {tiers}: {stderr}");
+    assert!(
+        tiers <= 2,
+        "the walk must halt at the first failed iteration          (live + log-tail replay = at most 2 mentions), saw {tiers}: {stderr}"
+    );
 }

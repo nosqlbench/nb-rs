@@ -109,8 +109,9 @@ impl<'i> crate::executor::ExecShell for IntervalShell<'i> {
     fn run<'a>(
         &'a self,
         ctx: &'a mut crate::executor::ExecCtx,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+    > {
         Box::pin(async move {
             let mut runs: u64 = 0;
             let mut last;
@@ -132,8 +133,11 @@ impl<'i> crate::executor::ExecShell for IntervalShell<'i> {
                     break;
                 }
             }
-            crate::diag!(crate::observer::LogLevel::Info,
-                "interval: '{}' schedule ended after {runs} run(s)", self.label);
+            crate::diag!(
+                crate::observer::LogLevel::Info,
+                "interval: '{}' schedule ended after {runs} run(s)",
+                self.label
+            );
             last
         })
     }
@@ -178,11 +182,16 @@ pub(crate) fn for_phase(
     }
     match crate::timeval::parse_time_ms(raw) {
         Ok(0) => None,
-        Ok(ms) => Some(IntervalSpec { interval_ms: ms, repeat: p.repeat }),
+        Ok(ms) => Some(IntervalSpec {
+            interval_ms: ms,
+            repeat: p.repeat,
+        }),
         Err(e) => {
-            crate::diag!(crate::observer::LogLevel::Error,
+            crate::diag!(
+                crate::observer::LogLevel::Error,
                 "phase '{phase_name}': `interval: {raw}` is not a duration ({e}) \
-                 — running once");
+                 — running once"
+            );
             None
         }
     }
@@ -213,34 +222,55 @@ mod tests {
 
     fn phase_with(interval: Option<&str>, repeat: Option<u64>) -> HashMap<String, WorkloadPhase> {
         let mut m = HashMap::new();
-        m.insert("p".to_string(), WorkloadPhase {
-            interval: interval.map(str::to_string),
-            repeat,
-            ..Default::default()
-        });
+        m.insert(
+            "p".to_string(),
+            WorkloadPhase {
+                interval: interval.map(str::to_string),
+                repeat,
+                ..Default::default()
+            },
+        );
         m
     }
 
-    fn no_params() -> HashMap<String, String> { HashMap::new() }
+    fn no_params() -> HashMap<String, String> {
+        HashMap::new()
+    }
 
     /// No `interval:` → no schedule (the phase runs once).
     #[test]
     fn absent_interval_yields_no_schedule() {
         assert_eq!(for_phase(&phase_with(None, None), &no_params(), "p"), None);
         // `repeat:` alone does not conjure a schedule.
-        assert_eq!(for_phase(&phase_with(None, Some(5)), &no_params(), "p"), None);
+        assert_eq!(
+            for_phase(&phase_with(None, Some(5)), &no_params(), "p"),
+            None
+        );
         // An unknown phase name is simply not scheduled.
-        assert_eq!(for_phase(&phase_with(Some("5m"), None), &no_params(), "nope"), None);
+        assert_eq!(
+            for_phase(&phase_with(Some("5m"), None), &no_params(), "nope"),
+            None
+        );
     }
 
     /// A duration + bound resolves to milliseconds.
     #[test]
     fn interval_resolves_to_millis_with_bound() {
-        assert_eq!(for_phase(&phase_with(Some("5m"), Some(288)), &no_params(), "p"),
-            Some(IntervalSpec { interval_ms: 300_000, repeat: Some(288) }));
+        assert_eq!(
+            for_phase(&phase_with(Some("5m"), Some(288)), &no_params(), "p"),
+            Some(IntervalSpec {
+                interval_ms: 300_000,
+                repeat: Some(288)
+            })
+        );
         // No `repeat:` = until session stop.
-        assert_eq!(for_phase(&phase_with(Some("250ms"), None), &no_params(), "p"),
-            Some(IntervalSpec { interval_ms: 250, repeat: None }));
+        assert_eq!(
+            for_phase(&phase_with(Some("250ms"), None), &no_params(), "p"),
+            Some(IntervalSpec {
+                interval_ms: 250,
+                repeat: None
+            })
+        );
     }
 
     /// `0` / empty is the DISABLE knob — run once, so a shared phase stays
@@ -248,9 +278,18 @@ mod tests {
     /// never to a spin.
     #[test]
     fn zero_or_bad_interval_degrades_to_run_once() {
-        assert_eq!(for_phase(&phase_with(Some("0"), Some(10)), &no_params(), "p"), None);
-        assert_eq!(for_phase(&phase_with(Some(""), None), &no_params(), "p"), None);
-        assert_eq!(for_phase(&phase_with(Some("banana"), Some(10)), &no_params(), "p"), None);
+        assert_eq!(
+            for_phase(&phase_with(Some("0"), Some(10)), &no_params(), "p"),
+            None
+        );
+        assert_eq!(
+            for_phase(&phase_with(Some(""), None), &no_params(), "p"),
+            None
+        );
+        assert_eq!(
+            for_phase(&phase_with(Some("banana"), Some(10)), &no_params(), "p"),
+            None
+        );
     }
 
     /// The `{param}` interpolation that lets ONE shared phase be scheduled
@@ -264,15 +303,23 @@ mod tests {
         assert_eq!(for_phase(&phases, &off, "p"), None);
         // Opted in → scheduled.
         let on = HashMap::from([("recall_interval".to_string(), "5m".to_string())]);
-        assert_eq!(for_phase(&phases, &on, "p"),
-            Some(IntervalSpec { interval_ms: 300_000, repeat: None }));
+        assert_eq!(
+            for_phase(&phases, &on, "p"),
+            Some(IntervalSpec {
+                interval_ms: 300_000,
+                repeat: None
+            })
+        );
     }
 
     /// The trigger fires on a phase with `interval:`, and never on an op
     /// subject (this wrapper is `WrapperLevel::Phase`).
     #[test]
     fn triggers_only_on_a_phase_declaring_interval() {
-        let with = WorkloadPhase { interval: Some("5m".into()), ..Default::default() };
+        let with = WorkloadPhase {
+            interval: Some("5m".into()),
+            ..Default::default()
+        };
         let without = WorkloadPhase::default();
         assert!(triggers(WrapperSubject::Phase(&with)));
         assert!(!triggers(WrapperSubject::Phase(&without)));
@@ -287,11 +334,14 @@ mod tests {
         fn run<'a>(
             &'a self,
             _ctx: &'a mut crate::executor::ExecCtx,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>
-        {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+        > {
             Box::pin(async { crate::phase_outcome::Outcome::skipped() })
         }
-        fn shell_kind(&self) -> crate::executor::ShellKind { self.0 }
+        fn shell_kind(&self) -> crate::executor::ShellKind {
+            self.0
+        }
     }
 
     /// The layer is generic over ANY shell — it wraps a SCENARIO shell just
@@ -303,19 +353,31 @@ mod tests {
     #[test]
     fn layer_is_generic_over_any_shell() {
         use crate::executor::{ExecShell, ShellKind};
-        let spec = IntervalSpec { interval_ms: 1, repeat: Some(1) };
+        let spec = IntervalSpec {
+            interval_ms: 1,
+            repeat: Some(1),
+        };
 
         let scenario = FakeShell(ShellKind::Scenario);
-        assert_eq!(IntervalShell::new(&scenario, spec, "s").shell_kind(),
-            ShellKind::Scenario, "wrapping a scenario keeps it a scenario");
+        assert_eq!(
+            IntervalShell::new(&scenario, spec, "s").shell_kind(),
+            ShellKind::Scenario,
+            "wrapping a scenario keeps it a scenario"
+        );
 
         let phase = FakeShell(ShellKind::Phase);
-        assert_eq!(IntervalShell::new(&phase, spec, "p").shell_kind(),
-            ShellKind::Phase, "wrapping a phase keeps it a phase");
+        assert_eq!(
+            IntervalShell::new(&phase, spec, "p").shell_kind(),
+            ShellKind::Phase,
+            "wrapping a phase keeps it a phase"
+        );
 
         let session = FakeShell(ShellKind::Session);
-        assert_eq!(IntervalShell::new(&session, spec, "sess").shell_kind(),
-            ShellKind::Session, "wrapping a session keeps it a session");
+        assert_eq!(
+            IntervalShell::new(&session, spec, "sess").shell_kind(),
+            ShellKind::Session,
+            "wrapping a session keeps it a session"
+        );
     }
 
     /// The registration's level filter is permissive by default: a layer that
@@ -340,13 +402,16 @@ mod tests {
     #[tokio::test]
     async fn dwell_short_circuits_on_session_stop() {
         let _g = crate::session_signals::STOP_GLOBAL_TEST_LOCK
-            .lock().unwrap_or_else(|e| e.into_inner());
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::session_signals::request_stop();
         let t = std::time::Instant::now();
         // A 10s dwell must return immediately, not after 10s.
         assert!(!dwell(10_000).await, "a latched stop must end the dwell");
-        assert!(t.elapsed() < std::time::Duration::from_secs(1),
-            "dwell must not wait out the interval after a stop");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(1),
+            "dwell must not wait out the interval after a stop"
+        );
         crate::session_signals::clear_session_stop_for_test();
     }
 }

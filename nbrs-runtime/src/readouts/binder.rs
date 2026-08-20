@@ -67,9 +67,18 @@ impl std::fmt::Debug for RenderStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RenderStep::Literal(s) => write!(f, "Literal({s:?})"),
-            RenderStep::Render { readout, lod, layout, color, .. } => {
-                write!(f, "Render {{ name: {:?}, lod: {lod:?}, layout: {layout:?}, color: {color:?} }}",
-                    readout.name())
+            RenderStep::Render {
+                readout,
+                lod,
+                layout,
+                color,
+                ..
+            } => {
+                write!(
+                    f,
+                    "Render {{ name: {:?}, lod: {lod:?}, layout: {layout:?}, color: {color:?} }}",
+                    readout.name()
+                )
             }
             RenderStep::ColorDirective(c) => {
                 write!(f, "ColorDirective({c:?})")
@@ -81,8 +90,7 @@ impl std::fmt::Debug for RenderStep {
 /// Layout intent expressed inside a readout body via the
 /// `layout=` option. See SRD-63 §5.3.1. The binder maps
 /// this to a [`LayoutHint`] for the sink at render time.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum LayoutMode {
     /// Default — pick per LOD: compact ⇒ inline,
     /// labeled / expanded ⇒ block.
@@ -93,7 +101,6 @@ pub enum LayoutMode {
     /// Force block regardless of LOD.
     Block,
 }
-
 
 /// What the binder writes to the sink for a single render
 /// step. The sink decides how to honour the hint:
@@ -151,7 +158,9 @@ pub struct BakedBody {
 }
 
 impl BakedBody {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Build from a pre-validated step list. Used by the
     /// body-grammar parser; tests and integration paths
@@ -165,15 +174,14 @@ impl BakedBody {
     /// need to inspect the baked steps (the TUI binder,
     /// snapshot capture) take this view rather than
     /// reaching through the field.
-    pub fn steps(&self) -> &[RenderStep] { &self.steps }
+    pub fn steps(&self) -> &[RenderStep] {
+        &self.steps
+    }
 
     /// Build from a single registered readout name. Used by
     /// the workload parser's Form-B path (`on_phase_end:
     /// phase_outcome`) where no body grammar is involved.
-    pub fn from_single(
-        readout: ReadoutHandle,
-        lod: Lod,
-    ) -> Self {
+    pub fn from_single(readout: ReadoutHandle, lod: Lod) -> Self {
         Self::from_steps(vec![RenderStep::Render {
             readout,
             lod,
@@ -189,12 +197,7 @@ impl BakedBody {
     /// (`@RED` / `[#hex]`) wrap the *next* step in ANSI
     /// on / off bytes; consecutive directives accumulate
     /// (last one wins for the next step).
-    pub fn fire(
-        &self,
-        ctx: &dyn ReadoutContext,
-        mode: ContentMode,
-        sink: &mut dyn ReadoutSink,
-    ) {
+    pub fn fire(&self, ctx: &dyn ReadoutContext, mode: ContentMode, sink: &mut dyn ReadoutSink) {
         walk_body(self, ctx, mode, sink, &Overrides::default());
     }
 }
@@ -244,7 +247,13 @@ fn walk_body(
                     sink.literal(s);
                 }
             }
-            RenderStep::Render { readout, lod, layout, options, color } => {
+            RenderStep::Render {
+                readout,
+                lod,
+                layout,
+                options,
+                color,
+            } => {
                 let effective_lod = overrides.lod.unwrap_or(*lod);
                 let mut hint = layout_hint_for(effective_lod, mode, *layout);
                 if overrides.focused {
@@ -270,14 +279,10 @@ fn walk_body(
 /// future mode-aware layout (e.g. an "expand on
 /// Explanation" rule) doesn't require changing every call
 /// site.
-pub fn layout_hint_for(
-    lod: Lod,
-    _mode: ContentMode,
-    layout: LayoutMode,
-) -> LayoutHint {
+pub fn layout_hint_for(lod: Lod, _mode: ContentMode, layout: LayoutMode) -> LayoutHint {
     match layout {
         LayoutMode::Inline => LayoutHint::InlineCompact,
-        LayoutMode::Block  => LayoutHint::Block,
+        LayoutMode::Block => LayoutHint::Block,
         // Auto: compact ⇒ inline, labeled / expanded ⇒ block.
         LayoutMode::Auto => match lod {
             Lod::Compact => LayoutHint::InlineCompact,
@@ -352,14 +357,20 @@ impl StringSink {
     }
 
     /// Consume the sink, returning the rendered string.
-    pub fn take(self) -> String { self.buf }
+    pub fn take(self) -> String {
+        self.buf
+    }
 
     /// Borrow the rendered string so far without consuming.
-    pub fn as_str(&self) -> &str { &self.buf }
+    pub fn as_str(&self) -> &str {
+        &self.buf
+    }
 }
 
 impl Default for StringSink {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReadoutSink for StringSink {
@@ -462,7 +473,7 @@ enum FlatLayoutHint {
 fn flatten_layout(layout: LayoutHint) -> FlatLayoutHint {
     match layout {
         LayoutHint::InlineCompact => FlatLayoutHint::Inline,
-        LayoutHint::Block         => FlatLayoutHint::Block,
+        LayoutHint::Block => FlatLayoutHint::Block,
         LayoutHint::Focused(inner) => flatten_layout(*inner),
     }
 }
@@ -484,12 +495,7 @@ pub trait ReadoutBinder: Send {
     /// Drive every readout bound to `event`. The binder
     /// applies its interactive state, walks the resolved
     /// list, and emits render steps to `sink`.
-    fn fire(
-        &mut self,
-        event: EventType,
-        ctx: &dyn ReadoutContext,
-        sink: &mut dyn ReadoutSink,
-    );
+    fn fire(&mut self, event: EventType, ctx: &dyn ReadoutContext, sink: &mut dyn ReadoutSink);
 
     /// Forward a keyboard event from the surface. Default
     /// no-op for non-interactive sinks.
@@ -517,7 +523,9 @@ pub struct DefaultBinder {
 
 impl DefaultBinder {
     pub fn new() -> Self {
-        Self { bindings: HashMap::new() }
+        Self {
+            bindings: HashMap::new(),
+        }
     }
 
     /// Bind a baked body to an event slot. Multiple calls
@@ -569,16 +577,13 @@ impl DefaultBinder {
 }
 
 impl Default for DefaultBinder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReadoutBinder for DefaultBinder {
-    fn fire(
-        &mut self,
-        event: EventType,
-        ctx: &dyn ReadoutContext,
-        sink: &mut dyn ReadoutSink,
-    ) {
+    fn fire(&mut self, event: EventType, ctx: &dyn ReadoutContext, sink: &mut dyn ReadoutSink) {
         if let Some(bodies) = self.bindings.get(&event) {
             for body in bodies {
                 body.fire(ctx, ContentMode::Value, sink);
@@ -611,9 +616,7 @@ pub fn build_binder_from_workload(
 
     // Seed defaults first so unbound slots get them.
     for (event, body) in defaults {
-        let cloned = BakedBody::from_steps(
-            body.steps.iter().map(clone_step).collect()
-        );
+        let cloned = BakedBody::from_steps(body.steps.iter().map(clone_step).collect());
         validate_body_for_event(&cloned, *event)?;
         binder.bind(*event, cloned);
     }
@@ -622,22 +625,27 @@ pub fn build_binder_from_workload(
     // binding, drop the defaults and replace with the
     // configured bodies.
     let slots: &[(EventType, &[String])] = &[
-        (EventType::SessionStart, bindings.on_session_start.as_slice()),
-        (EventType::SessionEnd,   bindings.on_session_end.as_slice()),
-        (EventType::PhaseStart,   bindings.on_phase_start.as_slice()),
-        (EventType::PhaseEnd,     bindings.on_phase_end.as_slice()),
-        (EventType::EachStart,    bindings.on_each_start.as_slice()),
-        (EventType::EachEnd,      bindings.on_each_end.as_slice()),
-        (EventType::ScopeStart,   bindings.on_scope_start.as_slice()),
-        (EventType::ScopeEnd,     bindings.on_scope_end.as_slice()),
-        (EventType::Update,       bindings.on_update.as_slice()),
+        (
+            EventType::SessionStart,
+            bindings.on_session_start.as_slice(),
+        ),
+        (EventType::SessionEnd, bindings.on_session_end.as_slice()),
+        (EventType::PhaseStart, bindings.on_phase_start.as_slice()),
+        (EventType::PhaseEnd, bindings.on_phase_end.as_slice()),
+        (EventType::EachStart, bindings.on_each_start.as_slice()),
+        (EventType::EachEnd, bindings.on_each_end.as_slice()),
+        (EventType::ScopeStart, bindings.on_scope_start.as_slice()),
+        (EventType::ScopeEnd, bindings.on_scope_end.as_slice()),
+        (EventType::Update, bindings.on_update.as_slice()),
     ];
     for (event, bodies) in slots {
-        if bodies.is_empty() { continue; }
+        if bodies.is_empty() {
+            continue;
+        }
         binder.bindings.remove(event);
         for body_str in *bodies {
-            let (baked, _warnings) = bake(body_str)
-                .map_err(|e| format!("readouts.{}: {e}", event.slot_name()))?;
+            let (baked, _warnings) =
+                bake(body_str).map_err(|e| format!("readouts.{}: {e}", event.slot_name()))?;
             validate_body_for_event(&baked, *event)?;
             binder.bind(*event, baked);
         }
@@ -731,7 +739,9 @@ impl TuiReadoutBinder {
     /// Read the active overlay-held flag. Visible to the
     /// surface so it can render an "explanation overlay
     /// active" affordance in chrome.
-    pub fn overlay_held(&self) -> bool { self.overlay_held }
+    pub fn overlay_held(&self) -> bool {
+        self.overlay_held
+    }
 
     /// Read the LOD override for a `(slot, body_index)`
     /// pair, if any.
@@ -741,16 +751,13 @@ impl TuiReadoutBinder {
 }
 
 impl Default for TuiReadoutBinder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReadoutBinder for TuiReadoutBinder {
-    fn fire(
-        &mut self,
-        event: EventType,
-        ctx: &dyn ReadoutContext,
-        sink: &mut dyn ReadoutSink,
-    ) {
+    fn fire(&mut self, event: EventType, ctx: &dyn ReadoutContext, sink: &mut dyn ReadoutSink) {
         self.last_event = Some(event);
         // Two paths to Explanation mode:
         //   1. Local `overlay_held` toggle — set via
@@ -808,10 +815,16 @@ impl TuiReadoutBinder {
     /// Move the focus pointer for the most-recently-fired
     /// slot. `delta` is +1 / -1 (cycles wrap).
     fn cycle_focus(&mut self, delta: i32) {
-        let Some(slot) = self.last_event else { return; };
-        let Some(bodies) = self.inner.bindings.get(&slot) else { return; };
+        let Some(slot) = self.last_event else {
+            return;
+        };
+        let Some(bodies) = self.inner.bindings.get(&slot) else {
+            return;
+        };
         let len = bodies.len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let cur = self.focus.get(&slot).copied().flatten().unwrap_or(0) as i32;
         let next = (cur + delta).rem_euclid(len as i32) as usize;
         self.focus.insert(slot, Some(next));
@@ -822,18 +835,33 @@ impl TuiReadoutBinder {
     /// when no body is focused or the slot has no
     /// bodies.
     fn cycle_focused_lod(&mut self, delta: i32) {
-        let Some(slot) = self.last_event else { return; };
-        let Some(focus_opt) = self.focus.get(&slot).copied() else { return; };
-        let Some(idx) = focus_opt else { return; };
+        let Some(slot) = self.last_event else {
+            return;
+        };
+        let Some(focus_opt) = self.focus.get(&slot).copied() else {
+            return;
+        };
+        let Some(idx) = focus_opt else {
+            return;
+        };
 
         // Read the body's baked LOD by walking its first
         // Render step (the common case — bodies that
         // start with a Literal don't yield a meaningful
         // base LOD, so we treat them as Labeled).
         let bodies = self.inner.bindings.get(&slot);
-        let Some(bodies) = bodies else { return; };
-        let baked_lod = bodies.get(idx).and_then(first_render_lod).unwrap_or(Lod::Labeled);
-        let cur = self.lod_overrides.get(&(slot, idx)).copied().unwrap_or(baked_lod);
+        let Some(bodies) = bodies else {
+            return;
+        };
+        let baked_lod = bodies
+            .get(idx)
+            .and_then(first_render_lod)
+            .unwrap_or(Lod::Labeled);
+        let cur = self
+            .lod_overrides
+            .get(&(slot, idx))
+            .copied()
+            .unwrap_or(baked_lod);
         let next = step_lod(cur, delta);
         self.lod_overrides.insert((slot, idx), next);
     }
@@ -865,10 +893,16 @@ fn fire_body_with_overrides(
     override_lod: Option<Lod>,
     focused: bool,
 ) {
-    walk_body(body, ctx, mode, sink, &Overrides {
-        lod: override_lod,
-        focused,
-    });
+    walk_body(
+        body,
+        ctx,
+        mode,
+        sink,
+        &Overrides {
+            lod: override_lod,
+            focused,
+        },
+    );
 }
 
 /// Build a binder bound to a single event slot, applying
@@ -931,7 +965,8 @@ pub fn build_event_binder_with_cli(
         // silently replaced by the CLI flag.
         let workload_bodies = bindings.get(event.slot_name());
         if !workload_bodies.is_empty() {
-            crate::diag!(crate::observer::LogLevel::Warn,
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
                 "readouts: --readout override [{body}] replaces workload binding {workload:?} \
                  for slot {slot}. Use a `+` prefix on the override (e.g. `--readout=+x`) \
                  if you intended to extend rather than replace.",
@@ -948,13 +983,11 @@ pub fn build_event_binder_with_cli(
             // path's bodies and append the override body.
             let inner = build_event_binder(bindings, event, default)?;
             binder.merge(inner);
-            let (baked, _) = bake(stripped)
-                .map_err(|e| format!("readouts: --readout: {e}"))?;
+            let (baked, _) = bake(stripped).map_err(|e| format!("readouts: --readout: {e}"))?;
             validate_body_for_event(&baked, event)?;
             binder.bind(event, baked);
         } else {
-            let (baked, _) = bake(stripped)
-                .map_err(|e| format!("readouts: --readout: {e}"))?;
+            let (baked, _) = bake(stripped).map_err(|e| format!("readouts: --readout: {e}"))?;
             validate_body_for_event(&baked, event)?;
             binder.bind(event, baked);
         }
@@ -992,8 +1025,8 @@ fn build_event_binder_inner(
 
     for body_str in bodies {
         let stripped = body_str.trim_start().strip_prefix('+').unwrap_or(body_str);
-        let (baked, _warnings) = bake(stripped)
-            .map_err(|e| format!("readouts.{}: {e}", event.slot_name()))?;
+        let (baked, _warnings) =
+            bake(stripped).map_err(|e| format!("readouts.{}: {e}", event.slot_name()))?;
         validate_body_for_event(&baked, event)?;
         binder.bind(event, baked);
     }
@@ -1003,15 +1036,19 @@ fn build_event_binder_inner(
 fn clone_step(step: &RenderStep) -> RenderStep {
     match step {
         RenderStep::Literal(s) => RenderStep::Literal(s.clone()),
-        RenderStep::Render { readout, lod, layout, options, color } => {
-            RenderStep::Render {
-                readout: readout.clone(),
-                lod: *lod,
-                layout: *layout,
-                options: options.clone(),
-                color: color.clone(),
-            }
-        }
+        RenderStep::Render {
+            readout,
+            lod,
+            layout,
+            options,
+            color,
+        } => RenderStep::Render {
+            readout: readout.clone(),
+            lod: *lod,
+            layout: *layout,
+            options: options.clone(),
+            color: color.clone(),
+        },
         RenderStep::ColorDirective(c) => RenderStep::ColorDirective(c.clone()),
     }
 }
@@ -1024,10 +1061,7 @@ fn clone_step(step: &RenderStep) -> RenderStep {
 ///
 /// Per `feedback_never_ignore_silently` — every input must
 /// be acted on or rejected, never discarded.
-pub fn validate_body_for_event(
-    body: &BakedBody,
-    event: EventType,
-) -> Result<(), String> {
+pub fn validate_body_for_event(body: &BakedBody, event: EventType) -> Result<(), String> {
     let slot_kind = event.subject_kind();
     for step in &body.steps {
         if let RenderStep::Render { readout, .. } = step {
@@ -1061,9 +1095,7 @@ mod tests {
             on_session_end: vec!["phase_status".to_string()],
             ..Default::default()
         };
-        let res = build_event_binder(
-            &bindings, EventType::SessionEnd, BakedBody::new(),
-        );
+        let res = build_event_binder(&bindings, EventType::SessionEnd, BakedBody::new());
         let err = match res {
             Ok(_) => panic!("expected validation error"),
             Err(e) => e,
@@ -1079,9 +1111,10 @@ mod tests {
             on_session_end: vec!["session_summary".to_string()],
             ..Default::default()
         };
-        assert!(build_event_binder(
-            &bindings, EventType::SessionEnd, BakedBody::new(),
-        ).is_ok(), "session_summary at on_session_end should be valid");
+        assert!(
+            build_event_binder(&bindings, EventType::SessionEnd, BakedBody::new(),).is_ok(),
+            "session_summary at on_session_end should be valid"
+        );
     }
 
     #[test]
@@ -1092,16 +1125,24 @@ mod tests {
         // at the matching slot.
         type SlotCase = (EventType, fn(&mut nbrs_workload::model::ReadoutsBindings));
         let cases: &[SlotCase] = &[
-            (EventType::SessionEnd, |b| b.on_session_end = vec!["trace".into()]),
-            (EventType::PhaseEnd,   |b| b.on_phase_end   = vec!["trace".into()]),
-            (EventType::EachEnd,    |b| b.on_each_end    = vec!["trace".into()]),
-            (EventType::ScopeEnd,   |b| b.on_scope_end   = vec!["trace".into()]),
+            (EventType::SessionEnd, |b| {
+                b.on_session_end = vec!["trace".into()]
+            }),
+            (EventType::PhaseEnd, |b| {
+                b.on_phase_end = vec!["trace".into()]
+            }),
+            (EventType::EachEnd, |b| b.on_each_end = vec!["trace".into()]),
+            (EventType::ScopeEnd, |b| {
+                b.on_scope_end = vec!["trace".into()]
+            }),
         ];
         for (event, set_slot) in cases {
             let mut bindings = nbrs_workload::model::ReadoutsBindings::default();
             set_slot(&mut bindings);
-            assert!(build_event_binder(&bindings, *event, BakedBody::new()).is_ok(),
-                "trace at {event:?} should validate");
+            assert!(
+                build_event_binder(&bindings, *event, BakedBody::new()).is_ok(),
+                "trace at {event:?} should validate"
+            );
         }
     }
 
@@ -1112,25 +1153,58 @@ mod tests {
     fn default_binder_fires_phase_outcome_at_phase_end() {
         struct Ctx;
         impl ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "setup" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { Some((1, 2)) }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 3 }
-            fn cycles_total(&self) -> u64 { 3 }
-            fn ops_ok(&self) -> u64 { 3 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.01 }
-            fn consumed(&self) -> u64 { 3 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "setup"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                Some((1, 2))
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                3
+            }
+            fn cycles_total(&self) -> u64 {
+                3
+            }
+            fn ops_ok(&self) -> u64 {
+                3
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.01
+            }
+            fn consumed(&self) -> u64 {
+                3
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::PhaseEnd
+            }
         }
         let mut binder = DefaultBinder::new();
         let phase_outcome = Registry::lookup("phase_outcome").unwrap();
-        binder.set(EventType::PhaseEnd, BakedBody::from_single(phase_outcome, Lod::Labeled));
+        binder.set(
+            EventType::PhaseEnd,
+            BakedBody::from_single(phase_outcome, Lod::Labeled),
+        );
 
         let mut sink = StringSink::new();
         binder.fire(EventType::PhaseEnd, &Ctx, &mut sink);
@@ -1147,25 +1221,58 @@ mod tests {
     fn default_binder_dispatches_only_to_matching_event() {
         struct Ctx;
         impl ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "x" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { None }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 0 }
-            fn cycles_total(&self) -> u64 { 0 }
-            fn ops_ok(&self) -> u64 { 0 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.0 }
-            fn consumed(&self) -> u64 { 0 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "x"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                None
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                0
+            }
+            fn cycles_total(&self) -> u64 {
+                0
+            }
+            fn ops_ok(&self) -> u64 {
+                0
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.0
+            }
+            fn consumed(&self) -> u64 {
+                0
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::PhaseEnd
+            }
         }
         let mut binder = DefaultBinder::new();
         let phase_outcome = Registry::lookup("phase_outcome").unwrap();
-        binder.set(EventType::PhaseEnd, BakedBody::from_single(phase_outcome, Lod::Labeled));
+        binder.set(
+            EventType::PhaseEnd,
+            BakedBody::from_single(phase_outcome, Lod::Labeled),
+        );
 
         // Fire the wrong event — sink should stay empty.
         let mut sink = StringSink::new();
@@ -1201,8 +1308,12 @@ mod tests {
         use crate::readouts::buf::ReadoutBuf;
         struct EmptyReadout;
         impl Readout for EmptyReadout {
-            fn name(&self) -> &'static str { "empty" }
-            fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+            fn name(&self) -> &'static str {
+                "empty"
+            }
+            fn accepts(&self) -> &'static [SubjectKind] {
+                &[SubjectKind::Phase]
+            }
             fn render(
                 &self,
                 _ctx: &dyn ReadoutContext,
@@ -1210,12 +1321,18 @@ mod tests {
                 _mode: ContentMode,
                 _opts: &ReadoutOptions,
                 _out: &mut dyn ReadoutBuf,
-            ) -> usize { 0 }
+            ) -> usize {
+                0
+            }
         }
         struct Filler;
         impl Readout for Filler {
-            fn name(&self) -> &'static str { "filler" }
-            fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+            fn name(&self) -> &'static str {
+                "filler"
+            }
+            fn accepts(&self) -> &'static [SubjectKind] {
+                &[SubjectKind::Phase]
+            }
             fn render(
                 &self,
                 _ctx: &dyn ReadoutContext,
@@ -1230,21 +1347,51 @@ mod tests {
         }
         struct Ctx;
         impl ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "x" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { None }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 0 }
-            fn cycles_total(&self) -> u64 { 0 }
-            fn ops_ok(&self) -> u64 { 0 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 0 }
-            fn elapsed_secs(&self) -> f64 { 0.0 }
-            fn consumed(&self) -> u64 { 0 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "x"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                None
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                0
+            }
+            fn cycles_total(&self) -> u64 {
+                0
+            }
+            fn ops_ok(&self) -> u64 {
+                0
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                0
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.0
+            }
+            fn consumed(&self) -> u64 {
+                0
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::PhaseEnd
+            }
         }
         let mut sink = StringSink::new();
         let opts = ReadoutOptions::new();
@@ -1252,11 +1399,32 @@ mod tests {
         let h_empty: ReadoutHandle = std::sync::Arc::new(EmptyReadout);
 
         // Block A: writes content.
-        sink.render(h_filler.clone(), &Ctx, Lod::Labeled, ContentMode::Value, &opts, LayoutHint::Block);
+        sink.render(
+            h_filler.clone(),
+            &Ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &opts,
+            LayoutHint::Block,
+        );
         // Block B: empty render. Must NOT introduce a blank line.
-        sink.render(h_empty,           &Ctx, Lod::Labeled, ContentMode::Value, &opts, LayoutHint::Block);
+        sink.render(
+            h_empty,
+            &Ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &opts,
+            LayoutHint::Block,
+        );
         // Block C: writes content.
-        sink.render(h_filler,          &Ctx, Lod::Labeled, ContentMode::Value, &opts, LayoutHint::Block);
+        sink.render(
+            h_filler,
+            &Ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &opts,
+            LayoutHint::Block,
+        );
 
         // Expected: filler + \n + filler — single block separator,
         // not filler + \n + \n + filler (which would be the stranded-
@@ -1307,18 +1475,15 @@ mod tests {
     }
 
     fn default_phase_outcome() -> BakedBody {
-        BakedBody::from_single(
-            Registry::lookup("phase_outcome").unwrap(), Lod::Labeled,
-        )
+        BakedBody::from_single(Registry::lookup("phase_outcome").unwrap(), Lod::Labeled)
     }
 
     #[test]
     fn no_workload_binding_uses_default() {
         // Slot is empty → builder uses the supplied default.
         let bindings = empty_bindings();
-        let binder = build_event_binder(
-            &bindings, EventType::PhaseEnd, default_phase_outcome(),
-        ).unwrap();
+        let binder =
+            build_event_binder(&bindings, EventType::PhaseEnd, default_phase_outcome()).unwrap();
         assert_eq!(binder.slot_len(EventType::PhaseEnd), 1);
     }
 
@@ -1328,9 +1493,8 @@ mod tests {
         // REPLACES the default fully.
         let mut bindings = empty_bindings();
         bindings.on_phase_end = vec!["trace".to_string()];
-        let binder = build_event_binder(
-            &bindings, EventType::PhaseEnd, default_phase_outcome(),
-        ).unwrap();
+        let binder =
+            build_event_binder(&bindings, EventType::PhaseEnd, default_phase_outcome()).unwrap();
         // One body bound — the workload's, default dropped.
         assert_eq!(binder.slot_len(EventType::PhaseEnd), 1);
     }
@@ -1341,9 +1505,8 @@ mod tests {
         // and append.
         let mut bindings = empty_bindings();
         bindings.on_phase_end = vec!["+trace".to_string()];
-        let binder = build_event_binder(
-            &bindings, EventType::PhaseEnd, default_phase_outcome(),
-        ).unwrap();
+        let binder =
+            build_event_binder(&bindings, EventType::PhaseEnd, default_phase_outcome()).unwrap();
         // Two bodies: the default + the appended trace.
         assert_eq!(binder.slot_len(EventType::PhaseEnd), 2);
     }
@@ -1351,13 +1514,9 @@ mod tests {
     #[test]
     fn multiple_plus_prefix_appends_in_order() {
         let mut bindings = empty_bindings();
-        bindings.on_phase_end = vec![
-            "+trace".to_string(),
-            "+trace".to_string(),
-        ];
-        let binder = build_event_binder(
-            &bindings, EventType::PhaseEnd, default_phase_outcome(),
-        ).unwrap();
+        bindings.on_phase_end = vec!["+trace".to_string(), "+trace".to_string()];
+        let binder =
+            build_event_binder(&bindings, EventType::PhaseEnd, default_phase_outcome()).unwrap();
         // default + 2 appended.
         assert_eq!(binder.slot_len(EventType::PhaseEnd), 3);
     }
@@ -1367,8 +1526,12 @@ mod tests {
         let mut bindings = empty_bindings();
         bindings.on_update = vec!["phase_status".to_string()];
         let binder = build_event_binder_with_cli(
-            &bindings, EventType::Update, default_phase_outcome(), Some("trace"),
-        ).unwrap();
+            &bindings,
+            EventType::Update,
+            default_phase_outcome(),
+            Some("trace"),
+        )
+        .unwrap();
         // CLI override → exactly one body (the override),
         // workload's binding dropped.
         assert_eq!(binder.slot_len(EventType::Update), 1);
@@ -1379,8 +1542,12 @@ mod tests {
         let mut bindings = empty_bindings();
         bindings.on_update = vec!["phase_status".to_string()];
         let binder = build_event_binder_with_cli(
-            &bindings, EventType::Update, default_phase_outcome(), Some("+trace"),
-        ).unwrap();
+            &bindings,
+            EventType::Update,
+            default_phase_outcome(),
+            Some("+trace"),
+        )
+        .unwrap();
         // workload phase_status + appended trace = 2 bodies.
         assert_eq!(binder.slot_len(EventType::Update), 2);
     }
@@ -1389,35 +1556,72 @@ mod tests {
     fn cli_override_only_applies_to_update_slot() {
         let bindings = empty_bindings();
         let binder = build_event_binder_with_cli(
-            &bindings, EventType::PhaseEnd, default_phase_outcome(), Some("trace"),
-        ).unwrap();
+            &bindings,
+            EventType::PhaseEnd,
+            default_phase_outcome(),
+            Some("trace"),
+        )
+        .unwrap();
         // PhaseEnd ignores --readout — falls back to default.
         assert_eq!(binder.slot_len(EventType::PhaseEnd), 1);
         // The default body is phase_outcome, not trace; verify
         // by re-firing and checking output starts with ✓.
         struct Ctx;
         impl ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "x" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { None }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 0 }
-            fn cycles_total(&self) -> u64 { 0 }
-            fn ops_ok(&self) -> u64 { 0 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.0 }
-            fn consumed(&self) -> u64 { 0 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "x"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                None
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                0
+            }
+            fn cycles_total(&self) -> u64 {
+                0
+            }
+            fn ops_ok(&self) -> u64 {
+                0
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.0
+            }
+            fn consumed(&self) -> u64 {
+                0
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::PhaseEnd
+            }
         }
         let mut binder_local = binder;
         let mut sink = StringSink::new();
         binder_local.fire(EventType::PhaseEnd, &Ctx, &mut sink);
         let out = sink.take();
-        assert!(out.contains("✓"), "default phase_outcome body should fire: {out}");
+        assert!(
+            out.contains("✓"),
+            "default phase_outcome body should fire: {out}"
+        );
     }
 
     #[test]
@@ -1426,13 +1630,9 @@ mod tests {
         // applies to every entry (the `+` prefix becomes
         // editorial only, the binding drops the default).
         let mut bindings = empty_bindings();
-        bindings.on_phase_end = vec![
-            "trace".to_string(),
-            "+trace".to_string(),
-        ];
-        let binder = build_event_binder(
-            &bindings, EventType::PhaseEnd, default_phase_outcome(),
-        ).unwrap();
+        bindings.on_phase_end = vec!["trace".to_string(), "+trace".to_string()];
+        let binder =
+            build_event_binder(&bindings, EventType::PhaseEnd, default_phase_outcome()).unwrap();
         // Two bodies (the workload's two), no default.
         assert_eq!(binder.slot_len(EventType::PhaseEnd), 2);
     }
@@ -1443,8 +1643,14 @@ mod tests {
         let mut binder = TuiReadoutBinder::new();
         let phase_outcome = Registry::lookup("phase_outcome").unwrap();
         let trace = Registry::lookup("trace").unwrap();
-        binder.bind(EventType::PhaseEnd, BakedBody::from_single(phase_outcome, Lod::Labeled));
-        binder.bind(EventType::PhaseEnd, BakedBody::from_single(trace, Lod::Labeled));
+        binder.bind(
+            EventType::PhaseEnd,
+            BakedBody::from_single(phase_outcome, Lod::Labeled),
+        );
+        binder.bind(
+            EventType::PhaseEnd,
+            BakedBody::from_single(trace, Lod::Labeled),
+        );
         binder
     }
 
@@ -1480,7 +1686,8 @@ mod tests {
     /// race on shared static state.
     #[test]
     fn global_explain_toggle_flips_explanation_mode() {
-        let _guard = EXPLAIN_GLOBAL_TEST_LOCK.lock()
+        let _guard = EXPLAIN_GLOBAL_TEST_LOCK
+            .lock()
             .unwrap_or_else(|p| p.into_inner());
         // Force baseline off by toggling until off. (A previous
         // test may have left it on; the debounce + 10 s deadline
@@ -1492,28 +1699,34 @@ mod tests {
             crate::observer::toggle_explain();
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
-        assert!(!crate::observer::is_explain_held(),
-            "baseline: explain flag MUST be off");
+        assert!(
+            !crate::observer::is_explain_held(),
+            "baseline: explain flag MUST be off"
+        );
         // First press → on.
         crate::observer::toggle_explain();
-        assert!(crate::observer::is_explain_held(),
-            "first press MUST turn the flag on");
+        assert!(
+            crate::observer::is_explain_held(),
+            "first press MUST turn the flag on"
+        );
         // Second press past the debounce window → off.
         std::thread::sleep(std::time::Duration::from_millis(300));
         crate::observer::toggle_explain();
-        assert!(!crate::observer::is_explain_held(),
-            "second press MUST turn the flag off");
+        assert!(
+            !crate::observer::is_explain_held(),
+            "second press MUST turn the flag off"
+        );
     }
 
-    static EXPLAIN_GLOBAL_TEST_LOCK: std::sync::Mutex<()> =
-        std::sync::Mutex::new(());
+    static EXPLAIN_GLOBAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Auto-repeat debounce: a second `toggle_explain` call
     /// within 250 ms of the first is swallowed. The state
     /// stays where the first press left it.
     #[test]
     fn global_explain_toggle_debounces_auto_repeat() {
-        let _guard = EXPLAIN_GLOBAL_TEST_LOCK.lock()
+        let _guard = EXPLAIN_GLOBAL_TEST_LOCK
+            .lock()
             .unwrap_or_else(|p| p.into_inner());
         // Force baseline off, with appropriate spacing.
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1527,8 +1740,10 @@ mod tests {
         assert!(crate::observer::is_explain_held());
         // Immediately repeated → should be swallowed (debounce).
         crate::observer::toggle_explain();
-        assert!(crate::observer::is_explain_held(),
-            "rapid second press MUST be debounced, leaving state on");
+        assert!(
+            crate::observer::is_explain_held(),
+            "rapid second press MUST be debounced, leaving state on"
+        );
         // Clean up: wait for debounce window, toggle off.
         std::thread::sleep(std::time::Duration::from_millis(300));
         crate::observer::toggle_explain();
@@ -1538,21 +1753,51 @@ mod tests {
     fn tui_binder_focus_cycles_through_slot() {
         struct Ctx;
         impl ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "x" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { None }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 0 }
-            fn cycles_total(&self) -> u64 { 0 }
-            fn ops_ok(&self) -> u64 { 0 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.0 }
-            fn consumed(&self) -> u64 { 0 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "x"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                None
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                0
+            }
+            fn cycles_total(&self) -> u64 {
+                0
+            }
+            fn ops_ok(&self) -> u64 {
+                0
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.0
+            }
+            fn consumed(&self) -> u64 {
+                0
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::PhaseEnd
+            }
         }
         let mut binder = make_tui_binder_with_two_bodies();
         // First fire to set last_event.
@@ -1580,21 +1825,51 @@ mod tests {
     fn tui_binder_lod_cycle_stamps_override() {
         struct Ctx;
         impl ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "x" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { None }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 0 }
-            fn cycles_total(&self) -> u64 { 0 }
-            fn ops_ok(&self) -> u64 { 0 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.0 }
-            fn consumed(&self) -> u64 { 0 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "x"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                None
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                0
+            }
+            fn cycles_total(&self) -> u64 {
+                0
+            }
+            fn ops_ok(&self) -> u64 {
+                0
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.0
+            }
+            fn consumed(&self) -> u64 {
+                0
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::PhaseEnd
+            }
         }
         let mut binder = make_tui_binder_with_two_bodies();
         let mut sink = StringSink::new();
@@ -1603,21 +1878,30 @@ mod tests {
 
         // Initial baked LOD is Labeled. Cycle up → Expanded.
         binder.on_key(BinderKey::CycleLodUp);
-        assert_eq!(binder.lod_override(EventType::PhaseEnd, 1), Some(Lod::Expanded));
+        assert_eq!(
+            binder.lod_override(EventType::PhaseEnd, 1),
+            Some(Lod::Expanded)
+        );
 
         // Cycle up again → wraps to Compact.
         binder.on_key(BinderKey::CycleLodUp);
-        assert_eq!(binder.lod_override(EventType::PhaseEnd, 1), Some(Lod::Compact));
+        assert_eq!(
+            binder.lod_override(EventType::PhaseEnd, 1),
+            Some(Lod::Compact)
+        );
 
         // Cycle down → back to Expanded (wrap).
         binder.on_key(BinderKey::CycleLodDown);
-        assert_eq!(binder.lod_override(EventType::PhaseEnd, 1), Some(Lod::Expanded));
+        assert_eq!(
+            binder.lod_override(EventType::PhaseEnd, 1),
+            Some(Lod::Expanded)
+        );
     }
 
     #[test]
     fn step_lod_cycles_three_levels() {
-        assert_eq!(step_lod(Lod::Compact,  1), Lod::Labeled);
-        assert_eq!(step_lod(Lod::Labeled,  1), Lod::Expanded);
+        assert_eq!(step_lod(Lod::Compact, 1), Lod::Labeled);
+        assert_eq!(step_lod(Lod::Labeled, 1), Lod::Expanded);
         assert_eq!(step_lod(Lod::Expanded, 1), Lod::Compact);
         assert_eq!(step_lod(Lod::Compact, -1), Lod::Expanded);
     }

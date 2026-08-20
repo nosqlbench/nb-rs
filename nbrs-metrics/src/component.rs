@@ -352,7 +352,9 @@ impl Component {
         if let Some(hook) = &self.dynamic_capture {
             hook.capture_into(&mut out, now, true);
         }
-        *self.last_capture_instant.lock()
+        *self
+            .last_capture_instant
+            .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(now);
         out
     }
@@ -378,7 +380,9 @@ impl Component {
     pub fn capture_delta_auto(&self, fallback: Duration) -> MetricSet {
         let now = Instant::now();
         let interval = {
-            let mut prev = self.last_capture_instant.lock()
+            let mut prev = self
+                .last_capture_instant
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let elapsed = prev.map(|t| now.duration_since(t));
             *prev = Some(now);
@@ -435,20 +439,38 @@ impl Component {
                 }
                 InstrumentRef::Histogram(h) => {
                     let lbl = strip_name_label(h.labels());
-                    let reservoir = if drain { h.snapshot() } else { h.peek_snapshot() };
+                    let reservoir = if drain {
+                        h.snapshot()
+                    } else {
+                        h.peek_snapshot()
+                    };
                     // `cumulative_count` is the instrument's lifetime total
                     // (monotonic, never drained); the reservoir carries the
                     // per-window distribution. See the cumulative-counter note.
                     out.insert_histogram_with_unit_cumulative(
-                        family, unit, lbl, reservoir, h.total(), now,
+                        family,
+                        unit,
+                        lbl,
+                        reservoir,
+                        h.total(),
+                        now,
                     );
                 }
                 InstrumentRef::Timer(t) => {
                     let lbl = strip_name_label(t.labels());
-                    let snap = if drain { t.snapshot() } else { t.peek_snapshot() };
+                    let snap = if drain {
+                        t.snapshot()
+                    } else {
+                        t.peek_snapshot()
+                    };
                     // `snap.count` is the Timer's absolute lifetime count.
                     out.insert_histogram_with_unit_cumulative(
-                        family, unit, lbl, snap.histogram, snap.count, now,
+                        family,
+                        unit,
+                        lbl,
+                        snap.histogram,
+                        snap.count,
+                        now,
                     );
                 }
             }
@@ -465,9 +487,10 @@ impl Component {
         }
         if let Some(ref parent_weak) = self.parent
             && let Some(parent_arc) = parent_weak.upgrade()
-                && let Ok(parent) = parent_arc.read() {
-                    return parent.get_prop(name);
-                }
+            && let Ok(parent) = parent_arc.read()
+        {
+            return parent.get_prop(name);
+        }
         None
     }
 
@@ -519,8 +542,7 @@ impl Component {
     ///
     /// Mirrors [`Self::get_prop`] but for typed controls (SRD 23
     /// §"Branch-scoped and final controls").
-    pub fn find_control_up<T>(&self, name: &str)
-        -> Option<crate::controls::Control<T>>
+    pub fn find_control_up<T>(&self, name: &str) -> Option<crate::controls::Control<T>>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -529,29 +551,31 @@ impl Component {
         }
         if let Some(ref parent_weak) = self.parent
             && let Some(parent_arc) = parent_weak.upgrade()
-                && let Ok(parent) = parent_arc.read() {
-                    return parent.find_control_up_subtree::<T>(name);
-                }
+            && let Ok(parent) = parent_arc.read()
+        {
+            return parent.find_control_up_subtree::<T>(name);
+        }
         None
     }
 
     /// Ancestor-side recursion. Honors [`BranchScope::Subtree`]
     /// on an ancestor's declaration; otherwise keeps walking.
-    fn find_control_up_subtree<T>(&self, name: &str)
-        -> Option<crate::controls::Control<T>>
+    fn find_control_up_subtree<T>(&self, name: &str) -> Option<crate::controls::Control<T>>
     where
         T: Clone + Send + Sync + 'static,
     {
         if let Some(erased) = self.controls.get_erased(name)
             && erased.branch_scope() == crate::controls::BranchScope::Subtree
-                && let Some(c) = self.controls.get::<T>(name) {
-                    return Some(c);
-                }
+            && let Some(c) = self.controls.get::<T>(name)
+        {
+            return Some(c);
+        }
         if let Some(ref parent_weak) = self.parent
             && let Some(parent_arc) = parent_weak.upgrade()
-                && let Ok(parent) = parent_arc.read() {
-                    return parent.find_control_up_subtree::<T>(name);
-                }
+            && let Ok(parent) = parent_arc.read()
+        {
+            return parent.find_control_up_subtree::<T>(name);
+        }
         None
     }
 
@@ -559,32 +583,37 @@ impl Component {
     /// just the enumeration handle, useful for diagnostics
     /// (`dryrun=controls`, TUI surfaces) that don't need the
     /// typed value.
-    pub fn find_control_erased_up(&self, name: &str)
-        -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>>
-    {
+    pub fn find_control_erased_up(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>> {
         if let Some(erased) = self.controls.get_erased(name) {
             return Some(erased);
         }
         if let Some(ref parent_weak) = self.parent
             && let Some(parent_arc) = parent_weak.upgrade()
-                && let Ok(parent) = parent_arc.read() {
-                    return parent.find_control_erased_up_subtree(name);
-                }
+            && let Ok(parent) = parent_arc.read()
+        {
+            return parent.find_control_erased_up_subtree(name);
+        }
         None
     }
 
-    fn find_control_erased_up_subtree(&self, name: &str)
-        -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>>
-    {
+    fn find_control_erased_up_subtree(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>> {
         if let Some(erased) = self.controls.get_erased(name)
-            && erased.branch_scope() == crate::controls::BranchScope::Subtree {
-                return Some(erased);
-            }
+            && erased.branch_scope() == crate::controls::BranchScope::Subtree
+        {
+            return Some(erased);
+        }
         if let Some(ref parent_weak) = self.parent
             && let Some(parent_arc) = parent_weak.upgrade()
-                && let Ok(parent) = parent_arc.read() {
-                    return parent.find_control_erased_up_subtree(name);
-                }
+            && let Ok(parent) = parent_arc.read()
+        {
+            return parent.find_control_erased_up_subtree(name);
+        }
         None
     }
 
@@ -604,8 +633,10 @@ impl Component {
     pub fn control_snapshot(
         start: &std::sync::Arc<std::sync::RwLock<Component>>,
     ) -> std::collections::HashMap<String, std::sync::Arc<dyn crate::controls::ErasedControl>> {
-        let mut map: std::collections::HashMap<String, std::sync::Arc<dyn crate::controls::ErasedControl>> =
-            std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<
+            String,
+            std::sync::Arc<dyn crate::controls::ErasedControl>,
+        > = std::collections::HashMap::new();
         let mut next = Some(start.clone());
         let mut is_start = true;
         while let Some(arc) = next {
@@ -615,9 +646,7 @@ impl Component {
                 for handle in g.controls.list() {
                     // The start component's own controls are always visible;
                     // an ancestor's only if subtree-scoped. Nearest wins.
-                    if is_start
-                        || handle.branch_scope() == crate::controls::BranchScope::Subtree
-                    {
+                    if is_start || handle.branch_scope() == crate::controls::BranchScope::Subtree {
                         map.entry(handle.name().to_string()).or_insert(handle);
                     }
                 }
@@ -641,7 +670,9 @@ impl Component {
         let mut count = 0;
         for child in &self.children {
             if let Ok(c) = child.read() {
-                if c.state == ComponentState::Running { count += 1; }
+                if c.state == ComponentState::Running {
+                    count += 1;
+                }
                 count += c.running_descendant_count();
             }
         }
@@ -797,17 +828,11 @@ fn find_one_walk(
 
 /// True if any component in the subtree matches. Short-circuits
 /// on the first hit.
-pub fn any(
-    root: &Arc<RwLock<Component>>,
-    sel: &crate::selector::Selector,
-) -> bool {
+pub fn any(root: &Arc<RwLock<Component>>, sel: &crate::selector::Selector) -> bool {
     any_walk(root, sel)
 }
 
-fn any_walk(
-    root: &Arc<RwLock<Component>>,
-    sel: &crate::selector::Selector,
-) -> bool {
+fn any_walk(root: &Arc<RwLock<Component>>, sel: &crate::selector::Selector) -> bool {
     let Ok(guard) = root.read() else { return false };
     if sel.matches(&guard.effective_labels) {
         return true;
@@ -818,20 +843,13 @@ fn any_walk(
 }
 
 /// Count every matching component in the subtree.
-pub fn count(
-    root: &Arc<RwLock<Component>>,
-    sel: &crate::selector::Selector,
-) -> usize {
+pub fn count(root: &Arc<RwLock<Component>>, sel: &crate::selector::Selector) -> usize {
     let mut n = 0usize;
     count_walk(root, sel, &mut n);
     n
 }
 
-fn count_walk(
-    root: &Arc<RwLock<Component>>,
-    sel: &crate::selector::Selector,
-    n: &mut usize,
-) {
+fn count_walk(root: &Arc<RwLock<Component>>, sel: &crate::selector::Selector, n: &mut usize) {
     let Ok(guard) = root.read() else { return };
     if sel.matches(&guard.effective_labels) {
         *n += 1;
@@ -880,16 +898,17 @@ fn count_walk(
 /// own-label set. So the check needs no lock on any child, costs a lookup in
 /// one bucket, and cleans up with no teardown pass — a stopped or dropped
 /// component's claim simply expires.
-pub fn attach(
-    parent: &Arc<RwLock<Component>>,
-    child: &Arc<RwLock<Component>>,
-) {
+pub fn attach(parent: &Arc<RwLock<Component>>, child: &Arc<RwLock<Component>>) {
     let parent_effective = {
         let p = parent.read().unwrap_or_else(|e| e.into_inner());
         p.effective_labels.clone()
     };
     let mut c = child.write().unwrap_or_else(|e| e.into_inner());
-    if let Some((k, _)) = c.labels.iter().find(|(k, _)| parent_effective.get(k).is_some()) {
+    if let Some((k, _)) = c
+        .labels
+        .iter()
+        .find(|(k, _)| parent_effective.get(k).is_some())
+    {
         panic!(
             "component label-ownership violation: child re-declares label `{k}` \
              already owned by an ancestor. Each label name must be set on exactly \
@@ -940,10 +959,7 @@ pub fn attach(
 ///
 /// Removes the child from the parent's children list and clears
 /// the child's parent reference.
-pub fn detach(
-    parent: &Arc<RwLock<Component>>,
-    child: &Arc<RwLock<Component>>,
-) {
+pub fn detach(parent: &Arc<RwLock<Component>>, child: &Arc<RwLock<Component>>) {
     let mut p = parent.write().unwrap_or_else(|e| e.into_inner());
     p.children.retain(|c| !Arc::ptr_eq(c, child));
     let mut c = child.write().unwrap_or_else(|e| e.into_inner());
@@ -955,10 +971,7 @@ pub fn detach(
 ///
 /// Returns one `(effective_labels, snapshot)` pair per captured
 /// component. Draining semantics — used by the scheduler tick.
-pub fn capture_tree(
-    root: &Arc<RwLock<Component>>,
-    interval: Duration,
-) -> Vec<(Labels, MetricSet)> {
+pub fn capture_tree(root: &Arc<RwLock<Component>>, interval: Duration) -> Vec<(Labels, MetricSet)> {
     let mut results = Vec::new();
     capture_recursive(root, interval, &mut results);
     results
@@ -984,10 +997,9 @@ fn capture_recursive(
         // Reified control gauges — one per declared control that
         // has a numeric projection. Published at every tick so
         // they flow through the same sinks as regular metrics.
-        let control_gauges = guard.controls.snapshot_gauges(
-            &effective_labels,
-            Instant::now(),
-        );
+        let control_gauges = guard
+            .controls
+            .snapshot_gauges(&effective_labels, Instant::now());
         if !control_gauges.is_empty() {
             results.push((effective_labels, control_gauges));
         }
@@ -1003,9 +1015,7 @@ fn capture_recursive(
 /// component and returns absolute/peeked snapshots via
 /// [`Component::capture_current`]. Safe to call arbitrarily often —
 /// doesn't drain histogram/timer reservoirs.
-pub fn capture_tree_current(
-    root: &Arc<RwLock<Component>>,
-) -> Vec<(Labels, MetricSet)> {
+pub fn capture_tree_current(root: &Arc<RwLock<Component>>) -> Vec<(Labels, MetricSet)> {
     let mut results = Vec::new();
     capture_current_recursive(root, &mut results);
     results
@@ -1025,10 +1035,9 @@ fn capture_current_recursive(
         if !snapshot.is_empty() {
             results.push((effective_labels.clone(), snapshot));
         }
-        let control_gauges = guard.controls.snapshot_gauges(
-            &effective_labels,
-            Instant::now(),
-        );
+        let control_gauges = guard
+            .controls
+            .snapshot_gauges(&effective_labels, Instant::now());
         if !control_gauges.is_empty() {
             results.push((effective_labels, control_gauges));
         }
@@ -1054,10 +1063,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn register_instrument_first_time_succeeds() {
         let mut c = Component::new(Labels::empty(), HashMap::new());
-        assert!(c.register_instrument(
-            "recall_at_10",
-            InstrumentRef::Counter(new_counter("recall_at_10")),
-        ).is_ok());
+        assert!(
+            c.register_instrument(
+                "recall_at_10",
+                InstrumentRef::Counter(new_counter("recall_at_10")),
+            )
+            .is_ok()
+        );
         assert!(c.find_instrument("recall_at_10").is_some());
     }
 
@@ -1067,23 +1079,30 @@ mod tests {
         c.register_instrument(
             "recall_at_10",
             InstrumentRef::Counter(new_counter("recall_at_10")),
-        ).unwrap();
-        let err = c.register_instrument(
-            "recall_at_10",
-            InstrumentRef::Counter(new_counter("recall_at_10")),
-        ).unwrap_err();
-        assert!(err.contains("duplicate family"),
-            "wrong message: {err}");
-        assert!(err.contains("recall_at_10"),
-            "family name not in error: {err}");
+        )
+        .unwrap();
+        let err = c
+            .register_instrument(
+                "recall_at_10",
+                InstrumentRef::Counter(new_counter("recall_at_10")),
+            )
+            .unwrap_err();
+        assert!(err.contains("duplicate family"), "wrong message: {err}");
+        assert!(
+            err.contains("recall_at_10"),
+            "family name not in error: {err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn register_instrument_distinct_names_succeed() {
         let mut c = Component::new(Labels::empty(), HashMap::new());
-        c.register_instrument("a", InstrumentRef::Counter(new_counter("a"))).unwrap();
-        c.register_instrument("b", InstrumentRef::Counter(new_counter("b"))).unwrap();
-        c.register_instrument("c", InstrumentRef::Counter(new_counter("c"))).unwrap();
+        c.register_instrument("a", InstrumentRef::Counter(new_counter("a")))
+            .unwrap();
+        c.register_instrument("b", InstrumentRef::Counter(new_counter("b")))
+            .unwrap();
+        c.register_instrument("c", InstrumentRef::Counter(new_counter("c")))
+            .unwrap();
         assert_eq!(c.instruments().len(), 3);
     }
 
@@ -1092,17 +1111,13 @@ mod tests {
         // SRD-40b §7's contract: the error message names the
         // dimensional cell so the workload author can see WHICH
         // op-template's label set produced the collision.
-        let labels = Labels::of("phase", "pvs_query")
-            .with("op", "select_ann");
+        let labels = Labels::of("phase", "pvs_query").with("op", "select_ann");
         let mut c = Component::new(labels, HashMap::new());
-        c.register_instrument(
-            "overscan",
-            InstrumentRef::Counter(new_counter("overscan")),
-        ).unwrap();
-        let err = c.register_instrument(
-            "overscan",
-            InstrumentRef::Counter(new_counter("overscan")),
-        ).unwrap_err();
+        c.register_instrument("overscan", InstrumentRef::Counter(new_counter("overscan")))
+            .unwrap();
+        let err = c
+            .register_instrument("overscan", InstrumentRef::Counter(new_counter("overscan")))
+            .unwrap_err();
         assert!(err.contains("phase"), "missing phase label: {err}");
         assert!(err.contains("pvs_query"), "missing phase value: {err}");
         assert!(err.contains("op"), "missing op label: {err}");
@@ -1115,24 +1130,22 @@ mod tests {
         // component-tree structure, not a global registry.
         let mut a = Component::new(Labels::of("op", "foo"), HashMap::new());
         let mut b = Component::new(Labels::of("op", "bar"), HashMap::new());
-        assert!(a.register_instrument(
-            "overscan",
-            InstrumentRef::Counter(new_counter("overscan")),
-        ).is_ok());
-        assert!(b.register_instrument(
-            "overscan",
-            InstrumentRef::Counter(new_counter("overscan")),
-        ).is_ok());
+        assert!(
+            a.register_instrument("overscan", InstrumentRef::Counter(new_counter("overscan")),)
+                .is_ok()
+        );
+        assert!(
+            b.register_instrument("overscan", InstrumentRef::Counter(new_counter("overscan")),)
+                .is_ok()
+        );
     }
 
     // Test helper: register a counter that records a fixed value.
     fn install_counter(c: &mut Component, family: &str, value: u64) -> Arc<Counter> {
         let counter = new_counter(family);
         counter.inc_by(value);
-        c.register_instrument(
-            family,
-            InstrumentRef::Counter(counter.clone()),
-        ).unwrap();
+        c.register_instrument(family, InstrumentRef::Counter(counter.clone()))
+            .unwrap();
         counter
     }
 
@@ -1162,13 +1175,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn component_attach_computes_effective_labels() {
-        let root = Component::root(
-            Labels::of("session", "s1"),
+        let root = Component::root(Labels::of("session", "s1"), HashMap::new());
+        let child = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "rampup"),
             HashMap::new(),
-        );
-        let child = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "rampup"), HashMap::new()),
-        ));
+        )));
         attach(&root, &child);
 
         let c = child.read().unwrap();
@@ -1183,9 +1194,10 @@ mod tests {
         root_props.insert("hdr_digits".to_string(), "4".to_string());
         let root = Component::root(Labels::of("session", "s1"), root_props);
 
-        let child = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "rampup"), HashMap::new()),
-        ));
+        let child = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "rampup"),
+            HashMap::new(),
+        )));
         attach(&root, &child);
 
         let c = child.read().unwrap();
@@ -1201,9 +1213,10 @@ mod tests {
 
         let mut child_props = HashMap::new();
         child_props.insert("hdr_digits".to_string(), "4".to_string());
-        let child = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "rampup"), child_props),
-        ));
+        let child = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "rampup"),
+            child_props,
+        )));
         attach(&root, &child);
 
         let c = child.read().unwrap();
@@ -1213,9 +1226,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn detach_removes_child() {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
-        let child = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "rampup"), HashMap::new()),
-        ));
+        let child = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "rampup"),
+            HashMap::new(),
+        )));
         attach(&root, &child);
         assert_eq!(root.read().unwrap().child_count(), 1);
 
@@ -1228,9 +1242,10 @@ mod tests {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
 
         // Running child with a registered counter.
-        let child1 = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "load"), HashMap::new()),
-        ));
+        let child1 = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "load"),
+            HashMap::new(),
+        )));
         attach(&root, &child1);
         {
             let mut c = child1.write().unwrap();
@@ -1239,9 +1254,10 @@ mod tests {
         }
 
         // Stopped child with a registered counter — must NOT be captured.
-        let child2 = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "done"), HashMap::new()),
-        ));
+        let child2 = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "done"),
+            HashMap::new(),
+        )));
         attach(&root, &child2);
         {
             let mut c = child2.write().unwrap();
@@ -1258,15 +1274,17 @@ mod tests {
     async fn capture_tree_walks_nested_children() {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
 
-        let scenario = Arc::new(RwLock::new(
-            Component::new(Labels::of("scenario", "default"), HashMap::new()),
-        ));
+        let scenario = Arc::new(RwLock::new(Component::new(
+            Labels::of("scenario", "default"),
+            HashMap::new(),
+        )));
         attach(&root, &scenario);
         scenario.write().unwrap().set_state(ComponentState::Running);
 
-        let phase = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "search"), HashMap::new()),
-        ));
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "search"),
+            HashMap::new(),
+        )));
         attach(&scenario, &phase);
         {
             let mut p = phase.write().unwrap();
@@ -1306,15 +1324,18 @@ mod tests {
         )));
         attach(&root, &activity_a);
         let rampup = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("phase", "rampup")
+            Labels::empty()
+                .with("phase", "rampup")
                 .with("profile", "label_00"),
             HashMap::new(),
         )));
         attach(&activity_a, &rampup);
         for k in ["10", "100"] {
             let aq = Arc::new(RwLock::new(Component::new(
-                Labels::empty().with("phase", "ann_query")
-                    .with("profile", "label_00").with("k", k),
+                Labels::empty()
+                    .with("phase", "ann_query")
+                    .with("profile", "label_00")
+                    .with("k", k),
                 HashMap::new(),
             )));
             attach(&activity_a, &aq);
@@ -1326,7 +1347,8 @@ mod tests {
         )));
         attach(&root, &activity_b);
         let teardown = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("phase", "teardown")
+            Labels::empty()
+                .with("phase", "teardown")
                 .with("profile", "label_99"),
             HashMap::new(),
         )));
@@ -1340,15 +1362,15 @@ mod tests {
         let sel = crate::selector::Selector::new().present("phase");
         let hits = find(&root, &sel);
         assert_eq!(hits.len(), 4);
-        let names: Vec<String> = hits.iter()
-            .filter_map(|c| c.read().ok().and_then(|g|
-                g.effective_labels().get("phase").map(|s| s.to_string())
-            ))
+        let names: Vec<String> = hits
+            .iter()
+            .filter_map(|c| {
+                c.read()
+                    .ok()
+                    .and_then(|g| g.effective_labels().get("phase").map(|s| s.to_string()))
+            })
             .collect();
-        assert_eq!(
-            names,
-            vec!["rampup", "ann_query", "ann_query", "teardown"],
-        );
+        assert_eq!(names, vec!["rampup", "ann_query", "ann_query", "teardown"],);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1362,8 +1384,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_with_glob_and_eq_conjunction() {
         let root = sample_tree();
-        let sel = crate::selector::Selector::new()
-            .glob("phase", "ann_*");
+        let sel = crate::selector::Selector::new().glob("phase", "ann_*");
         let hits = find(&root, &sel);
         assert_eq!(hits.len(), 2);
         for h in &hits {
@@ -1375,20 +1396,27 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_with_present_and_absent_clauses() {
         let root = sample_tree();
-        let with_k = find(&root, &crate::selector::Selector::new()
-            .present("phase").present("k"));
+        let with_k = find(
+            &root,
+            &crate::selector::Selector::new()
+                .present("phase")
+                .present("k"),
+        );
         assert_eq!(with_k.len(), 2);
 
-        let without_k = find(&root, &crate::selector::Selector::new()
-            .present("phase").absent("k"));
+        let without_k = find(
+            &root,
+            &crate::selector::Selector::new()
+                .present("phase")
+                .absent("k"),
+        );
         assert_eq!(without_k.len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_one_exact_match() {
         let root = sample_tree();
-        let sel = crate::selector::Selector::new()
-            .eq("phase", "rampup");
+        let sel = crate::selector::Selector::new().eq("phase", "rampup");
         let c = find_one(&root, &sel).unwrap();
         assert_eq!(
             c.read().unwrap().effective_labels().get("phase"),
@@ -1410,8 +1438,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn find_one_ambiguous_reports_count() {
         let root = sample_tree();
-        let sel = crate::selector::Selector::new()
-            .eq("phase", "ann_query");
+        let sel = crate::selector::Selector::new().eq("phase", "ann_query");
         match find_one(&root, &sel) {
             Err(crate::selector::LookupError::Ambiguous { count }) => {
                 assert_eq!(count, 2);
@@ -1424,8 +1451,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn any_short_circuits_on_first_hit() {
         let root = sample_tree();
-        assert!(any(&root, &crate::selector::Selector::new().eq("phase", "rampup")));
-        assert!(!any(&root, &crate::selector::Selector::new().eq("phase", "zzz")));
+        assert!(any(
+            &root,
+            &crate::selector::Selector::new().eq("phase", "rampup")
+        ));
+        assert!(!any(
+            &root,
+            &crate::selector::Selector::new().eq("phase", "zzz")
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1439,8 +1472,10 @@ mod tests {
     async fn query_from_subtree_is_scoped() {
         let root = sample_tree();
         let activity_a = root.read().unwrap().children.first().unwrap().clone();
-        let hits = find(&activity_a,
-            &crate::selector::Selector::new().present("phase"));
+        let hits = find(
+            &activity_a,
+            &crate::selector::Selector::new().present("phase"),
+        );
         assert_eq!(hits.len(), 3);
     }
 
@@ -1469,15 +1504,17 @@ mod tests {
         let root = Component::root(Labels::of("session", "s"), HashMap::new());
         {
             let guard = root.read().unwrap();
-            guard.controls().declare(
-                crate::controls::ControlBuilder::new("concurrency", 16u32).build(),
-            );
+            guard
+                .controls()
+                .declare(crate::controls::ControlBuilder::new("concurrency", 16u32).build());
         }
         let c: crate::controls::Control<u32> = {
             let guard = root.read().unwrap();
             guard.controls().get::<u32>("concurrency").unwrap()
         };
-        c.set(32, crate::controls::ControlOrigin::Test).await.unwrap();
+        c.set(32, crate::controls::ControlOrigin::Test)
+            .await
+            .unwrap();
         let reread: crate::controls::Control<u32> = {
             let guard = root.read().unwrap();
             guard.controls().get::<u32>("concurrency").unwrap()
@@ -1487,10 +1524,7 @@ mod tests {
 
     #[tokio::test]
     async fn reified_control_gauges_flow_through_capture_tree() {
-        let root = Component::root(
-            Labels::empty().with("session", "s1"),
-            HashMap::new(),
-        );
+        let root = Component::root(Labels::empty().with("session", "s1"), HashMap::new());
         let phase = Arc::new(RwLock::new(Component::new(
             Labels::empty().with("phase", "rampup"),
             HashMap::new(),
@@ -1506,23 +1540,33 @@ mod tests {
         }
         phase.write().unwrap().set_state(ComponentState::Running);
 
-        let c: crate::controls::Control<u32> = phase.read().unwrap()
-            .controls().get::<u32>("concurrency").unwrap();
-        c.set(64, crate::controls::ControlOrigin::Test).await.unwrap();
+        let c: crate::controls::Control<u32> = phase
+            .read()
+            .unwrap()
+            .controls()
+            .get::<u32>("concurrency")
+            .unwrap();
+        c.set(64, crate::controls::ControlOrigin::Test)
+            .await
+            .unwrap();
 
         let captured = capture_tree(&root, Duration::from_secs(1));
         let mut found_value: Option<f64> = None;
         for (labels, set) in &captured {
-            if labels.get("phase") != Some("rampup") { continue; }
+            if labels.get("phase") != Some("rampup") {
+                continue;
+            }
             if let Some(fam) = set.family("control_concurrency")
-                && let Some(m) = fam.metrics().next() {
-                    if let Some(p) = m.point()
-                        && let crate::snapshot::MetricValue::Gauge(g) = p.value() {
-                            found_value = Some(g.value);
-                        }
-                    assert_eq!(m.labels().get("phase"), Some("rampup"));
-                    assert_eq!(m.labels().get("control"), Some("concurrency"));
+                && let Some(m) = fam.metrics().next()
+            {
+                if let Some(p) = m.point()
+                    && let crate::snapshot::MetricValue::Gauge(g) = p.value()
+                {
+                    found_value = Some(g.value);
                 }
+                assert_eq!(m.labels().get("phase"), Some("rampup"));
+                assert_eq!(m.labels().get("control"), Some("concurrency"));
+            }
         }
         assert_eq!(found_value, Some(64.0));
 
@@ -1539,15 +1583,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dryrun_controls_enumeration_over_tree() {
         let root = sample_tree();
-        let phase_hits = find(&root,
-            &crate::selector::Selector::new().present("phase"));
+        let phase_hits = find(&root, &crate::selector::Selector::new().present("phase"));
         for (idx, phase) in phase_hits.iter().enumerate() {
             let guard = phase.read().unwrap();
             guard.controls().declare(
-                crate::controls::ControlBuilder::new(
-                    "concurrency",
-                    (10 * (idx + 1)) as u32,
-                ).build(),
+                crate::controls::ControlBuilder::new("concurrency", (10 * (idx + 1)) as u32)
+                    .build(),
             );
         }
 
@@ -1557,11 +1598,7 @@ mod tests {
             let labels = guard.effective_labels().clone();
             for ctl in guard.controls().list() {
                 entries.push((
-                    format!(
-                        "{}/{}",
-                        labels.get("phase").unwrap_or("-"),
-                        ctl.name(),
-                    ),
+                    format!("{}/{}", labels.get("phase").unwrap_or("-"), ctl.name(),),
                     ctl.value_string(),
                 ));
             }
@@ -1579,10 +1616,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn branch_scope_subtree_resolves_from_descendant() {
         use crate::controls::{BranchScope, ControlBuilder};
-        let root = Component::root(
-            Labels::empty().with("session", "s1"),
-            HashMap::new(),
-        );
+        let root = Component::root(Labels::empty().with("session", "s1"), HashMap::new());
         let phase = Arc::new(RwLock::new(Component::new(
             Labels::empty().with("phase", "rampup"),
             HashMap::new(),
@@ -1595,19 +1629,18 @@ mod tests {
                 .build(),
         );
 
-        let resolved = phase.read().unwrap()
-            .find_control_up::<u32>("hdr_sigdigs");
-        assert!(resolved.is_some(), "Subtree-scoped control should be visible to descendant");
+        let resolved = phase.read().unwrap().find_control_up::<u32>("hdr_sigdigs");
+        assert!(
+            resolved.is_some(),
+            "Subtree-scoped control should be visible to descendant"
+        );
         assert_eq!(resolved.unwrap().value(), 3u32);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn branch_scope_local_does_not_leak_to_descendants() {
         use crate::controls::{BranchScope, ControlBuilder};
-        let root = Component::root(
-            Labels::empty().with("session", "s1"),
-            HashMap::new(),
-        );
+        let root = Component::root(Labels::empty().with("session", "s1"), HashMap::new());
         let phase = Arc::new(RwLock::new(Component::new(
             Labels::empty().with("phase", "rampup"),
             HashMap::new(),
@@ -1620,19 +1653,17 @@ mod tests {
                 .build(),
         );
 
-        let leaked = phase.read().unwrap()
-            .find_control_up::<u32>("private");
-        assert!(leaked.is_none(),
-            "Local-scoped control must not be visible to descendants");
+        let leaked = phase.read().unwrap().find_control_up::<u32>("private");
+        assert!(
+            leaked.is_none(),
+            "Local-scoped control must not be visible to descendants"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn nearest_declaration_wins_during_walk_up() {
         use crate::controls::{BranchScope, ControlBuilder};
-        let root = Component::root(
-            Labels::empty().with("session", "s1"),
-            HashMap::new(),
-        );
+        let root = Component::root(Labels::empty().with("session", "s1"), HashMap::new());
         let phase = Arc::new(RwLock::new(Component::new(
             Labels::empty().with("phase", "rampup"),
             HashMap::new(),
@@ -1644,11 +1675,15 @@ mod tests {
                 .branch_scope(BranchScope::Subtree)
                 .build(),
         );
-        phase.read().unwrap().controls().declare(
-            ControlBuilder::new("hdr_sigdigs", 5u32).build(),
-        );
+        phase
+            .read()
+            .unwrap()
+            .controls()
+            .declare(ControlBuilder::new("hdr_sigdigs", 5u32).build());
 
-        let v = phase.read().unwrap()
+        let v = phase
+            .read()
+            .unwrap()
             .find_control_up::<u32>("hdr_sigdigs")
             .unwrap()
             .value();
@@ -1661,19 +1696,18 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn component_scope_close_flushes_running_component_marks_partial_and_stops() {
-        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence::{CadenceTree, Cadences};
         use crate::cadence_reporter::CadenceReporter;
 
-        let tree = CadenceTree::plan_default(
-            Cadences::new(&[Duration::from_secs(1)]).unwrap(),
-        );
+        let tree = CadenceTree::plan_default(Cadences::new(&[Duration::from_secs(1)]).unwrap());
         let reporter = CadenceReporter::new(tree);
 
         // Build a phase component with a registered counter holding N=42.
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
-        let phase = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "short"), HashMap::new()),
-        ));
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "short"),
+            HashMap::new(),
+        )));
         attach(&root, &phase);
         {
             let mut p = phase.write().unwrap();
@@ -1690,10 +1724,13 @@ mod tests {
         reporter.flush_for_tests();
 
         let labels = phase.read().unwrap().effective_labels().clone();
-        let latest = reporter.latest(&labels, Duration::from_secs(1))
+        let latest = reporter
+            .latest(&labels, Duration::from_secs(1))
             .expect("scope_close must publish the partial");
         assert!(latest.is_partial(), "snapshot must be marked partial");
-        let f = latest.family("test_counter").expect("test_counter family present");
+        let f = latest
+            .family("test_counter")
+            .expect("test_counter family present");
         let m = f.metrics().next().unwrap();
         match m.point().unwrap().value() {
             crate::snapshot::MetricValue::Counter(c) => assert_eq!(c.cumulative, 42),
@@ -1703,18 +1740,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn component_scope_close_skips_non_running_states() {
-        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence::{CadenceTree, Cadences};
         use crate::cadence_reporter::CadenceReporter;
 
-        let tree = CadenceTree::plan_default(
-            Cadences::new(&[Duration::from_secs(1)]).unwrap(),
-        );
+        let tree = CadenceTree::plan_default(Cadences::new(&[Duration::from_secs(1)]).unwrap());
         let reporter = CadenceReporter::new(tree);
 
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
-        let phase = Arc::new(RwLock::new(
-            Component::new(Labels::of("phase", "starting"), HashMap::new()),
-        ));
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::of("phase", "starting"),
+            HashMap::new(),
+        )));
         attach(&root, &phase);
         assert_eq!(phase.read().unwrap().state(), ComponentState::Starting);
         {
@@ -1727,8 +1763,10 @@ mod tests {
 
         assert_eq!(phase.read().unwrap().state(), ComponentState::Starting);
         let labels = phase.read().unwrap().effective_labels().clone();
-        assert!(reporter.latest(&labels, Duration::from_secs(1)).is_none(),
-            "scope_close on a non-Running component must not publish");
+        assert!(
+            reporter.latest(&labels, Duration::from_secs(1)).is_none(),
+            "scope_close on a non-Running component must not publish"
+        );
     }
 
     // ── capture_delta_auto: real-elapsed interval ────────────
@@ -1759,12 +1797,16 @@ mod tests {
         // Allow generous lower / upper bounds — CI machines
         // can be loaded — but anything within (60ms, 500ms) is
         // unambiguously distinct from the 1000ms fallback.
-        assert!(s.interval() > Duration::from_millis(60),
+        assert!(
+            s.interval() > Duration::from_millis(60),
             "interval should reflect real ~80ms elapsed, got {:?}",
-            s.interval());
-        assert!(s.interval() < Duration::from_millis(500),
+            s.interval()
+        );
+        assert!(
+            s.interval() < Duration::from_millis(500),
             "interval should be the real elapsed, not the 1s fallback: {:?}",
-            s.interval());
+            s.interval()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1776,8 +1818,11 @@ mod tests {
         let _first = c.capture_delta_auto(Duration::from_secs(1));
         std::thread::sleep(Duration::from_millis(50));
         let second = c.capture_delta_auto(Duration::from_secs(1));
-        assert!(second.interval() < Duration::from_millis(500),
+        assert!(
+            second.interval() < Duration::from_millis(500),
             "second auto-capture should measure inter-capture \
-             elapsed, not cumulative: {:?}", second.interval());
+             elapsed, not cumulative: {:?}",
+            second.interval()
+        );
     }
 }

@@ -28,21 +28,17 @@ use std::process::Command;
 fn nbrs() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd
 }
 
 fn write_workload(label: &str, body: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
-    dir.push(format!(
-        "nbrs_outcome_{label}_{}.yaml",
-        std::process::id(),
-    ));
-    let mut f = std::fs::File::create(&dir)
-        .unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
+    dir.push(format!("nbrs_outcome_{label}_{}.yaml", std::process::id(),));
+    let mut f = std::fs::File::create(&dir).unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
     f.write_all(body.as_bytes())
         .unwrap_or_else(|e| panic!("write {dir:?}: {e}"));
     dir
@@ -52,15 +48,14 @@ fn write_workload(label: &str, body: &str) -> PathBuf {
 /// minted session dir under TMPDIR and return the session
 /// path (so subsequent assertions / replay invocations can
 /// open the same metrics.db) along with stdout/stderr/exit.
-fn run_with_session(
-    workload: &Path,
-    extra: &[&str],
-) -> (PathBuf, String, String, bool) {
+fn run_with_session(workload: &Path, extra: &[&str]) -> (PathBuf, String, String, bool) {
     let session_parent = std::env::temp_dir().join(format!(
         "nbrs-outcome-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -108,63 +103,88 @@ scenarios:
 #[test]
 fn failed_phase_lands_phase_outcomes_row_with_errors() {
     let wl = write_workload("sqlite", FAIL_EVERY_CYCLE);
-    let (session_path, _stdout, stderr, ok) = run_with_session(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=stop",
-    ]);
-    assert!(!ok, "run should have failed (errors=stop on 100% error rate): {stderr}");
+    let (session_path, _stdout, stderr, ok) = run_with_session(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=stop",
+        ],
+    );
+    assert!(
+        !ok,
+        "run should have failed (errors=stop on 100% error rate): {stderr}"
+    );
 
     let db_path = session_path.join("metrics.db");
-    assert!(db_path.exists(),
+    assert!(
+        db_path.exists(),
         "metrics.db not produced at {} — stderr:\n{stderr}",
-        db_path.display());
+        db_path.display()
+    );
 
     let reporter =
-        nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db_path)
-            .expect("open metrics.db");
+        nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db_path).expect("open metrics.db");
     let outcomes = reporter.read_phase_outcomes(None);
-    assert!(!outcomes.is_empty(),
-        "phase_outcomes table empty after failing run; stderr:\n{stderr}");
+    assert!(
+        !outcomes.is_empty(),
+        "phase_outcomes table empty after failing run; stderr:\n{stderr}"
+    );
 
     // Find the failed outcome — the test workload's single
     // phase should land here as Failed. Other outcomes (e.g.
     // implicit setup phases that completed before the failing
     // one) are tolerated; we just require at least one Failed
     // row with a populated error list.
-    let failed: Vec<_> = outcomes.iter()
-        .filter(|o| o.status == "failed").collect();
-    assert!(!failed.is_empty(),
-        "no Failed phase outcomes; rows: {:?}", outcomes);
+    let failed: Vec<_> = outcomes.iter().filter(|o| o.status == "failed").collect();
+    assert!(
+        !failed.is_empty(),
+        "no Failed phase outcomes; rows: {:?}",
+        outcomes
+    );
     let f = failed[0];
-    assert!(!f.errors.is_empty(),
-        "Failed outcome must carry at least one error: {:?}", f);
+    assert!(
+        !f.errors.is_empty(),
+        "Failed outcome must carry at least one error: {:?}",
+        f
+    );
     // The error class should propagate from the testkit
     // injection (`ModelError`) through the per-cycle error
     // path into PhaseErrorDetail.class.
     assert!(
-        f.errors.iter().any(|e| e.class.contains("ModelError")
-            || e.class == "phase_failed"),
+        f.errors
+            .iter()
+            .any(|e| e.class.contains("ModelError") || e.class == "phase_failed"),
         "expected an error with class containing 'ModelError' or 'phase_failed': {:?}",
-        f.errors);
+        f.errors
+    );
     // SRD-77 axis labels — session and exec_id must be
     // populated even on the legacy single-execution shape.
-    assert!(!f.session.is_empty(),
-        "session label must be populated on phase_outcomes row: {:?}", f);
-    assert_eq!(f.exec_id, 1,
-        "exec_id defaults to 1 until SRD-77 lands the registry: {:?}", f);
+    assert!(
+        !f.session.is_empty(),
+        "session label must be populated on phase_outcomes row: {:?}",
+        f
+    );
+    assert_eq!(
+        f.exec_id, 1,
+        "exec_id defaults to 1 until SRD-77 lands the registry: {:?}",
+        f
+    );
 }
 
 #[test]
 fn nbrs_replay_renders_failed_phase_with_x_glyph() {
     let wl = write_workload("replay", FAIL_EVERY_CYCLE);
-    let (session_path, _stdout, stderr, ok) = run_with_session(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=stop",
-    ]);
+    let (session_path, _stdout, stderr, ok) = run_with_session(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=stop",
+        ],
+    );
     assert!(!ok, "run should have failed: {stderr}");
 
     // Drive `nbrs replay --plain` against the session db and
@@ -176,21 +196,28 @@ fn nbrs_replay_renders_failed_phase_with_x_glyph() {
     let out = cmd.output().expect("exec nbrs replay");
     let replay_stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let replay_stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    assert!(out.status.success(),
-        "nbrs replay should succeed; stderr:\n{replay_stderr}");
-    assert!(replay_stdout.contains('✗'),
-        "replay output must include ✗ for the failed phase; stdout:\n{replay_stdout}");
+    assert!(
+        out.status.success(),
+        "nbrs replay should succeed; stderr:\n{replay_stderr}"
+    );
+    assert!(
+        replay_stdout.contains('✗'),
+        "replay output must include ✗ for the failed phase; stdout:\n{replay_stdout}"
+    );
 }
 
 #[test]
 fn nbrs_replay_errors_filter_keeps_only_failed_outcomes() {
     let wl = write_workload("filter", FAIL_EVERY_CYCLE);
-    let (session_path, _stdout, _stderr, _ok) = run_with_session(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=stop",
-    ]);
+    let (session_path, _stdout, _stderr, _ok) = run_with_session(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=stop",
+        ],
+    );
 
     let mut cmd = nbrs();
     cmd.arg("replay");
@@ -207,21 +234,28 @@ fn nbrs_replay_errors_filter_keeps_only_failed_outcomes() {
     // that ✗ appears AND ✓ never appears (a successful row
     // would slip through if the `--errors` filter were
     // broken).
-    assert!(stdout.contains('✗'),
-        "--errors output must include ✗ for the failed phase; got:\n{stdout}");
-    assert!(!stdout.contains('✓'),
-        "--errors must not include any ✓ rows; got:\n{stdout}");
+    assert!(
+        stdout.contains('✗'),
+        "--errors output must include ✗ for the failed phase; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains('✓'),
+        "--errors must not include any ✓ rows; got:\n{stdout}"
+    );
 }
 
 #[test]
 fn nbrs_replay_json_dumps_structured_outcome() {
     let wl = write_workload("json", FAIL_EVERY_CYCLE);
-    let (session_path, _stdout, _stderr, _ok) = run_with_session(&wl, &[
-        "adapter=testkit",
-        "cycles=20",
-        "concurrency=1",
-        "errors=stop",
-    ]);
+    let (session_path, _stdout, _stderr, _ok) = run_with_session(
+        &wl,
+        &[
+            "adapter=testkit",
+            "cycles=20",
+            "concurrency=1",
+            "errors=stop",
+        ],
+    );
 
     let mut cmd = nbrs();
     cmd.arg("replay");
@@ -235,18 +269,28 @@ fn nbrs_replay_json_dumps_structured_outcome() {
     // parsing JSON (the replay command writes a fixed shape).
     let mut saw_failed = false;
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        assert!(line.starts_with('{') && line.ends_with('}'),
-            "each JSON line must be one self-contained object: {line:?}");
-        assert!(line.contains("\"phase_name\":"),
-            "JSON must carry phase_name: {line:?}");
-        assert!(line.contains("\"status\":"),
-            "JSON must carry status: {line:?}");
-        assert!(line.contains("\"exec_id\":"),
-            "JSON must carry exec_id: {line:?}");
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "each JSON line must be one self-contained object: {line:?}"
+        );
+        assert!(
+            line.contains("\"phase_name\":"),
+            "JSON must carry phase_name: {line:?}"
+        );
+        assert!(
+            line.contains("\"status\":"),
+            "JSON must carry status: {line:?}"
+        );
+        assert!(
+            line.contains("\"exec_id\":"),
+            "JSON must carry exec_id: {line:?}"
+        );
         if line.contains("\"status\":\"failed\"") {
             saw_failed = true;
         }
     }
-    assert!(saw_failed,
-        "JSON dump must contain at least one failed outcome; got:\n{stdout}");
+    assert!(
+        saw_failed,
+        "JSON dump must contain at least one failed outcome; got:\n{stdout}"
+    );
 }

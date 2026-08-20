@@ -29,11 +29,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use nbrs_runtime::observer::{LogCategory, LogLevel, PhaseProgressUpdate, RunObserver};
 use nbrs_metrics::cadence::Cadences;
 use nbrs_metrics::metrics_query::MetricsQuery;
 use nbrs_metrics::scheduler::Reporter;
 use nbrs_metrics::snapshot::MetricSet;
+use nbrs_runtime::observer::{LogCategory, LogLevel, PhaseProgressUpdate, RunObserver};
 use parking_lot::Mutex;
 
 use crate::frame_broker::FrameBroker;
@@ -49,20 +49,48 @@ struct ScopeAncestorContext {
 }
 
 impl nbrs_runtime::readouts::ReadoutContext for ScopeAncestorContext {
-    fn subject_name(&self) -> &str { &self.name }
-    fn subject_seq(&self) -> Option<(usize, usize)> { None }
-    fn subject_labels(&self) -> &str { "" }
-    fn cycles_completed(&self) -> u64 { 0 }
-    fn cycles_total(&self) -> u64 { 0 }
-    fn ops_ok(&self) -> u64 { 0 }
-    fn errors(&self) -> u64 { 0 }
-    fn retries(&self) -> u64 { 0 }
-    fn concurrency(&self) -> usize { 0 }
-    fn elapsed_secs(&self) -> f64 { 0.0 }
-    fn consumed(&self) -> u64 { 0 }
-    fn status_metric_chips(&self) -> String { String::new() }
-    fn depth_indent(&self) -> &str { "" }
-    fn use_color(&self) -> bool { self.use_color }
+    fn subject_name(&self) -> &str {
+        &self.name
+    }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        None
+    }
+    fn subject_labels(&self) -> &str {
+        ""
+    }
+    fn cycles_completed(&self) -> u64 {
+        0
+    }
+    fn cycles_total(&self) -> u64 {
+        0
+    }
+    fn ops_ok(&self) -> u64 {
+        0
+    }
+    fn errors(&self) -> u64 {
+        0
+    }
+    fn retries(&self) -> u64 {
+        0
+    }
+    fn concurrency(&self) -> usize {
+        0
+    }
+    fn elapsed_secs(&self) -> f64 {
+        0.0
+    }
+    fn consumed(&self) -> u64 {
+        0
+    }
+    fn status_metric_chips(&self) -> String {
+        String::new()
+    }
+    fn depth_indent(&self) -> &str {
+        ""
+    }
+    fn use_color(&self) -> bool {
+        self.use_color
+    }
     fn event(&self) -> nbrs_runtime::lifecycle::EventType {
         // Live mid-run scope-ancestor walker fires the
         // scope_header readout at the same boundary that
@@ -249,30 +277,41 @@ fn level_to_severity(level: LogLevel) -> LogSeverity {
     match level {
         LogLevel::Trace => LogSeverity::Debug,
         LogLevel::Debug => LogSeverity::Debug,
-        LogLevel::Info  => LogSeverity::Info,
-        LogLevel::Warn  => LogSeverity::Warn,
+        LogLevel::Info => LogSeverity::Info,
+        LogLevel::Warn => LogSeverity::Warn,
         LogLevel::Error => LogSeverity::Error,
     }
 }
 
 impl RunObserver for LogOnlyObserver {
-    fn op_measure(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
-                  op_name: &str, text: &str) {
-        self.state.send(crate::run_state_actor::RunStateCmd::OpMeasure {
-            parent: parent_phase, op_name: op_name.to_string(), text: text.to_string() });
+    fn op_measure(
+        &self,
+        parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: &str,
+        text: &str,
+    ) {
+        self.state
+            .send(crate::run_state_actor::RunStateCmd::OpMeasure {
+                parent: parent_phase,
+                op_name: op_name.to_string(),
+                text: text.to_string(),
+            });
     }
 
     fn session_dir_ready(&self, dir: &std::path::Path) {
         // Opens <dir>/transcript.log in the actor and flushes everything
         // buffered since actor start.
-        self.state.send(crate::run_state_actor::RunStateCmd::OpenTranscript(
-            dir.join("transcript.log")));
+        self.state
+            .send(crate::run_state_actor::RunStateCmd::OpenTranscript(
+                dir.join("transcript.log"),
+            ));
     }
 
     fn sysmon_update(&self, sample: &nbrs_runtime::sysmon::SysmonSample) {
         // Same forward the full-TUI observer does: the sample is ambient
         // session state consumed by the status fold at repaint.
-        self.state.send(crate::run_state_actor::RunStateCmd::Sysmon(sample.clone()));
+        self.state
+            .send(crate::run_state_actor::RunStateCmd::Sysmon(sample.clone()));
     }
 
     fn scenario_pre_mapped(&self, tree: &nbrs_runtime::scene_tree::SceneTree) {
@@ -287,7 +326,15 @@ impl RunObserver for LogOnlyObserver {
         self.state.send(RunStateCmd::InstallTree(tree.clone()));
     }
 
-    fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
+    fn phase_starting(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        op_templates: usize,
+        total_cycles: u64,
+        concurrency: usize,
+    ) {
         // Snapshot mutation: same RunStateCmd shape TuiObserver
         // sends, so the snapshot model is identical between modes.
         self.state.send(RunStateCmd::PhaseStarting {
@@ -309,7 +356,11 @@ impl RunObserver for LogOnlyObserver {
         // phase rows nested under their innermost scope, no
         // redundant striated coord tuple repeated on every
         // phase line.
-        let template_word = if op_templates == 1 { "op template" } else { "op templates" };
+        let template_word = if op_templates == 1 {
+            "op template"
+        } else {
+            "op templates"
+        };
         let cycle_word = if total_cycles == 1 { "cycle" } else { "cycles" };
 
         // ANSI color codes — only when stderr is a TTY and
@@ -333,9 +384,17 @@ impl RunObserver for LogOnlyObserver {
                 // condensed ✓ line from `nbrs-runtime::activity`
                 // is the sole per-phase log entry, same as the
                 // hierarchic path below.
-                let _ = (op_templates, total_cycles, concurrency,
-                         template_word, cycle_word, name, labels,
-                         bold, color);
+                let _ = (
+                    op_templates,
+                    total_cycles,
+                    concurrency,
+                    template_word,
+                    cycle_word,
+                    name,
+                    labels,
+                    bold,
+                    color,
+                );
                 return;
             }
         };
@@ -349,11 +408,18 @@ impl RunObserver for LogOnlyObserver {
         // same-name dispatch); fall back to a by-name lookup only
         // for a runtime-materialized phase absent from this
         // (possibly pre-map-snapshot) tree handle.
-        let phase_node = tree.nodes.get(scene_node_id)
+        let phase_node = tree
+            .nodes
+            .get(scene_node_id)
             .filter(|n| n.kind == nbrs_runtime::scene_tree::NodeKind::Phase && n.name == name)
-            .or_else(|| tree.find_phase(name, labels,
-                Some(&nbrs_runtime::scene_tree::PhaseStatus::Running))
-                .and_then(|id| tree.nodes.get(id)));
+            .or_else(|| {
+                tree.find_phase(
+                    name,
+                    labels,
+                    Some(&nbrs_runtime::scene_tree::PhaseStatus::Running),
+                )
+                .and_then(|id| tree.nodes.get(id))
+            });
         let (seq, phase_depth, ancestor_chain) = match phase_node {
             Some(n) => {
                 let mut chain: Vec<usize> = Vec::new();
@@ -369,7 +435,9 @@ impl RunObserver for LogOnlyObserver {
                     }
                 }
                 chain.reverse(); // outer-first
-                let seq = n.seq.map(|s| format!("{dim}[{s}/{}]{reset} ", tree.total_phases()))
+                let seq = n
+                    .seq
+                    .map(|s| format!("{dim}[{s}/{}]{reset} ", tree.total_phases()))
                     .unwrap_or_default();
                 let depth = n.depth.saturating_sub(1);
                 (seq, depth, chain)
@@ -382,7 +450,9 @@ impl RunObserver for LogOnlyObserver {
         // point gets its own indented header line.
         let mut guard = self.last_scope_chain.lock();
         let last_chain = guard.clone().unwrap_or_default();
-        let common_prefix = last_chain.iter().zip(ancestor_chain.iter())
+        let common_prefix = last_chain
+            .iter()
+            .zip(ancestor_chain.iter())
             .take_while(|(a, b)| a == b)
             .count();
         // Push 8c: scope-ancestor headers route through
@@ -413,8 +483,7 @@ impl RunObserver for LogOnlyObserver {
                     );
                 }
                 let _ = (cyan, italic);
-                nbrs_runtime::observer::log(LogLevel::Info,
-                    &format!("{indent}{s_buf}"));
+                nbrs_runtime::observer::log(LogLevel::Info, &format!("{indent}{s_buf}"));
             }
         }
         *guard = Some(ancestor_chain);
@@ -428,11 +497,25 @@ impl RunObserver for LogOnlyObserver {
         // hierarchic walk reads the same on its way down — only
         // the redundant "[N/total] [name] (coords): …" preview
         // is dropped (its info is fully captured by the ✓ line).
-        let _ = (phase_depth, op_templates, total_cycles,
-                 concurrency, template_word, cycle_word, seq, labels);
+        let _ = (
+            phase_depth,
+            op_templates,
+            total_cycles,
+            concurrency,
+            template_word,
+            cycle_word,
+            seq,
+            labels,
+        );
     }
 
-    fn phase_completed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_completed(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        duration_secs: f64,
+    ) {
         self.state.send(RunStateCmd::PhaseCompleted {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
             scene_node_id,
@@ -448,7 +531,13 @@ impl RunObserver for LogOnlyObserver {
         // phase_completed.
     }
 
-    fn phase_failed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
+    fn phase_failed(
+        &self,
+        scene_node_id: nbrs_runtime::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        error: &str,
+    ) {
         self.state.send(RunStateCmd::PhaseFailed {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
             scene_node_id,
@@ -474,7 +563,12 @@ impl RunObserver for LogOnlyObserver {
         });
     }
 
-    fn op_completed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, duration_secs: f64) {
+    fn op_completed(
+        &self,
+        parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: &str,
+        duration_secs: f64,
+    ) {
         self.state.send(RunStateCmd::OpCompleted {
             parent: parent_phase,
             op_name: op_name.to_string(),
@@ -482,7 +576,12 @@ impl RunObserver for LogOnlyObserver {
         });
     }
 
-    fn op_failed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, error: &str) {
+    fn op_failed(
+        &self,
+        parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: &str,
+        error: &str,
+    ) {
         self.state.send(RunStateCmd::OpFailed {
             parent: parent_phase,
             op_name: op_name.to_string(),
@@ -592,4 +691,3 @@ impl RunObserver for LogOnlyObserver {
         *self.metrics_query.lock() = Some(query);
     }
 }
-

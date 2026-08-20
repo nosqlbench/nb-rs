@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use nbrs_metrics::controls::{
-    Control, ControlBuilder, ControlOrigin, ControlRegistry, SetError,
-};
+use nbrs_metrics::controls::{Control, ControlBuilder, ControlOrigin, ControlRegistry, SetError};
 use nbrs_metrics::labels::Labels;
 use nbrs_rate::{RateLimiter, RateLimiterApplier, RateSpec};
 
@@ -32,10 +30,7 @@ fn build_rate_control(initial: f64) -> Control<RateSpec> {
     ControlBuilder::new("rate", RateSpec::new(initial))
         .validator(|spec: &RateSpec| {
             if spec.ops_per_sec <= 0.0 {
-                return Err(format!(
-                    "rate must be > 0 (got {})",
-                    spec.ops_per_sec,
-                ));
+                return Err(format!("rate must be > 0 (got {})", spec.ops_per_sec,));
             }
             if spec.ops_per_sec > 1_000_000.0 {
                 return Err(format!(
@@ -96,7 +91,8 @@ async fn full_flow_workload_like_rate_control() {
 
     // 4. Writer mutates the control. The applier reconfigures
     //    the limiter in-place; workers keep going.
-    control.set(RateSpec::new(20_000.0), ControlOrigin::Test)
+    control
+        .set(RateSpec::new(20_000.0), ControlOrigin::Test)
         .await
         .expect("reconfigure to higher rate should succeed");
     assert_eq!(limiter.rate(), 20_000.0);
@@ -126,11 +122,9 @@ async fn full_flow_workload_like_rate_control() {
     );
 
     // 5. The reified gauge now reads the committed value.
-    let snap = registry.snapshot_gauges(
-        &Labels::of("phase", "rampup"),
-        Instant::now(),
-    );
-    let family = snap.family("control_rate")
+    let snap = registry.snapshot_gauges(&Labels::of("phase", "rampup"), Instant::now());
+    let family = snap
+        .family("control_rate")
         .expect("control_rate gauge family should exist");
     let metric = family.metrics().next().unwrap();
     assert_eq!(metric.labels().get("control"), Some("rate"));
@@ -157,13 +151,20 @@ async fn failing_applier_reports_through_control() {
     // subscriber (e.g. a cooperating fiber pool) refusing the
     // new value. Per SRD 23's confirmed-apply contract, any
     // single applier failure fails the whole write.
-    control.register_applier(nbrs_metrics::controls::SyncApplier::new(
-        |_: RateSpec| Err("subscriber B refused".into()),
-    ));
+    control.register_applier(nbrs_metrics::controls::SyncApplier::new(|_: RateSpec| {
+        Err("subscriber B refused".into())
+    }));
 
-    match control.set(RateSpec::new(5_000.0), ControlOrigin::Test).await {
+    match control
+        .set(RateSpec::new(5_000.0), ControlOrigin::Test)
+        .await
+    {
         Err(SetError::ApplyFailed(failures)) => {
-            assert!(failures.iter().any(|f| f.message.contains("subscriber B refused")));
+            assert!(
+                failures
+                    .iter()
+                    .any(|f| f.message.contains("subscriber B refused"))
+            );
         }
         other => panic!("expected ApplyFailed, got {other:?}"),
     }
@@ -173,6 +174,9 @@ async fn failing_applier_reports_through_control() {
     // control value is NOT advanced — this is the confirmed-apply
     // contract. Readers that need "the authoritative current
     // rate" use `control.value()`, not `limiter.rate()`.
-    assert_eq!(control.value().ops_per_sec, 1_000.0,
-        "control committed value is the source of truth");
+    assert_eq!(
+        control.value().ops_per_sec,
+        1_000.0,
+        "control committed value is the source of truth"
+    );
 }

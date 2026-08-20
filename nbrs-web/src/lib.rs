@@ -53,8 +53,8 @@
 //! - SRD 18b — scope tree exposed at `/api/scope-tree`
 //! - SRD 42 — metrics cadence, reporter subscriptions
 
-pub mod server;
-pub mod routes;
-pub mod models;
-pub mod ws;
 pub mod graph;
+pub mod models;
+pub mod routes;
+pub mod server;
+pub mod ws;

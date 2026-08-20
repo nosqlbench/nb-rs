@@ -19,8 +19,7 @@ use std::time::{Duration, Instant};
 use hdrhistogram::Histogram as HdrHistogram;
 
 use nbrs_metrics::cadence::{
-    Cadences, CadenceTree, CadenceTreeError, DEFAULT_MAX_FAN_IN,
-    format_duration_short,
+    CadenceTree, CadenceTreeError, Cadences, DEFAULT_MAX_FAN_IN, format_duration_short,
 };
 use nbrs_metrics::cadence_reporter::{CadenceReporter, HISTORY_RING_CAP};
 use nbrs_metrics::component::{Component, ComponentState, InstrumentRef, attach, capture_tree};
@@ -32,10 +31,9 @@ use nbrs_metrics::labels::Labels;
 use nbrs_metrics::metrics_query::{MetricsQuery, SelectError, Selection};
 use nbrs_metrics::scheduler::{Reporter, SchedulerBuilder};
 use nbrs_metrics::snapshot::{
-    Bucket, BucketBound, CombineMode, CounterValue, Exemplar, GaugeValue, HistogramValue,
-    Metric, MetricFamily, MetricPoint, MetricSet, MetricType, MetricValue,
-    combine_hdr, combine_into, counter_family, gauge_family, histogram_family,
-    split_name_label,
+    Bucket, BucketBound, CombineMode, CounterValue, Exemplar, GaugeValue, HistogramValue, Metric,
+    MetricFamily, MetricPoint, MetricSet, MetricType, MetricValue, combine_hdr, combine_into,
+    counter_family, gauge_family, histogram_family, split_name_label,
 };
 
 // =========================================================================
@@ -194,7 +192,10 @@ async fn combine_counter_aggregate_sums_keeps_earlier_created() {
     combine_into(&mut a, &b, CombineMode::Aggregate).unwrap();
     match a.value() {
         MetricValue::Counter(c) => {
-            assert_eq!(c.cumulative, 35, "aggregate sums cumulative across components");
+            assert_eq!(
+                c.cumulative, 35,
+                "aggregate sums cumulative across components"
+            );
             assert_eq!(c.created, Some(t0));
         }
         _ => panic!("wrong type"),
@@ -221,8 +222,15 @@ async fn metric_set_coalesce_keeps_latest_counter_sum_intervals() {
     b.insert_counter("ops", Labels::default(), 7, Instant::now());
     let merged = MetricSet::coalesce(&[a, b]);
     assert_eq!(merged.interval(), Duration::from_secs(3));
-    let cumulative = match merged.family("ops").unwrap()
-        .metrics().next().unwrap().point().unwrap().value()
+    let cumulative = match merged
+        .family("ops")
+        .unwrap()
+        .metrics()
+        .next()
+        .unwrap()
+        .point()
+        .unwrap()
+        .value()
     {
         MetricValue::Counter(c) => c.cumulative,
         _ => panic!("wrong type"),
@@ -263,11 +271,14 @@ async fn convenience_constructors_build_single_point_families() {
 async fn cadences_parse_and_order_are_preserved() {
     let c = Cadences::parse("1m,10s,5m").unwrap();
     let got: Vec<Duration> = c.iter().collect();
-    assert_eq!(got, vec![
-        Duration::from_secs(60),
-        Duration::from_secs(10),
-        Duration::from_secs(300),
-    ]);
+    assert_eq!(
+        got,
+        vec![
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            Duration::from_secs(300),
+        ]
+    );
     assert_eq!(c.smallest(), Duration::from_secs(10));
     assert_eq!(c.largest(), Duration::from_secs(300));
 }
@@ -275,13 +286,13 @@ async fn cadences_parse_and_order_are_preserved() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cadence_tree_plan_validated_enforces_base_interval() {
     let c = Cadences::new(&[Duration::from_millis(500), Duration::from_secs(1)]).unwrap();
-    let err = CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1))
-        .unwrap_err();
+    let err =
+        CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap_err();
     assert!(matches!(err, CadenceTreeError::BelowBase { .. }));
 
     let c2 = Cadences::new(&[Duration::from_millis(1500)]).unwrap();
-    let err2 = CadenceTree::plan_validated(c2, DEFAULT_MAX_FAN_IN, Duration::from_secs(1))
-        .unwrap_err();
+    let err2 =
+        CadenceTree::plan_validated(c2, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap_err();
     assert!(matches!(err2, CadenceTreeError::NotMultiple { .. }));
 }
 
@@ -316,10 +327,8 @@ fn ts_counter_set(interval: Duration, v: u64) -> MetricSet {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cadence_reporter_promotes_on_interval_boundary() {
-    let cadences = Cadences::new(&[
-        Duration::from_millis(100),
-        Duration::from_millis(400),
-    ]).unwrap();
+    let cadences =
+        Cadences::new(&[Duration::from_millis(100), Duration::from_millis(400)]).unwrap();
     let tree = CadenceTree::plan_default(cadences);
     let reporter = CadenceReporter::new(tree);
     let labels = Labels::of("phase", "load");
@@ -334,13 +343,26 @@ async fn cadence_reporter_promotes_on_interval_boundary() {
     // asynchronously. Tests synchronize via `flush_for_tests`
     // to observe in-flight effects deterministically.
     reporter.flush_for_tests();
-    let latest_400 = reporter.latest(&labels, Duration::from_millis(400)).unwrap();
-    let cumulative = match latest_400.family("ops").unwrap()
-        .metrics().next().unwrap().point().unwrap().value() {
+    let latest_400 = reporter
+        .latest(&labels, Duration::from_millis(400))
+        .unwrap();
+    let cumulative = match latest_400
+        .family("ops")
+        .unwrap()
+        .metrics()
+        .next()
+        .unwrap()
+        .point()
+        .unwrap()
+        .value()
+    {
         MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
-    assert_eq!(cumulative, 20, "promoted window holds the latest cumulative");
+    assert_eq!(
+        cumulative, 20,
+        "promoted window holds the latest cumulative"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -349,13 +371,27 @@ async fn cadence_reporter_force_close_publishes_trailing_partial() {
     let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
     let labels = Labels::of("phase", "tail");
     reporter.ingest(&labels, ts_counter_set(Duration::from_millis(200), 3));
-    assert!(reporter.latest(&labels, Duration::from_millis(1000)).is_none());
+    assert!(
+        reporter
+            .latest(&labels, Duration::from_millis(1000))
+            .is_none()
+    );
 
     reporter.shutdown_flush().await;
-    let partial = reporter.latest(&labels, Duration::from_millis(1000)).unwrap();
+    let partial = reporter
+        .latest(&labels, Duration::from_millis(1000))
+        .unwrap();
     assert!(partial.interval() < Duration::from_millis(1000));
-    let total = match partial.family("ops").unwrap()
-        .metrics().next().unwrap().point().unwrap().value() {
+    let total = match partial
+        .family("ops")
+        .unwrap()
+        .metrics()
+        .next()
+        .unwrap()
+        .point()
+        .unwrap()
+        .value()
+    {
         MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
@@ -371,7 +407,10 @@ async fn cadence_reporter_ring_retains_recent_by_time() {
     let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
     let labels = Labels::of("phase", "ring");
     for i in 0..(HISTORY_RING_CAP + 5) {
-        reporter.ingest(&labels, ts_counter_set(Duration::from_millis(50), (i as u64) + 1));
+        reporter.ingest(
+            &labels,
+            ts_counter_set(Duration::from_millis(50), (i as u64) + 1),
+        );
     }
     reporter.flush_for_tests();
     let ring = reporter.ring(&labels, Duration::from_millis(50));
@@ -387,16 +426,18 @@ async fn cadence_reporter_ring_retains_recent_by_time() {
 fn install_test_counter(c: &mut Component, family: &str, value: u64) {
     let counter = Arc::new(Counter::new(Labels::of("name", family)));
     counter.inc_by(value);
-    c.register_instrument(family, InstrumentRef::Counter(counter)).unwrap();
+    c.register_instrument(family, InstrumentRef::Counter(counter))
+        .unwrap();
 }
 
 fn build_query_fixture(
     cadences: Cadences,
 ) -> (Arc<RwLock<Component>>, Arc<CadenceReporter>, MetricsQuery) {
     let root = Component::root(Labels::of("session", "s1"), HashMap::new());
-    let phase = Arc::new(RwLock::new(
-        Component::new(Labels::of("phase", "load"), HashMap::new()),
-    ));
+    let phase = Arc::new(RwLock::new(Component::new(
+        Labels::of("phase", "load"),
+        HashMap::new(),
+    )));
     attach(&root, &phase);
     {
         let mut p = phase.write().unwrap();
@@ -415,11 +456,12 @@ async fn metrics_query_now_reads_smallest_cadence_window() {
     // closed window, not the live tree. Before any window closes,
     // `now` is empty. After an ingest of data at that cadence,
     // `now` returns it.
-    let (_root, reporter, q) = build_query_fixture(
-        Cadences::new(&[Duration::from_millis(100)]).unwrap(),
+    let (_root, reporter, q) =
+        build_query_fixture(Cadences::new(&[Duration::from_millis(100)]).unwrap());
+    assert!(
+        q.now(&Selection::family("ops")).is_empty(),
+        "pre-close now should be empty"
     );
-    assert!(q.now(&Selection::family("ops")).is_empty(),
-        "pre-close now should be empty");
 
     let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
     let mut s = MetricSet::new(Duration::from_millis(100));
@@ -428,8 +470,15 @@ async fn metrics_query_now_reads_smallest_cadence_window() {
     reporter.flush_for_tests();
 
     let snap = q.now(&Selection::family("ops"));
-    let total = match snap.family("ops").unwrap()
-        .metrics().next().unwrap().point().unwrap().value()
+    let total = match snap
+        .family("ops")
+        .unwrap()
+        .metrics()
+        .next()
+        .unwrap()
+        .point()
+        .unwrap()
+        .value()
     {
         MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
@@ -439,9 +488,8 @@ async fn metrics_query_now_reads_smallest_cadence_window() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
-    let (_root, reporter, q) = build_query_fixture(
-        Cadences::new(&[Duration::from_millis(100)]).unwrap(),
-    );
+    let (_root, reporter, q) =
+        build_query_fixture(Cadences::new(&[Duration::from_millis(100)]).unwrap());
     // Ingest a closed snapshot directly — MetricsQuery sees it.
     let phase_labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
     let mut ingest = MetricSet::new(Duration::from_millis(100));
@@ -450,8 +498,15 @@ async fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
     reporter.flush_for_tests();
 
     let snap = q.cadence_window(Duration::from_millis(100), &Selection::family("ops"));
-    let total = match snap.family("ops").unwrap()
-        .metrics().next().unwrap().point().unwrap().value()
+    let total = match snap
+        .family("ops")
+        .unwrap()
+        .metrics()
+        .next()
+        .unwrap()
+        .point()
+        .unwrap()
+        .value()
     {
         MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
@@ -461,9 +516,8 @@ async fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_query_selection_filters_by_labels() {
-    let (_root, reporter, q) = build_query_fixture(
-        Cadences::new(&[Duration::from_millis(100)]).unwrap(),
-    );
+    let (_root, reporter, q) =
+        build_query_fixture(Cadences::new(&[Duration::from_millis(100)]).unwrap());
     let phase_labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
     let mut ingest = MetricSet::new(Duration::from_millis(100));
     ingest.insert_counter("ops", Labels::of("kind", "a"), 1, Instant::now());
@@ -486,14 +540,14 @@ async fn metrics_query_selection_filters_by_labels() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_query_select_one_hard_errors_on_zero_or_many() {
-    let (_root, reporter, q) = build_query_fixture(
-        Cadences::new(&[Duration::from_millis(100)]).unwrap(),
-    );
+    let (_root, reporter, q) =
+        build_query_fixture(Cadences::new(&[Duration::from_millis(100)]).unwrap());
     // Zero matches
-    let err = q.select_one(|qi| qi.cadence_window(
-        Duration::from_millis(100),
-        &Selection::family("missing"),
-    )).unwrap_err();
+    let err = q
+        .select_one(|qi| {
+            qi.cadence_window(Duration::from_millis(100), &Selection::family("missing"))
+        })
+        .unwrap_err();
     assert_eq!(err, SelectError::NoMatch);
 
     // Ingest two distinct series.
@@ -504,25 +558,25 @@ async fn metrics_query_select_one_hard_errors_on_zero_or_many() {
     reporter.ingest(&phase_labels, ingest);
     reporter.flush_for_tests();
 
-    let err = q.select_one(|qi| qi.cadence_window(
-        Duration::from_millis(100),
-        &Selection::family("ops"),
-    )).unwrap_err();
+    let err = q
+        .select_one(|qi| qi.cadence_window(Duration::from_millis(100), &Selection::family("ops")))
+        .unwrap_err();
     assert_eq!(err, SelectError::MultipleMatches(2));
 
     // Tight filter matches exactly one.
-    let ok = q.select_one(|qi| qi.cadence_window(
-        Duration::from_millis(100),
-        &Selection::family("ops").with_label("k", "a"),
-    ));
+    let ok = q.select_one(|qi| {
+        qi.cadence_window(
+            Duration::from_millis(100),
+            &Selection::family("ops").with_label("k", "a"),
+        )
+    });
     assert!(ok.is_ok());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_query_session_lifetime_includes_in_flight_partial() {
-    let (_root, reporter, q) = build_query_fixture(
-        Cadences::new(&[Duration::from_secs(1)]).unwrap(),
-    );
+    let (_root, reporter, q) =
+        build_query_fixture(Cadences::new(&[Duration::from_secs(1)]).unwrap());
     let phase_labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
     // Only 200ms of data — doesn't promote at the 1s cadence, but
     // session_lifetime should still see it through the prebuffer peek.
@@ -532,15 +586,25 @@ async fn metrics_query_session_lifetime_includes_in_flight_partial() {
     reporter.flush_for_tests();
 
     let snap = q.session_lifetime(&Selection::family("ops"));
-    let total = match snap.family("ops").unwrap()
-        .metrics().next().unwrap().point().unwrap().value()
+    let total = match snap
+        .family("ops")
+        .unwrap()
+        .metrics()
+        .next()
+        .unwrap()
+        .point()
+        .unwrap()
+        .value()
     {
         MetricValue::Counter(c) => c.cumulative,
         // session_lifetime merges the live-now counter too, so the
         // observed total may be larger than 7 (adds the stub's 42).
         _ => panic!(),
     };
-    assert!(total >= 7, "session_lifetime should include in-flight prebuffer: got {total}");
+    assert!(
+        total >= 7,
+        "session_lifetime should include in-flight prebuffer: got {total}"
+    );
 }
 
 // =========================================================================
@@ -550,9 +614,10 @@ async fn metrics_query_session_lifetime_includes_in_flight_partial() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn capture_tree_visits_only_running_components() {
     let root = Component::root(Labels::of("session", "s1"), HashMap::new());
-    let phase = Arc::new(RwLock::new(
-        Component::new(Labels::of("phase", "load"), HashMap::new()),
-    ));
+    let phase = Arc::new(RwLock::new(Component::new(
+        Labels::of("phase", "load"),
+        HashMap::new(),
+    )));
     attach(&root, &phase);
 
     // Stopped phase — not captured.
@@ -587,9 +652,7 @@ impl Reporter for CountingReporter {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scheduler_feeds_cadence_reporter_and_delivers_to_external_reporter() {
-    let tree = CadenceTree::plan_default(Cadences::new(&[
-        Duration::from_millis(100),
-    ]).unwrap());
+    let tree = CadenceTree::plan_default(Cadences::new(&[Duration::from_millis(100)]).unwrap());
     let cr = Arc::new(CadenceReporter::new(tree));
     let external_count = Arc::new(AtomicU64::new(0));
     let ec = external_count.clone();

@@ -36,7 +36,9 @@ use crate::ast::{Expr, LabelFilter, LabelFilterOp, MetricExpr};
 /// Idempotent: calling the rewrite twice with the same
 /// `resolved_id` produces the same AST as one call.
 pub fn inject_default_exec_id(expr: &mut Expr, resolved_id: Option<u64>) {
-    let Some(id) = resolved_id else { return; };
+    let Some(id) = resolved_id else {
+        return;
+    };
     walk(expr, id);
 }
 
@@ -118,28 +120,40 @@ mod tests {
     fn missing_exec_id_filter_is_injected() {
         let out = rendered_label_filters(r#"cycles_total{phase="x"}"#);
         // exec_id="7" should appear, ordering is sorted by the prettifier.
-        assert!(out.contains(r#"exec_id="7""#),
-            "exec_id filter MUST be injected; got: {out}");
-        assert!(out.contains(r#"phase="x""#),
-            "operator-written filter MUST be preserved; got: {out}");
+        assert!(
+            out.contains(r#"exec_id="7""#),
+            "exec_id filter MUST be injected; got: {out}"
+        );
+        assert!(
+            out.contains(r#"phase="x""#),
+            "operator-written filter MUST be preserved; got: {out}"
+        );
     }
 
     #[test]
     fn latest_literal_is_resolved_to_concrete_id() {
         let out = rendered_label_filters(r#"cycles_total{exec_id="latest"}"#);
-        assert!(out.contains(r#"exec_id="7""#),
-            "`latest` literal MUST resolve to the concrete id; got: {out}");
-        assert!(!out.contains(r#"exec_id="latest""#),
-            "`latest` literal MUST NOT survive the rewrite; got: {out}");
+        assert!(
+            out.contains(r#"exec_id="7""#),
+            "`latest` literal MUST resolve to the concrete id; got: {out}"
+        );
+        assert!(
+            !out.contains(r#"exec_id="latest""#),
+            "`latest` literal MUST NOT survive the rewrite; got: {out}"
+        );
     }
 
     #[test]
     fn explicit_concrete_exec_id_is_left_alone() {
         let out = rendered_label_filters(r#"cycles_total{exec_id="3"}"#);
-        assert!(out.contains(r#"exec_id="3""#),
-            "operator-supplied concrete id MUST survive; got: {out}");
-        assert!(!out.contains(r#"exec_id="7""#),
-            "rewrite MUST NOT override an explicit operator value; got: {out}");
+        assert!(
+            out.contains(r#"exec_id="3""#),
+            "operator-supplied concrete id MUST survive; got: {out}"
+        );
+        assert!(
+            !out.contains(r#"exec_id="7""#),
+            "rewrite MUST NOT override an explicit operator value; got: {out}"
+        );
     }
 
     #[test]
@@ -148,20 +162,25 @@ mod tests {
         let before = crate::prettifier::pretty_print(&e);
         inject_default_exec_id(&mut e, None);
         let after = crate::prettifier::pretty_print(&e);
-        assert_eq!(before, after,
+        assert_eq!(
+            before, after,
             "None resolver MUST leave the AST untouched (the explicit \
-             aggregate-across-executions intent)");
+             aggregate-across-executions intent)"
+        );
     }
 
     #[test]
     fn injection_walks_inside_function_calls_and_binops() {
         let out = rendered_label_filters(
-            r#"rate(cycles_total{phase="x"}[1m]) / count(cycles_total{phase="x"})"#);
+            r#"rate(cycles_total{phase="x"}[1m]) / count(cycles_total{phase="x"})"#,
+        );
         // Both selectors get the qualifier; count via two
         // occurrences in the rendered output.
         let count = out.matches(r#"exec_id="7""#).count();
-        assert_eq!(count, 2,
-            "every nested MetricExpr MUST get the qualifier; got: {out}");
+        assert_eq!(
+            count, 2,
+            "every nested MetricExpr MUST get the qualifier; got: {out}"
+        );
     }
 
     #[test]
@@ -171,7 +190,9 @@ mod tests {
         let once = crate::prettifier::pretty_print(&e);
         inject_default_exec_id(&mut e, Some(7));
         let twice = crate::prettifier::pretty_print(&e);
-        assert_eq!(once, twice,
-            "rewrite MUST be idempotent under repeated injection");
+        assert_eq!(
+            once, twice,
+            "rewrite MUST be idempotent under repeated injection"
+        );
     }
 }

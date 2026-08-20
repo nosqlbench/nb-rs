@@ -73,8 +73,7 @@ static CATALOG: OnceLock<Vec<&'static BundledWorkload>> = OnceLock::new();
 /// condition.
 pub fn install(sets: &[&'static [BundledWorkload]]) {
     let _ = CATALOG.set({
-        let mut all: Vec<&'static BundledWorkload> =
-            sets.iter().flat_map(|s| s.iter()).collect();
+        let mut all: Vec<&'static BundledWorkload> = sets.iter().flat_map(|s| s.iter()).collect();
         all.sort_by_key(|w| w.name);
         for pair in all.windows(2) {
             assert_ne!(
@@ -102,7 +101,12 @@ pub fn lookup(name: &str) -> Option<&'static BundledWorkload> {
 /// installed (library consumers without the nbrs binary's
 /// startup hook).
 pub fn iter() -> impl Iterator<Item = &'static BundledWorkload> {
-    CATALOG.get().map(|v| v.as_slice()).unwrap_or(&[]).iter().copied()
+    CATALOG
+        .get()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .copied()
 }
 
 /// Entries of one tier, in name order.
@@ -119,8 +123,16 @@ mod tests {
     // install path. (E2e coverage drives the real assembled
     // catalog through the nbrs binary.)
     static SET_A: &[BundledWorkload] = &[
-        BundledWorkload { name: "alpha", tier: Tier::Curated, source: "description: a\n" },
-        BundledWorkload { name: "examples/beta", tier: Tier::Example, source: "# b\n" },
+        BundledWorkload {
+            name: "alpha",
+            tier: Tier::Curated,
+            source: "description: a\n",
+        },
+        BundledWorkload {
+            name: "examples/beta",
+            tier: Tier::Example,
+            source: "# b\n",
+        },
     ];
 
     #[test]

@@ -50,8 +50,8 @@ impl HdrBounds {
     /// at 3 significant digits. ≈ 200 KiB per slot, ≈ 2 MiB per
     /// 10-slot ring.
     pub const LATENCY_DEFAULT: Self = Self {
-        low: 1_000,                // 1 µs in ns
-        high: 60_000_000_000,      // 60 s in ns
+        low: 1_000,           // 1 µs in ns
+        high: 60_000_000_000, // 60 s in ns
         sig_digits: 3,
     };
 
@@ -122,13 +122,14 @@ impl LiveWindowHistogram {
         // Initialise each slot's started_at to the anchor minus the
         // window, so every slot reads as "stale" on first use and
         // will be reset + stamped on its first record.
-        let stale_start = anchor.checked_sub(config.window)
-            .unwrap_or(anchor);
+        let stale_start = anchor.checked_sub(config.window).unwrap_or(anchor);
         let slots = (0..config.slot_count)
-            .map(|_| Mutex::new(Slot {
-                started_at: stale_start,
-                hist: config.bounds.build(),
-            }))
+            .map(|_| {
+                Mutex::new(Slot {
+                    started_at: stale_start,
+                    hist: config.bounds.build(),
+                })
+            })
             .collect();
         let scratch = Mutex::new(config.bounds.build());
         Self {
@@ -140,7 +141,9 @@ impl LiveWindowHistogram {
         }
     }
 
-    pub fn config(&self) -> &LiveWindowConfig { &self.config }
+    pub fn config(&self) -> &LiveWindowConfig {
+        &self.config
+    }
 
     /// Record one sample. Locks exactly one slot's mutex; resets
     /// the slot lazily if it's from a prior cycle.
@@ -221,8 +224,8 @@ impl LiveWindowHistogram {
         let current_idx = ((ns / self.slot_duration_ns) as usize) % self.config.slot_count;
         // offset = how many slot-durations back is idx vs current_idx
         let offset = ((current_idx + self.config.slot_count) - idx) % self.config.slot_count;
-        let boundary_ns = current_slot_start_ns
-            .saturating_sub((offset as u128) * self.slot_duration_ns);
+        let boundary_ns =
+            current_slot_start_ns.saturating_sub((offset as u128) * self.slot_duration_ns);
         self.anchor + Duration::from_nanos(boundary_ns as u64)
     }
 }
@@ -285,8 +288,11 @@ mod tests {
         // Wait longer than the window so every slot goes stale.
         std::thread::sleep(Duration::from_millis(260));
         let late = ring.peek();
-        assert_eq!(late.len(), 0,
-            "every slot older than window should be skipped");
+        assert_eq!(
+            late.len(),
+            0,
+            "every slot older than window should be skipped"
+        );
     }
 
     #[test]
@@ -322,6 +328,9 @@ mod tests {
         assert_eq!(snap.len(), 2);
         // HDR reports bucketed values; allow one bucket of slack.
         assert!(snap.max() <= 60_000_000_000 * 2);
-        assert!(snap.min() > 0, "below-low clamp must produce a positive recorded value");
+        assert!(
+            snap.min() > 0,
+            "below-low clamp must produce a positive recorded value"
+        );
     }
 }

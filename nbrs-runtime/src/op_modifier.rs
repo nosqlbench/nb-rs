@@ -164,11 +164,7 @@ impl<T: 'static> ModifierChain<T> {
             Some(sink) => {
                 for m in &self.active {
                     m.apply(target);
-                    sink.modifier_applied(
-                        &self.op_label,
-                        m.field_name(),
-                        &|| m.diagnostic_value(),
-                    );
+                    sink.modifier_applied(&self.op_label, m.field_name(), &|| m.diagnostic_value());
                 }
             }
         }
@@ -282,8 +278,8 @@ pub fn session_sink() -> Option<Arc<dyn ModifierTraceSink>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Synthetic target type — stands in for a CQL Statement.
     #[derive(Default, Debug, PartialEq)]
@@ -524,11 +520,8 @@ mod tests {
 
     #[test]
     fn debug_impl_reports_active_count_without_revealing_state() {
-        let chain: ModifierChain<FakeStmt> = ModifierChain::new(
-            "op1",
-            vec![Box::new(TimeoutMod { ms: 100 })],
-            None,
-        );
+        let chain: ModifierChain<FakeStmt> =
+            ModifierChain::new("op1", vec![Box::new(TimeoutMod { ms: 100 })], None);
         let s = format!("{:?}", chain);
         assert!(s.contains("op_label"));
         assert!(s.contains("active_count"));

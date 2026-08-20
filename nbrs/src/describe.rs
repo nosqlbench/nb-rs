@@ -34,19 +34,31 @@ pub fn describe_command(args: &[String]) {
         ("controls", name) | ("control", name) => describe_control(name),
         ("wiring", "functions") => describe_wiring_functions(verbose),
         ("wiring", "functions-md") => {
-            let rest: Vec<String> = args.iter().skip(2)
+            let rest: Vec<String> = args
+                .iter()
+                .skip(2)
                 .filter(|a| !a.starts_with('-'))
-                .cloned().collect();
-            let path = rest.first().map(|s| s.as_str()).unwrap_or("wiring_functions.md");
+                .cloned()
+                .collect();
+            let path = rest
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("wiring_functions.md");
             describe_wiring_functions_md(path);
         }
         ("wiring", "stdlib") => describe_wiring_stdlib(),
         ("wiring", "types") => describe_wiring_types(),
         ("wiring", "types-md") => {
-            let rest: Vec<String> = args.iter().skip(2)
+            let rest: Vec<String> = args
+                .iter()
+                .skip(2)
                 .filter(|a| !a.starts_with('-'))
-                .cloned().collect();
-            let path = rest.first().map(|s| s.as_str()).unwrap_or("wiring_types.md");
+                .cloned()
+                .collect();
+            let path = rest
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("wiring_types.md");
             describe_wiring_types_md(path);
         }
         ("wiring", "dag") => {
@@ -60,7 +72,9 @@ pub fn describe_command(args: &[String]) {
         }
         ("wiring", _) => {
             eprintln!("nbrs describe wiring <subtopic>");
-            eprintln!("  functions [--verbose]  List wiring functions (verbose: + signatures, types, associativity)");
+            eprintln!(
+                "  functions [--verbose]  List wiring functions (verbose: + signatures, types, associativity)"
+            );
             eprintln!("  functions-md           Dump all wiring functions to a markdown file");
             eprintln!("  types                  List wiring port types with descriptions");
             eprintln!("  types-md               Dump wiring types to a markdown file");
@@ -106,10 +120,16 @@ pub fn describe_command(args: &[String]) {
         }
         _ => {
             eprintln!("nbrs describe <topic>");
-            eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers + controls");
-            eprintln!("  controls [<name>]  List every dynamic control (SRD-23) the binary can declare");
+            eprintln!(
+                "  adapter[=<name>]   List adapters / show one adapter's params + drivers + controls"
+            );
+            eprintln!(
+                "  controls [<name>]  List every dynamic control (SRD-23) the binary can declare"
+            );
             eprintln!("  optimizers [<n>]   List registered optimizers / show one in detail");
-            eprintln!("  wiring             Wiring (graph-kernel) topics: functions, modules, dag, stdlib");
+            eprintln!(
+                "  wiring             Wiring (graph-kernel) topics: functions, modules, dag, stdlib"
+            );
             eprintln!("  workloads          List bundled workloads / show one in detail");
             eprintln!("  drivers            List driver manifests (SRD-109 web client drivers)");
             eprintln!("  wrappers           List the registered op-template wrappers");
@@ -137,8 +157,12 @@ fn describe_drivers() {
     let mut rows: Vec<Row> = Vec::new();
 
     for entry in nbrs_workload::catalog::iter() {
-        let Some(rest) = entry.name.strip_prefix("drivers/") else { continue };
-        let Some(driver_name) = rest.strip_suffix("/driver") else { continue };
+        let Some(rest) = entry.name.strip_prefix("drivers/") else {
+            continue;
+        };
+        let Some(driver_name) = rest.strip_suffix("/driver") else {
+            continue;
+        };
         match nbrs_workload::drivers::parse_driver_manifest(entry.source, entry.name) {
             Ok(m) => rows.push(Row {
                 name: driver_name.to_string(),
@@ -154,13 +178,18 @@ fn describe_drivers() {
         local.sort_by_key(|e| e.file_name());
         for entry in local {
             let manifest_path = entry.path().join("driver.yaml");
-            if !manifest_path.is_file() { continue }
+            if !manifest_path.is_file() {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
             match std::fs::read_to_string(&manifest_path)
                 .map_err(|e| format!("read {}: {e}", manifest_path.display()))
-                .and_then(|s| nbrs_workload::drivers::parse_driver_manifest(
-                    &s, &manifest_path.display().to_string()))
-            {
+                .and_then(|s| {
+                    nbrs_workload::drivers::parse_driver_manifest(
+                        &s,
+                        &manifest_path.display().to_string(),
+                    )
+                }) {
                 Ok(m) => rows.push(Row {
                     name,
                     adapter: m.adapter,
@@ -178,11 +207,22 @@ fn describe_drivers() {
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    let adapter_w = rows.iter().map(|r| r.adapter.len()).max().unwrap_or(7).max(7);
-    println!("{:name_w$}  {:adapter_w$}  {:8}  {}", "name", "adapter", "origin", "description");
+    let adapter_w = rows
+        .iter()
+        .map(|r| r.adapter.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    println!(
+        "{:name_w$}  {:adapter_w$}  {:8}  {}",
+        "name", "adapter", "origin", "description"
+    );
     for r in &rows {
         let desc = r.description.lines().next().unwrap_or("");
-        println!("{:name_w$}  {:adapter_w$}  {:8}  {desc}", r.name, r.adapter, r.origin);
+        println!(
+            "{:name_w$}  {:adapter_w$}  {:8}  {desc}",
+            r.name, r.adapter, r.origin
+        );
     }
     println!();
     println!("run: nbrs run driver=<name> [workload=<blueprint>] [param=value …]");
@@ -206,7 +246,10 @@ fn describe_workloads(args: &[String]) {
     use nbrs_workload::catalog::{self, Tier};
     let all = args.iter().any(|a| a == "--all");
     let json = args.iter().any(|a| a == "--json");
-    let positional = args.iter().find(|a| !a.starts_with("--")).map(|s| s.as_str());
+    let positional = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(|s| s.as_str());
 
     match positional {
         Some("examples") => {
@@ -244,14 +287,17 @@ fn describe_workloads(args: &[String]) {
 fn workload_summary(source: &str) -> String {
     if let Ok(jval) = serde_yaml::from_str::<serde_json::Value>(source)
         && let Some(desc) = jval.get("description").and_then(|d| d.as_str())
-            && let Some(first) = desc.lines().find(|l| !l.trim().is_empty()) {
-                return first.trim().to_string();
-            }
+        && let Some(first) = desc.lines().find(|l| !l.trim().is_empty())
+    {
+        return first.trim().to_string();
+    }
     // Comment-block fallback: first non-empty, non-decorative
     // comment line (skipping shebangs, license headers, and the
     // bare-filename line examples conventionally start with).
     for line in source.lines() {
-        let Some(stripped) = line.strip_prefix('#') else { break };
+        let Some(stripped) = line.strip_prefix('#') else {
+            break;
+        };
         let t = stripped.trim();
         if t.is_empty()
             || t.starts_with('!')
@@ -266,9 +312,11 @@ fn workload_summary(source: &str) -> String {
         // after the dash.
         for dash in [" — ", " - "] {
             if let Some((head, rest)) = t.split_once(dash)
-                && head.ends_with(".yaml") && !rest.trim().is_empty() {
-                    return rest.trim().to_string();
-                }
+                && head.ends_with(".yaml")
+                && !rest.trim().is_empty()
+            {
+                return rest.trim().to_string();
+            }
         }
         return t.to_string();
     }
@@ -293,7 +341,10 @@ fn list_workloads(entries: Vec<&'static nbrs_workload::catalog::BundledWorkload>
                 // opposed to the comment-block fallback.
                 let described = serde_yaml::from_str::<serde_json::Value>(w.source)
                     .ok()
-                    .and_then(|j| j.get("description").and_then(|d| d.as_str().map(|s| !s.trim().is_empty())))
+                    .and_then(|j| {
+                        j.get("description")
+                            .and_then(|d| d.as_str().map(|s| !s.trim().is_empty()))
+                    })
                     .unwrap_or(false);
                 serde_json::json!({
                     "name": w.name,
@@ -320,8 +371,7 @@ fn describe_one_workload(name: &str) -> Result<(), String> {
             let merged = nbrs_workload::extends::load_and_merge_bundled(b)?;
             (b.name.to_string(), merged, Some(b.tier.as_str()))
         } else if std::path::Path::new(name).exists() {
-            let merged =
-                nbrs_workload::extends::load_and_merge(std::path::Path::new(name))?;
+            let merged = nbrs_workload::extends::load_and_merge(std::path::Path::new(name))?;
             (name.to_string(), merged, None)
         } else {
             return Err(format!(
@@ -402,7 +452,10 @@ fn describe_one_workload(name: &str) -> Result<(), String> {
 
 /// The first non-heading, non-empty line of a markdown doc (its summary).
 fn first_prose_line(md: &str) -> &str {
-    md.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("")
+    md.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or("")
 }
 
 /// `nbrs describe optimizers` — list the optimizers registered in this binary
@@ -421,7 +474,10 @@ fn describe_optimizers_list() {
 
 /// `nbrs describe optimizers <name>` — print the optimizer's full markdown doc.
 fn describe_optimizer(name: &str) {
-    match nbrs_runtime::optimize::describe().into_iter().find(|i| i.name == name) {
+    match nbrs_runtime::optimize::describe()
+        .into_iter()
+        .find(|i| i.name == name)
+    {
         Some(info) => print!("{}", info.doc_md),
         None => {
             eprintln!("No optimizer named '{name}' is registered in this binary.");
@@ -473,17 +529,37 @@ fn describe_controls() {
         println!("  (no dynamic controls registered in this binary)");
         return;
     }
-    let name_w = entries.iter().map(|e| e.desc.name.len()).max().unwrap_or(4).max(4);
-    let owner_w = entries.iter().map(|e| e.owner.to_string().len()).max().unwrap_or(5).max(5);
+    let name_w = entries
+        .iter()
+        .map(|e| e.desc.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let owner_w = entries
+        .iter()
+        .map(|e| e.owner.to_string().len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
     for e in &entries {
         let d = e.desc;
-        println!("  {:<name_w$}  {:<owner_w$}  {}", d.name, e.owner.to_string(), control_shape(d));
-        println!("  {:<name_w$}  {:<owner_w$}  declared {}", "", "", d.declared_when);
+        println!(
+            "  {:<name_w$}  {:<owner_w$}  {}",
+            d.name,
+            e.owner.to_string(),
+            control_shape(d)
+        );
+        println!(
+            "  {:<name_w$}  {:<owner_w$}  declared {}",
+            "", "", d.declared_when
+        );
         println!("  {:<name_w$}  {:<owner_w$}  {}", "", "", d.doc);
         println!();
     }
     println!("Servo any toward an objective with `optimize: {{ servo: <name> }}` (SRD-86 §4).");
-    println!("Run-specific view (what a given workload declares): nbrs run workload=… dryrun=controls");
+    println!(
+        "Run-specific view (what a given workload declares): nbrs run workload=… dryrun=controls"
+    );
 }
 
 /// `nbrs describe controls <name>` — detail for one control, or the full list
@@ -512,7 +588,7 @@ fn describe_control(name: &str) {
 }
 
 fn describe_adapters_list() {
-    use nbrs_runtime::adapter::{registered_driver_names, default_drivers};
+    use nbrs_runtime::adapter::{default_drivers, registered_driver_names};
 
     let mut names = registered_driver_names();
     names.sort();
@@ -534,7 +610,10 @@ fn describe_adapters_list() {
             if alts.is_empty() {
                 println!("  {name}    (driver: {default})");
             } else {
-                println!("  {name}    (drivers: {default} [default], {})", alts.join(", "));
+                println!(
+                    "  {name}    (drivers: {default} [default], {})",
+                    alts.join(", ")
+                );
             }
         }
     }
@@ -543,9 +622,7 @@ fn describe_adapters_list() {
 }
 
 fn describe_adapter(name: &str) {
-    use nbrs_runtime::adapter::{
-        find_adapter_registration, default_drivers, find_driver,
-    };
+    use nbrs_runtime::adapter::{default_drivers, find_adapter_registration, find_driver};
 
     let Some(reg) = find_adapter_registration(name) else {
         eprintln!("No adapter named '{name}' is registered in this binary.");
@@ -560,7 +637,10 @@ fn describe_adapter(name: &str) {
         println!("  Aliases:        {}", aliases.join(", "));
     }
     // Default-config preference (no params → e.g. stdout's console default).
-    println!("  Display:        {:?}", (reg.display_preference)(&std::collections::HashMap::new()));
+    println!(
+        "  Display:        {:?}",
+        (reg.display_preference)(&std::collections::HashMap::new())
+    );
 
     let adapter_params = (reg.known_params)();
     if !adapter_params.is_empty() {
@@ -607,8 +687,10 @@ fn describe_adapter(name: &str) {
         // `<adapter>driver=…` (e.g. `cqldriver=scylla`). Surface
         // the exact knob + accepted values so the user doesn't
         // have to read the source.
-        println!("  Select a driver with: {name}driver=<{}>",
-            drivers.join("|"));
+        println!(
+            "  Select a driver with: {name}driver=<{}>",
+            drivers.join("|")
+        );
     }
 }
 
@@ -620,7 +702,9 @@ fn describe_wiring_functions(verbose: bool) {
 
     // ANSI color codes
     let (bold, dim, reset, green, cyan, magenta) = if is_tty {
-        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m")
+        (
+            "\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m",
+        )
     } else {
         ("", "", "", "", "", "")
     };
@@ -660,9 +744,14 @@ fn describe_wiring_functions(verbose: bool) {
             let params_desc = if const_info.is_empty() {
                 String::new()
             } else {
-                let p: Vec<String> = const_info.iter()
+                let p: Vec<String> = const_info
+                    .iter()
                     .map(|(name, required)| {
-                        if *required { name.to_string() } else { format!("[{name}]") }
+                        if *required {
+                            name.to_string()
+                        } else {
+                            format!("[{name}]")
+                        }
                     })
                     .collect();
                 format!("({})", p.join(", "))
@@ -704,7 +793,9 @@ fn describe_wiring_functions(verbose: bool) {
         println!();
     }
 
-    println!("  {bold}Legend:{reset}  {bold}P{reset}{green}\u{2713}{reset}{green}\u{2713}{reset}{green}\u{2713}{reset} = supported levels  {green}\u{2713}{reset} = yes  {dim}\u{2717}{reset} = no");
+    println!(
+        "  {bold}Legend:{reset}  {bold}P{reset}{green}\u{2713}{reset}{green}\u{2713}{reset}{green}\u{2713}{reset} = supported levels  {green}\u{2713}{reset} = yes  {dim}\u{2717}{reset} = no"
+    );
     println!("    {bold}P{reset}3  Cranelift native code       {dim}(~0.2ns/node){reset}");
     println!("    {bold}P{reset}2  Compiled u64 closure        {dim}(~4.5ns/node){reset}");
     println!("    {bold}P{reset}1  Runtime Value interpreter   {dim}(~70ns/node){reset}");
@@ -714,7 +805,9 @@ fn describe_wiring_functions(verbose: bool) {
     println!("  {dim}constants are known at assembly time, P2 otherwise.{reset}");
     if !verbose {
         println!();
-        println!("  {dim}Pass --verbose for per-function signatures, types, and associativity.{reset}");
+        println!(
+            "  {dim}Pass --verbose for per-function signatures, types, and associativity.{reset}"
+        );
     }
     println!();
 }
@@ -735,18 +828,32 @@ fn format_module_def_signature(sig: &polydat::dsl::registry::FuncSig) -> String 
     // Probe the live node's NodeMeta to get real wire input
     // types + real output port types.
     let probed = probe_node_meta(sig.name, sig.params);
-    let wire_types: Vec<String> = probed.as_ref()
-        .map(|m| m.wire_inputs().iter().map(|p| port_type_label(p.typ).to_string()).collect())
+    let wire_types: Vec<String> = probed
+        .as_ref()
+        .map(|m| {
+            m.wire_inputs()
+                .iter()
+                .map(|p| port_type_label(p.typ).to_string())
+                .collect()
+        })
         .unwrap_or_default();
-    let out_types: Vec<String> = probed.as_ref()
-        .map(|m| m.outs.iter().map(|p| port_type_label(p.typ).to_string()).collect())
+    let out_types: Vec<String> = probed
+        .as_ref()
+        .map(|m| {
+            m.outs
+                .iter()
+                .map(|p| port_type_label(p.typ).to_string())
+                .collect()
+        })
         .unwrap_or_default();
 
     let mut parts: Vec<String> = Vec::with_capacity(sig.params.len());
     let mut wire_idx: usize = 0;
     for p in sig.params {
         let ty = if p.slot_type.is_wire() {
-            let resolved = wire_types.get(wire_idx).cloned()
+            let resolved = wire_types
+                .get(wire_idx)
+                .cloned()
                 .unwrap_or_else(|| "wire".to_string());
             wire_idx += 1;
             resolved
@@ -759,7 +866,9 @@ fn format_module_def_signature(sig: &polydat::dsl::registry::FuncSig) -> String 
     }
     let arity_suffix = match &sig.arity {
         Arity::Fixed => "",
-        Arity::VariadicWires { .. } | Arity::VariadicConsts { .. } | Arity::VariadicGroup { .. } => ", ...",
+        Arity::VariadicWires { .. }
+        | Arity::VariadicConsts { .. }
+        | Arity::VariadicGroup { .. } => ", ...",
     };
     let args = format!("{}{arity_suffix}", parts.join(", "));
     let out = if out_types.is_empty() {
@@ -774,7 +883,9 @@ fn format_module_def_signature(sig: &polydat::dsl::registry::FuncSig) -> String 
     } else if out_types.len() == 1 {
         format!("(out: {})", out_types[0])
     } else {
-        let outs: Vec<String> = out_types.iter().enumerate()
+        let outs: Vec<String> = out_types
+            .iter()
+            .enumerate()
             .map(|(i, t)| format!("out{i}: {t}"))
             .collect();
         format!("({})", outs.join(", "))
@@ -805,7 +916,8 @@ fn probe_node_meta(
             wire_examples.insert(p.example);
         }
     }
-    let input_decls: String = wire_examples.iter()
+    let input_decls: String = wire_examples
+        .iter()
         .map(|name| format!("input {name}: u64\n"))
         .collect();
     let source = if parts.is_empty() {
@@ -813,9 +925,9 @@ fn probe_node_meta(
     } else {
         format!("{input_decls}out := {func_name}({})", parts.join(", "))
     };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || polydat::dsl::compile_polydat(&source),
-    ));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        polydat::dsl::compile_polydat(&source)
+    }));
     match result {
         Ok(Ok(kernel)) => {
             let program = kernel.program();
@@ -885,13 +997,13 @@ fn port_type_label(t: polydat::ast::PortType) -> &'static str {
 fn slot_type_label(slot: polydat::ast::SlotType) -> &'static str {
     use polydat::ast::SlotType;
     match slot {
-        SlotType::Wire        => "wire",
-        SlotType::ConstU64    => "const u64",
-        SlotType::ConstF64    => "const f64",
-        SlotType::ConstStr    => "const str",
+        SlotType::Wire => "wire",
+        SlotType::ConstU64 => "const u64",
+        SlotType::ConstF64 => "const f64",
+        SlotType::ConstStr => "const str",
         SlotType::ConstVecU64 => "const [u64]",
         SlotType::ConstVecF64 => "const [f64]",
-        SlotType::ConstVec    => "const [T]",
+        SlotType::ConstVec => "const [T]",
     }
 }
 
@@ -906,12 +1018,16 @@ fn format_commutativity_and_arity(sig: &polydat::dsl::registry::FuncSig) -> Stri
     }
     match &sig.arity {
         Arity::Fixed => bits.push(format!("arity=fixed({})", sig.params.len())),
-        Arity::VariadicWires { min_wires } =>
-            bits.push(format!("arity=variadic-wires(min={min_wires})")),
-        Arity::VariadicConsts { min_consts } =>
-            bits.push(format!("arity=variadic-consts(min={min_consts})")),
-        Arity::VariadicGroup { group, min_repeats } =>
-            bits.push(format!("arity=variadic-group({n} types × min {min_repeats})", n = group.len())),
+        Arity::VariadicWires { min_wires } => {
+            bits.push(format!("arity=variadic-wires(min={min_wires})"))
+        }
+        Arity::VariadicConsts { min_consts } => {
+            bits.push(format!("arity=variadic-consts(min={min_consts})"))
+        }
+        Arity::VariadicGroup { group, min_repeats } => bits.push(format!(
+            "arity=variadic-group({n} types × min {min_repeats})",
+            n = group.len()
+        )),
     }
     if sig.outputs == 0 {
         bits.push("dynamic outputs".into());
@@ -937,7 +1053,10 @@ fn describe_wiring_functions_md(path: &str) {
 
     // Summary table
     let total: usize = grouped.iter().map(|(_, funcs)| funcs.len()).sum();
-    out.push_str(&format!("**{total} functions** across {} categories.\n\n", grouped.len()));
+    out.push_str(&format!(
+        "**{total} functions** across {} categories.\n\n",
+        grouped.len()
+    ));
 
     out.push_str("## Table of Contents\n\n");
     for (cat, funcs) in &grouped {
@@ -967,9 +1086,14 @@ fn describe_wiring_functions_md(path: &str) {
             let params_desc = if const_info.is_empty() {
                 String::new()
             } else {
-                let p: Vec<String> = const_info.iter()
+                let p: Vec<String> = const_info
+                    .iter()
                     .map(|(name, required)| {
-                        if *required { name.to_string() } else { format!("[{name}]") }
+                        if *required {
+                            name.to_string()
+                        } else {
+                            format!("[{name}]")
+                        }
                     })
                     .collect();
                 format!("({})", p.join(", "))
@@ -984,14 +1108,24 @@ fn describe_wiring_functions_md(path: &str) {
             // Escape pipes in description
             let desc = sig.description.replace('|', "\\|");
             table_rows.push(vec![
-                format!("`{}`", sig.name), params_desc, arity, jit.to_string(), desc,
+                format!("`{}`", sig.name),
+                params_desc,
+                arity,
+                jit.to_string(),
+                desc,
             ]);
         }
         let headers: Vec<String> = ["Function", "Params", "Arity", "JIT", "Description"]
-            .iter().map(|h| (*h).to_string()).collect();
+            .iter()
+            .map(|h| (*h).to_string())
+            .collect();
         // All columns left-aligned: every one is prose or a short token, none
         // numeric.
-        out.push_str(&crate::report::markdown_table(&headers, &table_rows, headers.len()));
+        out.push_str(&crate::report::markdown_table(
+            &headers,
+            &table_rows,
+            headers.len(),
+        ));
         out.push('\n');
 
         // Detailed entries with help text
@@ -1039,7 +1173,10 @@ fn describe_wiring_functions_md(path: &str) {
             }
             let sig_str = format!("{}({}) → {}", sig.name, all_params.join(", "), sig.outputs);
             out.push_str(&format!("**Signature:** `{sig_str}`\n\n"));
-            out.push_str(&format!("**Category:** {}  \n", sig.category.display_name()));
+            out.push_str(&format!(
+                "**Category:** {}  \n",
+                sig.category.display_name()
+            ));
 
             let level = probe_compile_level(sig.name);
             let jit = match level {
@@ -1065,11 +1202,10 @@ fn describe_wiring_functions_md(path: &str) {
         }
     }
 
-    let mut f = std::fs::File::create(path)
-        .unwrap_or_else(|e| {
-            eprintln!("error: failed to create {path}: {e}");
-            std::process::exit(1);
-        });
+    let mut f = std::fs::File::create(path).unwrap_or_else(|e| {
+        eprintln!("error: failed to create {path}: {e}");
+        std::process::exit(1);
+    });
     f.write_all(out.as_bytes()).unwrap_or_else(|e| {
         eprintln!("error: failed to write {path}: {e}");
         std::process::exit(1);
@@ -1087,7 +1223,9 @@ fn describe_wiring_types() {
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let (bold, dim, reset, cyan, magenta) = if is_tty {
         ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[36m", "\x1b[35m")
-    } else { ("", "", "", "", "") };
+    } else {
+        ("", "", "", "", "")
+    };
 
     println!();
     println!("{bold}Wiring Port Types{reset}");
@@ -1095,32 +1233,89 @@ fn describe_wiring_types() {
     println!();
 
     let groups: &[(&str, &[(polydat::ast::PortType, &str)])] = &[
-        ("Scalars (numeric)", &[
-            (polydat::ast::PortType::U64,  "64-bit unsigned integer; the primary numeric carrier"),
-            (polydat::ast::PortType::I64,  "64-bit signed integer"),
-            (polydat::ast::PortType::U32,  "32-bit unsigned integer; widens to U64 automatically"),
-            (polydat::ast::PortType::I32,  "32-bit signed integer; widens to I64 automatically"),
-            (polydat::ast::PortType::F64,  "64-bit IEEE 754 float (math, distributions, noise)"),
-            (polydat::ast::PortType::F32,  "32-bit IEEE 754 float; widens to F64 automatically"),
-        ]),
-        ("Scalars (other)", &[
-            (polydat::ast::PortType::Bool, "Boolean true/false; widens to U64 (1/0)"),
-            (polydat::ast::PortType::Str,  "Heap-allocated string; everything auto-converts to Str"),
-            (polydat::ast::PortType::Bytes, "Raw byte buffer"),
-            (polydat::ast::PortType::Json, "Structured JSON value"),
-        ]),
-        ("Vectors", &[
-            (polydat::ast::PortType::VecF32, "Typed `f32` vector (`Arc<[f32]>`); native for CQL `vector<float, N>`"),
-            (polydat::ast::PortType::VecF64, "Typed `f64` vector (`Arc<[f64]>`); native for CQL `vector<double, N>`"),
-            (polydat::ast::PortType::VecF16, "Typed half-precision float vector (`Arc<[half::f16]>`); native for CQL `vector<half_float, N>`"),
-            (polydat::ast::PortType::VecI16, "Typed `i16` vector (`Arc<[i16]>`); native for CQL `vector<smallint, N>`"),
-            (polydat::ast::PortType::VecI32, "Typed `i32` vector (`Arc<[i32]>`)"),
-            (polydat::ast::PortType::VecI64, "Typed `i64` vector (`Arc<[i64]>`); native for CQL `vector<bigint, N>`"),
-        ]),
-        ("Reference types", &[
-            (polydat::ast::PortType::Handle, "Type-erased `Arc<dyn Any + Send + Sync>` handle to a resolved resource (dataset, prepared statement, ...)"),
-            (polydat::ast::PortType::Ext,    "Adapter-contributed reflected type (e.g. CQL UUID)"),
-        ]),
+        (
+            "Scalars (numeric)",
+            &[
+                (
+                    polydat::ast::PortType::U64,
+                    "64-bit unsigned integer; the primary numeric carrier",
+                ),
+                (polydat::ast::PortType::I64, "64-bit signed integer"),
+                (
+                    polydat::ast::PortType::U32,
+                    "32-bit unsigned integer; widens to U64 automatically",
+                ),
+                (
+                    polydat::ast::PortType::I32,
+                    "32-bit signed integer; widens to I64 automatically",
+                ),
+                (
+                    polydat::ast::PortType::F64,
+                    "64-bit IEEE 754 float (math, distributions, noise)",
+                ),
+                (
+                    polydat::ast::PortType::F32,
+                    "32-bit IEEE 754 float; widens to F64 automatically",
+                ),
+            ],
+        ),
+        (
+            "Scalars (other)",
+            &[
+                (
+                    polydat::ast::PortType::Bool,
+                    "Boolean true/false; widens to U64 (1/0)",
+                ),
+                (
+                    polydat::ast::PortType::Str,
+                    "Heap-allocated string; everything auto-converts to Str",
+                ),
+                (polydat::ast::PortType::Bytes, "Raw byte buffer"),
+                (polydat::ast::PortType::Json, "Structured JSON value"),
+            ],
+        ),
+        (
+            "Vectors",
+            &[
+                (
+                    polydat::ast::PortType::VecF32,
+                    "Typed `f32` vector (`Arc<[f32]>`); native for CQL `vector<float, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecF64,
+                    "Typed `f64` vector (`Arc<[f64]>`); native for CQL `vector<double, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecF16,
+                    "Typed half-precision float vector (`Arc<[half::f16]>`); native for CQL `vector<half_float, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecI16,
+                    "Typed `i16` vector (`Arc<[i16]>`); native for CQL `vector<smallint, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecI32,
+                    "Typed `i32` vector (`Arc<[i32]>`)",
+                ),
+                (
+                    polydat::ast::PortType::VecI64,
+                    "Typed `i64` vector (`Arc<[i64]>`); native for CQL `vector<bigint, N>`",
+                ),
+            ],
+        ),
+        (
+            "Reference types",
+            &[
+                (
+                    polydat::ast::PortType::Handle,
+                    "Type-erased `Arc<dyn Any + Send + Sync>` handle to a resolved resource (dataset, prepared statement, ...)",
+                ),
+                (
+                    polydat::ast::PortType::Ext,
+                    "Adapter-contributed reflected type (e.g. CQL UUID)",
+                ),
+            ],
+        ),
     ];
 
     for (group_name, types) in groups {
@@ -1144,47 +1339,107 @@ fn describe_wiring_types_md(path: &str) {
     out.push_str("Port types are the wire-level type tags carried by every wiring node's input / output ports. Conversions are inserted automatically at compile time when a producer's port type differs from its consumer's; see the widening notes per variant.\n\n");
 
     let groups: &[(&str, &[(polydat::ast::PortType, &str)])] = &[
-        ("Scalars (numeric)", &[
-            (polydat::ast::PortType::U64,  "64-bit unsigned integer; the primary numeric carrier"),
-            (polydat::ast::PortType::I64,  "64-bit signed integer"),
-            (polydat::ast::PortType::U32,  "32-bit unsigned integer; widens to U64 automatically"),
-            (polydat::ast::PortType::I32,  "32-bit signed integer; widens to I64 automatically"),
-            (polydat::ast::PortType::F64,  "64-bit IEEE 754 float (math, distributions, noise)"),
-            (polydat::ast::PortType::F32,  "32-bit IEEE 754 float; widens to F64 automatically"),
-        ]),
-        ("Scalars (other)", &[
-            (polydat::ast::PortType::Bool, "Boolean true/false; widens to U64 (1/0)"),
-            (polydat::ast::PortType::Str,  "Heap-allocated string; everything auto-converts to Str"),
-            (polydat::ast::PortType::Bytes, "Raw byte buffer"),
-            (polydat::ast::PortType::Json, "Structured JSON value"),
-        ]),
-        ("Vectors", &[
-            (polydat::ast::PortType::VecF32, "Typed `f32` vector (`Arc<[f32]>`); native for CQL `vector<float, N>`"),
-            (polydat::ast::PortType::VecF64, "Typed `f64` vector (`Arc<[f64]>`); native for CQL `vector<double, N>`"),
-            (polydat::ast::PortType::VecF16, "Typed half-precision float vector (`Arc<[half::f16]>`); native for CQL `vector<half_float, N>`"),
-            (polydat::ast::PortType::VecI16, "Typed `i16` vector (`Arc<[i16]>`); native for CQL `vector<smallint, N>`"),
-            (polydat::ast::PortType::VecI32, "Typed `i32` vector (`Arc<[i32]>`)"),
-            (polydat::ast::PortType::VecI64, "Typed `i64` vector (`Arc<[i64]>`); native for CQL `vector<bigint, N>`"),
-        ]),
-        ("Reference types", &[
-            (polydat::ast::PortType::Handle, "Type-erased `Arc<dyn Any + Send + Sync>` handle to a resolved resource (dataset, prepared statement, ...)"),
-            (polydat::ast::PortType::Ext,    "Adapter-contributed reflected type (e.g. CQL UUID)"),
-        ]),
+        (
+            "Scalars (numeric)",
+            &[
+                (
+                    polydat::ast::PortType::U64,
+                    "64-bit unsigned integer; the primary numeric carrier",
+                ),
+                (polydat::ast::PortType::I64, "64-bit signed integer"),
+                (
+                    polydat::ast::PortType::U32,
+                    "32-bit unsigned integer; widens to U64 automatically",
+                ),
+                (
+                    polydat::ast::PortType::I32,
+                    "32-bit signed integer; widens to I64 automatically",
+                ),
+                (
+                    polydat::ast::PortType::F64,
+                    "64-bit IEEE 754 float (math, distributions, noise)",
+                ),
+                (
+                    polydat::ast::PortType::F32,
+                    "32-bit IEEE 754 float; widens to F64 automatically",
+                ),
+            ],
+        ),
+        (
+            "Scalars (other)",
+            &[
+                (
+                    polydat::ast::PortType::Bool,
+                    "Boolean true/false; widens to U64 (1/0)",
+                ),
+                (
+                    polydat::ast::PortType::Str,
+                    "Heap-allocated string; everything auto-converts to Str",
+                ),
+                (polydat::ast::PortType::Bytes, "Raw byte buffer"),
+                (polydat::ast::PortType::Json, "Structured JSON value"),
+            ],
+        ),
+        (
+            "Vectors",
+            &[
+                (
+                    polydat::ast::PortType::VecF32,
+                    "Typed `f32` vector (`Arc<[f32]>`); native for CQL `vector<float, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecF64,
+                    "Typed `f64` vector (`Arc<[f64]>`); native for CQL `vector<double, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecF16,
+                    "Typed half-precision float vector (`Arc<[half::f16]>`); native for CQL `vector<half_float, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecI16,
+                    "Typed `i16` vector (`Arc<[i16]>`); native for CQL `vector<smallint, N>`",
+                ),
+                (
+                    polydat::ast::PortType::VecI32,
+                    "Typed `i32` vector (`Arc<[i32]>`)",
+                ),
+                (
+                    polydat::ast::PortType::VecI64,
+                    "Typed `i64` vector (`Arc<[i64]>`); native for CQL `vector<bigint, N>`",
+                ),
+            ],
+        ),
+        (
+            "Reference types",
+            &[
+                (
+                    polydat::ast::PortType::Handle,
+                    "Type-erased `Arc<dyn Any + Send + Sync>` handle to a resolved resource (dataset, prepared statement, ...)",
+                ),
+                (
+                    polydat::ast::PortType::Ext,
+                    "Adapter-contributed reflected type (e.g. CQL UUID)",
+                ),
+            ],
+        ),
     ];
 
     for (group_name, types) in groups {
         out.push_str(&format!("## {group_name}\n\n"));
         let headers: Vec<String> = vec!["Label".to_string(), "Description".to_string()];
-        let rows: Vec<Vec<String>> = types.iter()
+        let rows: Vec<Vec<String>> = types
+            .iter()
             .map(|(t, desc)| vec![format!("`{}`", port_type_label(*t)), (*desc).to_string()])
             .collect();
-        out.push_str(&crate::report::markdown_table(&headers, &rows, headers.len()));
+        out.push_str(&crate::report::markdown_table(
+            &headers,
+            &rows,
+            headers.len(),
+        ));
         out.push('\n');
     }
 
-    match std::fs::File::create(path)
-        .and_then(|mut f| f.write_all(out.as_bytes()))
-    {
+    match std::fs::File::create(path).and_then(|mut f| f.write_all(out.as_bytes())) {
         Ok(_) => println!("wrote {path} ({} bytes)", out.len()),
         Err(e) => eprintln!("failed to write {path}: {e}"),
     }
@@ -1194,15 +1449,17 @@ fn describe_wiring_types_md(path: &str) {
 /// extracts `ModuleDef` statements, and prints them grouped by
 /// category (source filename) with ANSI coloring.
 fn describe_wiring_stdlib() {
+    use polydat::dsl::ast::Statement;
     use polydat::dsl::lexer::lex;
     use polydat::dsl::parser::parse;
-    use polydat::dsl::ast::Statement;
 
     let sources = polydat::dsl::stdlib_sources();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let (bold, dim, reset, green, cyan, magenta) = if is_tty {
-        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m")
+        (
+            "\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m",
+        )
     } else {
         ("", "", "", "", "", "")
     };
@@ -1214,9 +1471,7 @@ fn describe_wiring_stdlib() {
 
     for (filename, source) in sources {
         // Category name: filename without .polydat extension, title-cased
-        let category = filename
-            .strip_suffix(".polydat")
-            .unwrap_or(filename);
+        let category = filename.strip_suffix(".polydat").unwrap_or(filename);
         let category_title = category
             .chars()
             .enumerate()
@@ -1225,11 +1480,17 @@ fn describe_wiring_stdlib() {
 
         let tokens = match lex(source) {
             Ok(t) => t,
-            Err(e) => { eprintln!("warning: failed to lex stdlib file: {e}"); continue; }
+            Err(e) => {
+                eprintln!("warning: failed to lex stdlib file: {e}");
+                continue;
+            }
         };
         let ast = match parse(tokens) {
             Ok(a) => a,
-            Err(e) => { eprintln!("warning: failed to parse stdlib file: {e}"); continue; }
+            Err(e) => {
+                eprintln!("warning: failed to parse stdlib file: {e}");
+                continue;
+            }
         };
 
         // Collect module defs from this file
@@ -1249,13 +1510,17 @@ fn describe_wiring_stdlib() {
 
         for mdef in &modules {
             // Build typed params string: (name: type, name: type, ...)
-            let params_str = mdef.params.iter()
+            let params_str = mdef
+                .params
+                .iter()
                 .map(|p| format!("{}: {}", p.name, p.typ))
                 .collect::<Vec<_>>()
                 .join(", ");
 
             // Build typed outputs string: (name: type, ...)
-            let outputs_str = mdef.outputs.iter()
+            let outputs_str = mdef
+                .outputs
+                .iter()
                 .map(|p| format!("{}: {}", p.name, p.typ))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -1292,26 +1557,34 @@ fn describe_wiring_stdlib() {
 /// Usage:
 ///   nbrs describe wiring modules [--dir=path]
 fn describe_wiring_modules(args: &[String]) {
+    use polydat::dsl::ast::Statement;
     use polydat::dsl::lexer::lex;
     use polydat::dsl::parser::parse;
-    use polydat::dsl::ast::Statement;
 
-    let dir = args.iter()
+    let dir = args
+        .iter()
         .find_map(|a| a.strip_prefix("--dir="))
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
 
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let (bold, dim, reset, green, cyan, magenta) = if is_tty {
-        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m")
+        (
+            "\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m",
+        )
     } else {
         ("", "", "", "", "", "")
     };
 
     println!();
     println!("{bold}GK Modules in {}{reset}", dir.display());
-    println!("{bold}{}{reset}", "═".repeat(15 + dir.display().to_string().len()));
+    println!(
+        "{bold}{}{reset}",
+        "═".repeat(15 + dir.display().to_string().len())
+    );
     println!();
 
     let entries = match std::fs::read_dir(&dir) {
@@ -1338,16 +1611,18 @@ fn describe_wiring_modules(args: &[String]) {
     for path in &polydat_files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
-            Err(e) => { eprintln!("warning: failed to read {}: {e}", path.display()); continue; }
+            Err(e) => {
+                eprintln!("warning: failed to read {}: {e}", path.display());
+                continue;
+            }
         };
 
-        let filename = path.file_name()
+        let filename = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
 
-        let category = filename
-            .strip_suffix(".polydat")
-            .unwrap_or(filename);
+        let category = filename.strip_suffix(".polydat").unwrap_or(filename);
         let category_title = category
             .chars()
             .enumerate()
@@ -1356,11 +1631,17 @@ fn describe_wiring_modules(args: &[String]) {
 
         let tokens = match lex(&source) {
             Ok(t) => t,
-            Err(e) => { eprintln!("warning: failed to lex {filename}: {e}"); continue; }
+            Err(e) => {
+                eprintln!("warning: failed to lex {filename}: {e}");
+                continue;
+            }
         };
         let ast = match parse(tokens) {
             Ok(a) => a,
-            Err(e) => { eprintln!("warning: failed to parse {filename}: {e}"); continue; }
+            Err(e) => {
+                eprintln!("warning: failed to parse {filename}: {e}");
+                continue;
+            }
         };
 
         let mut modules = Vec::new();
@@ -1378,12 +1659,16 @@ fn describe_wiring_modules(args: &[String]) {
         println!();
 
         for mdef in &modules {
-            let params_str = mdef.params.iter()
+            let params_str = mdef
+                .params
+                .iter()
                 .map(|p| format!("{}: {}", p.name, p.typ))
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let outputs_str = mdef.outputs.iter()
+            let outputs_str = mdef
+                .outputs
+                .iter()
                 .map(|p| format!("{}: {}", p.name, p.typ))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -1415,7 +1700,9 @@ fn extract_first_comment(source: &str, name: &str) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
     // Find the line where the module def starts
     let def_prefix = format!("{name}(");
-    let def_idx = lines.iter().position(|l| l.trim_start().starts_with(&def_prefix))?;
+    let def_idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(&def_prefix))?;
 
     // Walk backwards from the def line, collecting the nearest comment block.
     // Stop at the first blank line or non-comment line.
@@ -1461,11 +1748,11 @@ fn describe_wiring_dag(args: &[String]) {
     use polydat::viz;
 
     let file = args.iter().find(|a| !a.starts_with("--"));
-    let format = args.iter()
+    let format = args
+        .iter()
         .find_map(|a| a.strip_prefix("--format="))
         .unwrap_or("dot");
-    let output = args.iter()
-        .find_map(|a| a.strip_prefix("--output="));
+    let output = args.iter().find_map(|a| a.strip_prefix("--output="));
     let with_flattening = args.iter().any(|a| a == "--with-flattening");
 
     let source = match file {
@@ -1477,7 +1764,9 @@ fn describe_wiring_dag(args: &[String]) {
             }
         },
         None => {
-            eprintln!("nbrs describe wiring dag <file.polydat> [--format=dot|mermaid|svg] [--output=file]");
+            eprintln!(
+                "nbrs describe wiring dag <file.polydat> [--format=dot|mermaid|svg] [--output=file]"
+            );
             eprintln!("nbrs describe wiring dag --with-flattening <workload.yaml>");
             eprintln!();
             eprintln!("Renders a Polydat source file as a DAG diagram.");
@@ -1560,7 +1849,7 @@ fn describe_wiring_dag(args: &[String]) {
 /// in the header line so the caller can confirm which file
 /// was read.
 fn render_elision_summary(yaml_source: &str, path: &str) -> Result<String, String> {
-    use nbrs_runtime::scope_tree::{ScopeTree, ScopeKind};
+    use nbrs_runtime::scope_tree::{ScopeKind, ScopeTree};
     use nbrs_workload::parse::{parse_workload, parse_workload_from_path};
     use std::collections::HashMap;
 
@@ -1575,7 +1864,7 @@ fn render_elision_summary(yaml_source: &str, path: &str) -> Result<String, Strin
     } else {
         parse_workload(yaml_source, &HashMap::new())
     }
-        .map_err(|e| format!("parse_workload('{path}'): {e}"))?;
+    .map_err(|e| format!("parse_workload('{path}'): {e}"))?;
 
     // Pick the scenario the same way the runner does: take the
     // user-named scenario or, if absent, synthesise a default
@@ -1586,7 +1875,9 @@ fn render_elision_summary(yaml_source: &str, path: &str) -> Result<String, Strin
     let scenario_nodes: Vec<_> = if let Some(nodes) = workload.scenarios.get(scenario_name) {
         nodes.clone()
     } else if !workload.phase_order.is_empty() {
-        workload.phase_order.iter()
+        workload
+            .phase_order
+            .iter()
             .map(|n| nbrs_workload::model::ScenarioNode::Phase(n.clone()))
             .collect()
     } else {
@@ -1616,9 +1907,9 @@ fn render_elision_summary(yaml_source: &str, path: &str) -> Result<String, Strin
     ));
     for (idx, node) in tree.iter_dfs() {
         let mat = match node.materialised {
-            Some(true)  => "true",
+            Some(true) => "true",
             Some(false) => "false",
-            None        => "?",
+            None => "?",
         };
         // bind_outer = nearest materialised ancestor, walking
         // *strict* parents when this node is itself flattened.
@@ -1626,9 +1917,7 @@ fn render_elision_summary(yaml_source: &str, path: &str) -> Result<String, Strin
         // (own logical_name) so the summary is self-contained:
         // a reader knows where every node binds at a glance.
         let bind_outer = match node.materialised {
-            Some(false) => match node.parent
-                .and_then(|p| tree.nearest_materialised(p))
-            {
+            Some(false) => match node.parent.and_then(|p| tree.nearest_materialised(p)) {
                 Some(anc) => tree.nodes[anc].logical_name.clone(),
                 None => "<none>".to_string(),
             },
@@ -1712,7 +2001,9 @@ fn adapter_spec() -> crate::cli_spec::Command {
             name: "adapter",
             help: "Adapter to describe.",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
-            value: crate::cli_spec::ValueProvider::Custom(crate::completion::adapter_names_provider),
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::adapter_names_provider,
+            ),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -1741,7 +2032,9 @@ fn controls_spec() -> crate::cli_spec::Command {
             name: "control",
             help: "Control to describe.",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
-            value: crate::cli_spec::ValueProvider::Custom(crate::completion::control_names_provider),
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::control_names_provider,
+            ),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -1794,14 +2087,18 @@ fn workloads_spec() -> crate::cli_spec::Command {
         level: Level::FullSurface,
         flags: vec![
             crate::cli_spec::Flag {
-                long: "--all", short: None, aliases: &[],
+                long: "--all",
+                short: None,
+                aliases: &[],
                 arity: crate::cli_spec::Arity::Bool,
                 value: crate::cli_spec::ValueProvider::None,
                 help: "Include the examples tier in the listing.",
                 repeatable: false,
             },
             crate::cli_spec::Flag {
-                long: "--json", short: None, aliases: &[],
+                long: "--json",
+                short: None,
+                aliases: &[],
                 arity: crate::cli_spec::Arity::Bool,
                 value: crate::cli_spec::ValueProvider::None,
                 help: "Machine-readable listing.",
@@ -1815,7 +2112,8 @@ fn workloads_spec() -> crate::cli_spec::Command {
             help: "Catalog name for the detail view, or `examples`.",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
             value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::describe_workloads_arg_provider),
+                crate::completion::describe_workloads_arg_provider,
+            ),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -1840,20 +2138,22 @@ fn wiring_spec() -> crate::cli_spec::Command {
         dynamic_options: None,
         positionals: Vec::new(),
         subcommands: vec![
-            wiring_leaf("functions",
-                "List wiring functions ([--verbose] adds signatures + types)."),
-            wiring_leaf("functions-md",
-                "Dump all wiring functions to a markdown file ([<path>] default wiring_functions.md)."),
-            wiring_leaf("stdlib",
-                "List embedded standard-library modules."),
-            wiring_leaf("types",
-                "List wiring port types with descriptions."),
-            wiring_leaf("types-md",
-                "Dump wiring types to a markdown file ([<path>] default wiring_types.md)."),
-            wiring_leaf("dag",
-                "Render a wiring source as DOT, Mermaid, or SVG."),
-            wiring_leaf("modules",
-                "List modules from a directory."),
+            wiring_leaf(
+                "functions",
+                "List wiring functions ([--verbose] adds signatures + types).",
+            ),
+            wiring_leaf(
+                "functions-md",
+                "Dump all wiring functions to a markdown file ([<path>] default wiring_functions.md).",
+            ),
+            wiring_leaf("stdlib", "List embedded standard-library modules."),
+            wiring_leaf("types", "List wiring port types with descriptions."),
+            wiring_leaf(
+                "types-md",
+                "Dump wiring types to a markdown file ([<path>] default wiring_types.md).",
+            ),
+            wiring_leaf("dag", "Render a wiring source as DOT, Mermaid, or SVG."),
+            wiring_leaf("modules", "List modules from a directory."),
         ],
         handler: Some(Handler::Sync(handle_wiring_default)),
         raw_args: false,
@@ -1933,7 +2233,8 @@ fn op_spec() -> crate::cli_spec::Command {
             help: "Workload file or catalog name.",
             kind: crate::cli_spec::PositionalKind::One,
             value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::workload_positional_provider),
+                crate::completion::workload_positional_provider,
+            ),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -1990,12 +2291,12 @@ pub fn render_wrappers_table() -> String {
             constraint_parts.push(format!("forbids_outer=[{}]", names.join(", ")));
         }
         if !reg.mutually_exclusive_with.is_empty() {
-            let names: Vec<&str> =
-                reg.mutually_exclusive_with.iter().map(|n| n.as_str()).collect();
-            constraint_parts.push(format!(
-                "mutually_exclusive_with=[{}]",
-                names.join(", "),
-            ));
+            let names: Vec<&str> = reg
+                .mutually_exclusive_with
+                .iter()
+                .map(|n| n.as_str())
+                .collect();
+            constraint_parts.push(format!("mutually_exclusive_with=[{}]", names.join(", "),));
         }
         rows.push(Row {
             name: reg.name.as_str().to_string(),
@@ -2158,7 +2459,10 @@ pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<Strin
     let registry = WrapperRegistry::from_inventory();
     let resolver = WrapperResolver::with_default_order(&registry).map_err(|e| e.to_string())?;
     let plan = resolver
-        .resolve(nbrs_runtime::wrapper_registry::WrapperSubject::Op(*template), &registry)
+        .resolve(
+            nbrs_runtime::wrapper_registry::WrapperSubject::Op(*template),
+            &registry,
+        )
         .map_err(|e| e.to_string())?;
 
     let mut out = String::new();
@@ -2172,9 +2476,10 @@ pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<Strin
     }
     out.push_str("  wrapper stack (innermost -> outermost):\n");
     for (i, reg) in plan.iter_innermost_first().enumerate() {
-        let line = (reg.describe_assignment)(
-                nbrs_runtime::wrapper_registry::WrapperSubject::Op(*template))
-            .unwrap_or_else(|| reg.name.as_str().to_string());
+        let line = (reg.describe_assignment)(nbrs_runtime::wrapper_registry::WrapperSubject::Op(
+            *template,
+        ))
+        .unwrap_or_else(|| reg.name.as_str().to_string());
         // Prepend the wrapper name to assignments that don't
         // already start with it — `describe_assignment` lines
         // typically lead with `<name>: …` already, but the
@@ -2227,22 +2532,32 @@ phases:
         assert!(out.contains("# scope elision summary: test.yaml"));
         assert!(out.contains("# scenario: default"));
         // Logical names per SRD-13d §5.3.
-        assert!(out.contains("workload"),
-            "root node logical_name 'workload' missing:\n{out}");
-        assert!(out.contains("workload.scenario.default"),
-            "scenario logical_name missing:\n{out}");
-        assert!(out.contains("workload.scenario.default.phase.setup"),
-            "phase logical_name missing:\n{out}");
+        assert!(
+            out.contains("workload"),
+            "root node logical_name 'workload' missing:\n{out}"
+        );
+        assert!(
+            out.contains("workload.scenario.default"),
+            "scenario logical_name missing:\n{out}"
+        );
+        assert!(
+            out.contains("workload.scenario.default.phase.setup"),
+            "phase logical_name missing:\n{out}"
+        );
         // Stub predicate ⇒ everyone's materialised.
-        assert!(out.contains("true"),
-            "expected at least one materialised=true row:\n{out}");
+        assert!(
+            out.contains("true"),
+            "expected at least one materialised=true row:\n{out}"
+        );
         // No 'false' rows under the all-materialise stub. (We
         // can't assert "no false" by literal substring because
         // 'false' could appear inside a logical_name; the regex
         // would be brittle. Spot-check the column instead by
         // counting "    false    " patterns.)
-        assert!(!out.contains(" false "),
-            "stub predicate should not flag any node as flattened:\n{out}");
+        assert!(
+            !out.contains(" false "),
+            "stub predicate should not flag any node as flattened:\n{out}"
+        );
     }
 
     /// Multi-phase workload — verify each phase appears with its
@@ -2260,9 +2575,12 @@ phases:
     ops:
       - op: noop
 "#;
-        let out = render_elision_summary(yaml, "two.yaml")
-            .expect("two-phase workload should render");
-        assert!(out.contains("phase.setup"), "setup phase row missing:\n{out}");
+        let out =
+            render_elision_summary(yaml, "two.yaml").expect("two-phase workload should render");
+        assert!(
+            out.contains("phase.setup"),
+            "setup phase row missing:\n{out}"
+        );
         assert!(out.contains("phase.run"), "run phase row missing:\n{out}");
     }
 
@@ -2274,8 +2592,10 @@ phases:
     fn malformed_workload_returns_path_tagged_error() {
         let bad = "not: valid: yaml: workload";
         let err = render_elision_summary(bad, "bad.yaml").unwrap_err();
-        assert!(err.contains("bad.yaml"),
-            "error should embed the offending path: {err}");
+        assert!(
+            err.contains("bad.yaml"),
+            "error should embed the offending path: {err}"
+        );
     }
 
     /// `bind_outer` for a materialised node points at its own
@@ -2295,15 +2615,18 @@ phases:
         let out = render_elision_summary(yaml, "x.yaml").unwrap();
         // The phase row should mention its own name twice — once
         // in the logical_name column, once in bind_outer.
-        let phase_lines: Vec<&str> = out.lines()
-            .filter(|l| l.contains("phase.p"))
-            .collect();
-        assert_eq!(phase_lines.len(), 1,
-            "expected exactly one phase row, got: {phase_lines:?}");
+        let phase_lines: Vec<&str> = out.lines().filter(|l| l.contains("phase.p")).collect();
+        assert_eq!(
+            phase_lines.len(),
+            1,
+            "expected exactly one phase row, got: {phase_lines:?}"
+        );
         let line = phase_lines[0];
         let occurrences = line.matches("workload.scenario.default.phase.p").count();
-        assert_eq!(occurrences, 2,
-            "materialised phase row should list its logical_name twice (logical_name + bind_outer): {line}");
+        assert_eq!(
+            occurrences, 2,
+            "materialised phase row should list its logical_name twice (logical_name + bind_outer): {line}"
+        );
     }
 }
 
@@ -2322,16 +2645,23 @@ mod describe_wrappers_tests {
         let out = render_wrappers_table();
         // Header row.
         assert!(out.contains("NAME"), "header missing NAME column:\n{out}");
-        assert!(out.contains("OWNED FIELDS"), "header missing OWNED FIELDS:\n{out}");
+        assert!(
+            out.contains("OWNED FIELDS"),
+            "header missing OWNED FIELDS:\n{out}"
+        );
         assert!(out.contains("TRIGGER"), "header missing TRIGGER:\n{out}");
-        assert!(out.contains("CONSTRAINTS"), "header missing CONSTRAINTS:\n{out}");
+        assert!(
+            out.contains("CONSTRAINTS"),
+            "header missing CONSTRAINTS:\n{out}"
+        );
         // Each registered wrapper appears.
         for name in [
-            "traverse", "delay", "validate", "poll",
-            "if", "fields", "result", "metrics",
+            "traverse", "delay", "validate", "poll", "if", "fields", "result", "metrics",
         ] {
-            assert!(out.contains(name),
-                "wrapper `{name}` missing from describe wrappers output:\n{out}");
+            assert!(
+                out.contains(name),
+                "wrapper `{name}` missing from describe wrappers output:\n{out}"
+            );
         }
     }
 
@@ -2346,24 +2676,32 @@ mod describe_wrappers_tests {
             .lines()
             .find(|l| l.starts_with("traverse"))
             .expect("traverse row missing");
-        assert!(traverse_line.contains("always"),
-            "traverse trigger should be `always`: {traverse_line}");
+        assert!(
+            traverse_line.contains("always"),
+            "traverse trigger should be `always`: {traverse_line}"
+        );
         let validate_line = out
             .lines()
             .find(|l| l.starts_with("validate"))
             .expect("validate row missing");
-        assert!(validate_line.contains("verify/relevancy"),
-            "validate trigger should mention verify/relevancy: {validate_line}");
+        assert!(
+            validate_line.contains("verify/relevancy"),
+            "validate trigger should mention verify/relevancy: {validate_line}"
+        );
         let metrics_line = out
             .lines()
             .find(|l| l.starts_with("metrics"))
             .expect("metrics row missing");
-        assert!(metrics_line.contains("non-empty metrics map"),
-            "metrics trigger should be `non-empty metrics map`: {metrics_line}");
+        assert!(
+            metrics_line.contains("non-empty metrics map"),
+            "metrics trigger should be `non-empty metrics map`: {metrics_line}"
+        );
         // metrics declares forbids_outer for every other wrapper —
         // surface that in the constraints column.
-        assert!(metrics_line.contains("forbids_outer="),
-            "metrics row should advertise its forbids_outer constraint: {metrics_line}");
+        assert!(
+            metrics_line.contains("forbids_outer="),
+            "metrics row should advertise its forbids_outer constraint: {metrics_line}"
+        );
     }
 
     /// Owned-fields column lists the registry's owned-field names
@@ -2376,15 +2714,19 @@ mod describe_wrappers_tests {
             .lines()
             .find(|l| l.starts_with("traverse"))
             .expect("traverse row missing");
-        assert!(traverse_line.contains("(none)"),
-            "traverse owned fields should render as `(none)`: {traverse_line}");
+        assert!(
+            traverse_line.contains("(none)"),
+            "traverse owned fields should render as `(none)`: {traverse_line}"
+        );
         let validate_line = out
             .lines()
             .find(|l| l.starts_with("validate"))
             .expect("validate row missing");
         for f in ["verify", "relevancy", "strict"] {
-            assert!(validate_line.contains(f),
-                "validate row missing owned field `{f}`: {validate_line}");
+            assert!(
+                validate_line.contains(f),
+                "validate row missing owned field `{f}`: {validate_line}"
+            );
         }
     }
 
@@ -2410,13 +2752,17 @@ phases:
             .expect("simple workload should resolve");
         assert!(out.contains("op 'noop'"), "header missing op name: {out}");
         assert!(out.contains("phase: setup"), "header missing phase: {out}");
-        assert!(out.contains("wrapper stack (innermost -> outermost)"),
-            "stack header missing: {out}");
+        assert!(
+            out.contains("wrapper stack (innermost -> outermost)"),
+            "stack header missing: {out}"
+        );
         // Empty op fires only the always-on wrappers.
         let traverse_idx = out.find("traverse").expect("traverse missing");
         let result_idx = out.find("result").expect("result missing");
-        assert!(traverse_idx < result_idx,
-            "traverse should print before result: {out}");
+        assert!(
+            traverse_idx < result_idx,
+            "traverse should print before result: {out}"
+        );
         // None of the optional wrappers should appear in the
         // stack. We check the numbered stack lines so a phase or
         // op whose name contains "metrics" or "validate" can't
@@ -2427,8 +2773,10 @@ phases:
             .collect();
         for unexpected in ["delay", "validate", "poll", "fields", "metrics"] {
             for line in &stack_lines {
-                assert!(!line.contains(unexpected),
-                    "unexpected wrapper `{unexpected}` in stack line: {line}");
+                assert!(
+                    !line.contains(unexpected),
+                    "unexpected wrapper `{unexpected}` in stack line: {line}"
+                );
             }
         }
     }
@@ -2454,8 +2802,10 @@ phases:
         let out = render_op_description(path.to_str().unwrap(), "check")
             .expect("validate workload should resolve");
         // Validate fires on `verify:` — the line should say so.
-        assert!(out.contains("triggered by `verify:` field"),
-            "validate provenance missing: {out}");
+        assert!(
+            out.contains("triggered by `verify:` field"),
+            "validate provenance missing: {out}"
+        );
         // Traverse is transitive (always-on wrapper, but it would
         // also be pulled in transitively by validate). The
         // resolver tags it AlwaysOn because the trigger fires
@@ -2465,8 +2815,10 @@ phases:
             .lines()
             .find(|l| l.contains("1.") && l.contains("traverse"))
             .expect("traverse line missing");
-        assert!(!traverse_line.contains("triggered by"),
-            "traverse line should not claim a field trigger: {traverse_line}");
+        assert!(
+            !traverse_line.contains("triggered by"),
+            "traverse line should not claim a field trigger: {traverse_line}"
+        );
     }
 
     /// Unknown op-template names surface a clean error including
@@ -2489,10 +2841,18 @@ phases:
         std::fs::write(&path, yaml).expect("write workload");
 
         let err = render_op_description(path.to_str().unwrap(), "missing").unwrap_err();
-        assert!(err.contains("no op template named 'missing'"),
-            "error should name the missing template: {err}");
-        assert!(err.contains("alpha"), "candidate list should include alpha: {err}");
-        assert!(err.contains("beta"), "candidate list should include beta: {err}");
+        assert!(
+            err.contains("no op template named 'missing'"),
+            "error should name the missing template: {err}"
+        );
+        assert!(
+            err.contains("alpha"),
+            "candidate list should include alpha: {err}"
+        );
+        assert!(
+            err.contains("beta"),
+            "candidate list should include beta: {err}"
+        );
     }
 
     /// Missing-file path returns a clean error string, not a
@@ -2501,7 +2861,9 @@ phases:
     #[test]
     fn describe_op_missing_file_returns_clean_error() {
         let err = render_op_description("/nonexistent/path/never.yaml", "x").unwrap_err();
-        assert!(err.contains("never.yaml"),
-            "error should embed the file path: {err}");
+        assert!(
+            err.contains("never.yaml"),
+            "error should embed the file path: {err}"
+        );
     }
 }

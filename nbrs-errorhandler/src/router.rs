@@ -66,8 +66,13 @@ fn parse_retry_verb(token: &str) -> Result<(&str, Option<u32>), String> {
     if token == "retry" {
         return Ok(("retry", Some(DEFAULT_RETRY_VERB_BUDGET)));
     }
-    if let Some(arg) = token.strip_prefix("retry(").and_then(|r| r.strip_suffix(')')) {
-        let n: u32 = arg.trim().parse()
+    if let Some(arg) = token
+        .strip_prefix("retry(")
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        let n: u32 = arg
+            .trim()
+            .parse()
             .map_err(|_| format!("invalid retry budget in '{token}': expected retry(N)"))?;
         return Ok(("retry", Some(n)));
     }
@@ -82,7 +87,9 @@ impl ErrorRouter {
 
         for rule in spec.split(';') {
             let rule = rule.trim();
-            if rule.is_empty() { continue; }
+            if rule.is_empty() {
+                continue;
+            }
 
             let (pattern_str, handler_str) = if let Some(colon) = rule.find(':') {
                 (&rule[..colon], &rule[colon + 1..])
@@ -144,8 +151,9 @@ impl ErrorRouter {
     /// checks the pattern SOURCE, not regex universality: `.*` is the
     /// one canonical way to write the catch-all.
     pub fn has_catch_all(&self) -> bool {
-        self.mappings.iter().any(|m|
-            m.patterns.iter().any(|p| p.as_str() == ".*"))
+        self.mappings
+            .iter()
+            .any(|m| m.patterns.iter().any(|p| p.as_str() == ".*"))
     }
 
     /// Create a simple router with a default handler for all errors.
@@ -191,7 +199,10 @@ impl ErrorRouter {
             for pattern in &mapping.patterns {
                 if pattern.is_match(error_name) {
                     let handlers = mapping.handlers.clone();
-                    self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(error_name.to_string(), handlers.clone());
+                    self.cache
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(error_name.to_string(), handlers.clone());
                     return handlers;
                 }
             }
@@ -199,10 +210,15 @@ impl ErrorRouter {
 
         // No match — unhandled error type. Default to stop so
         // unconfigured errors don't silently pass through.
-        eprintln!("error: no handler matched error type '{error_name}' — stopping (add a handler pattern to configure)");
+        eprintln!(
+            "error: no handler matched error type '{error_name}' — stopping (add a handler pattern to configure)"
+        );
         let stop_handler = crate::handlers::builtin_handler("stop").unwrap();
         let handlers = vec![Arc::from(stop_handler) as Arc<dyn ErrorHandler>];
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(error_name.to_string(), handlers.clone());
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(error_name.to_string(), handlers.clone());
         handlers
     }
 }
@@ -210,7 +226,6 @@ impl ErrorRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn parse_simple() {
@@ -267,7 +282,10 @@ mod tests {
     fn stop_handler_in_chain() {
         let router = ErrorRouter::parse(".*:warn,stop").unwrap();
         let detail = router.handle_error("Fatal", "kaboom", 42, 0);
-        assert!(detail.should_stop, "stop handler in chain should set should_stop");
+        assert!(
+            detail.should_stop,
+            "stop handler in chain should set should_stop"
+        );
     }
 
     #[test]

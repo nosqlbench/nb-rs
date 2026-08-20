@@ -34,8 +34,8 @@
 
 use std::collections::HashMap;
 
-use nbrs_workload::polydat_matter::{PolydatMatter, HasPolydatMatter};
 use nbrs_workload::model::{BindingsDef, ParsedOp, WorkloadPhase};
+use nbrs_workload::polydat_matter::{HasPolydatMatter, PolydatMatter};
 
 use crate::scope_tree::{ScopeKind, ScopeNodeIdx, ScopeTree};
 
@@ -76,10 +76,12 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
     // wrong phase's op and apply the wrong classification.
     // Mirrors the same disambiguation `runner.rs::InstallSpec::OpTemplate`
     // already does at install time.
-    let mut owning_phase: std::collections::HashMap<ScopeNodeIdx, String>
-        = std::collections::HashMap::new();
+    let mut owning_phase: std::collections::HashMap<ScopeNodeIdx, String> =
+        std::collections::HashMap::new();
     for (idx, node) in tree.iter_dfs() {
-        if !matches!(node.kind, ScopeKind::OpTemplate { .. }) { continue; }
+        if !matches!(node.kind, ScopeKind::OpTemplate { .. }) {
+            continue;
+        }
         let mut cursor = node.parent;
         while let Some(p) = cursor {
             if let ScopeKind::Phase { name } = &tree.nodes[p].kind {
@@ -133,7 +135,9 @@ fn scope_kind_polydat_matter(
             }
         }
         ScopeKind::Scenario { .. } => PolydatMatter::None,
-        ScopeKind::Phase { name } => inputs.phases.get(name)
+        ScopeKind::Phase { name } => inputs
+            .phases
+            .get(name)
             .map(WorkloadPhase::polydat_matter)
             .unwrap_or(PolydatMatter::None),
         ScopeKind::OpTemplate { name } => {
@@ -146,14 +150,16 @@ fn scope_kind_polydat_matter(
                 Some(n) => n,
                 None => return PolydatMatter::None,
             };
-            inputs.phases.get(phase_name)
+            inputs
+                .phases
+                .get(phase_name)
                 .and_then(|p| p.ops.iter().find(|op| op.name == *name))
                 .map(ParsedOp::polydat_matter)
                 .unwrap_or(PolydatMatter::None)
         }
-        ScopeKind::Comprehension { .. }
-        | ScopeKind::DoWhile { .. }
-        | ScopeKind::DoUntil { .. } => PolydatMatter::Definitions,
+        ScopeKind::Comprehension { .. } | ScopeKind::DoWhile { .. } | ScopeKind::DoUntil { .. } => {
+            PolydatMatter::Definitions
+        }
         ScopeKind::IncludedScenario { .. } => PolydatMatter::None,
         // Scenario-tree-level `bindings:` (and the canonical
         // lowered form of `set:`) install Polydat matter — same
@@ -167,15 +173,19 @@ fn scope_kind_polydat_matter(
 /// (when SRD-13d phases 7 / 8 fully wire those surfaces).
 /// Returns `(idx, depth, materialised, logical_name,
 /// kind_label)` quintuples in DFS order.
-pub fn elision_summary(tree: &ScopeTree) -> Vec<(ScopeNodeIdx, usize, Option<bool>, String, String)> {
+pub fn elision_summary(
+    tree: &ScopeTree,
+) -> Vec<(ScopeNodeIdx, usize, Option<bool>, String, String)> {
     tree.iter_dfs()
-        .map(|(idx, node)| (
-            idx,
-            node.depth,
-            node.materialised,
-            node.logical_name.clone(),
-            node.kind.label().to_string(),
-        ))
+        .map(|(idx, node)| {
+            (
+                idx,
+                node.depth,
+                node.materialised,
+                node.logical_name.clone(),
+                node.kind.label().to_string(),
+            )
+        })
         .collect()
 }
 
@@ -187,11 +197,28 @@ mod tests {
     fn empty_phase() -> WorkloadPhase {
         WorkloadPhase {
             dimensions: Default::default(),
-            cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, timeout: None, stop_when: Vec::new(), continue_if: None, tags: None,
-            ops: vec![], for_each: None,
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            cycles: None,
+            concurrency: None,
+            rate: None,
+            daemon: false,
+            adapter: None,
+            errors: None,
+            tries: None,
+            tries_backoff: None,
+            interval: None,
+            repeat: None,
+            error_rate_max: None,
+            timeout: None,
+            stop_when: Vec::new(),
+            continue_if: None,
+            tags: None,
+            ops: vec![],
+            for_each: None,
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
             optimize: None,
@@ -206,7 +233,11 @@ mod tests {
         params: &HashMap<String, String>,
         phases: &HashMap<String, WorkloadPhase>,
     ) {
-        let inputs = ClassifyInputs { bindings, params, phases };
+        let inputs = ClassifyInputs {
+            bindings,
+            params,
+            phases,
+        };
         classify_and_mark(tree, &inputs);
     }
 
@@ -214,8 +245,7 @@ mod tests {
     fn empty_workload_elides_everything_below_root() {
         let mut phases = HashMap::new();
         phases.insert("p".into(), empty_phase());
-        let mut tree = ScopeTree::build("default",
-            &[ScenarioNode::Phase("p".into())]);
+        let mut tree = ScopeTree::build("default", &[ScenarioNode::Phase("p".into())]);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
         // Root materialises (always, per SRD-13d §5.1).
         assert_eq!(tree.nodes[0].materialised, Some(true));
@@ -224,10 +254,14 @@ mod tests {
         assert_eq!(tree.nodes[scenario_idx].materialised, Some(false));
         assert_eq!(tree.nodes[phase_idx].materialised, Some(false));
         assert_eq!(tree.nodes[0].logical_name, "");
-        assert_eq!(tree.nodes[scenario_idx].logical_name,
-            "workload.scenario.default");
-        assert_eq!(tree.nodes[phase_idx].logical_name,
-            "workload.scenario.default.phase.p");
+        assert_eq!(
+            tree.nodes[scenario_idx].logical_name,
+            "workload.scenario.default"
+        );
+        assert_eq!(
+            tree.nodes[phase_idx].logical_name,
+            "workload.scenario.default.phase.p"
+        );
     }
 
     #[test]
@@ -237,10 +271,13 @@ mod tests {
         p1.bindings = BindingsDef::PolydatSource("k := 5".into());
         phases.insert("p1".into(), p1);
         phases.insert("p2".into(), empty_phase());
-        let mut tree = ScopeTree::build("default", &[
-            ScenarioNode::Phase("p1".into()),
-            ScenarioNode::Phase("p2".into()),
-        ]);
+        let mut tree = ScopeTree::build(
+            "default",
+            &[
+                ScenarioNode::Phase("p1".into()),
+                ScenarioNode::Phase("p2".into()),
+            ],
+        );
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
         let scenario_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
         let p1_idx = tree.nodes[scenario_idx].children[0];
@@ -254,8 +291,7 @@ mod tests {
         let mut phases = HashMap::new();
         phases.insert("p".into(), empty_phase());
         let bindings = BindingsDef::PolydatSource("dataset := \"sift\"".into());
-        let mut tree = ScopeTree::build("default",
-            &[ScenarioNode::Phase("p".into())]);
+        let mut tree = ScopeTree::build("default", &[ScenarioNode::Phase("p".into())]);
         mark_with(&mut tree, &bindings, &HashMap::new(), &phases);
         // Workload root predicate returns Definitions due to
         // the bindings — the root is materialised either way
@@ -272,8 +308,7 @@ mod tests {
         phases.insert("p".into(), empty_phase());
         let mut params = HashMap::new();
         params.insert("dataset".into(), "sift".into());
-        let mut tree = ScopeTree::build("default",
-            &[ScenarioNode::Phase("p".into())]);
+        let mut tree = ScopeTree::build("default", &[ScenarioNode::Phase("p".into())]);
         mark_with(&mut tree, &BindingsDef::default(), &params, &phases);
         assert_eq!(tree.nodes[0].materialised, Some(true));
     }
@@ -286,13 +321,14 @@ mod tests {
         // resilient to changes in the Comprehension struct's
         // private fields.
         let comp = polydat::iteration::comprehension::Comprehension::cartesian(vec![]);
-        let mut tree = ScopeTree::build("default", &[
-            ScenarioNode::Comprehension {
+        let mut tree = ScopeTree::build(
+            "default",
+            &[ScenarioNode::Comprehension {
                 comprehension: comp,
                 children: vec![ScenarioNode::Phase("p".into())],
                 continue_if: None,
-            },
-        ]);
+            }],
+        );
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
         let scenario_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
         let comp_idx = tree.nodes[scenario_idx].children[0];
@@ -309,22 +345,30 @@ mod tests {
         let mut phases = HashMap::new();
         let mut p = empty_phase();
         let mut op = ParsedOp::simple("a", "noop");
-        op.metrics.insert("m".into(), MetricSpec {
-            cell: Default::default(),
-            value: "factor * 2.0".into(),  // expression → Definitions
-            family: None, kind: None, unit: None, format: None,
-        });
+        op.metrics.insert(
+            "m".into(),
+            MetricSpec {
+                cell: Default::default(),
+                value: "factor * 2.0".into(), // expression → Definitions
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+            },
+        );
         p.ops.push(op);
         phases.insert("p".into(), p);
-        let mut tree = ScopeTree::build("default",
-            &[ScenarioNode::Phase("p".into())]);
+        let mut tree = ScopeTree::build("default", &[ScenarioNode::Phase("p".into())]);
         // Build the op tier first so the predicate sees it.
         tree.extend_with_op_templates(&phases);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
         // Find the op-template node.
-        let op_idx = tree.iter_dfs()
-            .find(|(_, n)| matches!(&n.kind,
-                crate::scope_tree::ScopeKind::OpTemplate { name } if name == "a"))
+        let op_idx = tree
+            .iter_dfs()
+            .find(|(_, n)| {
+                matches!(&n.kind,
+                crate::scope_tree::ScopeKind::OpTemplate { name } if name == "a")
+            })
             .map(|(i, _)| i)
             .expect("op-template node");
         assert_eq!(tree.nodes[op_idx].materialised, Some(true));
@@ -342,20 +386,28 @@ mod tests {
         let mut phases = HashMap::new();
         let mut p = empty_phase();
         let mut op = ParsedOp::simple("a", "noop");
-        op.metrics.insert("m".into(), MetricSpec {
-            cell: Default::default(),
-            value: "existing_wire".into(),
-            family: None, kind: None, unit: None, format: None,
-        });
+        op.metrics.insert(
+            "m".into(),
+            MetricSpec {
+                cell: Default::default(),
+                value: "existing_wire".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+            },
+        );
         p.ops.push(op);
         phases.insert("p".into(), p);
-        let mut tree = ScopeTree::build("default",
-            &[ScenarioNode::Phase("p".into())]);
+        let mut tree = ScopeTree::build("default", &[ScenarioNode::Phase("p".into())]);
         tree.extend_with_op_templates(&phases);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
-        let op_idx = tree.iter_dfs()
-            .find(|(_, n)| matches!(&n.kind,
-                crate::scope_tree::ScopeKind::OpTemplate { name } if name == "a"))
+        let op_idx = tree
+            .iter_dfs()
+            .find(|(_, n)| {
+                matches!(&n.kind,
+                crate::scope_tree::ScopeKind::OpTemplate { name } if name == "a")
+            })
             .map(|(i, _)| i)
             .expect("op-template node");
         assert_eq!(tree.nodes[op_idx].materialised, Some(true));
@@ -372,21 +424,32 @@ mod tests {
         use nbrs_workload::model::{MetricSpec, ParsedOp};
         let mut with_metrics = empty_phase();
         let mut op_with = ParsedOp::simple("select_ann", "noop");
-        op_with.metrics.insert("m".into(), MetricSpec {
-            cell: Default::default(),
-            value: "existing_wire".into(),
-            family: None, kind: None, unit: None, format: None,
-        });
+        op_with.metrics.insert(
+            "m".into(),
+            MetricSpec {
+                cell: Default::default(),
+                value: "existing_wire".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+            },
+        );
         with_metrics.ops.push(op_with);
         let mut without_metrics = empty_phase();
-        without_metrics.ops.push(ParsedOp::simple("select_ann", "noop"));
+        without_metrics
+            .ops
+            .push(ParsedOp::simple("select_ann", "noop"));
         let mut phases = HashMap::new();
         phases.insert("ann_query".into(), with_metrics);
         phases.insert("pvs_metadata_query".into(), without_metrics);
-        let mut tree = ScopeTree::build("default", &[
-            ScenarioNode::Phase("ann_query".into()),
-            ScenarioNode::Phase("pvs_metadata_query".into()),
-        ]);
+        let mut tree = ScopeTree::build(
+            "default",
+            &[
+                ScenarioNode::Phase("ann_query".into()),
+                ScenarioNode::Phase("pvs_metadata_query".into()),
+            ],
+        );
         tree.extend_with_op_templates(&phases);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
 
@@ -394,8 +457,12 @@ mod tests {
         // phase ancestor each lives under, and assert per-phase
         // materialisation.
         for (idx, node) in tree.iter_dfs() {
-            let crate::scope_tree::ScopeKind::OpTemplate { name } = &node.kind else { continue };
-            if name != "select_ann" { continue }
+            let crate::scope_tree::ScopeKind::OpTemplate { name } = &node.kind else {
+                continue;
+            };
+            if name != "select_ann" {
+                continue;
+            }
             // Walk up to the owning phase.
             let mut cursor = node.parent;
             let mut phase = None;
@@ -411,8 +478,10 @@ mod tests {
                 Some("pvs_metadata_query") => Some(false),
                 other => panic!("unexpected owning phase: {other:?}"),
             };
-            assert_eq!(tree.nodes[idx].materialised, expected_materialised,
-                "op-template {name} under phase {phase:?} should materialise={expected_materialised:?}");
+            assert_eq!(
+                tree.nodes[idx].materialised, expected_materialised,
+                "op-template {name} under phase {phase:?} should materialise={expected_materialised:?}"
+            );
         }
     }
 
@@ -420,8 +489,7 @@ mod tests {
     fn elision_summary_dumps_dfs_order() {
         let mut phases = HashMap::new();
         phases.insert("p".into(), empty_phase());
-        let mut tree = ScopeTree::build("default",
-            &[ScenarioNode::Phase("p".into())]);
+        let mut tree = ScopeTree::build("default", &[ScenarioNode::Phase("p".into())]);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
         let summary = elision_summary(&tree);
         // DFS pre-order: session → workload → scenario → phase. The

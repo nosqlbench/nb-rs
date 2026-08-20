@@ -19,8 +19,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
@@ -28,14 +28,15 @@ pub const NAME: WrapperName = WrapperName::new("fields");
 
 /// Trigger: op carries `fields: true` (bool, or string "true").
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template
         .params
         .get("fields")
         .map(|v| {
-            v.as_bool().unwrap_or_else(|| {
-                v.as_str().map(|s| s == "true").unwrap_or(false)
-            })
+            v.as_bool()
+                .unwrap_or_else(|| v.as_str().map(|s| s == "true").unwrap_or(false))
         })
         .unwrap_or(false)
 }
@@ -116,7 +117,9 @@ impl OpDispenser for FieldsDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Pre-execute rendering mode — resolve the
             // captured op_fields and print their rendered
@@ -125,17 +128,14 @@ impl OpDispenser for FieldsDispenser {
             // not inner short-circuits (DRYRUN under
             // dryrun=fields, etc).
             if !self.op_fields.is_empty() {
-                match crate::wires::resolve_op_fields_via_wires(
-                    &self.op_fields, ctx.wires,
-                ) {
+                match crate::wires::resolve_op_fields_via_wires(&self.op_fields, ctx.wires) {
                     Ok(resolved) => {
                         for s in resolved.strings().iter() {
                             println!("{s}");
                         }
                     }
                     Err(msg) => {
-                        eprintln!("[{}@{}] fields-render failed: {msg}",
-                            self.op_name, cycle);
+                        eprintln!("[{}@{}] fields-render failed: {msg}", self.op_name, cycle);
                     }
                 }
             }
@@ -151,10 +151,13 @@ impl OpDispenser for FieldsDispenser {
             if self.op_fields.is_empty() {
                 if let Some(ref body) = result.body {
                     let json = body.to_json();
-                    println!("[{}@{}] {} rows: {}",
-                        self.op_name, cycle,
+                    println!(
+                        "[{}@{}] {} rows: {}",
+                        self.op_name,
+                        cycle,
                         body.element_count(),
-                        serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()));
+                        serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string())
+                    );
                 } else {
                     println!("[{}@{}] (no result body)", self.op_name, cycle);
                 }
@@ -168,5 +171,7 @@ impl OpDispenser for FieldsDispenser {
             Ok(result)
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }

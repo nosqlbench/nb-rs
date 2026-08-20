@@ -71,7 +71,10 @@ impl FrameBroker {
     /// `publish` prunes the dead sender from the broker.
     pub fn subscribe(&self) -> mpsc::Receiver<MetricSet> {
         let (tx, rx) = mpsc::channel();
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
         rx
     }
 

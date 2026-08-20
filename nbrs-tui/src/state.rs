@@ -43,7 +43,11 @@ pub struct ActivePhaseId {
 
 impl ActivePhaseId {
     pub fn new(exec_id: u64, name: impl Into<String>, labels: impl Into<String>) -> Self {
-        Self { exec_id, name: name.into(), labels: labels.into() }
+        Self {
+            exec_id,
+            name: name.into(),
+            labels: labels.into(),
+        }
     }
 }
 
@@ -428,15 +432,10 @@ pub struct RunState {
 
     /// Set to true when the run is complete.
     pub finished: bool,
-
 }
 
 impl RunState {
-    pub fn new(
-        workload_file: &str,
-        scenario_name: &str,
-        adapter: &str,
-    ) -> Self {
+    pub fn new(workload_file: &str, scenario_name: &str, adapter: &str) -> Self {
         Self {
             workload_file: workload_file.to_string(),
             scenario_name: scenario_name.to_string(),
@@ -492,14 +491,22 @@ impl RunState {
         // through the scene tree). First match: correct for a single
         // execution; ambiguous under concurrent executions of the same
         // phase (same as the pre-SRD-100 (name,labels) key), resolved in P1c.
-        self.active_phases.values().find(|a| a.name == name && a.labels == labels)
+        self.active_phases
+            .values()
+            .find(|a| a.name == name && a.labels == labels)
     }
 
     /// Mutable borrow of the active-phase entry for a specific
     /// (exec_id, name, labels) key. Used by the observer's progress
     /// callback to update in place.
-    pub fn active_phase_mut(&mut self, exec_id: u64, name: &str, labels: &str) -> Option<&mut ActivePhase> {
-        self.active_phases.get_mut(&ActivePhaseId::new(exec_id, name, labels))
+    pub fn active_phase_mut(
+        &mut self,
+        exec_id: u64,
+        name: &str,
+        labels: &str,
+    ) -> Option<&mut ActivePhase> {
+        self.active_phases
+            .get_mut(&ActivePhaseId::new(exec_id, name, labels))
     }
 
     /// Push a log entry to the ring buffer (capped at 200).
@@ -520,7 +527,9 @@ impl RunState {
         message: String,
     ) {
         self.push_log_entry(LogEntry {
-            severity, message, category,
+            severity,
+            message,
+            category,
             at: std::time::SystemTime::now(),
         });
     }
@@ -628,8 +637,8 @@ impl RunState {
         labels: &str,
         want: Option<&PhaseStatus>,
     ) -> Option<SceneNodeId> {
-        let id_addresses_live_phase = self.tree.nodes.get(scene_node_id)
-            .is_some_and(|n| n.kind == EntryKind::Phase
+        let id_addresses_live_phase = self.tree.nodes.get(scene_node_id).is_some_and(|n| {
+            n.kind == EntryKind::Phase
                 && n.name == name
                 && match want {
                     // Running/completed transitions: the threaded id wins
@@ -639,9 +648,9 @@ impl RunState {
                     // (Pending/Running) node — the phase that just failed.
                     // A terminal node at this id is a re-used loop id, so
                     // fall through to the by-name lookup instead.
-                    None => !matches!(n.status,
-                        PhaseStatus::Completed | PhaseStatus::Failed(_)),
-                });
+                    None => !matches!(n.status, PhaseStatus::Completed | PhaseStatus::Failed(_)),
+                }
+        });
         if id_addresses_live_phase {
             return Some(scene_node_id);
         }
@@ -653,8 +662,13 @@ impl RunState {
             // -completed one (`find_phase(.., None)` returns the first-by-DFS
             // node, which is the stale terminal row). Last-resort any-status
             // match keeps a degenerate single-row tree working.
-            None => self.tree.find_phase(name, labels, Some(&PhaseStatus::Running))
-                .or_else(|| self.tree.find_phase(name, labels, Some(&PhaseStatus::Pending)))
+            None => self
+                .tree
+                .find_phase(name, labels, Some(&PhaseStatus::Running))
+                .or_else(|| {
+                    self.tree
+                        .find_phase(name, labels, Some(&PhaseStatus::Pending))
+                })
                 .or_else(|| self.tree.find_phase(name, labels, None)),
             some => self.tree.find_phase(name, labels, some),
         }
@@ -664,9 +678,17 @@ impl RunState {
     /// `scene_node_id` (SRD-100 P1c). Pre-mapped phases flip their
     /// own node directly; a phase the pre-map never enumerated is
     /// pushed dynamically so it still gets a tree slot.
-    pub fn set_phase_running(&mut self, scene_node_id: SceneNodeId, name: &str, labels: &str, op_count: usize) {
+    pub fn set_phase_running(
+        &mut self,
+        scene_node_id: SceneNodeId,
+        name: &str,
+        labels: &str,
+        op_count: usize,
+    ) {
         let session_now = self.elapsed_secs();
-        if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Pending)) {
+        if let Some(id) =
+            self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Pending))
+        {
             self.tree.set_phase_running_at(id, op_count);
             self.phase_session_started.insert(id, session_now);
         } else {
@@ -699,8 +721,7 @@ impl RunState {
     /// in the body.
     pub fn final_op_leaves(&self, name: &str, labels: &str) -> Vec<(String, String)> {
         let node_id = match self.phases.iter().find(|e| {
-            e.name == name && e.labels == labels
-                && matches!(e.status, PhaseStatus::Running)
+            e.name == name && e.labels == labels && matches!(e.status, PhaseStatus::Running)
         }) {
             Some(e) => e.node_id,
             None => return Vec::new(),
@@ -710,35 +731,39 @@ impl RunState {
             _ => return Vec::new(),
         };
         let total = ops.len();
-        ops.iter().map(|op| {
-            let icon = match &op.status {
-                PhaseStatus::Completed => "✓",
-                PhaseStatus::Failed(_) => "✗",
-                _ => "—",
-            };
-            // Same form as the live leaf: what the step produced, then how
-            // long it took. The settled scrollback row is where this matters
-            // most — it is the copy a reader comes back to.
-            let duration_cell = op.duration_secs
-                .map(|d| match op.measure.as_deref() {
-                    Some(m) => format!("[{m}] {}", crate::widgets::format_dur_compact(d)),
-                    None => crate::widgets::format_dur_compact(d),
-                })
-                .unwrap_or_else(|| "—".to_string());
-            let stamp = match op.session_elapsed {
-                Some(v) => format!("  @ {}", crate::widgets::format_dur_compact(v)),
-                None => String::new(),
-            };
-            let mut line = format!(
-                "    {icon} {name}  [{seq}/{total}]{stamp}",
-                name = op.name, seq = op.seq + 1,
-            );
-            if let PhaseStatus::Failed(err) = &op.status {
-                line.push_str("  ");
-                line.push_str(err);
-            }
-            (line, duration_cell)
-        }).collect()
+        ops.iter()
+            .map(|op| {
+                let icon = match &op.status {
+                    PhaseStatus::Completed => "✓",
+                    PhaseStatus::Failed(_) => "✗",
+                    _ => "—",
+                };
+                // Same form as the live leaf: what the step produced, then how
+                // long it took. The settled scrollback row is where this matters
+                // most — it is the copy a reader comes back to.
+                let duration_cell = op
+                    .duration_secs
+                    .map(|d| match op.measure.as_deref() {
+                        Some(m) => format!("[{m}] {}", crate::widgets::format_dur_compact(d)),
+                        None => crate::widgets::format_dur_compact(d),
+                    })
+                    .unwrap_or_else(|| "—".to_string());
+                let stamp = match op.session_elapsed {
+                    Some(v) => format!("  @ {}", crate::widgets::format_dur_compact(v)),
+                    None => String::new(),
+                };
+                let mut line = format!(
+                    "    {icon} {name}  [{seq}/{total}]{stamp}",
+                    name = op.name,
+                    seq = op.seq + 1,
+                );
+                if let PhaseStatus::Failed(err) = &op.status {
+                    line.push_str("  ");
+                    line.push_str(err);
+                }
+                (line, duration_cell)
+            })
+            .collect()
     }
 
     pub fn set_phase_completed(
@@ -761,12 +786,16 @@ impl RunState {
             && summary.skips >= summary.ops_finished
             && summary.ops_ok == 0
             && summary.errors == 0;
-        if fully_skipped && matches!(
-            nbrs_runtime::observer::skipped_phase_display(),
-            nbrs_runtime::observer::SkippedPhaseDisplay::Elide
-            | nbrs_runtime::observer::SkippedPhaseDisplay::Prune)
+        if fully_skipped
+            && matches!(
+                nbrs_runtime::observer::skipped_phase_display(),
+                nbrs_runtime::observer::SkippedPhaseDisplay::Elide
+                    | nbrs_runtime::observer::SkippedPhaseDisplay::Prune
+            )
         {
-            if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running)) {
+            if let Some(id) =
+                self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running))
+            {
                 self.tree.remove_node(id);
                 self.summaries.remove(&id);
                 self.phase_session_started.remove(&id);
@@ -774,13 +803,17 @@ impl RunState {
             }
             return;
         }
-        if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running)) {
+        if let Some(id) =
+            self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running))
+        {
             // Displayed duration is a session-clock delta so
             // `session_started + duration == session_elapsed` holds
             // exactly on every rendered row. The executor-measured
             // `duration_secs` is the fallback when the start was never
             // observed (runtime-materialized phase).
-            let display_duration = self.phase_session_started.get(&id)
+            let display_duration = self
+                .phase_session_started
+                .get(&id)
                 .map(|s| (session_now - s).max(0.0))
                 .unwrap_or(duration_secs);
             self.tree.set_phase_completed_at(id, display_duration);
@@ -792,7 +825,13 @@ impl RunState {
 
     /// Mark a phase as failed, keyed by the dispatch-time
     /// `scene_node_id` (SRD-100 P1c).
-    pub fn set_phase_failed(&mut self, scene_node_id: SceneNodeId, name: &str, labels: &str, error: &str) {
+    pub fn set_phase_failed(
+        &mut self,
+        scene_node_id: SceneNodeId,
+        name: &str,
+        labels: &str,
+        error: &str,
+    ) {
         let session_now = self.elapsed_secs();
         if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, None) {
             self.tree.set_phase_failed_at(id, error);
@@ -881,18 +920,23 @@ impl RunState {
     /// the very transitions the lines reported).
     pub fn margin_body_stamp(&self) -> String {
         let secs = self.elapsed_secs();
-        let phase_only: Vec<_> = self.phases.iter()
+        let phase_only: Vec<_> = self
+            .phases
+            .iter()
             .filter(|p| matches!(p.kind, EntryKind::Phase))
             .collect();
         let total = self.expected_total_phases;
-        let running = phase_only.iter()
+        let running = phase_only
+            .iter()
             .find(|p| matches!(p.status, PhaseStatus::Running));
         let running_seq = running.and_then(|p| p.seq);
-        let latest_done_seq = phase_only.iter()
+        let latest_done_seq = phase_only
+            .iter()
             .filter(|p| !matches!(p.status, PhaseStatus::Pending))
             .filter_map(|p| p.seq)
             .max();
-        let fallback_done = phase_only.iter()
+        let fallback_done = phase_only
+            .iter()
             .filter(|p| !matches!(p.status, PhaseStatus::Pending))
             .count();
         let count = match (running_seq, latest_done_seq, total) {
@@ -912,7 +956,8 @@ impl RunState {
     /// tree. Called after every mutation that affects the DFS
     /// order or any node's display fields.
     fn rebuild_phases(&mut self) {
-        self.phases = self.tree
+        self.phases = self
+            .tree
             .dfs()
             .filter(|n| n.kind != EntryKind::Root)
             .map(|n| PhaseEntry {
@@ -964,11 +1009,17 @@ mod resolve_tests {
     }
 
     fn row(s: &RunState, id: SceneNodeId) -> &PhaseEntry {
-        s.phases.iter().find(|e| e.node_id == id).expect("row for id")
+        s.phases
+            .iter()
+            .find(|e| e.node_id == id)
+            .expect("row for id")
     }
 
     fn running_count(s: &RunState) -> usize {
-        s.phases.iter().filter(|e| matches!(e.status, PhaseStatus::Running)).count()
+        s.phases
+            .iter()
+            .filter(|e| matches!(e.status, PhaseStatus::Running))
+            .count()
     }
 
     /// The id-keyed-wins branch: two distinct same-name nodes, completed in
@@ -993,8 +1044,10 @@ mod resolve_tests {
             let d = r.duration_secs.expect("completed row has duration");
             let reconciled = r.session_elapsed.expect("session_elapsed set")
                 - r.session_started.expect("session_started set");
-            assert!((d - reconciled).abs() < 1e-9,
-                "duration {d} must equal session_elapsed - session_started {reconciled}");
+            assert!(
+                (d - reconciled).abs() < 1e-9,
+                "duration {d} must equal session_elapsed - session_started {reconciled}"
+            );
         }
         assert_eq!(row(&s, p1).op_count, 3);
         assert_eq!(row(&s, p2).op_count, 7);
@@ -1025,13 +1078,23 @@ mod resolve_tests {
         s.set_phase_completed(p, "p", "i=1", 1.0, PhaseSummary::default());
         // iteration 2 reuses the same id (now Completed) -> append a live row
         s.set_phase_running(p, "p", "i=2", 1);
-        assert_eq!(running_count(&s), 1, "iteration 2 appended a distinct live row");
+        assert_eq!(
+            running_count(&s),
+            1,
+            "iteration 2 appended a distinct live row"
+        );
         // iteration 2 fails, reported with the reused id `p`
         s.set_phase_failed(p, "p", "i=2", "boom");
-        assert!(matches!(row(&s, p).status, PhaseStatus::Completed),
-            "iteration 1's row stays Completed, got {:?}", row(&s, p).status);
-        let failed = s.phases.iter()
-            .filter(|e| matches!(e.status, PhaseStatus::Failed(_))).count();
+        assert!(
+            matches!(row(&s, p).status, PhaseStatus::Completed),
+            "iteration 1's row stays Completed, got {:?}",
+            row(&s, p).status
+        );
+        let failed = s
+            .phases
+            .iter()
+            .filter(|e| matches!(e.status, PhaseStatus::Failed(_)))
+            .count();
         assert_eq!(failed, 1, "exactly the live iteration-2 row failed");
         assert_eq!(running_count(&s), 0, "no row left stranded Running");
     }
@@ -1070,8 +1133,10 @@ mod measure_tests {
         let leaves = st.final_op_leaves("finalize", "");
         assert_eq!(leaves.len(), 1);
         let (_, cell) = &leaves[0];
-        assert!(cell.starts_with("[12 sst] "),
-            "measure precedes the duration in the gutter cell: {cell:?}");
+        assert!(
+            cell.starts_with("[12 sst] "),
+            "measure precedes the duration in the gutter cell: {cell:?}"
+        );
     }
 
     /// An op with no `measure:` renders exactly as before — the feature is
@@ -1099,6 +1164,9 @@ mod measure_tests {
         st.op_completed(node, "plain", 0.3);
 
         let (_, cell) = &st.final_op_leaves("finalize", "")[0];
-        assert!(!cell.contains('['), "no brackets without a measure: {cell:?}");
+        assert!(
+            !cell.contains('['),
+            "no brackets without a measure: {cell:?}"
+        );
     }
 }

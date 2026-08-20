@@ -72,8 +72,8 @@
 
 mod detail;
 mod handler;
-mod router;
 pub mod handlers;
+mod router;
 
 pub use detail::{ErrorDetail, Retry};
 pub use handler::ErrorHandler;

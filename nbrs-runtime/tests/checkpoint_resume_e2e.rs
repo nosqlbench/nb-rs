@@ -109,11 +109,17 @@ phases:
         .expect("read 2nd checkpoint")
         .expect("checkpoint still present after resume");
     assert_eq!(post.invocation, 2, "second invocation increments counter");
-    assert_eq!(post.session, saved.session, "session id preserved across resume");
+    assert_eq!(
+        post.session, saved.session,
+        "session id preserved across resume"
+    );
 
     let schema_post = find_phase(&post, "schema");
-    assert_eq!(schema_post.status, PhaseStatus::Completed,
-        "skipped schema retains Completed");
+    assert_eq!(
+        schema_post.status,
+        PhaseStatus::Completed,
+        "skipped schema retains Completed"
+    );
     assert_eq!(
         schema_post.duration_secs.expect("duration"),
         schema_duration_v1,
@@ -121,8 +127,11 @@ phases:
     );
 
     let load_post = find_phase(&post, "load");
-    assert_eq!(load_post.status, PhaseStatus::Completed,
-        "rerun load completes again");
+    assert_eq!(
+        load_post.status,
+        PhaseStatus::Completed,
+        "rerun load completes again"
+    );
 }
 
 /// Workload-root binding edit between runs → phase's
@@ -151,7 +160,9 @@ fn upstream_binding_edit_invalidates_idempotent_skip() {
     // canonical_hash covers; the phase's own program is
     // byte-identical between runs but its instance_hash
     // (over its ancestor chain) differs.
-    let make_workload = |modulus: u64| format!(r#"
+    let make_workload = |modulus: u64| {
+        format!(
+            r#"
 scenarios:
   default:
     - schema
@@ -167,14 +178,18 @@ phases:
     ops:
       decl:
         stmt: "DECL shard={{shard}}"
-"#);
+"#
+        )
+    };
 
     std::fs::write(&workload_path, make_workload(8)).unwrap();
-    in_dir(&dir, || run_args(&[
-        format!("workload={}", workload_path.display()),
-        "driver=stdout".into(),
-        format!("filename={}", stdout_path.display()),
-    ]));
+    in_dir(&dir, || {
+        run_args(&[
+            format!("workload={}", workload_path.display()),
+            "driver=stdout".into(),
+            format!("filename={}", stdout_path.display()),
+        ])
+    });
     let session_dir = read_logs_latest(&dir);
     let cp_path = session_dir.join("checkpoint.jsonl");
     let saved = storage::read(&cp_path).unwrap().unwrap();
@@ -187,20 +202,27 @@ phases:
     // instance_hash even though the phase's own program is
     // byte-identical.
     std::fs::write(&workload_path, make_workload(16)).unwrap();
-    in_dir(&dir, || run_args(&[
-        format!("workload={}", workload_path.display()),
-        "driver=stdout".into(),
-        format!("filename={}", stdout_path.display()),
-        format!("resume={}", session_dir.display()),
-    ]));
+    in_dir(&dir, || {
+        run_args(&[
+            format!("workload={}", workload_path.display()),
+            "driver=stdout".into(),
+            format!("filename={}", stdout_path.display()),
+            format!("resume={}", session_dir.display()),
+        ])
+    });
     let post = storage::read(&cp_path).unwrap().unwrap();
     let h_v2 = post.phases[0].identity.phase_hash;
-    assert_ne!(h_v1, h_v2,
+    assert_ne!(
+        h_v1, h_v2,
         "instance_hash must differ after the upstream binding edit — \
-         this is the program_hash vs instance_hash split working as intended");
+         this is the program_hash vs instance_hash split working as intended"
+    );
     assert_eq!(post.invocation, 2);
-    assert_eq!(post.phases[0].status, PhaseStatus::Completed,
-        "phase ran fresh after the mismatch and completed");
+    assert_eq!(
+        post.phases[0].status,
+        PhaseStatus::Completed,
+        "phase ran fresh after the mismatch and completed"
+    );
 }
 
 // ---------------------------------------------------------------
@@ -218,14 +240,17 @@ fn run_args(args: &[String]) {
         .build()
         .expect("tokio rt");
     rt.block_on(async {
-        nbrs_runtime::runner::run(args).await
+        nbrs_runtime::runner::run(args)
+            .await
             .expect("runner.run returned Err")
     });
 }
 
 fn tempdir(prefix: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let d = std::env::temp_dir().join(format!("{prefix}-{n:x}"));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -249,25 +274,31 @@ fn in_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
     std::env::set_current_dir(dir).unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     std::env::set_current_dir(prev).unwrap();
-    if let Err(e) = result { std::panic::resume_unwind(e); }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
 }
 
 fn read_logs_latest(dir: &std::path::Path) -> PathBuf {
     let latest = dir.join("sessions").join("latest");
     let target = std::fs::read_link(&latest)
         .unwrap_or_else(|_| panic!("sessions/latest missing in {}", dir.display()));
-    if target.is_absolute() { target }
-    else { dir.join("sessions").join(target) }
+    if target.is_absolute() {
+        target
+    } else {
+        dir.join("sessions").join(target)
+    }
 }
 
-fn find_phase<'a>(
-    cp: &'a Checkpoint,
-    name: &str,
-) -> &'a nbrs_runtime::checkpoint::PhaseEntry {
+fn find_phase<'a>(cp: &'a Checkpoint, name: &str) -> &'a nbrs_runtime::checkpoint::PhaseEntry {
     use nbrs_runtime::checkpoint::PathSegment;
-    cp.phases.iter().find(|e| {
-        e.identity.yaml_path.iter().any(|seg| {
-            matches!(seg, PathSegment::Phase(n) if n == name)
+    cp.phases
+        .iter()
+        .find(|e| {
+            e.identity
+                .yaml_path
+                .iter()
+                .any(|seg| matches!(seg, PathSegment::Phase(n) if n == name))
         })
-    }).unwrap_or_else(|| panic!("phase {name} not in checkpoint"))
+        .unwrap_or_else(|| panic!("phase {name} not in checkpoint"))
 }

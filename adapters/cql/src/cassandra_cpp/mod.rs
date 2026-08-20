@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cassandra_cpp as cass;
 use cass::LendingIterator;
+use cassandra_cpp as cass;
 
 mod binder_meta;
 mod op_modifier;
@@ -45,13 +45,13 @@ const DEFAULT_LOG_LEVEL: cass::LogLevel = cass::LogLevel::ERROR;
 fn parse_log_level(s: &str) -> Option<cass::LogLevel> {
     match s.to_ascii_uppercase().as_str() {
         "DISABLED" | "OFF" | "NONE" => Some(cass::LogLevel::DISABLED),
-        "CRITICAL"                  => Some(cass::LogLevel::CRITICAL),
-        "ERROR"                     => Some(cass::LogLevel::ERROR),
-        "WARN" | "WARNING"          => Some(cass::LogLevel::WARN),
-        "INFO"                      => Some(cass::LogLevel::INFO),
-        "DEBUG"                     => Some(cass::LogLevel::DEBUG),
-        "TRACE"                     => Some(cass::LogLevel::TRACE),
-        _                           => None,
+        "CRITICAL" => Some(cass::LogLevel::CRITICAL),
+        "ERROR" => Some(cass::LogLevel::ERROR),
+        "WARN" | "WARNING" => Some(cass::LogLevel::WARN),
+        "INFO" => Some(cass::LogLevel::INFO),
+        "DEBUG" => Some(cass::LogLevel::DEBUG),
+        "TRACE" => Some(cass::LogLevel::TRACE),
+        _ => None,
     }
 }
 
@@ -61,10 +61,12 @@ fn apply_log_level_once(params: &HashMap<String, String>) -> Result<(), String> 
     // from racing — the cpp-driver doesn't honor level changes
     // after the first session is created anyway.
     let level = match params.get("cassandra_log_level") {
-        Some(raw) => parse_log_level(raw).ok_or_else(|| format!(
-            "invalid cassandra_log_level '{raw}' — expected one of \
+        Some(raw) => parse_log_level(raw).ok_or_else(|| {
+            format!(
+                "invalid cassandra_log_level '{raw}' — expected one of \
              DISABLED, CRITICAL, ERROR, WARN, INFO, DEBUG, TRACE"
-        ))?,
+            )
+        })?,
         None => DEFAULT_LOG_LEVEL,
     };
     LOG_LEVEL_INIT.get_or_init(|| {
@@ -73,10 +75,10 @@ fn apply_log_level_once(params: &HashMap<String, String>) -> Result<(), String> 
     Ok(())
 }
 
+use crate::common::{CqlConfig, CqlConsistency, STMT_FIELD_NAMES};
 use nbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResultBody,
 };
-use crate::common::{CqlConfig, CqlConsistency, STMT_FIELD_NAMES};
 use nbrs_workload::model::ParsedOp;
 
 // Bridge: `crate::common::CqlConsistency` → `cass::Consistency`.
@@ -84,15 +86,15 @@ use nbrs_workload::model::ParsedOp;
 // enum; the shared type stays driver-agnostic.
 fn to_cass_consistency(c: CqlConsistency) -> cass::Consistency {
     match c {
-        CqlConsistency::Any          => cass::Consistency::ANY,
-        CqlConsistency::One          => cass::Consistency::ONE,
-        CqlConsistency::Two          => cass::Consistency::TWO,
-        CqlConsistency::Three        => cass::Consistency::THREE,
-        CqlConsistency::Quorum       => cass::Consistency::QUORUM,
-        CqlConsistency::All          => cass::Consistency::ALL,
-        CqlConsistency::LocalQuorum  => cass::Consistency::LOCAL_QUORUM,
-        CqlConsistency::EachQuorum   => cass::Consistency::EACH_QUORUM,
-        CqlConsistency::LocalOne     => cass::Consistency::LOCAL_ONE,
+        CqlConsistency::Any => cass::Consistency::ANY,
+        CqlConsistency::One => cass::Consistency::ONE,
+        CqlConsistency::Two => cass::Consistency::TWO,
+        CqlConsistency::Three => cass::Consistency::THREE,
+        CqlConsistency::Quorum => cass::Consistency::QUORUM,
+        CqlConsistency::All => cass::Consistency::ALL,
+        CqlConsistency::LocalQuorum => cass::Consistency::LOCAL_QUORUM,
+        CqlConsistency::EachQuorum => cass::Consistency::EACH_QUORUM,
+        CqlConsistency::LocalOne => cass::Consistency::LOCAL_ONE,
     }
 }
 
@@ -134,7 +136,10 @@ impl CqlResultBody {
             // No result-set schema → a write/DDL acknowledgment. This
             // statement wrote one unit (a row for DML, the statement
             // for DDL); its `count` is 1.
-            return Self { rows: Vec::new(), written_rows: 1 };
+            return Self {
+                rows: Vec::new(),
+                written_rows: 1,
+            };
         }
         let row_count = result.row_count() as usize;
         let mut rows = Vec::with_capacity(row_count);
@@ -142,22 +147,26 @@ impl CqlResultBody {
         while let Some(row) = iter.next() {
             let mut map = HashMap::new();
             for col_idx in 0..col_count {
-                let col_name = result.column_name(col_idx)
-                    .unwrap_or("?")
-                    .to_string();
+                let col_name = result.column_name(col_idx).unwrap_or("?").to_string();
                 let value = Self::extract_column_value(&row, col_idx);
                 map.insert(col_name, value);
             }
             rows.push(map);
         }
-        Self { rows, written_rows: 0 }
+        Self {
+            rows,
+            written_rows: 0,
+        }
     }
 
     /// A write result carrying an explicit rows-written count. Used
     /// where the dispenser knows the count directly — a BATCH of `n`
     /// rows. No returned rows, so `element_count()` reports `n`.
     fn write_ack(rows_written: u64) -> Self {
-        Self { rows: Vec::new(), written_rows: rows_written }
+        Self {
+            rows: Vec::new(),
+            written_rows: rows_written,
+        }
     }
 
     /// Extract a single column value as serde_json::Value.
@@ -224,14 +233,16 @@ impl CqlResultBody {
 
     /// Get a column value from the first row as i64 (for relevancy extraction).
     pub fn get_column_i64_values(&self, column: &str) -> Vec<i64> {
-        self.rows.iter()
+        self.rows
+            .iter()
             .filter_map(|row| row.get(column)?.as_i64())
             .collect()
     }
 
     /// Get a column value from the first row as string (for capture).
     pub fn get_column_string_values(&self, column: &str) -> Vec<String> {
-        self.rows.iter()
+        self.rows
+            .iter()
             .filter_map(|row| {
                 let v = row.get(column)?;
                 match v {
@@ -246,17 +257,20 @@ impl CqlResultBody {
 impl ResultBody for CqlResultBody {
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(
-            self.rows.iter()
-                .map(|row| serde_json::Value::Object(
-                    row.iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                ))
-                .collect()
+            self.rows
+                .iter()
+                .map(|row| {
+                    serde_json::Value::Object(
+                        row.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    )
+                })
+                .collect(),
         )
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
     fn element_count(&self) -> u64 {
         // A read reports rows returned; a write reports rows written.
@@ -337,10 +351,7 @@ unsafe impl Sync for CqlAdapter {}
 /// resolve); depth-tracking finds the true matching `}`;
 /// inline-expression `{{...}}` and qualifier-prefixed
 /// `{bind:name}` shapes pass through unchanged.
-fn resolve_structural_and_mark_remaining<F>(
-    template: &str,
-    mut lookup: F,
-) -> (String, Vec<String>)
+fn resolve_structural_and_mark_remaining<F>(template: &str, mut lookup: F) -> (String, Vec<String>)
 where
     F: FnMut(&str) -> Option<polydat::ast::Value>,
 {
@@ -365,7 +376,9 @@ where
                 j += 1;
             }
             let end = (j + 2).min(n);
-            for k in start..end { out.push(chars[k]); }
+            for k in start..end {
+                out.push(chars[k]);
+            }
             i = end;
             continue;
         }
@@ -386,8 +399,15 @@ where
         let mut j = body_start;
         let mut depth: u32 = 1;
         while j < n {
-            if chars[j] == '{' { depth += 1; }
-            if chars[j] == '}' { depth -= 1; if depth == 0 { break; } }
+            if chars[j] == '{' {
+                depth += 1;
+            }
+            if chars[j] == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
             j += 1;
         }
         if j >= n {
@@ -417,8 +437,14 @@ where
         // Qualifier-prefixed (`{bind:name}`, etc.) and non-bare
         // identifiers pass through verbatim — same discipline as
         // `nbrs_runtime::wires::substitute_via_wires`.
-        if body_bare.contains(':') || !body_bare.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            || !body_bare.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        if body_bare.contains(':')
+            || !body_bare
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            || !body_bare
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
         {
             out.push('{');
             out.push_str(body_bare);
@@ -478,7 +504,8 @@ where
 /// of statements doesn't blow the error message size.
 fn flatten_one_line(s: &str) -> String {
     const MAX: usize = 400;
-    let joined: String = s.lines()
+    let joined: String = s
+        .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
@@ -486,7 +513,8 @@ fn flatten_one_line(s: &str) -> String {
     if joined.len() > MAX {
         // Honour char boundaries — naive [..MAX] could
         // split a multi-byte char and panic.
-        let cutoff = joined.char_indices()
+        let cutoff = joined
+            .char_indices()
             .take_while(|(i, _)| *i < MAX)
             .last()
             .map(|(i, c)| i + c.len_utf8())
@@ -518,9 +546,7 @@ fn flatten_one_line(s: &str) -> String {
 /// platforms the suffix is just the contextual hint without raw
 /// numbers.
 fn enrich_connect_error(stage: &str, raw: String) -> String {
-    let needs_diag =
-        raw.contains("LIB_UNABLE_TO_INIT")
-        || raw.contains("Unable to initialize");
+    let needs_diag = raw.contains("LIB_UNABLE_TO_INIT") || raw.contains("Unable to initialize");
     if !needs_diag {
         return format!("{stage}: {raw}");
     }
@@ -556,7 +582,8 @@ fn enrich_connect_error(stage: &str, raw: String) -> String {
 /// platforms or sandboxes where the source isn't readable.
 fn process_resource_snapshot() -> String {
     fn read_or_q(path: &str) -> String {
-        std::fs::read_to_string(path).map(|s| s.trim().to_string())
+        std::fs::read_to_string(path)
+            .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "?".into())
     }
     let fds = std::fs::read_dir("/proc/self/fd")
@@ -565,21 +592,23 @@ fn process_resource_snapshot() -> String {
     let nofile_soft = read_or_q("/proc/self/limits");
     // /proc/self/limits is multi-line; pull just the rows we need.
     let limit_for = |needle: &str| -> (String, String) {
-        if nofile_soft == "?" { return ("?".into(), "?".into()); }
+        if nofile_soft == "?" {
+            return ("?".into(), "?".into());
+        }
         for line in nofile_soft.lines() {
             if line.starts_with(needle) {
                 // Format: "Max open files            65536                65536                files"
                 let cols: Vec<&str> = line.split_whitespace().collect();
                 if cols.len() >= 4 {
                     let n = cols.len();
-                    return (cols[n-3].into(), cols[n-2].into());
+                    return (cols[n - 3].into(), cols[n - 2].into());
                 }
             }
         }
         ("?".into(), "?".into())
     };
-    let (nofile_s, nofile_h)   = limit_for("Max open files");
-    let (nproc_s,  nproc_h)    = limit_for("Max processes");
+    let (nofile_s, nofile_h) = limit_for("Max open files");
+    let (nproc_s, nproc_h) = limit_for("Max processes");
     let threads = std::fs::read_dir("/proc/self/task")
         .map(|d| d.count().to_string())
         .unwrap_or_else(|_| "?".into());
@@ -596,12 +625,15 @@ fn process_resource_snapshot() -> String {
 impl CqlAdapter {
     pub async fn connect(config: &CqlConfig) -> Result<Self, String> {
         let mut cluster = cass::Cluster::default();
-        cluster.set_contact_points(&config.hosts)
+        cluster
+            .set_contact_points(&config.hosts)
             .map_err(|e| format!("set contact points: {e}"))?;
-        cluster.set_port(config.port)
+        cluster
+            .set_port(config.port)
             .map_err(|e| format!("set port: {e}"))?;
         if let (Some(u), Some(p)) = (&config.username, &config.password) {
-            cluster.set_credentials(u, p)
+            cluster
+                .set_credentials(u, p)
                 .map_err(|e| format!("set credentials: {e}"))?;
         }
         cluster.set_request_timeout(std::time::Duration::from_millis(config.request_timeout_ms));
@@ -624,10 +656,12 @@ impl CqlAdapter {
         // `connection_idle_timeout` past the longest expected stall to ride
         // through it; in-flight requests still honour their own request
         // timeouts.
-        cluster.set_connection_heartbeat_interval(
-            std::time::Duration::from_millis(config.heartbeat_interval_ms));
-        cluster.set_connection_idle_timeout(
-            std::time::Duration::from_millis(config.connection_idle_timeout_ms));
+        cluster.set_connection_heartbeat_interval(std::time::Duration::from_millis(
+            config.heartbeat_interval_ms,
+        ));
+        cluster.set_connection_idle_timeout(std::time::Duration::from_millis(
+            config.connection_idle_timeout_ms,
+        ));
 
         // `common::CqlConfig::from_params` already validated the
         // consistency string at parse time, so this conversion is
@@ -638,7 +672,9 @@ impl CqlAdapter {
         // fall back to connecting without a keyspace (needed for DDL phases
         // that create the keyspace).
         let session = if config.keyspace.is_empty() {
-            cluster.connect().await
+            cluster
+                .connect()
+                .await
                 .map_err(|e| enrich_connect_error("connect", e.to_string()))?
         } else {
             match cluster.connect_keyspace(&config.keyspace).await {
@@ -647,14 +683,20 @@ impl CqlAdapter {
                     let msg = e.to_string();
                     // Only fall back for keyspace-not-found errors.
                     // Auth failures, network errors, etc. should propagate.
-                    if msg.contains("Keyspace") || msg.contains("keyspace") || msg.contains("not found") {
+                    if msg.contains("Keyspace")
+                        || msg.contains("keyspace")
+                        || msg.contains("not found")
+                    {
                         nbrs_runtime::observer::log(
                             nbrs_runtime::observer::LogLevel::Warn,
                             &format!(
                                 "cql/cassandra-cpp: keyspace '{}' not found, connecting without keyspace",
-                                config.keyspace));
-                        cluster.connect().await
-                            .map_err(|e| enrich_connect_error("connect (no keyspace)", e.to_string()))?
+                                config.keyspace
+                            ),
+                        );
+                        cluster.connect().await.map_err(|e| {
+                            enrich_connect_error("connect (no keyspace)", e.to_string())
+                        })?
                     } else {
                         return Err(enrich_connect_error(
                             &format!("connect to keyspace '{}'", config.keyspace),
@@ -682,9 +724,7 @@ impl CqlAdapter {
         // to the first op that is actually traced (`cql_trace_rate > 0`). With
         // tracing off — the default — the cluster is never touched for tracing
         // and no artifact file is created. See [`LazyTraceLog`].
-        let trace_log = std::sync::Arc::new(
-            LazyTraceLog::new(trace_log_path, session.clone()),
-        );
+        let trace_log = std::sync::Arc::new(LazyTraceLog::new(trace_log_path, session.clone()));
 
         Ok(Self {
             session,
@@ -724,7 +764,9 @@ fn resolve_trace_log_path(config: &CqlConfig) -> std::path::PathBuf {
 // dispatch logic is the same across every CQL engine.
 
 impl DriverAdapter for CqlAdapter {
-    fn name(&self) -> &str { "cql" }
+    fn name(&self) -> &str {
+        "cql"
+    }
 
     fn default_status_metrics(&self) -> Vec<nbrs_runtime::adapter::StatusMetric> {
         crate::common::default_status_metrics()
@@ -746,7 +788,7 @@ impl DriverAdapter for CqlAdapter {
         &self,
         parent: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
     ) {
-        use nbrs_metrics::component::{attach, Component};
+        use nbrs_metrics::component::{Component, attach};
         use nbrs_metrics::controls::SyncApplier;
         use nbrs_metrics::labels::Labels;
 
@@ -767,7 +809,8 @@ impl DriverAdapter for CqlAdapter {
         // is already declared on it.
         let cql_component = {
             let parent_guard = parent.read().unwrap_or_else(|e| e.into_inner());
-            let existing = parent_guard.children()
+            let existing = parent_guard
+                .children()
                 .find(|c| {
                     let g = c.read().unwrap_or_else(|e| e.into_inner());
                     g.labels().get("adapter") == Some("cql")
@@ -776,8 +819,11 @@ impl DriverAdapter for CqlAdapter {
             drop(parent_guard);
             match existing {
                 Some(c) => {
-                    if c.read().unwrap_or_else(|e| e.into_inner())
-                        .controls().get_erased("cql_trace_rate").is_some()
+                    if c.read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .controls()
+                        .get_erased("cql_trace_rate")
+                        .is_some()
                     {
                         return;
                     }
@@ -808,234 +854,252 @@ impl DriverAdapter for CqlAdapter {
             bits_for_apply.store(v.to_bits(), Ordering::Release);
             Ok(())
         }));
-        cql_component.read().unwrap_or_else(|e| e.into_inner())
-            .controls().declare(trace_control);
+        cql_component
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .controls()
+            .declare(trace_control);
     }
 
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
         parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
-        // Find the statement text and determine execution mode from the field name.
-        let (stmt_text, mode) = STMT_FIELD_NAMES.iter()
-            .find_map(|key| -> Option<(String, &str)> {
-                let v = template.op.get(*key)?;
-                let text = v.as_str()?;
-                Some((text.to_string(), *key))
-            })
-            .ok_or_else(|| "CQL op requires a 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
-
-        // SRD-68 Push 5c — construction-time structural resolution
-        // for prepared mode. Walk every `{name}` in the statement
-        // text against the dispenser's canonical kernel:
-        //   - If `canonical.lookup(name)` returns `Some(v)` the
-        //     name resolves to a stable-per-phase-activation value
-        //     (workload param, iter var, cascaded extern). Inline
-        //     `v.to_display_string()` directly into the SQL — the
-        //     CQL prepared-statement compiler can't accept `?`
-        //     markers for structural positions like keyspace /
-        //     table / option values.
-        //   - Else the name is a per-cycle output binding (phase
-        //     `bindings:` LHS, `result:` LHS). Mark it with `?`
-        //     and remember its name for cycle-time `wires.get`
-        //     binding.
-        // The result is a CQL-parameterised `prepared_text` plus
-        // `bind_names` in `?`-position order.
-        //
-        // The dispenser is now self-sufficient — it doesn't
-        // depend on the upstream `resolve_placeholders_via_kernel`
-        // mutation pass having pre-resolved structural names. When
-        // that pass lands its validator-only form (Push 5c step 3)
-        // the dispenser keeps working unchanged.
-        let parent_for_lookup = parent.clone();
-        let (prepared_text, bind_names) = resolve_structural_and_mark_remaining(
-            &stmt_text,
-            |name| parent_for_lookup.lookup(name),
-        );
-        // Workload-author lvalue assertions per per-cycle bind
-        // point: a `{name:*}` or `{name:<polydat-type>}` suffix
-        // in the original statement text overrides the cluster-
-        // side parameter type for binder verification. Indices
-        // here line up with `bind_names` — both walk the same
-        // statement text in the same per-cycle-bind order, so
-        // the i-th element of each list refers to the same `?`
-        // position. Bind points that the structural resolver
-        // inlined (workload-param substitutions like {keyspace}
-        // / {table}) drop out of both lists symmetrically.
-        let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
-            use nbrs_workload::bindpoints::{extract_bind_points, BindPoint};
-            extract_bind_points(&stmt_text).into_iter()
-                .filter_map(|bp| match bp {
-                    BindPoint::Reference { ref name, ref lvalue_spec, .. } => {
-                        // Keep only points that are also in
-                        // `bind_names` (the per-cycle survivors).
-                        // Use position to align: a kernel-resolved
-                        // name won't appear in bind_names so its
-                        // spec must be filtered out too.
-                        if bind_names.iter().any(|bn| bn == name) {
-                            Some(lvalue_spec.clone())
-                        } else {
-                            None
-                        }
-                    }
-                    BindPoint::InlineDefinition(_) => None,
+            // Find the statement text and determine execution mode from the field name.
+            let (stmt_text, mode) = STMT_FIELD_NAMES
+                .iter()
+                .find_map(|key| -> Option<(String, &str)> {
+                    let v = template.op.get(*key)?;
+                    let text = v.as_str()?;
+                    Some((text.to_string(), *key))
                 })
-                .collect()
-        };
+                .ok_or_else(|| {
+                    "CQL op requires a 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string()
+                })?;
 
-        let session = SessionHandle(&self.session as *const cass::Session);
-        let consistency = self.consistency;
-
-        // Check for batch configuration on this op.
-        // batch: <integer> — batch size (rows per batch), type defaults to unlogged.
-        // max_batch_size: <bytes> — byte budget bounding the encoded batch size (SRD-103 §6).
-        // batchtype: logged|unlogged|counter — overrides batch type.
-        // A `batch:` row cap OR a `max_batch_size:` byte budget both select the
-        // batch executor; `max_batch_size` alone byte-bounds a dynamically-sized batch.
-        let has_batch = template.params.contains_key("batch")
-            || template.params.contains_key("max_batch_size");
-        // SRD-103 §3 — both `batch:` (cursor stride / row cap) and
-        // `max_batch_size:` (byte budget) are GK-resolved op fields. A literal
-        // (`batch: 8`, `64KB`) resolves directly; an expression referencing the
-        // CQL session nodes is evaluated against a subscope with this phase's
-        // own `cql_session_key` bound, after the referenced settings are
-        // pre-read (async) into the session memo. The phase's session is
-        // pre-attached before op fields resolve, so `render_key` is a sync hit.
-        let session_key = self.config.to_resource_key("cassandra-cpp").render_key();
-        // Workload-authored `batch:` cursor stride (0 = unset → the byte budget,
-        // if any, drives the row count). Used directly, unfloored downstream.
-        let batch_n: usize = crate::common::session_handle::resolve_batch_count(
-            &parent, &session_key, template.params.get("batch"),
-        ).await.map_err(|e| format!("op '{}': {e}", template.name))?
-            .unwrap_or(0);
-        let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
-            &parent, &session_key, template.params.get("max_batch_size"),
-        ).await.map_err(|e| format!("op '{}': {e}", template.name))?;
-        let batch_type_name = template.params.get("batchtype")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-        let batch_type = match batch_type_name.as_str() {
-            "logged" => cass::BatchType::LOGGED,
-            "counter" => cass::BatchType::COUNTER,
-            _ => cass::BatchType::UNLOGGED,
-        };
-        // A batch DERIVES its retry-safety from its inner statements —
-        // uniform template with stride, so computed ONCE here, never per
-        // stanza: counter batches (increments are not idempotent) and LWT
-        // statements are not retry-safe; plain PK-keyed upserts are. Gates
-        // the transient-error retry classification at the execute site.
-        let batch_retry_safe = batch_type_name != "counter"
-            && crate::common::cql_statement_retry_safe(&stmt_text);
-
-        // SRD-68 invariant I-3: dispenser owns its canonical kernel.
-        // For Push 2b, no op-level Polydat matter is assembled here yet —
-        // the canonical kernel is the parent (phase scope) directly.
-        // Push 3 will fan out per-fiber kernels from this canonical;
-        // a follow-up will let CQL ops with their own `bindings:` /
-        // `result:` block materialise a child subscope via
-        // `parent.build_subscope(matter)`.
-        // SRD 73: build the per-op universal-field modifier chain
-        // BEFORE we move `parent` into `canonical_kernel`. The chain
-        // captures resolved values out of the Polydat scope once at
-        // initializer time; per-cycle execute() just calls
-        // `chain.apply`. Only one match arm below moves `modifiers`
-        // into its dispenser.
-        let modifiers = crate::common::op_modifier::build_cql_modifier_chain::<
-            op_modifier::CassModifierFactory<cass::Statement>,
-        >(&parent, template.name.clone())?;
-        // A batch is a statement too — resolve the SAME universal fields into a
-        // batch-targeted chain so consistency / serial / request timeout /
-        // tracing all reach the batch itself (the driver ignores member-
-        // statement aspects for batch execution). Built only when this op is a
-        // batch; drops out of the hot path otherwise.
-        let batch_modifiers = if has_batch {
-            Some(crate::common::op_modifier::build_cql_modifier_chain::<
-                op_modifier::CassModifierFactory<cass::Batch>,
-            >(&parent, template.name.clone())?)
-        } else {
-            None
-        };
-        let canonical_kernel = parent;
-
-        match mode {
-            "raw" => {
-                Ok(Box::new(CqlRawDispenser {
-                    session,
-                    stmt_template: stmt_text.clone(),
-                    canonical_kernel,
-                    trace_rate_bits: self.trace_rate_bits.clone(),
-                    trace_log: self.trace_log.clone(),
-                    modifiers,
-                }) as Box<dyn OpDispenser>)
-            }
-            "simple" => {
-                Ok(Box::new(CqlRawDispenser {
-                    session,
-                    stmt_template: stmt_text.clone(),
-                    canonical_kernel,
-                    trace_rate_bits: self.trace_rate_bits.clone(),
-                    trace_log: self.trace_log.clone(),
-                    modifiers,
-                }) as Box<dyn OpDispenser>)
-            }
-            _ => {
-                if bind_names.is_empty() && !has_batch {
-                    // No bind points — execute as raw (DDL, simple queries).
-                    // No prepare needed; nothing to verify.
-                    Ok(Box::new(CqlRawDispenser {
-                        session,
-                        stmt_template: stmt_text.clone(),
-                        canonical_kernel,
-                        trace_rate_bits: self.trace_rate_bits.clone(),
-                        trace_log: self.trace_log.clone(),
-                        modifiers,
-                    }) as Box<dyn OpDispenser>)
-                } else {
-                    // Prepare against the cluster and verify the
-                    // typed binder against the dispenser's parent
-                    // kernel — the per-op dispenser-init
-                    // compulsion. Both prepared-mode and batch-mode
-                    // use the same inner prepared statement.
-                    let prepared_raw = self.session.prepare(&prepared_text).await
-                        .map_err(|e| format!(
-                            "cassandra-cpp prepare '{}': {e}",
-                            prepared_text,
-                        ))?;
-                    let prepared_arc = Arc::new(prepared_raw);
-
-                    // Build per-position binder functions from
-                    // prepared statement metadata. For CUSTOM
-                    // (vector) columns we additionally extract the
-                    // class name so make_binder can specialise per
-                    // VectorType element (FloatType / IntType /
-                    // DoubleType / LongType / ShortType / Float16Type)
-                    // and dispatch native typed-vector inputs directly
-                    // without round-tripping through to_display_string.
-                    let binders: Vec<BinderFn> = (0..bind_names.len())
-                        .map(|i| {
-                            let dt = prepared_arc.parameter_data_type(i);
-                            let vt = get_const_data_type_value_type(&dt);
-                            let class_name = if vt == cass::ValueType::CUSTOM {
-                                get_const_data_type_class_name(&dt)
+            // SRD-68 Push 5c — construction-time structural resolution
+            // for prepared mode. Walk every `{name}` in the statement
+            // text against the dispenser's canonical kernel:
+            //   - If `canonical.lookup(name)` returns `Some(v)` the
+            //     name resolves to a stable-per-phase-activation value
+            //     (workload param, iter var, cascaded extern). Inline
+            //     `v.to_display_string()` directly into the SQL — the
+            //     CQL prepared-statement compiler can't accept `?`
+            //     markers for structural positions like keyspace /
+            //     table / option values.
+            //   - Else the name is a per-cycle output binding (phase
+            //     `bindings:` LHS, `result:` LHS). Mark it with `?`
+            //     and remember its name for cycle-time `wires.get`
+            //     binding.
+            // The result is a CQL-parameterised `prepared_text` plus
+            // `bind_names` in `?`-position order.
+            //
+            // The dispenser is now self-sufficient — it doesn't
+            // depend on the upstream `resolve_placeholders_via_kernel`
+            // mutation pass having pre-resolved structural names. When
+            // that pass lands its validator-only form (Push 5c step 3)
+            // the dispenser keeps working unchanged.
+            let parent_for_lookup = parent.clone();
+            let (prepared_text, bind_names) =
+                resolve_structural_and_mark_remaining(&stmt_text, |name| {
+                    parent_for_lookup.lookup(name)
+                });
+            // Workload-author lvalue assertions per per-cycle bind
+            // point: a `{name:*}` or `{name:<polydat-type>}` suffix
+            // in the original statement text overrides the cluster-
+            // side parameter type for binder verification. Indices
+            // here line up with `bind_names` — both walk the same
+            // statement text in the same per-cycle-bind order, so
+            // the i-th element of each list refers to the same `?`
+            // position. Bind points that the structural resolver
+            // inlined (workload-param substitutions like {keyspace}
+            // / {table}) drop out of both lists symmetrically.
+            let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
+                use nbrs_workload::bindpoints::{BindPoint, extract_bind_points};
+                extract_bind_points(&stmt_text)
+                    .into_iter()
+                    .filter_map(|bp| match bp {
+                        BindPoint::Reference {
+                            ref name,
+                            ref lvalue_spec,
+                            ..
+                        } => {
+                            // Keep only points that are also in
+                            // `bind_names` (the per-cycle survivors).
+                            // Use position to align: a kernel-resolved
+                            // name won't appear in bind_names so its
+                            // spec must be filtered out too.
+                            if bind_names.iter().any(|bn| bn == name) {
+                                Some(lvalue_spec.clone())
                             } else {
                                 None
-                            };
-                            make_binder(vt, class_name.as_deref())
-                        })
-                        .collect();
+                            }
+                        }
+                        BindPoint::InlineDefinition(_) => None,
+                    })
+                    .collect()
+            };
 
-                    // Build the polydat typed binder from the same
-                    // metadata, with per-bindpoint workload-author
-                    // lvalue assertions (`{name:*}` / `{name:<type>}`)
-                    // overriding the cluster-side type when present.
-                    // See the scylla driver's `map_op` for the
-                    // matching surface; the diagnostics here mirror
-                    // those exactly.
-                    let mut slot_build_err: Option<String> = None;
-                    let slots: Vec<polydat::binder::BinderSlot> = (0..bind_names.len())
+            let session = SessionHandle(&self.session as *const cass::Session);
+            let consistency = self.consistency;
+
+            // Check for batch configuration on this op.
+            // batch: <integer> — batch size (rows per batch), type defaults to unlogged.
+            // max_batch_size: <bytes> — byte budget bounding the encoded batch size (SRD-103 §6).
+            // batchtype: logged|unlogged|counter — overrides batch type.
+            // A `batch:` row cap OR a `max_batch_size:` byte budget both select the
+            // batch executor; `max_batch_size` alone byte-bounds a dynamically-sized batch.
+            let has_batch = template.params.contains_key("batch")
+                || template.params.contains_key("max_batch_size");
+            // SRD-103 §3 — both `batch:` (cursor stride / row cap) and
+            // `max_batch_size:` (byte budget) are GK-resolved op fields. A literal
+            // (`batch: 8`, `64KB`) resolves directly; an expression referencing the
+            // CQL session nodes is evaluated against a subscope with this phase's
+            // own `cql_session_key` bound, after the referenced settings are
+            // pre-read (async) into the session memo. The phase's session is
+            // pre-attached before op fields resolve, so `render_key` is a sync hit.
+            let session_key = self.config.to_resource_key("cassandra-cpp").render_key();
+            // Workload-authored `batch:` cursor stride (0 = unset → the byte budget,
+            // if any, drives the row count). Used directly, unfloored downstream.
+            let batch_n: usize = crate::common::session_handle::resolve_batch_count(
+                &parent,
+                &session_key,
+                template.params.get("batch"),
+            )
+            .await
+            .map_err(|e| format!("op '{}': {e}", template.name))?
+            .unwrap_or(0);
+            let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
+                &parent,
+                &session_key,
+                template.params.get("max_batch_size"),
+            )
+            .await
+            .map_err(|e| format!("op '{}': {e}", template.name))?;
+            let batch_type_name = template
+                .params
+                .get("batchtype")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
+            let batch_type = match batch_type_name.as_str() {
+                "logged" => cass::BatchType::LOGGED,
+                "counter" => cass::BatchType::COUNTER,
+                _ => cass::BatchType::UNLOGGED,
+            };
+            // A batch DERIVES its retry-safety from its inner statements —
+            // uniform template with stride, so computed ONCE here, never per
+            // stanza: counter batches (increments are not idempotent) and LWT
+            // statements are not retry-safe; plain PK-keyed upserts are. Gates
+            // the transient-error retry classification at the execute site.
+            let batch_retry_safe =
+                batch_type_name != "counter" && crate::common::cql_statement_retry_safe(&stmt_text);
+
+            // SRD-68 invariant I-3: dispenser owns its canonical kernel.
+            // For Push 2b, no op-level Polydat matter is assembled here yet —
+            // the canonical kernel is the parent (phase scope) directly.
+            // Push 3 will fan out per-fiber kernels from this canonical;
+            // a follow-up will let CQL ops with their own `bindings:` /
+            // `result:` block materialise a child subscope via
+            // `parent.build_subscope(matter)`.
+            // SRD 73: build the per-op universal-field modifier chain
+            // BEFORE we move `parent` into `canonical_kernel`. The chain
+            // captures resolved values out of the Polydat scope once at
+            // initializer time; per-cycle execute() just calls
+            // `chain.apply`. Only one match arm below moves `modifiers`
+            // into its dispenser.
+            let modifiers = crate::common::op_modifier::build_cql_modifier_chain::<
+                op_modifier::CassModifierFactory<cass::Statement>,
+            >(&parent, template.name.clone())?;
+            // A batch is a statement too — resolve the SAME universal fields into a
+            // batch-targeted chain so consistency / serial / request timeout /
+            // tracing all reach the batch itself (the driver ignores member-
+            // statement aspects for batch execution). Built only when this op is a
+            // batch; drops out of the hot path otherwise.
+            let batch_modifiers = if has_batch {
+                Some(crate::common::op_modifier::build_cql_modifier_chain::<
+                    op_modifier::CassModifierFactory<cass::Batch>,
+                >(&parent, template.name.clone())?)
+            } else {
+                None
+            };
+            let canonical_kernel = parent;
+
+            match mode {
+                "raw" => Ok(Box::new(CqlRawDispenser {
+                    session,
+                    stmt_template: stmt_text.clone(),
+                    canonical_kernel,
+                    trace_rate_bits: self.trace_rate_bits.clone(),
+                    trace_log: self.trace_log.clone(),
+                    modifiers,
+                }) as Box<dyn OpDispenser>),
+                "simple" => Ok(Box::new(CqlRawDispenser {
+                    session,
+                    stmt_template: stmt_text.clone(),
+                    canonical_kernel,
+                    trace_rate_bits: self.trace_rate_bits.clone(),
+                    trace_log: self.trace_log.clone(),
+                    modifiers,
+                }) as Box<dyn OpDispenser>),
+                _ => {
+                    if bind_names.is_empty() && !has_batch {
+                        // No bind points — execute as raw (DDL, simple queries).
+                        // No prepare needed; nothing to verify.
+                        Ok(Box::new(CqlRawDispenser {
+                            session,
+                            stmt_template: stmt_text.clone(),
+                            canonical_kernel,
+                            trace_rate_bits: self.trace_rate_bits.clone(),
+                            trace_log: self.trace_log.clone(),
+                            modifiers,
+                        }) as Box<dyn OpDispenser>)
+                    } else {
+                        // Prepare against the cluster and verify the
+                        // typed binder against the dispenser's parent
+                        // kernel — the per-op dispenser-init
+                        // compulsion. Both prepared-mode and batch-mode
+                        // use the same inner prepared statement.
+                        let prepared_raw =
+                            self.session.prepare(&prepared_text).await.map_err(|e| {
+                                format!("cassandra-cpp prepare '{}': {e}", prepared_text,)
+                            })?;
+                        let prepared_arc = Arc::new(prepared_raw);
+
+                        // Build per-position binder functions from
+                        // prepared statement metadata. For CUSTOM
+                        // (vector) columns we additionally extract the
+                        // class name so make_binder can specialise per
+                        // VectorType element (FloatType / IntType /
+                        // DoubleType / LongType / ShortType / Float16Type)
+                        // and dispatch native typed-vector inputs directly
+                        // without round-tripping through to_display_string.
+                        let binders: Vec<BinderFn> = (0..bind_names.len())
+                            .map(|i| {
+                                let dt = prepared_arc.parameter_data_type(i);
+                                let vt = get_const_data_type_value_type(&dt);
+                                let class_name = if vt == cass::ValueType::CUSTOM {
+                                    get_const_data_type_class_name(&dt)
+                                } else {
+                                    None
+                                };
+                                make_binder(vt, class_name.as_deref())
+                            })
+                            .collect();
+
+                        // Build the polydat typed binder from the same
+                        // metadata, with per-bindpoint workload-author
+                        // lvalue assertions (`{name:*}` / `{name:<type>}`)
+                        // overriding the cluster-side type when present.
+                        // See the scylla driver's `map_op` for the
+                        // matching surface; the diagnostics here mirror
+                        // those exactly.
+                        let mut slot_build_err: Option<String> = None;
+                        let slots: Vec<polydat::binder::BinderSlot> = (0..bind_names.len())
                         .map(|i| {
                             use nbrs_workload::bindpoints::LvalueSpec;
                             let name = &bind_names[i];
@@ -1118,78 +1182,86 @@ impl DriverAdapter for CqlAdapter {
                             }
                         })
                         .collect();
-                    if let Some(msg) = slot_build_err {
-                        return Err(msg);
-                    }
-                    if !slots.is_empty() {
-                        let binder = polydat::binder::Binder::Positional {
-                            field: "prepared".to_string(),
-                            slots,
-                        };
-                        polydat::binder::verify_against_kernel(&[binder], &canonical_kernel)
-                            .map_err(|violations| violations.into_iter()
-                                .map(|v| v.message)
-                                .collect::<Vec<_>>()
-                                .join("; "))?;
-                    }
+                        if let Some(msg) = slot_build_err {
+                            return Err(msg);
+                        }
+                        if !slots.is_empty() {
+                            let binder = polydat::binder::Binder::Positional {
+                                field: "prepared".to_string(),
+                                slots,
+                            };
+                            polydat::binder::verify_against_kernel(&[binder], &canonical_kernel)
+                                .map_err(|violations| {
+                                    violations
+                                        .into_iter()
+                                        .map(|v| v.message)
+                                        .collect::<Vec<_>>()
+                                        .join("; ")
+                                })?;
+                        }
 
-                    if has_batch {
-                        // SRD-22 cover-once — settle the FIXED uniform stride N
-                        // now (not per-execute). Only characterize a row when a
-                        // byte budget must be converted to a row count; `batch:N`
-                        // / single-row need no probe.
-                        let row_size = if max_batch_bytes.is_some() {
-                            crate::common::size_estimator::characterize_row_size(
-                                &canonical_kernel, &bind_names)
+                        if has_batch {
+                            // SRD-22 cover-once — settle the FIXED uniform stride N
+                            // now (not per-execute). Only characterize a row when a
+                            // byte budget must be converted to a row count; `batch:N`
+                            // / single-row need no probe.
+                            let row_size = if max_batch_bytes.is_some() {
+                                crate::common::size_estimator::characterize_row_size(
+                                    &canonical_kernel,
+                                    &bind_names,
+                                )
+                            } else {
+                                0
+                            };
+                            let stride_n = crate::common::size_estimator::fixed_batch_stride(
+                                row_size,
+                                batch_n,
+                                max_batch_bytes,
+                            );
+                            Ok(Box::new(CqlBatchDispenser {
+                                session,
+                                consistency,
+                                stmt_text: prepared_text.clone(),
+                                stmt_field: "stmt".to_string(),
+                                bind_names,
+                                canonical_kernel,
+                                batch_n,
+                                n: stride_n,
+                                max_batch_bytes,
+                                oversize_warned: std::sync::atomic::AtomicBool::new(false),
+                                prepared: prepared_arc,
+                                binders,
+                                batch_type,
+                                retry_safe: batch_retry_safe,
+                                rows_timer: nbrs_metrics::instruments::timer::Timer::new(
+                                    nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
+                                ),
+                                rows_total: std::sync::atomic::AtomicU64::new(0),
+                                batch_writes: std::sync::atomic::AtomicU64::new(0),
+                                trace_rate_bits: self.trace_rate_bits.clone(),
+                                trace_log: self.trace_log.clone(),
+                                // The batch-targeted chain — applied to the batch
+                                // itself, not its member statements.
+                                modifiers: batch_modifiers
+                                    .expect("batch modifier chain is built when has_batch"),
+                            }) as Box<dyn OpDispenser>)
                         } else {
-                            0
-                        };
-                        let stride_n = crate::common::size_estimator::fixed_batch_stride(
-                            row_size, batch_n, max_batch_bytes);
-                        Ok(Box::new(CqlBatchDispenser {
-                            session,
-                            consistency,
-                            stmt_text: prepared_text.clone(),
-                            stmt_field: "stmt".to_string(),
-                            bind_names,
-                            canonical_kernel,
-                            batch_n,
-                            n: stride_n,
-                            max_batch_bytes,
-                            oversize_warned: std::sync::atomic::AtomicBool::new(false),
-                            prepared: prepared_arc,
-                            binders,
-                            batch_type,
-                            retry_safe: batch_retry_safe,
-                            rows_timer: nbrs_metrics::instruments::timer::Timer::new(
-                                nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
-                            ),
-                            rows_total: std::sync::atomic::AtomicU64::new(0),
-                            batch_writes: std::sync::atomic::AtomicU64::new(0),
-                            trace_rate_bits: self.trace_rate_bits.clone(),
-                            trace_log: self.trace_log.clone(),
-                            // The batch-targeted chain — applied to the batch
-                            // itself, not its member statements.
-                            modifiers: batch_modifiers
-                                .expect("batch modifier chain is built when has_batch"),
-                        }) as Box<dyn OpDispenser>)
-                    } else {
-                        Ok(Box::new(CqlPreparedDispenser {
-                            session,
-                            consistency,
-                            stmt_text: prepared_text,
-                            bind_names,
-                            canonical_kernel,
-                            prepared: prepared_arc,
-                            binders,
-                            trace_rate_bits: self.trace_rate_bits.clone(),
-                            trace_log: self.trace_log.clone(),
-                            modifiers,
-                        }) as Box<dyn OpDispenser>)
+                            Ok(Box::new(CqlPreparedDispenser {
+                                session,
+                                consistency,
+                                stmt_text: prepared_text,
+                                bind_names,
+                                canonical_kernel,
+                                prepared: prepared_arc,
+                                binders,
+                                trace_rate_bits: self.trace_rate_bits.clone(),
+                                trace_log: self.trace_log.clone(),
+                                modifiers,
+                            }) as Box<dyn OpDispenser>)
+                        }
                     }
                 }
             }
-        }
         })
     }
 
@@ -1308,7 +1380,10 @@ impl OpDispenser for CqlRawDispenser {
         // collapsing internal whitespace runs to one
         // space so an indented multi-line `raw: |` block
         // reads cleanly in an error message.
-        Some(format!("CQL raw: {}", flatten_one_line(&self.stmt_template)))
+        Some(format!(
+            "CQL raw: {}",
+            flatten_one_line(&self.stmt_template)
+        ))
     }
 
     fn describe_resolved(&self, wires: &dyn nbrs_runtime::wires::WireSource) -> Option<String> {
@@ -1331,7 +1406,9 @@ impl OpDispenser for CqlRawDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             // SRD-68 Push 5: cycle-time bind-point resolution
@@ -1343,13 +1420,16 @@ impl OpDispenser for CqlRawDispenser {
             // `ExecCtx::wires`. Single resolution surface per
             // SRD-68 invariant I-1; legacy `fields.get_str` path
             // retired for CQL raw mode.
-            let stmt_text_owned = nbrs_runtime::wires::substitute_via_wires(
-                &self.stmt_template, wires,
-            ).map_err(|msg| ExecutionError::Op(AdapterError {
-                error_name: "unresolved_bind_point".into(),
-                message: msg,
-                retryable: false,
-            }))?;
+            let stmt_text_owned =
+                nbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires).map_err(
+                    |msg| {
+                        ExecutionError::Op(AdapterError {
+                            error_name: "unresolved_bind_point".into(),
+                            message: msg,
+                            retryable: false,
+                        })
+                    },
+                )?;
             let stmt_text: &str = stmt_text_owned.as_str();
 
             // Sparse-tracing decision per execute. Atomic load is
@@ -1357,8 +1437,7 @@ impl OpDispenser for CqlRawDispenser {
             // when the rate is non-zero, so the no-tracing hot
             // path stays effectively free.
             let trace_rate = f64::from_bits(self.trace_rate_bits.load(Ordering::Acquire));
-            let trace_this = trace_rate > 0.0
-                && rand::random::<f64>() < trace_rate;
+            let trace_this = trace_rate > 0.0 && rand::random::<f64>() < trace_rate;
 
             // Capture metadata for the trace log before running.
             // `started_at` is the wall-clock for the
@@ -1384,7 +1463,8 @@ impl OpDispenser for CqlRawDispenser {
                 self.modifiers.apply(&mut stmt);
                 if trace_this {
                     let _ = stmt.set_tracing(true);
-                    self.session.get()
+                    self.session
+                        .get()
                         .execute_with_tracing(&stmt)
                         .await
                         .map(|(r, tid)| (r, tid))
@@ -1392,16 +1472,18 @@ impl OpDispenser for CqlRawDispenser {
                     stmt.execute().await.map(|r| (r, None))
                 }
             } else {
-                self.session.get().execute(stmt_text).await.map(|r| (r, None))
+                self.session
+                    .get()
+                    .execute(stmt_text)
+                    .await
+                    .map(|r| (r, None))
             };
 
             let latency_nanos = started.elapsed().as_nanos() as u64;
 
             let exec_result = match exec_outcome {
                 Ok((result, trace_id)) => {
-                    if trace_this
-                        && let Some(log) = self.trace_log.get().await
-                    {
+                    if trace_this && let Some(log) = self.trace_log.get().await {
                         log.submit(TraceRecord {
                             cycle,
                             started_at,
@@ -1427,9 +1509,7 @@ impl OpDispenser for CqlRawDispenser {
                     } else {
                         stmt_text.to_string()
                     };
-                    if trace_this
-                        && let Some(log) = self.trace_log.get().await
-                    {
+                    if trace_this && let Some(log) = self.trace_log.get().await {
                         log.submit(TraceRecord {
                             cycle,
                             started_at,
@@ -1513,7 +1593,10 @@ struct CqlPreparedDispenser {
 
 impl OpDispenser for CqlPreparedDispenser {
     fn describe(&self) -> Option<String> {
-        Some(format!("CQL prepared: {}", flatten_one_line(&self.stmt_text)))
+        Some(format!(
+            "CQL prepared: {}",
+            flatten_one_line(&self.stmt_text)
+        ))
     }
 
     fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
@@ -1552,23 +1635,25 @@ impl OpDispenser for CqlPreparedDispenser {
         Some(format!("CQL prepared: {}", flatten_one_line(&out)))
     }
 
-
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             // `self.prepared` and `self.binders` are both fully
             // constructed at `map_op` time — no per-cycle init.
             let mut stmt = self.prepared.bind();
-            let _ = stmt.set_consistency(self.consistency)
-                .map_err(|e| ExecutionError::Op(AdapterError {
+            let _ = stmt.set_consistency(self.consistency).map_err(|e| {
+                ExecutionError::Op(AdapterError {
                     error_name: "bind_error".into(),
                     message: format!("set consistency: {e}"),
                     retryable: false,
-                }))?;
+                })
+            })?;
             // SRD 73: per-op universal-field overrides on top of
             // the session-level consistency. No-op when the user
             // didn't bind any field.
@@ -1582,12 +1667,13 @@ impl OpDispenser for CqlPreparedDispenser {
             // uses, no adapter-specific fields path.
             for (bind_idx, name) in self.bind_names.iter().enumerate() {
                 if let Some(value) = wires.get(name) {
-                    self.binders[bind_idx](&mut stmt, bind_idx, &value)
-                        .map_err(|e| ExecutionError::Op(AdapterError {
+                    self.binders[bind_idx](&mut stmt, bind_idx, &value).map_err(|e| {
+                        ExecutionError::Op(AdapterError {
                             error_name: "bind_error".into(),
                             message: format!("bind position {bind_idx} ('{name}'): {e}"),
                             retryable: false,
-                        }))?;
+                        })
+                    })?;
                 }
             }
 
@@ -1596,8 +1682,7 @@ impl OpDispenser for CqlPreparedDispenser {
             // when the rate is non-zero, so the no-tracing hot
             // path stays effectively free.
             let trace_rate = f64::from_bits(self.trace_rate_bits.load(Ordering::Acquire));
-            let trace_this = trace_rate > 0.0
-                && rand::random::<f64>() < trace_rate;
+            let trace_this = trace_rate > 0.0 && rand::random::<f64>() < trace_rate;
             if trace_this {
                 let _ = stmt.set_tracing(true);
             }
@@ -1616,7 +1701,8 @@ impl OpDispenser for CqlPreparedDispenser {
             // cassandra-cpp surface that pairs result with
             // `cass_future_tracing_id`.
             let exec_outcome = if trace_this {
-                self.session.get()
+                self.session
+                    .get()
                     .execute_with_tracing(&stmt)
                     .await
                     .map(|(r, tid)| (r, tid))
@@ -1630,7 +1716,9 @@ impl OpDispenser for CqlPreparedDispenser {
                 Ok((result, trace_id)) => {
                     if trace_this {
                         if let Some(log) = self.trace_log.get().await {
-                            let binds = self.bind_names.iter()
+                            let binds = self
+                                .bind_names
+                                .iter()
                                 .map(|name| match wires.get(name) {
                                     Some(v) => tracing::format_bind_value(name, &v),
                                     None => format!("{name}=<missing>"),
@@ -1659,10 +1747,10 @@ impl OpDispenser for CqlPreparedDispenser {
                     } else {
                         self.stmt_text.clone()
                     };
-                    if trace_this
-                        && let Some(log) = self.trace_log.get().await
-                    {
-                        let binds = self.bind_names.iter()
+                    if trace_this && let Some(log) = self.trace_log.get().await {
+                        let binds = self
+                            .bind_names
+                            .iter()
                             .map(|name| match wires.get(name) {
                                 Some(v) => tracing::format_bind_value(name, &v),
                                 None => format!("{name}=<missing>"),
@@ -1798,7 +1886,6 @@ struct CqlBatchDispenser {
     modifiers: nbrs_runtime::op_modifier::ModifierChain<cass::Batch>,
 }
 
-
 impl OpDispenser for CqlBatchDispenser {
     fn describe(&self) -> Option<String> {
         Some(format!("CQL batch: {}", flatten_one_line(&self.stmt_text)))
@@ -1845,10 +1932,11 @@ impl OpDispenser for CqlBatchDispenser {
         Some(format!("CQL batch: {}{}", flatten_one_line(&out), suffix))
     }
 
-
     fn status_counters(&self) -> Vec<(&str, u64)> {
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
-        if total == 0 { return Vec::new(); }
+        if total == 0 {
+            return Vec::new();
+        }
         let batches = self.batch_writes.load(std::sync::atomic::Ordering::Relaxed);
         // Publish `_batch_writes` (INTERNAL, leading underscore) alongside
         // `rows_inserted` through the same status-counter surface so the
@@ -1862,7 +1950,13 @@ impl OpDispenser for CqlBatchDispenser {
         out
     }
 
-    fn adapter_metrics(&self) -> Vec<(String, nbrs_metrics::labels::Labels, nbrs_metrics::snapshot::MetricValue)> {
+    fn adapter_metrics(
+        &self,
+    ) -> Vec<(
+        String,
+        nbrs_metrics::labels::Labels,
+        nbrs_metrics::snapshot::MetricValue,
+    )> {
         use nbrs_metrics::snapshot::{CounterValue, HistogramValue, MetricValue, split_name_label};
         let snap = self.rows_timer.snapshot();
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
@@ -1893,7 +1987,9 @@ impl OpDispenser for CqlBatchDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         // SRD-22 cover-once: read exactly the reserved sub-run — the
         // executor advanced the phase cursor by this many ordinals, so
@@ -1908,8 +2004,7 @@ impl OpDispenser for CqlBatchDispenser {
             // the RNG roll only fires when the rate is non-zero, so
             // the no-tracing hot path stays effectively free.
             let trace_rate = f64::from_bits(self.trace_rate_bits.load(Ordering::Acquire));
-            let trace_this = trace_rate > 0.0
-                && rand::random::<f64>() < trace_rate;
+            let trace_this = trace_rate > 0.0 && rand::random::<f64>() < trace_rate;
 
             // SRD-68 Push 5b' batch contract: "each iteration of the
             // batch is considered another pull … an iteration
@@ -1945,8 +2040,11 @@ impl OpDispenser for CqlBatchDispenser {
                         cur.clear();
                         cur_bytes = 0;
                     }
-                    if cur.is_empty() && row_bytes > budget
-                        && !self.oversize_warned.swap(true, std::sync::atomic::Ordering::Relaxed)
+                    if cur.is_empty()
+                        && row_bytes > budget
+                        && !self
+                            .oversize_warned
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
                     {
                         nbrs_runtime::diag!(
                             nbrs_runtime::observer::LogLevel::Warn,
@@ -1970,30 +2068,33 @@ impl OpDispenser for CqlBatchDispenser {
             for _ in 0..submitted {
                 self.rows_timer.record(per_row_nanos);
             }
-            self.rows_total.fetch_add(submitted as u64, std::sync::atomic::Ordering::Relaxed);
+            self.rows_total
+                .fetch_add(submitted as u64, std::sync::atomic::Ordering::Relaxed);
             // Count this op as one batch write iff it actually wrote a
             // row — the denominator for the display's true average
             // batch size. Reached only on the success path (a failed
             // sub-batch returns early above), so retried / failed ops
             // never inflate it.
             if submitted >= 1 {
-                self.batch_writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.batch_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
 
             // `rows_inserted` lands on the per-fiber kernel via
             // ctx.wires.write — wrappers above this layer see it
             // through wires.get on the same cycle.
-            let _ = ctx.wires.write(
-                "rows_inserted",
-                polydat::ast::Value::U64(submitted as u64),
-            );
+            let _ = ctx
+                .wires
+                .write("rows_inserted", polydat::ast::Value::U64(submitted as u64));
             // A CQL write reports the rows it wrote as its result: the
             // batch's `element_count` is `submitted` (rows written),
             // just as a SELECT's is the rows it returned. Carried as a
             // single `write_ack` for the whole op (the executed sub-
             // batches acknowledge a write; the driver returns no rows).
             Ok(OpResult {
-                body: Some(Box::new(CqlResultBody::write_ack(submitted as u64)) as Box<dyn ResultBody>),
+                body: Some(
+                    Box::new(CqlResultBody::write_ack(submitted as u64)) as Box<dyn ResultBody>
+                ),
                 skipped: false,
             })
         })
@@ -2029,12 +2130,13 @@ impl CqlBatchDispenser {
         // statements. Set them once here (session consistency + the SRD-73
         // universal-field chain + trace flag); the member statements below
         // carry only their bound values.
-        let _ = batch.set_consistency(self.consistency)
-            .map_err(|e| ExecutionError::Op(AdapterError {
+        let _ = batch.set_consistency(self.consistency).map_err(|e| {
+            ExecutionError::Op(AdapterError {
                 error_name: "batch_error".into(),
                 message: format!("set batch consistency: {e}"),
                 retryable: false,
-            }))?;
+            })
+        })?;
         self.modifiers.apply(&mut batch);
         if trace_this {
             let _ = batch.set_tracing(true);
@@ -2043,23 +2145,25 @@ impl CqlBatchDispenser {
             let mut stmt = self.prepared.bind();
             for (idx, value_opt) in row.iter().enumerate() {
                 if let Some(value) = value_opt {
-                    self.binders[idx](&mut stmt, idx, value)
-                        .map_err(|e| ExecutionError::Op(AdapterError {
+                    self.binders[idx](&mut stmt, idx, value).map_err(|e| {
+                        ExecutionError::Op(AdapterError {
                             error_name: "bind_error".into(),
                             message: format!(
                                 "bind position {idx} ('{}') row {row_idx}: {e}",
                                 self.bind_names.get(idx).map(String::as_str).unwrap_or("?"),
                             ),
                             retryable: false,
-                        }))?;
+                        })
+                    })?;
                 }
             }
-            batch.add_statement(stmt)
-                .map_err(|e| ExecutionError::Op(AdapterError {
+            batch.add_statement(stmt).map_err(|e| {
+                ExecutionError::Op(AdapterError {
                     error_name: "batch_error".into(),
                     message: format!("add_statement (row {row_idx}): {e}"),
                     retryable: false,
-                }))?;
+                })
+            })?;
         }
         let row_count = rows.len();
 
@@ -2070,15 +2174,17 @@ impl CqlBatchDispenser {
         let exec_outcome = if trace_this {
             self.session.get().execute_batch_with_tracing(&batch).await
         } else {
-            self.session.get().execute_batch(&batch).await.map(|r| (r, None))
+            self.session
+                .get()
+                .execute_batch(&batch)
+                .await
+                .map(|r| (r, None))
         };
         let batch_nanos = batch_start.elapsed().as_nanos() as u64;
 
         match exec_outcome {
             Ok((_result, trace_id)) => {
-                if trace_this
-                    && let Some(log) = self.trace_log.get().await
-                {
+                if trace_this && let Some(log) = self.trace_log.get().await {
                     log.submit(TraceRecord {
                         cycle,
                         started_at,
@@ -2099,9 +2205,7 @@ impl CqlBatchDispenser {
                 Ok(batch_nanos)
             }
             Err(e) => {
-                if trace_this
-                    && let Some(log) = self.trace_log.get().await
-                {
+                if trace_this && let Some(log) = self.trace_log.get().await {
                     log.submit(TraceRecord {
                         cycle,
                         started_at,
@@ -2214,9 +2318,8 @@ inventory::submit! {
 fn get_const_data_type_value_type<T>(dt: &T) -> cass::ValueType {
     // ConstDataType layout: (*const _CassDataType, PhantomData)
     // We read the first pointer-sized field.
-    let raw: *const cassandra_cpp_sys::CassDataType_ = unsafe {
-        *(dt as *const _ as *const *const cassandra_cpp_sys::CassDataType_)
-    };
+    let raw: *const cassandra_cpp_sys::CassDataType_ =
+        unsafe { *(dt as *const _ as *const *const cassandra_cpp_sys::CassDataType_) };
     let cass_vt = unsafe { cassandra_cpp_sys::cass_data_type_type(raw) };
     // Map the C enum value to the Rust ValueType.
     // CassValueType_ values match ValueType variant ordering.
@@ -2241,9 +2344,8 @@ fn get_const_data_type_value_type<T>(dt: &T) -> cass::ValueType {
 /// guessing the format.
 fn get_const_data_type_class_name<T>(dt: &T) -> Option<String> {
     use std::os::raw::c_char;
-    let raw: *const cassandra_cpp_sys::CassDataType_ = unsafe {
-        *(dt as *const _ as *const *const cassandra_cpp_sys::CassDataType_)
-    };
+    let raw: *const cassandra_cpp_sys::CassDataType_ =
+        unsafe { *(dt as *const _ as *const *const cassandra_cpp_sys::CassDataType_) };
     // `cass_data_type_class_name(dt, &out_ptr, &out_len)` writes
     // a borrowed UTF-8 slice on success (pointer + length). The
     // slice's lifetime is tied to the data type — we copy it out
@@ -2251,13 +2353,9 @@ fn get_const_data_type_class_name<T>(dt: &T) -> Option<String> {
     // CassDataType's lifetime.
     let mut name_ptr: *const c_char = std::ptr::null();
     let mut name_len: usize = 0;
-    let err = unsafe {
-        cassandra_cpp_sys::cass_data_type_class_name(raw, &mut name_ptr, &mut name_len)
-    };
-    if err != cassandra_cpp_sys::CassError_::CASS_OK
-        || name_ptr.is_null()
-        || name_len == 0
-    {
+    let err =
+        unsafe { cassandra_cpp_sys::cass_data_type_class_name(raw, &mut name_ptr, &mut name_len) };
+    if err != cassandra_cpp_sys::CassError_::CASS_OK || name_ptr.is_null() || name_len == 0 {
         return None;
     }
     // Safety: the C API returns a valid byte slice on success;
@@ -2301,7 +2399,7 @@ fn parse_vector_to_bytes(s: &str) -> Vec<u8> {
     if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
         return Vec::new();
     }
-    let inner = &trimmed[1..trimmed.len()-1];
+    let inner = &trimmed[1..trimmed.len() - 1];
     let mut bytes = Vec::new();
     for part in inner.split(',') {
         let part = part.trim();
@@ -2388,8 +2486,9 @@ fn vec_i16_to_be_bytes(slice: &[i16]) -> Vec<u8> {
     out
 }
 
-type BinderFn = Box<dyn Fn(&mut cass::Statement, usize, &polydat::ast::Value)
-    -> cass::Result<()> + Send + Sync>;
+type BinderFn = Box<
+    dyn Fn(&mut cass::Statement, usize, &polydat::ast::Value) -> cass::Result<()> + Send + Sync,
+>;
 
 /// Bind a CQL `vector<float, N>` (CUSTOM column with FloatType
 /// element) from any polydat value variant the runtime might
@@ -2493,8 +2592,8 @@ fn bind_vector_double(
             for chunk in le_bytes.chunks(8) {
                 if chunk.len() == 8 {
                     be.extend_from_slice(&[
-                        chunk[7], chunk[6], chunk[5], chunk[4],
-                        chunk[3], chunk[2], chunk[1], chunk[0],
+                        chunk[7], chunk[6], chunk[5], chunk[4], chunk[3], chunk[2], chunk[1],
+                        chunk[0],
                     ]);
                 } else {
                     be.extend_from_slice(chunk);
@@ -2532,8 +2631,8 @@ fn bind_vector_long(
             for chunk in le_bytes.chunks(8) {
                 if chunk.len() == 8 {
                     be.extend_from_slice(&[
-                        chunk[7], chunk[6], chunk[5], chunk[4],
-                        chunk[3], chunk[2], chunk[1], chunk[0],
+                        chunk[7], chunk[6], chunk[5], chunk[4], chunk[3], chunk[2], chunk[1],
+                        chunk[0],
                     ]);
                 } else {
                     be.extend_from_slice(chunk);
@@ -2596,13 +2695,11 @@ fn bind_vector_half(
             stmt.bind_bytes(idx, vec_f16_to_be_bytes(arc))?;
         }
         polydat::ast::Value::VecF32(arc) => {
-            let narrowed: Vec<half::f16> = arc.iter()
-                .map(|v| half::f16::from_f32(*v)).collect();
+            let narrowed: Vec<half::f16> = arc.iter().map(|v| half::f16::from_f32(*v)).collect();
             stmt.bind_bytes(idx, vec_f16_to_be_bytes(&narrowed))?;
         }
         polydat::ast::Value::VecF64(arc) => {
-            let narrowed: Vec<half::f16> = arc.iter()
-                .map(|v| half::f16::from_f64(*v)).collect();
+            let narrowed: Vec<half::f16> = arc.iter().map(|v| half::f16::from_f64(*v)).collect();
             stmt.bind_bytes(idx, vec_f16_to_be_bytes(&narrowed))?;
         }
         polydat::ast::Value::Bytes(le_bytes) => {
@@ -2662,57 +2759,54 @@ fn make_binder(cql_type: cass::ValueType, class_name: Option<&str>) -> BinderFn 
                     polydat::ast::Value::Str(s) => s.parse::<i32>().unwrap_or(0),
                     _ => 0,
                 };
-                stmt.bind_int32(idx, n)?; Ok(())
+                stmt.bind_int32(idx, n)?;
+                Ok(())
             })
         }
         // 64-bit integer types
-        cass::ValueType::BIGINT | cass::ValueType::COUNTER => {
-            Box::new(|stmt, idx, value| {
-                let n = match value {
-                    polydat::ast::Value::U64(v) => *v as i64,
-                    polydat::ast::Value::F64(v) => *v as i64,
-                    polydat::ast::Value::Str(s) => s.parse::<i64>().unwrap_or(0),
-                    _ => 0,
-                };
-                stmt.bind_int64(idx, n)?; Ok(())
-            })
-        }
+        cass::ValueType::BIGINT | cass::ValueType::COUNTER => Box::new(|stmt, idx, value| {
+            let n = match value {
+                polydat::ast::Value::U64(v) => *v as i64,
+                polydat::ast::Value::F64(v) => *v as i64,
+                polydat::ast::Value::Str(s) => s.parse::<i64>().unwrap_or(0),
+                _ => 0,
+            };
+            stmt.bind_int64(idx, n)?;
+            Ok(())
+        }),
         // Float
-        cass::ValueType::FLOAT => {
-            Box::new(|stmt, idx, value| {
-                let f = match value {
-                    polydat::ast::Value::F64(v) => *v as f32,
-                    polydat::ast::Value::U64(v) => *v as f32,
-                    polydat::ast::Value::Str(s) => s.parse::<f32>().unwrap_or(0.0),
-                    _ => 0.0,
-                };
-                stmt.bind_float(idx, f)?; Ok(())
-            })
-        }
+        cass::ValueType::FLOAT => Box::new(|stmt, idx, value| {
+            let f = match value {
+                polydat::ast::Value::F64(v) => *v as f32,
+                polydat::ast::Value::U64(v) => *v as f32,
+                polydat::ast::Value::Str(s) => s.parse::<f32>().unwrap_or(0.0),
+                _ => 0.0,
+            };
+            stmt.bind_float(idx, f)?;
+            Ok(())
+        }),
         // Double
-        cass::ValueType::DOUBLE => {
-            Box::new(|stmt, idx, value| {
-                let f = match value {
-                    polydat::ast::Value::F64(v) => *v,
-                    polydat::ast::Value::U64(v) => *v as f64,
-                    polydat::ast::Value::Str(s) => s.parse::<f64>().unwrap_or(0.0),
-                    _ => 0.0,
-                };
-                stmt.bind_double(idx, f)?; Ok(())
-            })
-        }
+        cass::ValueType::DOUBLE => Box::new(|stmt, idx, value| {
+            let f = match value {
+                polydat::ast::Value::F64(v) => *v,
+                polydat::ast::Value::U64(v) => *v as f64,
+                polydat::ast::Value::Str(s) => s.parse::<f64>().unwrap_or(0.0),
+                _ => 0.0,
+            };
+            stmt.bind_double(idx, f)?;
+            Ok(())
+        }),
         // Boolean
-        cass::ValueType::BOOLEAN => {
-            Box::new(|stmt, idx, value| {
-                let b = match value {
-                    polydat::ast::Value::Bool(v) => *v,
-                    polydat::ast::Value::U64(v) => *v != 0,
-                    polydat::ast::Value::Str(s) => &**s == "true" || &**s == "1",
-                    _ => false,
-                };
-                stmt.bind_bool(idx, b)?; Ok(())
-            })
-        }
+        cass::ValueType::BOOLEAN => Box::new(|stmt, idx, value| {
+            let b = match value {
+                polydat::ast::Value::Bool(v) => *v,
+                polydat::ast::Value::U64(v) => *v != 0,
+                polydat::ast::Value::Str(s) => &**s == "true" || &**s == "1",
+                _ => false,
+            };
+            stmt.bind_bool(idx, b)?;
+            Ok(())
+        }),
         // CUSTOM type — predominantly CQL vectors. The element type
         // comes from the parsed class name. Each branch builds a
         // closure specialised to the cluster-reported element so
@@ -2720,24 +2814,24 @@ fn make_binder(cql_type: cass::ValueType, class_name: Option<&str>) -> BinderFn 
         cass::ValueType::CUSTOM => {
             let element = class_name.and_then(binder_meta::parse_vector_element);
             match element {
-                Some(binder_meta::VectorElement::Float) => Box::new(|stmt, idx, value| {
-                    bind_vector_float(stmt, idx, value)
-                }),
-                Some(binder_meta::VectorElement::Int) => Box::new(|stmt, idx, value| {
-                    bind_vector_int(stmt, idx, value)
-                }),
-                Some(binder_meta::VectorElement::Double) => Box::new(|stmt, idx, value| {
-                    bind_vector_double(stmt, idx, value)
-                }),
-                Some(binder_meta::VectorElement::Long) => Box::new(|stmt, idx, value| {
-                    bind_vector_long(stmt, idx, value)
-                }),
-                Some(binder_meta::VectorElement::Short) => Box::new(|stmt, idx, value| {
-                    bind_vector_short(stmt, idx, value)
-                }),
-                Some(binder_meta::VectorElement::Half) => Box::new(|stmt, idx, value| {
-                    bind_vector_half(stmt, idx, value)
-                }),
+                Some(binder_meta::VectorElement::Float) => {
+                    Box::new(|stmt, idx, value| bind_vector_float(stmt, idx, value))
+                }
+                Some(binder_meta::VectorElement::Int) => {
+                    Box::new(|stmt, idx, value| bind_vector_int(stmt, idx, value))
+                }
+                Some(binder_meta::VectorElement::Double) => {
+                    Box::new(|stmt, idx, value| bind_vector_double(stmt, idx, value))
+                }
+                Some(binder_meta::VectorElement::Long) => {
+                    Box::new(|stmt, idx, value| bind_vector_long(stmt, idx, value))
+                }
+                Some(binder_meta::VectorElement::Short) => {
+                    Box::new(|stmt, idx, value| bind_vector_short(stmt, idx, value))
+                }
+                Some(binder_meta::VectorElement::Half) => {
+                    Box::new(|stmt, idx, value| bind_vector_half(stmt, idx, value))
+                }
                 // Unknown / Other / no class name — keep the legacy
                 // Bytes-or-string round-trip behaviour. Logs from
                 // map_op already WARN about the missing typed
@@ -2763,25 +2857,22 @@ fn make_binder(cql_type: cass::ValueType, class_name: Option<&str>) -> BinderFn 
             }
         }
         // BLOB: raw bytes binding
-        cass::ValueType::BLOB => {
-            Box::new(|stmt, idx, value| {
-                match value {
-                    polydat::ast::Value::Bytes(bytes) => {
-                        stmt.bind_bytes(idx, bytes.to_vec())?;
-                    }
-                    _ => {
-                        stmt.bind_string(idx, &value.to_display_string())?;
-                    }
+        cass::ValueType::BLOB => Box::new(|stmt, idx, value| {
+            match value {
+                polydat::ast::Value::Bytes(bytes) => {
+                    stmt.bind_bytes(idx, bytes.to_vec())?;
                 }
-                Ok(())
-            })
-        }
+                _ => {
+                    stmt.bind_string(idx, &value.to_display_string())?;
+                }
+            }
+            Ok(())
+        }),
         // Everything else: bind as string
-        _ => {
-            Box::new(|stmt, idx, value| {
-                stmt.bind_string(idx, &value.to_display_string())?; Ok(())
-            })
-        }
+        _ => Box::new(|stmt, idx, value| {
+            stmt.bind_string(idx, &value.to_display_string())?;
+            Ok(())
+        }),
     }
 }
 
@@ -2797,8 +2888,14 @@ mod connect_diag_tests {
         // ulimit" when the password was wrong.
         let out = enrich_connect_error("connect", "Bad credentials".into());
         assert_eq!(out, "connect: Bad credentials");
-        assert!(!out.contains("RLIMIT"), "no resource diag expected, got: {out}");
-        assert!(!out.contains("nofile_soft"), "no resource diag expected, got: {out}");
+        assert!(
+            !out.contains("RLIMIT"),
+            "no resource diag expected, got: {out}"
+        );
+        assert!(
+            !out.contains("nofile_soft"),
+            "no resource diag expected, got: {out}"
+        );
     }
 
     #[test]
@@ -2810,15 +2907,20 @@ mod connect_diag_tests {
                    Unable to initialize cluster event loop";
         let out = enrich_connect_error("connect to keyspace 'baselines'", raw.into());
         assert!(out.contains("LIB_UNABLE_TO_INIT"), "raw error preserved");
-        assert!(out.contains("per-process resource exhaustion"),
-            "diagnostic explanation present");
-        assert!(out.contains("Process resource snapshot:"),
-            "snapshot section present");
+        assert!(
+            out.contains("per-process resource exhaustion"),
+            "diagnostic explanation present"
+        );
+        assert!(
+            out.contains("Process resource snapshot:"),
+            "snapshot section present"
+        );
         assert!(out.contains("fds_in_use:"), "FD count line present");
-        assert!(out.contains("nofile_soft:") && out.contains("nofile_hard:"),
-            "FD limit lines present");
-        assert!(out.contains("ulimit -n"),
-            "remediation hint present");
+        assert!(
+            out.contains("nofile_soft:") && out.contains("nofile_hard:"),
+            "FD limit lines present"
+        );
+        assert!(out.contains("ulimit -n"), "remediation hint present");
     }
 
     #[test]
@@ -2831,8 +2933,10 @@ mod connect_diag_tests {
         let snap = process_resource_snapshot();
         assert!(snap.contains("fds_in_use:"));
         if std::path::Path::new("/proc/self/fd").exists() {
-            assert!(!snap.contains("fds_in_use:    ?"),
-                "/proc/self/fd should yield a numeric count on Linux, got: {snap}");
+            assert!(
+                !snap.contains("fds_in_use:    ?"),
+                "/proc/self/fd should yield a numeric count on Linux, got: {snap}"
+            );
         }
     }
 }
@@ -2862,7 +2966,10 @@ mod result_body_tests {
         // and ignores any written count.
         let mut row = std::collections::HashMap::new();
         row.insert("key".to_string(), serde_json::json!("v"));
-        let body = CqlResultBody { rows: vec![row], written_rows: 0 };
+        let body = CqlResultBody {
+            rows: vec![row],
+            written_rows: 0,
+        };
         assert_eq!(body.element_count(), 1);
     }
 
@@ -2871,7 +2978,10 @@ mod result_body_tests {
         // A SELECT that matched no rows is still a read: no returned
         // rows AND no written count, so element_count is 0 (preserving
         // the pre-change no-body behavior for empty reads).
-        let body = CqlResultBody { rows: Vec::new(), written_rows: 0 };
+        let body = CqlResultBody {
+            rows: Vec::new(),
+            written_rows: 0,
+        };
         assert_eq!(body.element_count(), 0);
     }
 }

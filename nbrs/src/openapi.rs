@@ -21,18 +21,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use nbrs_adapter_openapi::{ApiOperation, describe_operations, generate_ops, parse_spec};
+use nbrs_metrics::labels::Labels;
 use nbrs_runtime::activity::{Activity, ActivityConfig};
 use nbrs_runtime::adapter::DriverAdapter;
 use nbrs_runtime::bindings::compile_bindings;
 use nbrs_runtime::opseq::{OpSequence, SequencerType};
 use nbrs_runtime::synthesis::OpBuilder;
-use nbrs_adapter_openapi::{describe_operations, generate_ops, parse_spec, ApiOperation};
-use nbrs_metrics::labels::Labels;
 
 fn parse_params(args: &[String]) -> HashMap<String, String> {
     let mut params = HashMap::new();
     for arg in args {
-        if arg.starts_with("--") || arg.starts_with('-') { continue; }
+        if arg.starts_with("--") || arg.starts_with('-') {
+            continue;
+        }
         if let Some(eq_pos) = arg.find('=') {
             let key = arg[..eq_pos].to_string();
             let val = arg[eq_pos + 1..].to_string();
@@ -45,7 +47,8 @@ fn parse_params(args: &[String]) -> HashMap<String, String> {
 fn load_spec(
     params: &HashMap<String, String>,
 ) -> Result<(openapiv3::OpenAPI, Vec<ApiOperation>), String> {
-    let spec_path = params.get("spec")
+    let spec_path = params
+        .get("spec")
         .ok_or("missing required parameter: spec=<file.yaml>")?;
     let source = std::fs::read_to_string(spec_path)
         .map_err(|e| format!("failed to read spec '{spec_path}': {e}"))?;
@@ -104,7 +107,8 @@ pub async fn run_command(args: &[String]) {
 
     let ops_to_run: Vec<ApiOperation> = if let Some(filter) = params.get("operations") {
         let ids: Vec<&str> = filter.split(',').map(|s| s.trim()).collect();
-        api_ops.into_iter()
+        api_ops
+            .into_iter()
             .filter(|op| ids.contains(&op.operation_id.as_str()))
             .collect()
     } else {
@@ -116,19 +120,26 @@ pub async fn run_command(args: &[String]) {
         std::process::exit(1);
     }
 
-    let base_url = params.get("base_url")
+    let base_url = params
+        .get("base_url")
         .or_else(|| params.get("host"))
         .cloned()
         .unwrap_or_else(|| "http://localhost:8080".into());
 
     let (parsed_ops, bindings_source) = generate_ops(&ops_to_run, &base_url);
 
-    eprintln!("openapi: {} operations, base_url={}", parsed_ops.len(), base_url);
+    eprintln!(
+        "openapi: {} operations, base_url={}",
+        parsed_ops.len(),
+        base_url
+    );
     for op in &parsed_ops {
-        eprintln!("  {} {} {}",
+        eprintln!(
+            "  {} {} {}",
             op.op.get("method").and_then(|v| v.as_str()).unwrap_or("?"),
             op.op.get("uri").and_then(|v| v.as_str()).unwrap_or("?"),
-            op.name);
+            op.name
+        );
     }
 
     if !bindings_source.is_empty() {
@@ -144,8 +155,12 @@ pub async fn run_command(args: &[String]) {
     };
 
     let explicit_cycles: Option<u64> = params.get("cycles").and_then(|s| s.parse().ok());
-    let threads: usize = params.get("threads").and_then(|s| s.parse().ok()).unwrap_or(1);
-    let seq_type = params.get("seq")
+    let threads: usize = params
+        .get("threads")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let seq_type = params
+        .get("seq")
         .map(|s| SequencerType::parse(s).unwrap_or(SequencerType::Bucket))
         .unwrap_or(SequencerType::Bucket);
 
@@ -160,8 +175,10 @@ pub async fn run_command(args: &[String]) {
         sequencer: seq_type,
         error_spec: params.get("errors").cloned().unwrap_or_default(),
         max_retries: 3,
-        stanza_concurrency: params.get("stanza_concurrency")
-            .and_then(|s| s.parse().ok()).unwrap_or(1),
+        stanza_concurrency: params
+            .get("stanza_concurrency")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1),
         ..Default::default()
     };
 
@@ -170,7 +187,9 @@ pub async fn run_command(args: &[String]) {
 
     eprintln!("openapi: {cycles} cycles, {threads} threads");
 
-    let driver = params.get("adapter").or(params.get("driver"))
+    let driver = params
+        .get("adapter")
+        .or(params.get("driver"))
         .map(|s| s.as_str())
         .unwrap_or("http");
 
@@ -179,8 +198,10 @@ pub async fn run_command(args: &[String]) {
             use nbrs_adapter_http::{HttpAdapter, HttpConfig};
             Arc::new(HttpAdapter::with_config(HttpConfig {
                 base_url: None, // base_url already in URI templates
-                timeout_ms: params.get("timeout")
-                    .and_then(|s| s.parse().ok()).unwrap_or(30_000),
+                timeout_ms: params
+                    .get("timeout")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30_000),
                 follow_redirects: true,
             }))
         }
@@ -198,8 +219,8 @@ pub async fn run_command(args: &[String]) {
             }))
         }
         "testkit" => {
-            use nbrs_adapter_testkit::{ModelAdapter, ModelConfig};
             use nbrs_adapter_stdout::{StdoutConfig, StdoutFormat};
+            use nbrs_adapter_testkit::{ModelAdapter, ModelConfig};
             Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig {
                     format: StdoutFormat::Assignments,

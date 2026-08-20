@@ -161,7 +161,11 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
     // Compile and sample a few cycles.
     let samples = match polydat::dsl::compile_polydat(&polydat_source) {
         Ok(mut kernel) => {
-            let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();
+            let output_names: Vec<String> = kernel
+                .output_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             (0..5u64)
                 .map(|cycle| {
                     kernel.set_inputs(&[cycle]);
@@ -205,7 +209,10 @@ pub struct PolydatTransition {
 /// Convert a Litegraph graph structure into Polydat source text.
 fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
     if graph.nodes.is_empty() {
-        return Ok(PolydatTransition { source: String::new(), var_map: HashMap::new() });
+        return Ok(PolydatTransition {
+            source: String::new(),
+            var_map: HashMap::new(),
+        });
     }
 
     // Build link map: link_id → (source_node_id, source_slot, dest_node_id, dest_slot)
@@ -213,12 +220,13 @@ fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
     let mut link_map: HashMap<i64, (i64, usize)> = HashMap::new(); // link_id → (source_node, source_slot)
     for link_val in &graph.links {
         if let Some(arr) = link_val.as_array()
-            && arr.len() >= 5 {
-                let link_id = arr[0].as_i64().unwrap_or(-1);
-                let origin_id = arr[1].as_i64().unwrap_or(-1);
-                let origin_slot = arr[2].as_u64().unwrap_or(0) as usize;
-                link_map.insert(link_id, (origin_id, origin_slot));
-            }
+            && arr.len() >= 5
+        {
+            let link_id = arr[0].as_i64().unwrap_or(-1);
+            let origin_id = arr[1].as_i64().unwrap_or(-1);
+            let origin_slot = arr[2].as_u64().unwrap_or(0) as usize;
+            link_map.insert(link_id, (origin_id, origin_slot));
+        }
     }
 
     // Build node output name map: (node_id, slot_index) → variable name
@@ -242,7 +250,10 @@ fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
 
     // Assign output variable names for function nodes.
     for node in &graph.nodes {
-        if node.node_type == "polydat/coordinates" || node.node_type == "polydat/output" || node.node_type == "polydat/plotter" {
+        if node.node_type == "polydat/coordinates"
+            || node.node_type == "polydat/output"
+            || node.node_type == "polydat/plotter"
+        {
             continue;
         }
         // Node type is "Category/funcname" or "polydat/special" — extract last segment
@@ -286,9 +297,7 @@ fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
         [] => String::new(),
         [single] => format!("input {single}: u64"),
         many => {
-            let typed: Vec<String> = many.iter()
-                .map(|n| format!("{n}: u64"))
-                .collect();
+            let typed: Vec<String> = many.iter().map(|n| format!("{n}: u64")).collect();
             format!("input ({})", typed.join(", "))
         }
     });
@@ -298,7 +307,11 @@ fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
     let mut sorted_nodes: Vec<&LiteNode> = graph
         .nodes
         .iter()
-        .filter(|n| n.node_type != "polydat/coordinates" && n.node_type != "polydat/output" && n.node_type != "polydat/plotter")
+        .filter(|n| {
+            n.node_type != "polydat/coordinates"
+                && n.node_type != "polydat/output"
+                && n.node_type != "polydat/plotter"
+        })
         .collect();
     sorted_nodes.sort_by_key(|n| n.id);
 
@@ -360,9 +373,15 @@ fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
 
     let mut var_map: HashMap<i64, Vec<(usize, String)>> = HashMap::new();
     for ((node_id, slot_idx), var_name) in &output_names {
-        var_map.entry(*node_id).or_default().push((*slot_idx, var_name.clone()));
+        var_map
+            .entry(*node_id)
+            .or_default()
+            .push((*slot_idx, var_name.clone()));
     }
-    Ok(PolydatTransition { source: lines.join("\n"), var_map })
+    Ok(PolydatTransition {
+        source: lines.join("\n"),
+        var_map,
+    })
 }
 
 // ─── Eval API ──────────────────────────────────────────────
@@ -422,30 +441,44 @@ pub struct PlotResult {
 pub fn plot_graph(req: PlotRequest) -> PlotResult {
     let graph: LiteGraph = match serde_json::from_str(&req.graph) {
         Ok(g) => g,
-        Err(e) => return PlotResult {
-            error: Some(format!("invalid graph JSON: {e}")),
-            cycles: vec![], series: HashMap::new(), output_names: vec![],
-        },
+        Err(e) => {
+            return PlotResult {
+                error: Some(format!("invalid graph JSON: {e}")),
+                cycles: vec![],
+                series: HashMap::new(),
+                output_names: vec![],
+            };
+        }
     };
 
     let translation = match graph_to_polydat(&graph) {
         Ok(t) => t,
-        Err(e) => return PlotResult {
-            error: Some(e),
-            cycles: vec![], series: HashMap::new(), output_names: vec![],
-        },
+        Err(e) => {
+            return PlotResult {
+                error: Some(e),
+                cycles: vec![],
+                series: HashMap::new(),
+                output_names: vec![],
+            };
+        }
     };
 
     if translation.source.trim().is_empty() {
         return PlotResult {
-            error: None, cycles: vec![], series: HashMap::new(), output_names: vec![],
+            error: None,
+            cycles: vec![],
+            series: HashMap::new(),
+            output_names: vec![],
         };
     }
 
     match polydat::dsl::compile_polydat(&translation.source) {
         Ok(mut kernel) => {
-            let output_names: Vec<String> = kernel.output_names()
-                .iter().map(|s| s.to_string()).collect();
+            let output_names: Vec<String> = kernel
+                .output_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
 
             let step = req.cycle_step.max(1);
             let mut cycles = Vec::new();
@@ -463,7 +496,13 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
                     let f = match v {
                         polydat::ast::Value::U64(n) => *n as f64,
                         polydat::ast::Value::F64(n) => *n,
-                        polydat::ast::Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                        polydat::ast::Value::Bool(b) => {
+                            if *b {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        }
                         _ => f64::NAN,
                     };
                     series.get_mut(name).unwrap().push(f);
@@ -471,11 +510,18 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
                 c += step;
             }
 
-            PlotResult { error: None, cycles, series, output_names }
+            PlotResult {
+                error: None,
+                cycles,
+                series,
+                output_names,
+            }
         }
         Err(e) => PlotResult {
             error: Some(format!("compile error: {e}")),
-            cycles: vec![], series: HashMap::new(), output_names: vec![],
+            cycles: vec![],
+            series: HashMap::new(),
+            output_names: vec![],
         },
     }
 }
@@ -484,25 +530,37 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
 pub fn eval_graph(req: EvalRequest) -> EvalResult {
     let graph: LiteGraph = match serde_json::from_str(&req.graph) {
         Ok(g) => g,
-        Err(e) => return EvalResult {
-            polydat_source: String::new(), svg: String::new(),
-            error: Some(format!("invalid graph JSON: {e}")),
-            sample: String::new(), node_values: HashMap::new(),
-        },
+        Err(e) => {
+            return EvalResult {
+                polydat_source: String::new(),
+                svg: String::new(),
+                error: Some(format!("invalid graph JSON: {e}")),
+                sample: String::new(),
+                node_values: HashMap::new(),
+            };
+        }
     };
 
     let translation = match graph_to_polydat(&graph) {
         Ok(t) => t,
-        Err(e) => return EvalResult {
-            polydat_source: String::new(), svg: String::new(),
-            error: Some(e), sample: String::new(), node_values: HashMap::new(),
-        },
+        Err(e) => {
+            return EvalResult {
+                polydat_source: String::new(),
+                svg: String::new(),
+                error: Some(e),
+                sample: String::new(),
+                node_values: HashMap::new(),
+            };
+        }
     };
 
     if translation.source.trim().is_empty() {
         return EvalResult {
-            polydat_source: translation.source, svg: String::new(),
-            error: None, sample: String::new(), node_values: HashMap::new(),
+            polydat_source: translation.source,
+            svg: String::new(),
+            error: None,
+            sample: String::new(),
+            node_values: HashMap::new(),
         };
     }
 
@@ -513,7 +571,11 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
             kernel.set_inputs(&[req.cycle]);
 
             // Pull all outputs and collect their display values.
-            let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();
+            let output_names: Vec<String> = kernel
+                .output_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             let mut all_values: HashMap<String, String> = HashMap::new();
             for name in &output_names {
                 let v = kernel.pull(name);
@@ -526,7 +588,10 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
                 let mut outs = Vec::new();
                 for (_, var_name) in slots {
                     if let Some(val) = all_values.get(var_name) {
-                        outs.push(PortValue { name: var_name.clone(), value: val.clone() });
+                        outs.push(PortValue {
+                            name: var_name.clone(),
+                            value: val.clone(),
+                        });
                     }
                 }
                 if !outs.is_empty() {
@@ -535,7 +600,8 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
             }
 
             // Build sample string for sidebar.
-            let sample_vals: Vec<String> = output_names.iter()
+            let sample_vals: Vec<String> = output_names
+                .iter()
                 .filter_map(|name| all_values.get(name).map(|v| format!("{name}={v}")))
                 .collect();
             let sample = format!("cycle {}: {}", req.cycle, sample_vals.join(", "));

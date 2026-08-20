@@ -49,7 +49,7 @@ use std::time::Duration;
 use crate::display_sink::{DisplayInputs, DisplaySink, SinkHandle};
 use crate::key_watcher::{KeyWatcher, WatcherSignal};
 use crate::log_only_observer::LogOnlyObserver;
-use crate::log_only_sink::{fresh_resume_cursor, LogOnlySink};
+use crate::log_only_sink::{LogOnlySink, fresh_resume_cursor};
 use crate::run_state_actor::RunStateHandle;
 use crate::tui_sink::{TuiSink, TuiSinkSync};
 
@@ -84,7 +84,10 @@ impl SinkSupervisor {
             .name("sink-supervisor".into())
             .spawn(move || run_supervision(observer, state, done_rx, runtime))
             .expect("spawn sink-supervisor thread");
-        Self { done_tx: Some(done_tx), join: Some(join) }
+        Self {
+            done_tx: Some(done_tx),
+            join: Some(join),
+        }
     }
 
     /// Tell the supervisor the run has finished. Tears down
@@ -128,8 +131,7 @@ enum ActiveSink {
 /// supervisor polls it each tick and demotes to headless: the run
 /// continues, only the display dies. Process-global and one-way,
 /// like the console itself.
-static CONSOLE_LOST: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static CONSOLE_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Install the M7 console-loss hook. Idempotent (first install
 /// wins in `session_signals`); called at supervisor spawn so every
@@ -227,7 +229,11 @@ fn run_supervision(
         // and `continue`-loop, restarting the polling cycle.
         let mut swap_to: Option<Transition> = None;
         match &active {
-            ActiveSink::Terminal { signal_rx, prompt_tx, .. } => {
+            ActiveSink::Terminal {
+                signal_rx,
+                prompt_tx,
+                ..
+            } => {
                 while let Ok(sig) = signal_rx.try_recv() {
                     match sig {
                         WatcherSignal::ToggleTui => {
@@ -255,7 +261,8 @@ fn run_supervision(
                                 std::process::exit(130);
                             } else {
                                 nbrs_runtime::session_signals::escalate_shutdown(
-                                    nbrs_runtime::session_signals::ShutdownOrigin::CtrlC);
+                                    nbrs_runtime::session_signals::ShutdownOrigin::CtrlC,
+                                );
                             }
                         }
                         WatcherSignal::Suspend => {
@@ -273,7 +280,9 @@ fn run_supervision(
                             #[cfg(unix)]
                             {
                                 let _ = crossterm::terminal::disable_raw_mode();
-                                unsafe { libc::raise(libc::SIGTSTP); }
+                                unsafe {
+                                    libc::raise(libc::SIGTSTP);
+                                }
                                 // Execution resumes here when `fg`
                                 // delivers SIGCONT. Re-arm the
                                 // terminal for keystroke detection.
@@ -327,10 +336,9 @@ fn run_supervision(
                         // signal; the sink will catch up on
                         // its next start.
                         sig @ (WatcherSignal::Key(_)
-                            | WatcherSignal::GrowPrompt
-                            | WatcherSignal::ShrinkPrompt
-                            | WatcherSignal::ToggleHelp) =>
-                        {
+                        | WatcherSignal::GrowPrompt
+                        | WatcherSignal::ShrinkPrompt
+                        | WatcherSignal::ToggleHelp) => {
                             let _ = prompt_tx.send(sig);
                         }
                     }
@@ -345,8 +353,9 @@ fn run_supervision(
 
         if let Some(t) = swap_to {
             active = match t {
-                Transition::TerminalToTui =>
-                    swap_to_tui(&observer, &state, active, runtime.clone(), &resume_from),
+                Transition::TerminalToTui => {
+                    swap_to_tui(&observer, &state, active, runtime.clone(), &resume_from)
+                }
                 Transition::TuiToTerminal => {
                     // Wait for the App thread to fully exit and
                     // restore the terminal before bringing the
@@ -361,7 +370,8 @@ fn run_supervision(
                     // be visible again. `sink_active` is
                     // re-asserted by `start_terminal` →
                     // `LogOnlySink::start`.
-                    observer.inline_suppress_flag()
+                    observer
+                        .inline_suppress_flag()
                         .store(false, Ordering::Release);
                     match start_terminal(&observer, &state, runtime.clone(), &resume_from) {
                         Some(a) => a,
@@ -428,8 +438,7 @@ fn start_terminal(
 
     let min_level = observer.min_level();
     let sink_active = observer.sink_active_flag();
-    let mut sink = LogOnlySink::new(min_level, sink_active)
-        .with_resume(resume_from.clone());
+    let mut sink = LogOnlySink::new(min_level, sink_active).with_resume(resume_from.clone());
     if watcher.is_some() {
         sink = sink.with_keys(prompt_rx, runtime);
     }
@@ -439,7 +448,12 @@ fn start_terminal(
         metrics_query: None,
     });
 
-    Some(ActiveSink::Terminal { sink_handle, watcher, signal_rx, prompt_tx })
+    Some(ActiveSink::Terminal {
+        sink_handle,
+        watcher,
+        signal_rx,
+        prompt_tx,
+    })
 }
 
 fn swap_to_tui(
@@ -451,13 +465,21 @@ fn swap_to_tui(
 ) -> ActiveSink {
     // Tear down terminal mode first — the watcher disables
     // raw mode + releases stdin so the App can claim it.
-    if let ActiveSink::Terminal { sink_handle, watcher, prompt_tx, .. } = active {
+    if let ActiveSink::Terminal {
+        sink_handle,
+        watcher,
+        prompt_tx,
+        ..
+    } = active
+    {
         // Dropping `prompt_tx` disconnects the prompt receiver
         // inside the sink so its drain loop exits cleanly; the
         // sink_handle.shutdown() that follows then joins.
         drop(prompt_tx);
         sink_handle.shutdown();
-        if let Some(w) = watcher { w.shutdown(); }
+        if let Some(w) = watcher {
+            w.shutdown();
+        }
     } else {
         unreachable!("swap_to_tui called outside Terminal state");
     }
@@ -489,7 +511,9 @@ fn swap_to_tui(
     //     `\r\x1b[K…` would otherwise overwrite the TUI's
     //     bottom-row content.
     observer.sink_active_flag().store(true, Ordering::Release);
-    observer.inline_suppress_flag().store(true, Ordering::Release);
+    observer
+        .inline_suppress_flag()
+        .store(true, Ordering::Release);
 
     let sync = TuiSinkSync::default();
     let sink = Box::new(TuiSink::new(frame_rx, query, sync.clone()));
@@ -504,9 +528,15 @@ fn swap_to_tui(
 
 fn teardown(active: ActiveSink) {
     match active {
-        ActiveSink::Terminal { sink_handle, watcher, .. } => {
+        ActiveSink::Terminal {
+            sink_handle,
+            watcher,
+            ..
+        } => {
             sink_handle.shutdown();
-            if let Some(w) = watcher { w.shutdown(); }
+            if let Some(w) = watcher {
+                w.shutdown();
+            }
         }
         ActiveSink::Tui { sink_handle, .. } => {
             sink_handle.shutdown();

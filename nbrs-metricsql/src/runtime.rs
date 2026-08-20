@@ -45,10 +45,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 
-use crate::eval::{MetricAccess, DataSourceError, Matcher, Series, Vector};
-use crate::streaming::{compile_streaming, CompileError, StreamingPlan};
+use crate::eval::{DataSourceError, Matcher, MetricAccess, Series, Vector};
+use crate::streaming::{CompileError, StreamingPlan, compile_streaming};
 
 /// Opaque per-plan identifier. Returned by
 /// [`ContinuousQueryRuntime::register`]; consumers carry
@@ -143,7 +143,11 @@ pub enum WindowPolicy {
 }
 
 impl Default for WindowPolicy {
-    fn default() -> Self { Self::Tumbling { duration_ms: 5 * 60_000 } }
+    fn default() -> Self {
+        Self::Tumbling {
+            duration_ms: 5 * 60_000,
+        }
+    }
 }
 
 /// Public-facing runtime. Cheap to clone — internal state
@@ -178,8 +182,8 @@ impl std::fmt::Display for RegisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CompileFailed(s) => write!(f, "compile: {s}"),
-            Self::ParseFailed(s)   => write!(f, "parse: {s}"),
-            Self::Closed           => write!(f, "runtime closed"),
+            Self::ParseFailed(s) => write!(f, "parse: {s}"),
+            Self::Closed => write!(f, "runtime closed"),
         }
     }
 }
@@ -197,8 +201,8 @@ pub enum TickError {
 impl std::fmt::Display for TickError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Closed   => write!(f, "runtime closed"),
-            Self::Feed(s)  => write!(f, "feed: {s}"),
+            Self::Closed => write!(f, "runtime closed"),
+            Self::Feed(s) => write!(f, "feed: {s}"),
         }
     }
 }
@@ -270,8 +274,7 @@ impl ContinuousQueryRuntime {
         query: &str,
         options: RegisterOptions,
     ) -> Result<QueryHandle, RegisterError> {
-        let expr = crate::parse(query)
-            .map_err(|e| RegisterError::ParseFailed(e.to_string()))?;
+        let expr = crate::parse(query).map_err(|e| RegisterError::ParseFailed(e.to_string()))?;
         let plan = compile_streaming(&expr)
             .map_err(|e: CompileError| RegisterError::CompileFailed(e.to_string()))?;
         let plan_id = PlanId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
@@ -285,7 +288,10 @@ impl ContinuousQueryRuntime {
             snapshot: Arc::clone(&snapshot),
             reply: reply_tx,
         };
-        self.inner.cmd_tx.send(cmd).map_err(|_| RegisterError::Closed)?;
+        self.inner
+            .cmd_tx
+            .send(cmd)
+            .map_err(|_| RegisterError::Closed)?;
         // Wait for the actor to confirm registration (and
         // backfill). Only the data-source error case is
         // surfaced here as a register-time failure; the
@@ -297,7 +303,8 @@ impl ContinuousQueryRuntime {
                 snapshot,
             }),
             Ok(Err(e)) => Err(RegisterError::CompileFailed(format!(
-                "backfill failed: {e}"))),
+                "backfill failed: {e}"
+            ))),
             Err(_) => Err(RegisterError::Closed),
         }
     }
@@ -308,7 +315,9 @@ impl ContinuousQueryRuntime {
     /// republish.
     pub fn tick(&self) -> Result<(), TickError> {
         let (reply_tx, reply_rx) = bounded(1);
-        self.inner.cmd_tx.send(Command::Tick { reply: reply_tx })
+        self.inner
+            .cmd_tx
+            .send(Command::Tick { reply: reply_tx })
             .map_err(|_| TickError::Closed)?;
         reply_rx.recv().map_err(|_| TickError::Closed)?
     }
@@ -318,7 +327,10 @@ impl ContinuousQueryRuntime {
     #[cfg(test)]
     fn plan_count(&self) -> usize {
         let (reply_tx, reply_rx) = bounded(1);
-        self.inner.cmd_tx.send(Command::PlanCount { reply: reply_tx }).ok();
+        self.inner
+            .cmd_tx
+            .send(Command::PlanCount { reply: reply_tx })
+            .ok();
         reply_rx.recv().unwrap_or(0)
     }
 }
@@ -334,7 +346,7 @@ pub struct RegisterOptions {
 impl Default for RegisterOptions {
     fn default() -> Self {
         Self {
-            warmup_ms: 5 * 60_000,  // 5 minutes
+            warmup_ms: 5 * 60_000, // 5 minutes
             window_policy: WindowPolicy::default(),
         }
     }
@@ -367,7 +379,9 @@ impl QueryHandle {
         Arc::clone(&self.snapshot)
     }
 
-    pub fn plan_id(&self) -> PlanId { self.plan_id }
+    pub fn plan_id(&self) -> PlanId {
+        self.plan_id
+    }
 }
 
 impl Drop for QueryHandle {
@@ -399,10 +413,22 @@ fn actor_loop(cmd_rx: Receiver<Command>, feed: Box<dyn SampleFeed>) {
     let mut plans: HashMap<PlanId, PlanEntry> = HashMap::new();
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
-            Command::Register { plan, plan_id, warmup_ms, window_policy, snapshot, reply } => {
+            Command::Register {
+                plan,
+                plan_id,
+                warmup_ms,
+                window_policy,
+                snapshot,
+                reply,
+            } => {
                 let result = handle_register(
-                    &mut plans, plan, plan_id, warmup_ms, window_policy,
-                    snapshot, &*feed,
+                    &mut plans,
+                    plan,
+                    plan_id,
+                    warmup_ms,
+                    window_policy,
+                    snapshot,
+                    &*feed,
                 );
                 let _ = reply.send(result);
             }
@@ -447,13 +473,16 @@ fn handle_register(
     }
     let initial = plan.snapshot(now);
     snapshot.store(Arc::new(initial));
-    plans.insert(plan_id, PlanEntry {
-        plan,
-        leaf_watermarks: vec![now; leaf_count],
-        snapshot,
-        last_reset_ms: now,
-        window_policy,
-    });
+    plans.insert(
+        plan_id,
+        PlanEntry {
+            plan,
+            leaf_watermarks: vec![now; leaf_count],
+            snapshot,
+            last_reset_ms: now,
+            window_policy,
+        },
+    );
     Ok(())
 }
 
@@ -461,9 +490,10 @@ fn handle_tick(
     plans: &mut HashMap<PlanId, PlanEntry>,
     feed: &dyn SampleFeed,
 ) -> Result<(), TickError> {
-    let latest = feed.latest_ts()
-        .map_err(|e| TickError::Feed(e.message))?;
-    let Some(now) = latest else { return Ok(()); };
+    let latest = feed.latest_ts().map_err(|e| TickError::Feed(e.message))?;
+    let Some(now) = latest else {
+        return Ok(());
+    };
 
     for entry in plans.values_mut() {
         // Window-policy reset check — fires before ingest
@@ -485,8 +515,11 @@ fn handle_tick(
         let leaf_matchers = entry.plan.leaf_matchers();
         for (i, matchers) in leaf_matchers.iter().enumerate() {
             let watermark = entry.leaf_watermarks.get(i).copied().unwrap_or(0);
-            if now <= watermark { continue; }
-            let series = feed.fetch_since(matchers, watermark, now)
+            if now <= watermark {
+                continue;
+            }
+            let series = feed
+                .fetch_since(matchers, watermark, now)
                 .map_err(|e| TickError::Feed(e.message))?;
             for s in series.into_series() {
                 entry.plan.ingest_series(&s.labels, &s.samples);
@@ -516,7 +549,11 @@ mod tests {
     }
 
     impl MemFeed {
-        fn new() -> Self { Self { series: Mutex::new(Vec::new()) } }
+        fn new() -> Self {
+            Self {
+                series: Mutex::new(Vec::new()),
+            }
+        }
 
         fn push(&self, s: Series) {
             self.series.lock().unwrap().push(s);
@@ -524,35 +561,45 @@ mod tests {
     }
 
     impl SampleFeed for MemFeed {
-        fn fetch_since(&self, matchers: &[Matcher], since_ms: i64, until_ms: i64)
-            -> Result<Vector, DataSourceError>
-        {
+        fn fetch_since(
+            &self,
+            matchers: &[Matcher],
+            since_ms: i64,
+            until_ms: i64,
+        ) -> Result<Vector, DataSourceError> {
             // `since_ms` is exclusive per-trait contract; in
             // PullFeed we'd already converted, but tests
             // call this directly so honour the contract here.
             let lo = since_ms.saturating_add(1);
             let store = self.series.lock().unwrap();
-            Ok(store.iter()
+            Ok(store
+                .iter()
                 .filter(|s| matchers.iter().all(|m| match_label(s, m)))
                 .map(|s| Series {
                     labels: s.labels.clone(),
-                    samples: s.samples.iter()
+                    samples: s
+                        .samples
+                        .iter()
                         .filter(|sm| sm.timestamp_ms >= lo && sm.timestamp_ms <= until_ms)
-                        .cloned().collect(),
+                        .cloned()
+                        .collect(),
                 })
                 .collect())
         }
 
         fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
             let store = self.series.lock().unwrap();
-            Ok(store.iter()
+            Ok(store
+                .iter()
                 .flat_map(|s| s.samples.iter().map(|sm| sm.timestamp_ms))
                 .max())
         }
     }
 
     fn match_label(s: &Series, m: &Matcher) -> bool {
-        let v = s.labels.iter()
+        let v = s
+            .labels
+            .iter()
             .find(|(k, _)| k == &m.label)
             .map(|(_, v)| v.as_str())
             .unwrap_or("");
@@ -565,24 +612,42 @@ mod tests {
 
     fn series(labels: &[(&str, &str)], samples: &[(i64, f64)]) -> Series {
         Series {
-            labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            samples: samples.iter().map(|(t, v)| Sample {
-                timestamp_ms: *t, value: *v,
-            }).collect(),
+            labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            samples: samples
+                .iter()
+                .map(|(t, v)| Sample {
+                    timestamp_ms: *t,
+                    value: *v,
+                })
+                .collect(),
         }
     }
 
     #[test]
     fn register_returns_handle_and_first_snapshot() {
         let feed = Arc::new(MemFeed::new());
-        feed.push(series(&[("__name__", "cpu"), ("host", "h1")], &[(0, 5.0), (10, 7.0)]));
+        feed.push(series(
+            &[("__name__", "cpu"), ("host", "h1")],
+            &[(0, 5.0), (10, 7.0)],
+        ));
         // Wrap the Arc in a per-test Box so the runtime can
         // own one — clone the Arc back via a thin shim.
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
-            fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
-            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
+            fn fetch_since(
+                &self,
+                m: &[Matcher],
+                a: i64,
+                b: i64,
+            ) -> Result<Vector, DataSourceError> {
+                self.0.fetch_since(m, a, b)
+            }
+            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
+                self.0.latest_ts()
+            }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(Arc::clone(&feed))));
         let handle = runtime.register("sum(cpu)").expect("register");
@@ -602,9 +667,17 @@ mod tests {
         feed.push(series(&[("__name__", "cpu"), ("host", "h1")], &[(0, 1.0)]));
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
-            fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
-            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
+            fn fetch_since(
+                &self,
+                m: &[Matcher],
+                a: i64,
+                b: i64,
+            ) -> Result<Vector, DataSourceError> {
+                self.0.fetch_since(m, a, b)
+            }
+            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
+                self.0.latest_ts()
+            }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(Arc::clone(&feed))));
         let opts = RegisterOptions {
@@ -620,7 +693,10 @@ mod tests {
         assert_eq!(handle.snapshot()[0].samples.len(), 1);
 
         // Add a new sample at t=10, tick.
-        feed.push(series(&[("__name__", "cpu"), ("host", "h1")], &[(10, 99.0)]));
+        feed.push(series(
+            &[("__name__", "cpu"), ("host", "h1")],
+            &[(10, 99.0)],
+        ));
         runtime.tick().expect("tick");
 
         // After tick, snapshot has two timestamps.
@@ -634,9 +710,17 @@ mod tests {
     fn drop_handle_unregisters() {
         struct Empty;
         impl SampleFeed for Empty {
-            fn fetch_since(&self, _: &[Matcher], _: i64, _: i64)
-                -> Result<Vector, DataSourceError> { Ok(Vector::default()) }
-            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { Ok(Some(0)) }
+            fn fetch_since(
+                &self,
+                _: &[Matcher],
+                _: i64,
+                _: i64,
+            ) -> Result<Vector, DataSourceError> {
+                Ok(Vector::default())
+            }
+            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
+                Ok(Some(0))
+            }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Empty));
         let handle = runtime.register("sum(cpu)").expect("register");
@@ -650,12 +734,23 @@ mod tests {
     #[test]
     fn tumbling_window_resets_at_cadence() {
         let feed = Arc::new(MemFeed::new());
-        feed.push(series(&[("__name__", "cpu"), ("host", "h1")], &[(0, 100.0)]));
+        feed.push(series(
+            &[("__name__", "cpu"), ("host", "h1")],
+            &[(0, 100.0)],
+        ));
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
-            fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
-            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
+            fn fetch_since(
+                &self,
+                m: &[Matcher],
+                a: i64,
+                b: i64,
+            ) -> Result<Vector, DataSourceError> {
+                self.0.fetch_since(m, a, b)
+            }
+            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
+                self.0.latest_ts()
+            }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(Arc::clone(&feed))));
         let opts = RegisterOptions {
@@ -667,7 +762,10 @@ mod tests {
         assert_eq!(handle.snapshot().len(), 1);
 
         // Advance feed time past the tumble boundary.
-        feed.push(series(&[("__name__", "cpu"), ("host", "h1")], &[(2000, 5.0)]));
+        feed.push(series(
+            &[("__name__", "cpu"), ("host", "h1")],
+            &[(2000, 5.0)],
+        ));
         runtime.tick().expect("tick");
 
         // After the reset (2000 - 0 = 2000 > 1000), only
@@ -677,8 +775,7 @@ mod tests {
         // Reset publishes an empty snapshot; we don't
         // re-ingest the new sample in the same tick, so
         // expect empty.
-        assert!(snap.is_empty(),
-            "expected empty post-reset, got {snap:?}");
+        assert!(snap.is_empty(), "expected empty post-reset, got {snap:?}");
     }
 
     #[test]
@@ -686,44 +783,86 @@ mod tests {
         // Property: runtime tick + snapshot equals batch
         // evaluation against the same data. Same load-
         // bearing artifact pattern as SRD-47, scoped down.
-        use crate::eval::{evaluate, EvalContext};
+        use crate::eval::{EvalContext, evaluate};
 
         let inputs: Vec<Series> = vec![
-            series(&[("__name__", "cpu"), ("host", "h1")], &[(0, 1.0), (10, 2.0)]),
-            series(&[("__name__", "cpu"), ("host", "h2")], &[(0, 5.0), (10, 6.0)]),
-            series(&[("__name__", "cpu"), ("host", "h3")], &[(0, 10.0), (10, 12.0)]),
+            series(
+                &[("__name__", "cpu"), ("host", "h1")],
+                &[(0, 1.0), (10, 2.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("host", "h2")],
+                &[(0, 5.0), (10, 6.0)],
+            ),
+            series(
+                &[("__name__", "cpu"), ("host", "h3")],
+                &[(0, 10.0), (10, 12.0)],
+            ),
         ];
 
         // Batch reference.
-        struct Mem { series: Vec<Series> }
+        struct Mem {
+            series: Vec<Series>,
+        }
         impl MetricAccess for Mem {
-            fn select_range(&self, m: &[Matcher], _: i64, _: i64)
-                -> Result<Vector, DataSourceError>
-            {
-                Ok(self.series.iter()
+            fn select_range(
+                &self,
+                m: &[Matcher],
+                _: i64,
+                _: i64,
+            ) -> Result<Vector, DataSourceError> {
+                Ok(self
+                    .series
+                    .iter()
                     .filter(|s| m.iter().all(|mm| match_label(s, mm)))
-                    .cloned().collect())
+                    .cloned()
+                    .collect())
             }
         }
-        let ds = Mem { series: inputs.clone() };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 10, step_ms: 1, lookback_ms: None, query_start_ms: None, query_end_ms: None };
+        let ds = Mem {
+            series: inputs.clone(),
+        };
+        let ctx = EvalContext {
+            data: &ds,
+            start_ms: 0,
+            end_ms: 10,
+            step_ms: 1,
+            lookback_ms: None,
+            query_start_ms: None,
+            query_end_ms: None,
+        };
         let expr = crate::parse("sum(cpu) by (host)").unwrap();
         let batch = evaluate(&ctx, &expr).expect("batch");
 
         // Runtime path.
         let feed = Arc::new(MemFeed::new());
-        for s in &inputs { feed.push(s.clone()); }
+        for s in &inputs {
+            feed.push(s.clone());
+        }
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
-            fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
-            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
+            fn fetch_since(
+                &self,
+                m: &[Matcher],
+                a: i64,
+                b: i64,
+            ) -> Result<Vector, DataSourceError> {
+                self.0.fetch_since(m, a, b)
+            }
+            fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
+                self.0.latest_ts()
+            }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(feed)));
-        let handle = runtime.register_with("sum(cpu) by (host)", RegisterOptions {
-            window_policy: WindowPolicy::Lifetime,
-            warmup_ms: 100_000,
-        }).expect("register");
+        let handle = runtime
+            .register_with(
+                "sum(cpu) by (host)",
+                RegisterOptions {
+                    window_policy: WindowPolicy::Lifetime,
+                    warmup_ms: 100_000,
+                },
+            )
+            .expect("register");
         let stream = handle.snapshot();
 
         // Both should have 3 series, one per host, with
@@ -746,7 +885,10 @@ mod tests {
         assert_eq!(bi.len(), si.len());
         for (k, v) in &bi {
             let sv = si.get(k).copied().unwrap_or(f64::NAN);
-            assert!((v - sv).abs() < 1e-9, "divergence at {k:?}: batch={v} stream={sv}");
+            assert!(
+                (v - sv).abs() < 1e-9,
+                "divergence at {k:?}: batch={v} stream={sv}"
+            );
         }
     }
 }

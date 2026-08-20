@@ -66,10 +66,14 @@ pub enum CadenceTreeError {
 impl std::fmt::Display for CadenceTreeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BelowBase { cadence, base } =>
-                write!(f, "cadence {cadence:?} is smaller than base interval {base:?}"),
-            Self::NotMultiple { cadence, base } =>
-                write!(f, "cadence {cadence:?} is not an integer multiple of base {base:?}"),
+            Self::BelowBase { cadence, base } => write!(
+                f,
+                "cadence {cadence:?} is smaller than base interval {base:?}"
+            ),
+            Self::NotMultiple { cadence, base } => write!(
+                f,
+                "cadence {cadence:?} is not an integer multiple of base {base:?}"
+            ),
         }
     }
 }
@@ -116,7 +120,8 @@ impl Cadences {
             Duration::from_secs(30),
             Duration::from_secs(60),
             Duration::from_secs(300),
-        ]).expect("static default cadences are valid")
+        ])
+        .expect("static default cadences are valid")
     }
 
     /// Parse `"10s,1m,10m,10h"` into a cadence list. Whitespace is
@@ -126,7 +131,9 @@ impl Cadences {
         let mut cadences = Vec::new();
         for token in s.split(',') {
             let t = token.trim();
-            if t.is_empty() { continue; }
+            if t.is_empty() {
+                continue;
+            }
             cadences.push(parse_duration(t).map_err(|_| CadenceParseError::BadToken(t.into()))?);
         }
         Self::new(&cadences)
@@ -140,11 +147,15 @@ impl Cadences {
     }
 
     /// Number of declared cadences.
-    pub fn len(&self) -> usize { self.ordered.len() }
+    pub fn len(&self) -> usize {
+        self.ordered.len()
+    }
 
     /// True when no cadences are declared. `Cadences::new` rejects
     /// empty input, so this is always `false` for constructed values.
-    pub fn is_empty(&self) -> bool { self.ordered.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.ordered.is_empty()
+    }
 
     /// Smallest cadence — the finest granularity the user asked for.
     /// Acts as the effective "now" bucket for consumers that don't
@@ -164,16 +175,32 @@ impl Cadences {
 pub fn parse_duration(s: &str) -> Result<Duration, ()> {
     let s = s.trim();
     if let Some(n) = s.strip_suffix("ms") {
-        return n.trim().parse::<u64>().map(Duration::from_millis).map_err(|_| ());
+        return n
+            .trim()
+            .parse::<u64>()
+            .map(Duration::from_millis)
+            .map_err(|_| ());
     }
     if let Some(n) = s.strip_suffix('s') {
-        return n.trim().parse::<u64>().map(Duration::from_secs).map_err(|_| ());
+        return n
+            .trim()
+            .parse::<u64>()
+            .map(Duration::from_secs)
+            .map_err(|_| ());
     }
     if let Some(n) = s.strip_suffix('m') {
-        return n.trim().parse::<u64>().map(|v| Duration::from_secs(v * 60)).map_err(|_| ());
+        return n
+            .trim()
+            .parse::<u64>()
+            .map(|v| Duration::from_secs(v * 60))
+            .map_err(|_| ());
     }
     if let Some(n) = s.strip_suffix('h') {
-        return n.trim().parse::<u64>().map(|v| Duration::from_secs(v * 3600)).map_err(|_| ());
+        return n
+            .trim()
+            .parse::<u64>()
+            .map(|v| Duration::from_secs(v * 3600))
+            .map_err(|_| ());
     }
     s.parse::<u64>().map(Duration::from_secs).map_err(|_| ())
 }
@@ -279,12 +306,16 @@ impl CadenceTree {
     ) -> Result<Self, CadenceTreeError> {
         for c in declared.iter() {
             if c < base_interval {
-                return Err(CadenceTreeError::BelowBase { cadence: c, base: base_interval });
+                return Err(CadenceTreeError::BelowBase {
+                    cadence: c,
+                    base: base_interval,
+                });
             }
-            if base_interval.as_nanos() == 0
-                || c.as_nanos() % base_interval.as_nanos() != 0
-            {
-                return Err(CadenceTreeError::NotMultiple { cadence: c, base: base_interval });
+            if base_interval.as_nanos() == 0 || c.as_nanos() % base_interval.as_nanos() != 0 {
+                return Err(CadenceTreeError::NotMultiple {
+                    cadence: c,
+                    base: base_interval,
+                });
             }
         }
         Ok(Self::plan(declared, max_fan_in))
@@ -303,13 +334,13 @@ impl CadenceTree {
         sorted.sort_unstable();
         sorted.dedup();
 
-        let declared_set: std::collections::HashSet<Duration> =
-            sorted.iter().copied().collect();
+        let declared_set: std::collections::HashSet<Duration> = sorted.iter().copied().collect();
 
         let mut layers: Vec<Duration> = sorted.clone();
         synthesize_intermediates(&mut layers, max_fan_in);
 
-        let realized: Vec<CadenceLayer> = layers.iter()
+        let realized: Vec<CadenceLayer> = layers
+            .iter()
             .map(|d| CadenceLayer {
                 interval: *d,
                 hidden: !declared_set.contains(d),
@@ -318,7 +349,11 @@ impl CadenceTree {
 
         log_realized_tree(&realized, max_fan_in);
 
-        Self { declared, layers: realized, max_fan_in }
+        Self {
+            declared,
+            layers: realized,
+            max_fan_in,
+        }
     }
 
     /// Plan with the default `max_fan_in` ([`DEFAULT_MAX_FAN_IN`]).
@@ -327,13 +362,19 @@ impl CadenceTree {
     }
 
     /// User-declared cadences in their original declaration order.
-    pub fn declared(&self) -> &Cadences { &self.declared }
+    pub fn declared(&self) -> &Cadences {
+        &self.declared
+    }
 
     /// All layers (declared + hidden), sorted ascending by interval.
-    pub fn layers(&self) -> &[CadenceLayer] { &self.layers }
+    pub fn layers(&self) -> &[CadenceLayer] {
+        &self.layers
+    }
 
     /// Maximum fan-in used during planning.
-    pub fn max_fan_in(&self) -> u32 { self.max_fan_in }
+    pub fn max_fan_in(&self) -> u32 {
+        self.max_fan_in
+    }
 
     /// Just the hidden (auto-inserted) layers, ascending.
     pub fn hidden(&self) -> impl Iterator<Item = Duration> + '_ {
@@ -354,8 +395,13 @@ impl CadenceTree {
     pub fn align_to_declared(&self, preferred: Duration) -> Option<Duration> {
         let mut declared_sorted: Vec<Duration> = self.declared.iter().collect();
         declared_sorted.sort_unstable();
-        if declared_sorted.is_empty() { return None; }
-        declared_sorted.iter().copied().find(|&d| d >= preferred)
+        if declared_sorted.is_empty() {
+            return None;
+        }
+        declared_sorted
+            .iter()
+            .copied()
+            .find(|&d| d >= preferred)
             .or_else(|| declared_sorted.last().copied())
     }
 }
@@ -394,7 +440,8 @@ fn synthesize_intermediates(
             for j in 1..=n_inserts {
                 let raw_secs = a.as_secs_f64() * step_ratio.powi(j as i32);
                 let nice = nicest_duration(raw_secs);
-                if nice > a && nice < b
+                if nice > a
+                    && nice < b
                     && !new_intervals.contains(&nice)
                     && !layers[..=i].contains(&nice)
                     && !layers[i + 1..].contains(&nice)
@@ -423,7 +470,9 @@ fn synthesize_intermediates(
             }
             i += 1;
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     layers.sort_unstable();
@@ -435,10 +484,32 @@ fn synthesize_intermediates(
 /// layers, ascending. Picked to be readable at a glance and consistent
 /// with operator instinct (5s, 10s, 30s, 1m, …).
 const NICE_SECONDS: &[u64] = &[
-    1, 2, 5, 10, 15, 20, 30, 45,
-    60, 2 * 60, 5 * 60, 10 * 60, 15 * 60, 20 * 60, 30 * 60, 45 * 60,
-    3600, 2 * 3600, 3 * 3600, 4 * 3600, 6 * 3600, 8 * 3600, 12 * 3600,
-    24 * 3600, 2 * 86_400, 7 * 86_400,
+    1,
+    2,
+    5,
+    10,
+    15,
+    20,
+    30,
+    45,
+    60,
+    2 * 60,
+    5 * 60,
+    10 * 60,
+    15 * 60,
+    20 * 60,
+    30 * 60,
+    45 * 60,
+    3600,
+    2 * 3600,
+    3 * 3600,
+    4 * 3600,
+    6 * 3600,
+    8 * 3600,
+    12 * 3600,
+    24 * 3600,
+    2 * 86_400,
+    7 * 86_400,
 ];
 
 /// Round a duration (given in seconds, possibly fractional) to the
@@ -449,7 +520,8 @@ fn nicest_duration(secs: f64) -> Duration {
         return Duration::from_secs(1);
     }
     let target = secs.ln();
-    let best = NICE_SECONDS.iter()
+    let best = NICE_SECONDS
+        .iter()
         .min_by(|a, b| {
             let da = ((**a as f64).ln() - target).abs();
             let db = ((**b as f64).ln() - target).abs();
@@ -469,7 +541,11 @@ pub fn format_duration_short(d: Duration) -> String {
         // Sub-second cadences (e.g. a 100ms optimizer finest layer)
         // render in milliseconds rather than collapsing to "0s".
         let ms = d.subsec_millis();
-        return if ms == 0 { "0s".into() } else { format!("{ms}ms") };
+        return if ms == 0 {
+            "0s".into()
+        } else {
+            format!("{ms}ms")
+        };
     }
     let h = total / 3600;
     let m = (total % 3600) / 60;
@@ -491,7 +567,8 @@ fn log_realized_tree(realized: &[CadenceLayer], max_fan_in: u32) {
     // planner to keep adjacent fan-in within `max_fan_in:1`
     // when the declared layers are too far apart. The
     // trailing `/ <n>` reads as "max fan-in 20:1".
-    let cadences_str = realized.iter()
+    let cadences_str = realized
+        .iter()
         .map(|l| {
             let s = format_duration_short(l.interval);
             if l.hidden { format!("({s})") } else { s }
@@ -511,12 +588,15 @@ mod tests {
     fn cadence_parse_normal() {
         let c = Cadences::parse("10s,1m,10m,1h").unwrap();
         let got: Vec<_> = c.iter().collect();
-        assert_eq!(got, vec![
-            Duration::from_secs(10),
-            Duration::from_secs(60),
-            Duration::from_secs(600),
-            Duration::from_secs(3600),
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                Duration::from_secs(10),
+                Duration::from_secs(60),
+                Duration::from_secs(600),
+                Duration::from_secs(3600),
+            ]
+        );
     }
 
     #[test]
@@ -541,20 +621,17 @@ mod tests {
 
     #[test]
     fn cadence_tree_plan_validated_rejects_below_base() {
-        let c = Cadences::new(&[
-            Duration::from_millis(500),
-            Duration::from_secs(1),
-        ]).unwrap();
-        let err = CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap_err();
+        let c = Cadences::new(&[Duration::from_millis(500), Duration::from_secs(1)]).unwrap();
+        let err =
+            CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap_err();
         assert!(matches!(err, CadenceTreeError::BelowBase { .. }));
     }
 
     #[test]
     fn cadence_tree_plan_validated_rejects_non_multiple() {
-        let c = Cadences::new(&[
-            Duration::from_millis(1500),
-        ]).unwrap();
-        let err = CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap_err();
+        let c = Cadences::new(&[Duration::from_millis(1500)]).unwrap();
+        let err =
+            CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap_err();
         assert!(matches!(err, CadenceTreeError::NotMultiple { .. }));
     }
 
@@ -562,24 +639,30 @@ mod tests {
     fn align_to_declared_picks_smallest_above_preferred() {
         let c = Cadences::parse("5s,10s,1m,5m").unwrap();
         let tree = CadenceTree::plan(c, DEFAULT_MAX_FAN_IN);
-        assert_eq!(tree.align_to_declared(Duration::from_secs(1)),
-            Some(Duration::from_secs(5)));
-        assert_eq!(tree.align_to_declared(Duration::from_secs(10)),
-            Some(Duration::from_secs(10)));
-        assert_eq!(tree.align_to_declared(Duration::from_secs(30)),
-            Some(Duration::from_secs(60)));
+        assert_eq!(
+            tree.align_to_declared(Duration::from_secs(1)),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            tree.align_to_declared(Duration::from_secs(10)),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            tree.align_to_declared(Duration::from_secs(30)),
+            Some(Duration::from_secs(60))
+        );
         // Preferred > largest → falls back to largest.
-        assert_eq!(tree.align_to_declared(Duration::from_secs(3600)),
-            Some(Duration::from_secs(300)));
+        assert_eq!(
+            tree.align_to_declared(Duration::from_secs(3600)),
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]
     fn cadence_tree_plan_validated_accepts_exact_multiple() {
-        let c = Cadences::new(&[
-            Duration::from_secs(1),
-            Duration::from_secs(10),
-        ]).unwrap();
-        let tree = CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap();
+        let c = Cadences::new(&[Duration::from_secs(1), Duration::from_secs(10)]).unwrap();
+        let tree =
+            CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1)).unwrap();
         assert_eq!(tree.layers().len(), 2);
     }
 

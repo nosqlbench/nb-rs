@@ -76,10 +76,9 @@ impl DaemonExit {
     /// Clean completions and clean cancellations don't; errors,
     /// timeouts, and panics do.
     pub fn is_phase_error(&self) -> bool {
-        matches!(self,
-            DaemonExit::Errored(_)
-            | DaemonExit::TimedOut
-            | DaemonExit::Panicked(_),
+        matches!(
+            self,
+            DaemonExit::Errored(_) | DaemonExit::TimedOut | DaemonExit::Panicked(_),
         )
     }
 
@@ -202,8 +201,7 @@ impl DaemonPool {
     {
         // Atomic check-and-increment under the counts lock.
         {
-            let mut counts = self.live_counts.lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut counts = self.live_counts.lock().unwrap_or_else(|e| e.into_inner());
             let current = counts.entry(op_name.clone()).or_insert(0);
             if *current >= cap {
                 return Err(format!(
@@ -222,8 +220,7 @@ impl DaemonPool {
         let op_name_for_dec = op_name.clone();
         let handle = tokio::spawn(async move {
             let exit = body(flag_for_body).await;
-            let mut counts = counts_for_dec.lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut counts = counts_for_dec.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(n) = counts.get_mut(&op_name_for_dec) {
                 *n = n.saturating_sub(1);
             }
@@ -290,7 +287,12 @@ impl DaemonPool {
         };
         let mut out = Vec::with_capacity(slots.len());
         for slot in slots {
-            let DaemonSlot { name, cancel_grace, stop_flag, handle } = slot;
+            let DaemonSlot {
+                name,
+                cancel_grace,
+                stop_flag,
+                handle,
+            } = slot;
             // Signal stop. If the daemon already finished
             // naturally the flag is moot, but setting it is
             // harmless.
@@ -325,7 +327,9 @@ impl DaemonPool {
 }
 
 impl Default for DaemonPool {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -339,7 +343,8 @@ mod tests {
         let pool = DaemonPool::new();
         pool.try_spawn("worker".into(), 1, None, |_stop| async {
             DaemonExit::Completed
-        }).expect("first spawn under cap");
+        })
+        .expect("first spawn under cap");
         let outcomes = pool.shutdown().await;
         assert_eq!(outcomes.len(), 1);
         assert!(matches!(outcomes[0].1, DaemonExit::Completed));
@@ -351,15 +356,23 @@ mod tests {
     #[tokio::test]
     async fn cancellation_within_grace_is_not_phase_error() {
         let pool = DaemonPool::new();
-        pool.try_spawn("watcher".into(), 1, Some(Duration::from_secs(1)), |stop| async move {
-            // Poll the stop flag indefinitely (the work in the
-            // real adapter would race the in-flight reqwest
-            // future against this same poll loop).
-            loop {
-                if stop.load(Ordering::Acquire) { return DaemonExit::Cancelled; }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }).expect("first spawn under cap");
+        pool.try_spawn(
+            "watcher".into(),
+            1,
+            Some(Duration::from_secs(1)),
+            |stop| async move {
+                // Poll the stop flag indefinitely (the work in the
+                // real adapter would race the in-flight reqwest
+                // future against this same poll loop).
+                loop {
+                    if stop.load(Ordering::Acquire) {
+                        return DaemonExit::Cancelled;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            },
+        )
+        .expect("first spawn under cap");
         // Let the daemon spin briefly, then trigger the drain.
         tokio::time::sleep(Duration::from_millis(20)).await;
         let outcomes = pool.shutdown().await;
@@ -373,14 +386,18 @@ mod tests {
     #[tokio::test]
     async fn grace_window_expiry_fails_phase() {
         let pool = DaemonPool::new();
-        pool.try_spawn("stuck".into(), 1,
+        pool.try_spawn(
+            "stuck".into(),
+            1,
             Some(Duration::from_millis(50)),
             |_stop| async {
                 // Deliberately ignore the stop flag.
                 loop {
                     tokio::time::sleep(Duration::from_secs(10)).await;
                 }
-            }).expect("first spawn under cap");
+            },
+        )
+        .expect("first spawn under cap");
         let outcomes = pool.shutdown().await;
         assert_eq!(outcomes.len(), 1);
         assert!(matches!(outcomes[0].1, DaemonExit::TimedOut));
@@ -395,14 +412,17 @@ mod tests {
         let pool = DaemonPool::new();
         pool.try_spawn("op".into(), 1, None, |stop| async move {
             loop {
-                if stop.load(Ordering::Acquire) { return DaemonExit::Cancelled; }
+                if stop.load(Ordering::Acquire) {
+                    return DaemonExit::Cancelled;
+                }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        }).expect("first under cap");
+        })
+        .expect("first under cap");
         assert_eq!(pool.live_count("op"), 1);
-        let err = pool.try_spawn("op".into(), 1, None, |_| async {
-            DaemonExit::Completed
-        }).expect_err("second over cap");
+        let err = pool
+            .try_spawn("op".into(), 1, None, |_| async { DaemonExit::Completed })
+            .expect_err("second over cap");
         assert!(err.contains("'op'"));
         assert!(err.contains("cap of 1"));
         // Live count must NOT have changed by the rejected spawn.
@@ -416,18 +436,24 @@ mod tests {
         let pool = DaemonPool::new();
         pool.try_spawn("a".into(), 1, None, |stop| async move {
             loop {
-                if stop.load(Ordering::Acquire) { return DaemonExit::Cancelled; }
+                if stop.load(Ordering::Acquire) {
+                    return DaemonExit::Cancelled;
+                }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        }).expect("a first ok");
+        })
+        .expect("a first ok");
         // 'b' is a different op-template name; its own cap is
         // independent of 'a's.
         pool.try_spawn("b".into(), 1, None, |stop| async move {
             loop {
-                if stop.load(Ordering::Acquire) { return DaemonExit::Cancelled; }
+                if stop.load(Ordering::Acquire) {
+                    return DaemonExit::Cancelled;
+                }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        }).expect("b first ok");
+        })
+        .expect("b first ok");
         assert_eq!(pool.live_count("a"), 1);
         assert_eq!(pool.live_count("b"), 1);
         let _ = pool.shutdown().await;
@@ -441,15 +467,18 @@ mod tests {
         for _ in 0..n {
             pool.try_spawn("op".into(), n, None, |stop| async move {
                 loop {
-                    if stop.load(Ordering::Acquire) { return DaemonExit::Cancelled; }
+                    if stop.load(Ordering::Acquire) {
+                        return DaemonExit::Cancelled;
+                    }
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-            }).expect("under cap");
+            })
+            .expect("under cap");
         }
         assert_eq!(pool.live_count("op"), n);
-        let err = pool.try_spawn("op".into(), n, None, |_| async {
-            DaemonExit::Completed
-        }).expect_err("over cap");
+        let err = pool
+            .try_spawn("op".into(), n, None, |_| async { DaemonExit::Completed })
+            .expect_err("over cap");
         assert!(err.contains("cap of 5"));
         let _ = pool.shutdown().await;
     }
@@ -458,9 +487,9 @@ mod tests {
     #[tokio::test]
     async fn cap_zero_always_rejects() {
         let pool = DaemonPool::new();
-        let err = pool.try_spawn("op".into(), 0, None, |_| async {
-            DaemonExit::Completed
-        }).expect_err("cap 0 rejects");
+        let err = pool
+            .try_spawn("op".into(), 0, None, |_| async { DaemonExit::Completed })
+            .expect_err("cap 0 rejects");
         assert!(err.contains("cap of 0"));
         assert_eq!(pool.live_count("op"), 0);
     }
@@ -472,17 +501,19 @@ mod tests {
         let pool = DaemonPool::new();
         pool.try_spawn("op".into(), 1, None, |_stop| async {
             DaemonExit::Completed
-        }).expect("first ok");
+        })
+        .expect("first ok");
         // Yield until the spawned task has run its decrement.
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(2)).await;
-            if pool.live_count("op") == 0 { break; }
+            if pool.live_count("op") == 0 {
+                break;
+            }
         }
         assert_eq!(pool.live_count("op"), 0, "counter must decrement");
         // Now another spawn under the same cap succeeds.
-        pool.try_spawn("op".into(), 1, None, |_| async {
-            DaemonExit::Completed
-        }).expect("second ok after first drained");
+        pool.try_spawn("op".into(), 1, None, |_| async { DaemonExit::Completed })
+            .expect("second ok after first drained");
         let _ = pool.shutdown().await;
     }
 
@@ -497,10 +528,13 @@ mod tests {
                 message: "test".into(),
                 retryable: false,
             }))
-        }).expect("first ok");
+        })
+        .expect("first ok");
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(2)).await;
-            if pool.live_count("op") == 0 { break; }
+            if pool.live_count("op") == 0 {
+                break;
+            }
         }
         assert_eq!(pool.live_count("op"), 0);
         let _ = pool.shutdown().await;
@@ -518,12 +552,13 @@ mod tests {
             g.insert("op".into(), 0);
         }
         // Spawn (will bump to 1), exit immediately decrements to 0.
-        pool.try_spawn("op".into(), 1, None, |_| async {
-            DaemonExit::Completed
-        }).expect("ok");
+        pool.try_spawn("op".into(), 1, None, |_| async { DaemonExit::Completed })
+            .expect("ok");
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(2)).await;
-            if pool.live_count("op") == 0 { break; }
+            if pool.live_count("op") == 0 {
+                break;
+            }
         }
         assert_eq!(pool.live_count("op"), 0);
         let _ = pool.shutdown().await;
@@ -554,10 +589,7 @@ mod tests {
         }
 
         fn op_strategy() -> impl Strategy<Value = Op> {
-            prop_oneof![
-                names().prop_map(Op::Spawn),
-                names().prop_map(Op::Exit),
-            ]
+            prop_oneof![names().prop_map(Op::Spawn), names().prop_map(Op::Exit),]
         }
 
         proptest! {

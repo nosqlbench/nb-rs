@@ -21,7 +21,10 @@ pub struct HookeJeeves {
 
 impl HookeJeeves {
     pub fn from_params(p: &OptimizerParams) -> Self {
-        Self { tol: p.get("tol", 1e-8), shrink: p.get("shrink", 0.5) }
+        Self {
+            tol: p.get("tol", 1e-8),
+            shrink: p.get("shrink", 0.5),
+        }
     }
 }
 
@@ -55,7 +58,12 @@ impl Optimizer for HookeJeeves {
         "hooke_jeeves"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         if d == 0 {
@@ -77,8 +85,7 @@ impl Optimizer for HookeJeeves {
                 gbase = gx;
                 while ev.budget_left() {
                     // Pattern point: reflect the old base through the new.
-                    let pattern: Vec<f64> =
-                        (0..d).map(|j| 2.0 * base[j] - b_old[j]).collect();
+                    let pattern: Vec<f64> = (0..d).map(|j| 2.0 * base[j] - b_old[j]).collect();
                     let gpat = -ev.at(&pattern);
                     let (x2, g2) = explore(&mut ev, &pattern, gpat, &step);
                     if g2 < gbase {

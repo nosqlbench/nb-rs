@@ -161,7 +161,8 @@ impl Session {
     ) -> CassFuture<(CassResult, Option<crate::cassandra::uuid::Uuid>)> {
         let inner_future = unsafe { cass_session_execute_batch(self.inner(), batch.inner()) };
         <CassFuture<(CassResult, Option<crate::cassandra::uuid::Uuid>)>>::build(
-            self.clone(), inner_future,
+            self.clone(),
+            inner_future,
         )
     }
 
@@ -205,7 +206,8 @@ impl Session {
     ) -> CassFuture<(CassResult, Option<crate::cassandra::uuid::Uuid>)> {
         let inner_future = unsafe { cass_session_execute(self.inner(), statement.inner()) };
         <CassFuture<(CassResult, Option<crate::cassandra::uuid::Uuid>)>>::build(
-            self.clone(), inner_future,
+            self.clone(),
+            inner_future,
         )
     }
 

@@ -27,7 +27,8 @@
 //! ```
 
 use nbrs_runtime::adapter::{
-    AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, ResultBody, TextBody,
+    AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, ResultBody,
+    TextBody,
 };
 use nbrs_workload::model::ParsedOp;
 
@@ -63,8 +64,10 @@ impl HttpConfig {
     pub fn from_params(params: &std::collections::HashMap<String, String>) -> Self {
         Self {
             base_url: params.get("base_url").or(params.get("host")).cloned(),
-            timeout_ms: params.get("timeout")
-                .and_then(|s| s.parse().ok()).unwrap_or(30_000),
+            timeout_ms: params
+                .get("timeout")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30_000),
             // No client-wide `connect_timeout` from workload params: that
             // name is already the CQL cluster-connect timeout at the workload
             // root, and one value can't be both. HTTP takes `connect_timeout`
@@ -90,7 +93,10 @@ pub struct HttpAdapter {
 /// connect-timeout for a single op. reqwest's `.connect_timeout()` is a
 /// client-wide setting, so a per-op value needs its own client — built once
 /// at map_op (per op template), never per request.
-fn build_http_client(config: &HttpConfig, connect_timeout_override_ms: Option<u64>) -> reqwest::Client {
+fn build_http_client(
+    config: &HttpConfig,
+    connect_timeout_override_ms: Option<u64>,
+) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(config.timeout_ms))
         .redirect(if config.follow_redirects {
@@ -163,16 +169,25 @@ fn is_transient_failure(e: &reqwest::Error) -> bool {
     while let Some(s) = src {
         if let Some(io) = s.downcast_ref::<std::io::Error>() {
             use std::io::ErrorKind::*;
-            if matches!(io.kind(),
-                ConnectionRefused | ConnectionReset | ConnectionAborted
-                | TimedOut | NotConnected | BrokenPipe) {
+            if matches!(
+                io.kind(),
+                ConnectionRefused
+                    | ConnectionReset
+                    | ConnectionAborted
+                    | TimedOut
+                    | NotConnected
+                    | BrokenPipe
+            ) {
                 return true;
             }
         }
         let low = s.to_string().to_ascii_lowercase();
-        if low.contains("timed out") || low.contains("connection refused")
-            || low.contains("connection reset") || low.contains("dns error")
-            || low.contains("unreachable") {
+        if low.contains("timed out")
+            || low.contains("connection refused")
+            || low.contains("connection reset")
+            || low.contains("dns error")
+            || low.contains("unreachable")
+        {
             return true;
         }
         src = s.source();
@@ -192,15 +207,19 @@ impl OkStatusSpec {
         let mut ranges = Vec::new();
         for piece in spec.split(',') {
             let piece = piece.trim();
-            if piece.is_empty() { continue }
+            if piece.is_empty() {
+                continue;
+            }
             let (lo, hi) = match piece.split_once('-') {
                 Some((a, b)) => (a.trim(), b.trim()),
                 None => (piece, piece),
             };
-            let lo: u16 = lo.parse().map_err(|_| format!(
-                "ok_status '{spec}': '{piece}' is not a status code or range"))?;
-            let hi: u16 = hi.parse().map_err(|_| format!(
-                "ok_status '{spec}': '{piece}' is not a status code or range"))?;
+            let lo: u16 = lo.parse().map_err(|_| {
+                format!("ok_status '{spec}': '{piece}' is not a status code or range")
+            })?;
+            let hi: u16 = hi.parse().map_err(|_| {
+                format!("ok_status '{spec}': '{piece}' is not a status code or range")
+            })?;
             if lo > hi {
                 return Err(format!("ok_status '{spec}': range '{piece}' is inverted"));
             }
@@ -226,7 +245,10 @@ fn classify_reqwest_error(e: &reqwest::Error) -> String {
         // Connect/timeout cause buried under a generic request error —
         // name it by the underlying reason so `errors:` policies and the
         // operator both see a connection problem, not bare "RequestError".
-        if format_error_chain(e).to_ascii_lowercase().contains("timed out") {
+        if format_error_chain(e)
+            .to_ascii_lowercase()
+            .contains("timed out")
+        {
             "Timeout".into()
         } else {
             "ConnectionRefused".into()
@@ -239,8 +261,9 @@ fn classify_reqwest_error(e: &reqwest::Error) -> String {
 }
 
 impl DriverAdapter for HttpAdapter {
-    fn name(&self) -> &str { "http" }
-
+    fn name(&self) -> &str {
+        "http"
+    }
 
     /// HTTP adapter reads a closed vocabulary of op fields:
     /// request-shape (`method`, `uri` / `url`), body framing
@@ -264,126 +287,157 @@ impl DriverAdapter for HttpAdapter {
         // listening (the canonical use case is Cassandra's
         // synchronous `forceKeyspaceCompaction`, where the
         // poll layer is the actual waiter / observer).
-        Some(&["method", "content_type", "uri", "url", "body", "headers",
-               "request_timeout_ms", "on_timeout", "connect_timeout",
-               "expect_body", "ok_status"])
+        Some(&[
+            "method",
+            "content_type",
+            "uri",
+            "url",
+            "body",
+            "headers",
+            "request_timeout_ms",
+            "on_timeout",
+            "connect_timeout",
+            "expect_body",
+            "ok_status",
+        ])
     }
 
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
         parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
-        // Extract static method from template (default GET)
-        let method = template.op.get("method")
-            .and_then(|v: &serde_json::Value| v.as_str())
-            .map(|s: &str| s.to_uppercase())
-            .unwrap_or_else(|| "GET".into());
+            // Extract static method from template (default GET)
+            let method = template
+                .op
+                .get("method")
+                .and_then(|v: &serde_json::Value| v.as_str())
+                .map(|s: &str| s.to_uppercase())
+                .unwrap_or_else(|| "GET".into());
 
-        // Extract content type (default application/json)
-        let content_type = template.op.get("content_type")
-            .and_then(|v: &serde_json::Value| v.as_str())
-            .unwrap_or("application/json")
-            .to_string();
+            // Extract content type (default application/json)
+            let content_type = template
+                .op
+                .get("content_type")
+                .and_then(|v: &serde_json::Value| v.as_str())
+                .unwrap_or("application/json")
+                .to_string();
 
-        // SRD-68 Push 5: snapshot the per-cycle field templates at
-        // map_op. Each is rendered through `substitute_via_wires`
-        // at execute — the generic Polydat API resolves bind points by
-        // name, no synthesis-layer ResolvedFields involvement.
-        // `url` is an alias for `uri`; honour whichever appears.
-        let uri_template = template.op.get("uri")
-            .or_else(|| template.op.get("url"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let body_template = template.op.get("body")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let headers_template = template.op.get("headers")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        // Per-op timeout override. Cassandra's
-        // `forceKeyspaceCompaction` JMX op is synchronous (blocks
-        // for the entire compaction); the default 30s client
-        // timeout is far too short for any real table size. This
-        // field lets workloads opt into a longer per-request
-        // budget without raising the adapter-wide default.
-        // Named `request_timeout_ms` (not `timeout_ms`) so it
-        // doesn't collide with the polling wrapper's loop-level
-        // `timeout_ms`.
-        let per_op_timeout_ms = template.op.get("request_timeout_ms")
-            .and_then(|v| v.as_u64()
-                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+            // SRD-68 Push 5: snapshot the per-cycle field templates at
+            // map_op. Each is rendered through `substitute_via_wires`
+            // at execute — the generic Polydat API resolves bind points by
+            // name, no synthesis-layer ResolvedFields involvement.
+            // `url` is an alias for `uri`; honour whichever appears.
+            let uri_template = template
+                .op
+                .get("uri")
+                .or_else(|| template.op.get("url"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let body_template = template
+                .op
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let headers_template = template
+                .op
+                .get("headers")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            // Per-op timeout override. Cassandra's
+            // `forceKeyspaceCompaction` JMX op is synchronous (blocks
+            // for the entire compaction); the default 30s client
+            // timeout is far too short for any real table size. This
+            // field lets workloads opt into a longer per-request
+            // budget without raising the adapter-wide default.
+            // Named `request_timeout_ms` (not `timeout_ms`) so it
+            // doesn't collide with the polling wrapper's loop-level
+            // `timeout_ms`.
+            let per_op_timeout_ms = template.op.get("request_timeout_ms").and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            });
 
-        // `on_timeout: accept` is the fire-and-yield modifier
-        // (SRD-74-style). When a request_timeout_ms is set and
-        // the HTTP client trips it, the adapter would normally
-        // return a `Timeout` ExecutionError that fails the
-        // op. With `accept`, that specific outcome converts to
-        // a successful `OpResult` with no body — the server
-        // is presumed to still be doing the work; the polling
-        // layer is what observes its completion.
-        //
-        // Errors that are NOT `is_timeout()` (connection
-        // refused, body read errors, non-2xx responses) still
-        // surface normally. The modifier only translates
-        // client-side request-timeout firings.
-        // `expect_body: false` DECLARES that a body-less success is a normal
-        // outcome for this op — the fire-and-forget trigger whose work the
-        // poll layer observes, or any 204. The accept-timeout diagnostic
-        // below exists to explain a SURPRISE; an op that has said it expects
-        // no body is not surprised, and on a 256-phase sweep that warning is
-        // pure noise repeated once per tier. Declaring it drops the line to
-        // Debug rather than removing it, so `--log-level=debug` can still
-        // recover the timing.
-        let expect_body = template.op.get("expect_body")
-            .and_then(|v: &serde_json::Value| v.as_bool())
-            .unwrap_or(true);
-        let on_timeout_accept = template.op.get("on_timeout")
-            .and_then(|v| v.as_str())
-            .map(|s| s.eq_ignore_ascii_case("accept"))
-            .unwrap_or(false);
+            // `on_timeout: accept` is the fire-and-yield modifier
+            // (SRD-74-style). When a request_timeout_ms is set and
+            // the HTTP client trips it, the adapter would normally
+            // return a `Timeout` ExecutionError that fails the
+            // op. With `accept`, that specific outcome converts to
+            // a successful `OpResult` with no body — the server
+            // is presumed to still be doing the work; the polling
+            // layer is what observes its completion.
+            //
+            // Errors that are NOT `is_timeout()` (connection
+            // refused, body read errors, non-2xx responses) still
+            // surface normally. The modifier only translates
+            // client-side request-timeout firings.
+            // `expect_body: false` DECLARES that a body-less success is a normal
+            // outcome for this op — the fire-and-forget trigger whose work the
+            // poll layer observes, or any 204. The accept-timeout diagnostic
+            // below exists to explain a SURPRISE; an op that has said it expects
+            // no body is not surprised, and on a 256-phase sweep that warning is
+            // pure noise repeated once per tier. Declaring it drops the line to
+            // Debug rather than removing it, so `--log-level=debug` can still
+            // recover the timing.
+            let expect_body = template
+                .op
+                .get("expect_body")
+                .and_then(|v: &serde_json::Value| v.as_bool())
+                .unwrap_or(true);
+            let on_timeout_accept = template
+                .op
+                .get("on_timeout")
+                .and_then(|v| v.as_str())
+                .map(|s| s.eq_ignore_ascii_case("accept"))
+                .unwrap_or(false);
 
-        // Per-op connect timeout. reqwest's `.connect_timeout()` is
-        // client-wide, so an op that sets `connect_timeout` (a duration
-        // spec-string like `15s`, or a bare number = fractional seconds) gets
-        // its OWN client built with that value. Distinct from
-        // `request_timeout_ms` (the response deadline): this bounds the TCP
-        // CONNECT phase, so an unreachable endpoint fails fast and `retries:`
-        // kicks in instead of hanging on the OS default (~tens of seconds).
-        let connect_timeout_ms = template.op.get("connect_timeout")
-            .and_then(|v| v.as_str())
-            .and_then(|s| nbrs_runtime::timeval::parse_time_ms(s).ok());
-        let client = match connect_timeout_ms {
-            Some(_) => build_http_client(&self.config, connect_timeout_ms),
-            None => self.client.clone(),
-        };
+            // Per-op connect timeout. reqwest's `.connect_timeout()` is
+            // client-wide, so an op that sets `connect_timeout` (a duration
+            // spec-string like `15s`, or a bare number = fractional seconds) gets
+            // its OWN client built with that value. Distinct from
+            // `request_timeout_ms` (the response deadline): this bounds the TCP
+            // CONNECT phase, so an unreachable endpoint fails fast and `retries:`
+            // kicks in instead of hanging on the OS default (~tens of seconds).
+            let connect_timeout_ms = template
+                .op
+                .get("connect_timeout")
+                .and_then(|v| v.as_str())
+                .and_then(|s| nbrs_runtime::timeval::parse_time_ms(s).ok());
+            let client = match connect_timeout_ms {
+                Some(_) => build_http_client(&self.config, connect_timeout_ms),
+                None => self.client.clone(),
+            };
 
-        // `ok_status` — which response statuses count as success
-        // for THIS op (`"200-299,404"`). Default: reqwest's
-        // is_success (2xx). The canonical use is idempotent
-        // teardown, where 404 on an absent resource is the no-op
-        // outcome, not an error.
-        let ok_status = match template.op.get("ok_status").and_then(|v| v.as_str()) {
-            Some(spec) => Some(OkStatusSpec::parse(spec)
-                .map_err(|e| format!("op '{}': {e}", template.name))?),
-            None => None,
-        };
+            // `ok_status` — which response statuses count as success
+            // for THIS op (`"200-299,404"`). Default: reqwest's
+            // is_success (2xx). The canonical use is idempotent
+            // teardown, where 404 on an absent resource is the no-op
+            // outcome, not an error.
+            let ok_status = match template.op.get("ok_status").and_then(|v| v.as_str()) {
+                Some(spec) => Some(
+                    OkStatusSpec::parse(spec)
+                        .map_err(|e| format!("op '{}': {e}", template.name))?,
+                ),
+                None => None,
+            };
 
-        Ok(Box::new(HttpDispenser {
-            client,
-            base_url: self.base_url.clone(),
-            method,
-            content_type,
-            canonical_kernel: parent,
-            uri_template,
-            body_template,
-            headers_template,
-            per_op_timeout_ms,
-            on_timeout_accept,
-            expect_body,
-            ok_status,
-        }) as Box<dyn OpDispenser>)
+            Ok(Box::new(HttpDispenser {
+                client,
+                base_url: self.base_url.clone(),
+                method,
+                content_type,
+                canonical_kernel: parent,
+                uri_template,
+                body_template,
+                headers_template,
+                per_op_timeout_ms,
+                on_timeout_accept,
+                expect_body,
+                ok_status,
+            }) as Box<dyn OpDispenser>)
         })
     }
 }
@@ -425,7 +479,6 @@ struct HttpDispenser {
     ok_status: Option<OkStatusSpec>,
 }
 
-
 impl OpDispenser for HttpDispenser {
     fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
@@ -435,25 +488,30 @@ impl OpDispenser for HttpDispenser {
         &'a self,
         _cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
-            let uri_template = self.uri_template.as_deref()
-                .ok_or_else(|| ExecutionError::Op(AdapterError {
+            let uri_template = self.uri_template.as_deref().ok_or_else(|| {
+                ExecutionError::Op(AdapterError {
                     error_name: "missing_field".into(),
                     message: "HTTP op requires a 'uri' or 'url' field".into(),
                     retryable: false,
-                }))?;
+                })
+            })?;
 
             // SRD-68 Push 5: render each per-cycle template via the
             // generic wires API. Bind-point resolution failures are
             // returned as op errors so the error router decides.
-            let uri = nbrs_runtime::wires::substitute_via_wires(uri_template, wires)
-                .map_err(|e| ExecutionError::Op(AdapterError {
-                    error_name: "BindError".into(),
-                    message: format!("uri: {e}"),
-                    retryable: false,
-                }))?;
+            let uri =
+                nbrs_runtime::wires::substitute_via_wires(uri_template, wires).map_err(|e| {
+                    ExecutionError::Op(AdapterError {
+                        error_name: "BindError".into(),
+                        message: format!("uri: {e}"),
+                        retryable: false,
+                    })
+                })?;
 
             let full_url = if let Some(ref base) = self.base_url {
                 if uri.starts_with("http://") || uri.starts_with("https://") {
@@ -466,12 +524,15 @@ impl OpDispenser for HttpDispenser {
             };
 
             let body = match &self.body_template {
-                Some(t) => Some(nbrs_runtime::wires::substitute_via_wires(t, wires)
-                    .map_err(|e| ExecutionError::Op(AdapterError {
-                        error_name: "BindError".into(),
-                        message: format!("body: {e}"),
-                        retryable: false,
-                    }))?),
+                Some(t) => Some(nbrs_runtime::wires::substitute_via_wires(t, wires).map_err(
+                    |e| {
+                        ExecutionError::Op(AdapterError {
+                            error_name: "BindError".into(),
+                            message: format!("body: {e}"),
+                            retryable: false,
+                        })
+                    },
+                )?),
                 None => None,
             };
 
@@ -479,13 +540,16 @@ impl OpDispenser for HttpDispenser {
             // field. Per-line `Name: Value` entries.
             let extra_headers: Vec<(String, String)> = match &self.headers_template {
                 Some(t) => {
-                    let rendered = nbrs_runtime::wires::substitute_via_wires(t, wires)
-                        .map_err(|e| ExecutionError::Op(AdapterError {
-                            error_name: "BindError".into(),
-                            message: format!("headers: {e}"),
-                            retryable: false,
-                        }))?;
-                    rendered.lines()
+                    let rendered =
+                        nbrs_runtime::wires::substitute_via_wires(t, wires).map_err(|e| {
+                            ExecutionError::Op(AdapterError {
+                                error_name: "BindError".into(),
+                                message: format!("headers: {e}"),
+                                retryable: false,
+                            })
+                        })?;
+                    rendered
+                        .lines()
                         .filter_map(|line| {
                             let mut parts = line.splitn(2, ':');
                             let name = parts.next()?.trim().to_string();
@@ -504,11 +568,13 @@ impl OpDispenser for HttpDispenser {
                 "DELETE" => self.client.delete(&full_url),
                 "PATCH" => self.client.patch(&full_url),
                 "HEAD" => self.client.head(&full_url),
-                other => return Err(ExecutionError::Op(AdapterError {
-                    error_name: "InvalidMethod".into(),
-                    message: format!("unsupported HTTP method: {other}"),
-                    retryable: false,
-                })),
+                other => {
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: "InvalidMethod".into(),
+                        message: format!("unsupported HTTP method: {other}"),
+                        retryable: false,
+                    }));
+                }
             };
 
             builder = builder.header("Content-Type", &self.content_type);
@@ -556,7 +622,8 @@ impl OpDispenser for HttpDispenser {
                         // in session.log without changing the
                         // success-shape semantics.
                         let elapsed_ms = request_start.elapsed().as_millis();
-                        let configured_ms = self.per_op_timeout_ms
+                        let configured_ms = self
+                            .per_op_timeout_ms
                             .map(|n| n.to_string())
                             .unwrap_or_else(|| "client-default".to_string());
                         nbrs_runtime::observer::log(
@@ -582,7 +649,10 @@ impl OpDispenser for HttpDispenser {
                                  demand a body here."
                             ),
                         );
-                        return Ok(OpResult { body: None, skipped: false });
+                        return Ok(OpResult {
+                            body: None,
+                            skipped: false,
+                        });
                     }
                     let retryable = is_transient_failure(&e);
                     let scope = if e.is_connect() {
@@ -610,7 +680,8 @@ impl OpDispenser for HttpDispenser {
             // — verify-blocks can then address nested fields
             // (`field: status, eq: "200"`) instead of substring
             // matching on the raw text.
-            let content_type_says_json = response.headers()
+            let content_type_says_json = response
+                .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(|ct| ct.contains("json"))
@@ -641,11 +712,12 @@ impl OpDispenser for HttpDispenser {
                 // quoted string. That keeps "parse a scalar like
                 // "42" into a JSON number" — a real risk for
                 // plain-text endpoints — from happening.
-                let looks_like_json = body_text.trim_start()
-                    .starts_with(['{', '[']);
+                let looks_like_json = body_text.trim_start().starts_with(['{', '[']);
                 let parsed_json = if content_type_says_json || looks_like_json {
                     serde_json::from_str::<serde_json::Value>(&body_text).ok()
-                } else { None };
+                } else {
+                    None
+                };
                 let body: Box<dyn ResultBody> = match parsed_json {
                     Some(v) => Box::new(JsonBody(v)),
                     None => Box::new(TextBody(body_text)),
@@ -690,7 +762,8 @@ mod tests {
     /// listener's bound port; the caller addresses
     /// `http://127.0.0.1:<port>/`.
     async fn spawn_stalling_listener() -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
             .expect("bind 127.0.0.1:0");
         let port = listener.local_addr().expect("local_addr").port();
         tokio::spawn(async move {
@@ -713,30 +786,36 @@ mod tests {
     }
 
     fn test_kernel() -> std::sync::Arc<polydat::kernel::PolydatKernel> {
-        std::sync::Arc::new(
-            polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap()
-        )
+        std::sync::Arc::new(polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap())
     }
 
     /// Build an HTTP op-template programmatically. Bypasses
     /// the full workload parser to keep the test focused on
     /// the adapter's per-op behaviour.
-    fn http_op(method: &str, uri: &str,
-               request_timeout_ms: Option<&str>,
-               on_timeout: Option<&str>) -> ParsedOp {
+    fn http_op(
+        method: &str,
+        uri: &str,
+        request_timeout_ms: Option<&str>,
+        on_timeout: Option<&str>,
+    ) -> ParsedOp {
         let mut template = ParsedOp::simple("test", "");
         template.op.remove("stmt");
-        template.op.insert("method".into(),
-            serde_json::Value::String(method.into()));
-        template.op.insert("uri".into(),
-            serde_json::Value::String(uri.into()));
+        template
+            .op
+            .insert("method".into(), serde_json::Value::String(method.into()));
+        template
+            .op
+            .insert("uri".into(), serde_json::Value::String(uri.into()));
         if let Some(ms) = request_timeout_ms {
-            template.op.insert("request_timeout_ms".into(),
-                serde_json::Value::String(ms.into()));
+            template.op.insert(
+                "request_timeout_ms".into(),
+                serde_json::Value::String(ms.into()),
+            );
         }
         if let Some(v) = on_timeout {
-            template.op.insert("on_timeout".into(),
-                serde_json::Value::String(v.into()));
+            template
+                .op
+                .insert("on_timeout".into(), serde_json::Value::String(v.into()));
         }
         template
     }
@@ -756,10 +835,12 @@ mod tests {
         let template = http_op(
             "GET",
             &format!("http://127.0.0.1:{port}/"),
-            Some("100"),       // 100ms request timeout
-            Some("accept"),    // swallow client-side timeout
+            Some("100"),    // 100ms request timeout
+            Some("accept"), // swallow client-side timeout
         );
-        let dispenser = adapter.map_op(&template, test_kernel()).await
+        let dispenser = adapter
+            .map_op(&template, test_kernel())
+            .await
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
@@ -768,12 +849,18 @@ mod tests {
         let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
         let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
-        let result = dispenser.execute(0, &ctx).await
+        let result = dispenser
+            .execute(0, &ctx)
+            .await
             .expect("on_timeout: accept should map Timeout → Ok(empty)");
-        assert!(result.body.is_none(),
-            "expected empty-body OpResult after accepted timeout");
-        assert!(!result.skipped,
-            "accepted-timeout is a real (not skipped) op result");
+        assert!(
+            result.body.is_none(),
+            "expected empty-body OpResult after accepted timeout"
+        );
+        assert!(
+            !result.skipped,
+            "accepted-timeout is a real (not skipped) op result"
+        );
     }
 
     /// Without `on_timeout: accept`, the same stalling-listener
@@ -790,7 +877,9 @@ mod tests {
             Some("100"),
             None,
         );
-        let dispenser = adapter.map_op(&template, test_kernel()).await
+        let dispenser = adapter
+            .map_op(&template, test_kernel())
+            .await
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
@@ -799,11 +888,15 @@ mod tests {
         let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
         let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
-        let err = dispenser.execute(0, &ctx).await
+        let err = dispenser
+            .execute(0, &ctx)
+            .await
             .expect_err("default behaviour: client-side timeout → op error");
         match err {
-            ExecutionError::Op(ad) => assert_eq!(ad.error_name, "Timeout",
-                "expected error_name='Timeout', got: {ad:?}"),
+            ExecutionError::Op(ad) => assert_eq!(
+                ad.error_name, "Timeout",
+                "expected error_name='Timeout', got: {ad:?}"
+            ),
             other => panic!("expected ExecutionError::Op(Timeout), got {other:?}"),
         }
     }
@@ -821,13 +914,16 @@ mod tests {
     async fn successful_json_response_populates_body() {
         // Spin up a one-shot HTTP server that replies with a
         // Jolokia-shaped JSON body.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
             .expect("bind 127.0.0.1:0");
         let port = listener.local_addr().expect("local_addr").port();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 4096];
                     let _ = sock.read(&mut buf).await;
@@ -846,10 +942,12 @@ mod tests {
         let template = http_op(
             "POST",
             &format!("http://127.0.0.1:{port}/jolokia/"),
-            None,    // no per-op timeout
-            None,    // no on_timeout
+            None, // no per-op timeout
+            None, // no on_timeout
         );
-        let dispenser = adapter.map_op(&template, test_kernel()).await
+        let dispenser = adapter
+            .map_op(&template, test_kernel())
+            .await
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
@@ -858,16 +956,22 @@ mod tests {
         let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
         let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
-        let result = dispenser.execute(0, &ctx).await
+        let result = dispenser
+            .execute(0, &ctx)
+            .await
             .expect("successful HTTP request should return Ok");
-        let body = result.body.as_ref()
-            .expect("successful response with body must populate result.body — \
+        let body = result.body.as_ref().expect(
+            "successful response with body must populate result.body — \
                      no body indicates an adapter regression (the only legit \
                      body=None path is timeout-accept, which this test doesn't \
-                     exercise)");
+                     exercise)",
+        );
         let json = body.to_json();
-        assert_eq!(json.get("status").and_then(|v| v.as_u64()), Some(200),
-            "body should preserve the server's `status` field; got: {json}");
+        assert_eq!(
+            json.get("status").and_then(|v| v.as_u64()),
+            Some(200),
+            "body should preserve the server's `status` field; got: {json}"
+        );
     }
 }
 

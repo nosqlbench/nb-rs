@@ -14,9 +14,7 @@
 //! themselves. Polydat content lives on the AST, not on runtime
 //! state.
 
-use crate::model::{
-    BindingsDef, ParsedOp, ScenarioNode, Workload, WorkloadPhase,
-};
+use crate::model::{BindingsDef, ParsedOp, ScenarioNode, Workload, WorkloadPhase};
 
 /// SRD-13d §3.1 classification of how much Polydat content a
 /// scope-tree node carries.
@@ -80,7 +78,6 @@ fn has_inline_expr(op: &ParsedOp) -> bool {
     }
     op.op.values().any(scan) || op.params.values().any(scan)
 }
-
 
 // -----------------------------------------------------------
 // Trait impls
@@ -173,10 +170,10 @@ impl HasPolydatMatter for WorkloadPhase {
         // is f64-typed today (no Polydat refs) but counted as a
         // parent reference for symmetry; revisit when rate
         // grows GK-expression support.
-        let refs_parent = [&self.cycles, &self.concurrency]
-            .iter()
-            .any(|opt| opt.as_ref().is_some_and(|s|
-                s.contains('{') && s.contains('}')));
+        let refs_parent = [&self.cycles, &self.concurrency].iter().any(|opt| {
+            opt.as_ref()
+                .is_some_and(|s| s.contains('{') && s.contains('}'))
+        });
         if refs_parent || self.rate.is_some() {
             return PolydatMatter::Readonly;
         }
@@ -191,14 +188,11 @@ impl HasPolydatMatter for ScenarioNode {
             // variables — Definitions by construction.
             ScenarioNode::Comprehension { .. }
             | ScenarioNode::DoWhile { .. }
-            | ScenarioNode::DoUntil { .. }
-                => PolydatMatter::Definitions,
+            | ScenarioNode::DoUntil { .. } => PolydatMatter::Definitions,
             // Phase reference + scenario-include wrappers
             // don't add Polydat content on their own; the
             // wrapped phase / included scenario carries it.
-            ScenarioNode::Phase(_)
-            | ScenarioNode::IncludedScenario { .. }
-                => PolydatMatter::None,
+            ScenarioNode::Phase(_) | ScenarioNode::IncludedScenario { .. } => PolydatMatter::None,
             // Scenario-tree-level `bindings:` block (also the
             // canonical lowered form of `set:` sugar) installs
             // a Polydat scope kernel — Definitions by definition.
@@ -261,8 +255,10 @@ mod tests {
     #[test]
     fn parsed_op_with_inline_expr_is_definitions() {
         let mut op = empty_op("x");
-        op.op.insert("stmt".into(),
-            serde_json::Value::String("SELECT {{cycle}}".into()));
+        op.op.insert(
+            "stmt".into(),
+            serde_json::Value::String("SELECT {{cycle}}".into()),
+        );
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
 
@@ -277,11 +273,17 @@ mod tests {
         // MetricsDispenser read parent bindings directly;
         // that path is gone.
         let mut op = empty_op("x");
-        op.metrics.insert("foo".into(), MetricSpec {
-            value: "existing_wire".into(),
-            family: None, kind: None, unit: None, format: None,
-            cell: Default::default(),
-        });
+        op.metrics.insert(
+            "foo".into(),
+            MetricSpec {
+                value: "existing_wire".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
 
@@ -290,22 +292,34 @@ mod tests {
         // Same as above; dotted-name forms equally require a
         // synthesised `__metric_<name>` binding.
         let mut op = empty_op("x");
-        op.metrics.insert("foo".into(), MetricSpec {
-            value: "phase.recall_at_10".into(),
-            family: None, kind: None, unit: None, format: None,
-            cell: Default::default(),
-        });
+        op.metrics.insert(
+            "foo".into(),
+            MetricSpec {
+                value: "phase.recall_at_10".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
 
     #[test]
     fn parsed_op_metrics_expression_is_definitions() {
         let mut op = empty_op("x");
-        op.metrics.insert("foo".into(), MetricSpec {
-            value: "factor * 2.0".into(),
-            family: None, kind: None, unit: None, format: None,
-            cell: Default::default(),
-        });
+        op.metrics.insert(
+            "foo".into(),
+            MetricSpec {
+                value: "factor * 2.0".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
 
@@ -332,11 +346,19 @@ mod tests {
     #[test]
     fn workload_phase_with_phase_bindings_is_definitions() {
         let phase = WorkloadPhase {
-            cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
-            ops: vec![], for_each: None,
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            cycles: None,
+            concurrency: None,
+            rate: None,
+            adapter: None,
+            errors: None,
+            tags: None,
+            ops: vec![],
+            for_each: None,
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics: Default::default(),
             bindings: BindingsDef::PolydatSource("k := 5".into()),
             poll: None,
             ..Default::default()
@@ -347,12 +369,19 @@ mod tests {
     #[test]
     fn workload_phase_with_for_each_is_definitions() {
         let phase = WorkloadPhase {
-            cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
+            cycles: None,
+            concurrency: None,
+            rate: None,
+            adapter: None,
+            errors: None,
+            tags: None,
             ops: vec![],
             for_each: Some("k in 1,2,3".into()),
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
             ..Default::default()
@@ -367,17 +396,31 @@ mod tests {
         // `phase_start` extern) onto the phase kernel, so the phase
         // needs its own scope kernel even with no `bindings:`.
         let mut metrics = std::collections::HashMap::new();
-        metrics.insert("time_to_index".to_string(), crate::model::MetricSpec {
-            value: "current_epoch_millis() - phase_start".into(),
-            family: None, kind: None, unit: None, format: None,
-            cell: Default::default(),
-        });
+        metrics.insert(
+            "time_to_index".to_string(),
+            crate::model::MetricSpec {
+                value: "current_epoch_millis() - phase_start".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         let phase = WorkloadPhase {
-            cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
-            ops: vec![], for_each: None,
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics,
+            cycles: None,
+            concurrency: None,
+            rate: None,
+            adapter: None,
+            errors: None,
+            tags: None,
+            ops: vec![],
+            for_each: None,
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics,
             bindings: BindingsDef::default(),
             poll: None,
             ..Default::default()
@@ -388,11 +431,19 @@ mod tests {
     #[test]
     fn workload_phase_bare_is_none() {
         let phase = WorkloadPhase {
-            cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
-            ops: vec![], for_each: None,
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            cycles: None,
+            concurrency: None,
+            rate: None,
+            adapter: None,
+            errors: None,
+            tags: None,
+            ops: vec![],
+            for_each: None,
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
             ..Default::default()
@@ -404,11 +455,18 @@ mod tests {
     fn workload_phase_cycles_param_ref_is_readonly() {
         let phase = WorkloadPhase {
             cycles: Some("{train_count}".into()),
-            concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
-            ops: vec![], for_each: None,
-            loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            concurrency: None,
+            rate: None,
+            adapter: None,
+            errors: None,
+            tags: None,
+            ops: vec![],
+            for_each: None,
+            loop_scope: None,
+            iter_scope: None,
+            checkpoint: None,
+            status_metrics: vec![],
+            metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
             ..Default::default()

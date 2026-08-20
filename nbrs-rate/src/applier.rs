@@ -68,7 +68,8 @@ mod tests {
 
         assert_eq!(limiter.rate(), 100.0);
 
-        control.set(RateSpec::new(5_000.0), ControlOrigin::Test)
+        control
+            .set(RateSpec::new(5_000.0), ControlOrigin::Test)
             .await
             .expect("reconfigure should succeed");
 
@@ -96,7 +97,10 @@ mod tests {
                 .build();
         control.register_applier(RateLimiterApplier::new(limiter.clone()));
 
-        match control.set(RateSpec::new(100_000.0), ControlOrigin::Test).await {
+        match control
+            .set(RateSpec::new(100_000.0), ControlOrigin::Test)
+            .await
+        {
             Err(SetError::ValidationFailed(_)) => {}
             other => panic!("expected validation rejection, got {other:?}"),
         }
@@ -121,7 +125,8 @@ mod tests {
         }
         let slow_elapsed = slow_start.elapsed();
 
-        control.set(RateSpec::new(100_000.0), ControlOrigin::Test)
+        control
+            .set(RateSpec::new(100_000.0), ControlOrigin::Test)
             .await
             .unwrap();
 
@@ -159,7 +164,8 @@ mod tests {
         // still reads without panicking and the new rate is live.
         tokio::time::sleep(Duration::from_millis(60)).await;
         let backlog_before = limiter.wait_time_nanos();
-        control.set(RateSpec::new(1_000.0), ControlOrigin::Test)
+        control
+            .set(RateSpec::new(1_000.0), ControlOrigin::Test)
             .await
             .unwrap();
         // Read the backlog through the new (unit may differ) —

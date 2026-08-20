@@ -65,17 +65,14 @@ pub fn build_workload_params_kernel(
     params: &HashMap<String, String>,
 ) -> Result<PolydatKernel, String> {
     let source = render_workload_params_source(params);
-    compile_polydat(&source).map_err(|e| format!(
-        "workload params kernel: {e}\n--- generated source ---\n{source}"
-    ))
+    compile_polydat(&source)
+        .map_err(|e| format!("workload params kernel: {e}\n--- generated source ---\n{source}"))
 }
 
 /// Render the Polydat source for the workload-params kernel. Public
 /// so tests and diagnostics can inspect the synthesized module
 /// without compiling it.
-pub fn render_workload_params_source(
-    params: &HashMap<String, String>,
-) -> String {
+pub fn render_workload_params_source(params: &HashMap<String, String>) -> String {
     if params.is_empty() {
         return "const __empty := 0\n".to_string();
     }
@@ -116,14 +113,10 @@ pub fn render_workload_params_source(
 ///   wrap as Polydat string literal, escaping `\` and `"`
 fn format_value_as_polydat_literal(value: &str) -> String {
     let trimmed = value.trim();
-    if trimmed.parse::<u64>().is_ok()
-        || trimmed.parse::<f64>().is_ok()
-    {
+    if trimmed.parse::<u64>().is_ok() || trimmed.parse::<f64>().is_ok() {
         return trimmed.to_string();
     }
-    if is_polydat_quoted_string(trimmed)
-        || is_polydat_array_literal(trimmed)
-    {
+    if is_polydat_quoted_string(trimmed) || is_polydat_array_literal(trimmed) {
         return trimmed.to_string();
     }
     // Bare `true` / `false` AND anything else fall through to
@@ -139,29 +132,46 @@ fn format_value_as_polydat_literal(value: &str) -> String {
 }
 
 fn is_polydat_quoted_string(s: &str) -> bool {
-    if s.len() < 2 { return false; }
-    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    if s.len() < 2 {
+        return false;
+    }
+    if !s.starts_with('"') || !s.ends_with('"') {
+        return false;
+    }
     let bytes = s.as_bytes();
     let mut i = 1;
     let last = bytes.len() - 1;
     while i < last {
-        if bytes[i] == b'\\' { i += 2; continue; }
-        if bytes[i] == b'"' { return false; }
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return false;
+        }
         i += 1;
     }
     true
 }
 
 fn is_polydat_array_literal(s: &str) -> bool {
-    if !s.starts_with('[') || !s.ends_with(']') { return false; }
+    if !s.starts_with('[') || !s.ends_with(']') {
+        return false;
+    }
     let mut depth: i32 = 0;
     let mut in_string = false;
     let mut escape = false;
     for c in s.chars() {
-        if escape { escape = false; continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
         if in_string {
-            if c == '\\' { escape = true; }
-            else if c == '"' { in_string = false; }
+            if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
             continue;
         }
         match c {
@@ -169,7 +179,9 @@ fn is_polydat_array_literal(s: &str) -> bool {
             '[' => depth += 1,
             ']' => {
                 depth -= 1;
-                if depth < 0 { return false; }
+                if depth < 0 {
+                    return false;
+                }
             }
             _ => {}
         }
@@ -182,7 +194,10 @@ mod tests {
     use super::*;
 
     fn h(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -222,10 +237,13 @@ mod tests {
         let kernel = build_workload_params_kernel(&h(&[
             ("enable_hierarchy", "false"),
             ("debug_mode", "true"),
-        ])).unwrap();
-        let eh = kernel.lookup("enable_hierarchy")
+        ]))
+        .unwrap();
+        let eh = kernel
+            .lookup("enable_hierarchy")
             .expect("enable_hierarchy must resolve");
-        let dm = kernel.lookup("debug_mode")
+        let dm = kernel
+            .lookup("debug_mode")
             .expect("debug_mode must resolve");
         assert_eq!(eh.to_display_string(), "false");
         assert_eq!(dm.to_display_string(), "true");
@@ -237,17 +255,19 @@ mod tests {
             ("replication", r#"{'class': 'SimpleStrategy'}"#),
             ("with_quote", r#"a"b"#),
         ]));
-        assert!(src.contains(r#"const replication := "{'class': 'SimpleStrategy'}""#),
-            "unexpected: {src}");
-        assert!(src.contains(r#"const with_quote := "a\"b""#),
-            "embedded double-quote not escaped: {src}");
+        assert!(
+            src.contains(r#"const replication := "{'class': 'SimpleStrategy'}""#),
+            "unexpected: {src}"
+        );
+        assert!(
+            src.contains(r#"const with_quote := "a\"b""#),
+            "embedded double-quote not escaped: {src}"
+        );
     }
 
     #[test]
     fn deterministic_ordering_across_runs() {
-        let p = h(&[
-            ("z_last", "1"), ("a_first", "2"), ("m_middle", "3"),
-        ]);
+        let p = h(&[("z_last", "1"), ("a_first", "2"), ("m_middle", "3")]);
         let s1 = render_workload_params_source(&p);
         let s2 = render_workload_params_source(&p);
         assert_eq!(s1, s2);
@@ -260,15 +280,11 @@ mod tests {
 
     #[test]
     fn compiles_to_valid_kernel() {
-        let kernel = build_workload_params_kernel(&h(&[
-            ("dataset", "sift1m"),
-            ("count", "100"),
-        ])).unwrap();
+        let kernel =
+            build_workload_params_kernel(&h(&[("dataset", "sift1m"), ("count", "100")])).unwrap();
         // Both params are reachable as Polydat constants.
-        let dataset = kernel.lookup("dataset")
-            .expect("dataset must resolve");
-        let count = kernel.lookup("count")
-            .expect("count must resolve");
+        let dataset = kernel.lookup("dataset").expect("dataset must resolve");
+        let count = kernel.lookup("count").expect("count must resolve");
         assert_eq!(dataset.to_display_string(), "sift1m");
         assert_eq!(count.as_u64(), 100);
     }
@@ -291,10 +307,7 @@ mod tests {
         // emits boolean-looking strings as quoted string
         // literals; downstream consumers that need a real
         // boolean comparison can `str_eq(x, "true")`.
-        let src = render_workload_params_source(&h(&[
-            ("flag_t", "true"),
-            ("flag_f", "false"),
-        ]));
+        let src = render_workload_params_source(&h(&[("flag_t", "true"), ("flag_f", "false")]));
         assert!(src.contains("const flag_f := \"false\"\n"));
         assert!(src.contains("const flag_t := \"true\"\n"));
     }

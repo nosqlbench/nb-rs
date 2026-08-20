@@ -8,9 +8,9 @@
 //! body fields become Polydat bind points. Query parameters become part
 //! of the URI template.
 
-use std::collections::HashMap;
-use nbrs_workload::model::ParsedOp;
 use crate::spec::{ApiOperation, FieldInfo};
+use nbrs_workload::model::ParsedOp;
+use std::collections::HashMap;
 
 /// Generate ParsedOps from API operations.
 ///
@@ -21,10 +21,7 @@ use crate::spec::{ApiOperation, FieldInfo};
 /// - `content_type`: from the request body spec
 ///
 /// Polydat bindings are auto-generated for path parameters and body fields.
-pub fn generate_ops(
-    ops: &[ApiOperation],
-    base_url: &str,
-) -> (Vec<ParsedOp>, String) {
+pub fn generate_ops(ops: &[ApiOperation], base_url: &str) -> (Vec<ParsedOp>, String) {
     let mut parsed_ops = Vec::new();
     let mut binding_lines = Vec::new();
     let mut seen_bindings: HashMap<String, bool> = HashMap::new();
@@ -35,14 +32,19 @@ pub fn generate_ops(
         let mut op_fields: HashMap<String, serde_json::Value> = HashMap::new();
 
         // Method
-        op_fields.insert("method".into(), serde_json::Value::String(api_op.method.clone()));
+        op_fields.insert(
+            "method".into(),
+            serde_json::Value::String(api_op.method.clone()),
+        );
 
         // URI: base_url + path with bind points
         let mut uri = format!("{base}{}", api_op.path);
 
         // Add query parameters as bind points in the query string
         if !api_op.query_params.is_empty() {
-            let qp: Vec<String> = api_op.query_params.iter()
+            let qp: Vec<String> = api_op
+                .query_params
+                .iter()
                 .map(|p| format!("{}={{{}}}", p.name, p.name))
                 .collect();
             uri = format!("{uri}?{}", qp.join("&"));
@@ -90,11 +92,17 @@ pub fn generate_ops(
         let parsed = ParsedOp {
             traverse: None,
             name: api_op.operation_id.clone(),
-            description: if api_op.summary.is_empty() { None } else { Some(api_op.summary.clone()) },
+            description: if api_op.summary.is_empty() {
+                None
+            } else {
+                Some(api_op.summary.clone())
+            },
             op: op_fields,
             bindings: Default::default(),
             params: HashMap::new(),
-            tags: api_op.tags.iter()
+            tags: api_op
+                .tags
+                .iter()
                 .map(|t| (t.clone(), "true".into()))
                 .collect(),
             condition: None,
@@ -135,7 +143,8 @@ fn polydat_binding_for_param(name: &str, schema_type: &str) -> String {
 
 /// Generate a JSON body template with bind points for each field.
 fn generate_body_template(fields: &[FieldInfo]) -> String {
-    let pairs: Vec<String> = fields.iter()
+    let pairs: Vec<String> = fields
+        .iter()
         .map(|f| {
             let bind_name = f.name.replace('.', "_");
             match f.schema_type.as_str() {
@@ -163,7 +172,11 @@ mod tests {
             path: "/users/{userId}".into(),
             operation_id: "getUser".into(),
             summary: "Get a user".into(),
-            path_params: vec![ParamInfo { name: "userId".into(), schema_type: "integer".into(), required: true }],
+            path_params: vec![ParamInfo {
+                name: "userId".into(),
+                schema_type: "integer".into(),
+                required: true,
+            }],
             query_params: vec![],
             request_body: None,
             tags: vec![],
@@ -190,8 +203,16 @@ mod tests {
             request_body: Some(BodyInfo {
                 content_type: "application/json".into(),
                 fields: vec![
-                    FieldInfo { name: "name".into(), schema_type: "string".into(), required: true },
-                    FieldInfo { name: "age".into(), schema_type: "integer".into(), required: false },
+                    FieldInfo {
+                        name: "name".into(),
+                        schema_type: "string".into(),
+                        required: true,
+                    },
+                    FieldInfo {
+                        name: "age".into(),
+                        schema_type: "integer".into(),
+                        required: false,
+                    },
                 ],
             }),
             tags: vec![],

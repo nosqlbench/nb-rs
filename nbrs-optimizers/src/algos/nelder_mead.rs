@@ -22,7 +22,9 @@ pub struct NelderMead {
 
 impl NelderMead {
     pub fn from_params(p: &OptimizerParams) -> Self {
-        Self { tol: p.get("tol", 1e-8) }
+        Self {
+            tol: p.get("tol", 1e-8),
+        }
     }
 }
 
@@ -31,7 +33,12 @@ impl Optimizer for NelderMead {
         "nelder_mead"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         if d == 0 {
@@ -79,15 +86,21 @@ impl Optimizer for NelderMead {
             }
 
             // Reflection.
-            let xr: Vec<f64> =
-                (0..d).map(|j| centroid[j] + ALPHA * (centroid[j] - verts[worst][j])).collect();
+            let xr: Vec<f64> = (0..d)
+                .map(|j| centroid[j] + ALPHA * (centroid[j] - verts[worst][j]))
+                .collect();
             let gr = -ev.at(&xr);
 
             if gr < g[best] {
                 // Expansion (reflection was the new best).
-                let xe: Vec<f64> =
-                    (0..d).map(|j| centroid[j] + GAMMA * (xr[j] - centroid[j])).collect();
-                let ge = if ev.budget_left() { -ev.at(&xe) } else { gr + 1.0 };
+                let xe: Vec<f64> = (0..d)
+                    .map(|j| centroid[j] + GAMMA * (xr[j] - centroid[j]))
+                    .collect();
+                let ge = if ev.budget_left() {
+                    -ev.at(&xe)
+                } else {
+                    gr + 1.0
+                };
                 if ge < gr {
                     verts[worst] = xe;
                     g[worst] = ge;
@@ -118,7 +131,11 @@ impl Optimizer for NelderMead {
                         false,
                     )
                 };
-                let gc = if ev.budget_left() { -ev.at(&xc) } else { f64::INFINITY };
+                let gc = if ev.budget_left() {
+                    -ev.at(&xc)
+                } else {
+                    f64::INFINITY
+                };
                 let accept = if outside { gc <= gr } else { gc < g[worst] };
                 if accept {
                     verts[worst] = xc;

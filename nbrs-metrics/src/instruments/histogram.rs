@@ -8,14 +8,13 @@
 //! atomically, so the hot path (`record()`) and the snapshot path
 //! don't contend.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use hdrhistogram::Histogram as HdrHistogram;
 use crate::labels::Labels;
+use hdrhistogram::Histogram as HdrHistogram;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Default significant digits for HDR Histograms (0.1% error).
 pub const DEFAULT_HDR_SIGDIGS: u8 = 3;
-
 
 /// Component property name read by [`Histogram::with_sigdigs_from`]
 /// and [`crate::instruments::timer::Timer::with_sigdigs_from`] to
@@ -56,7 +55,7 @@ impl Histogram {
             labels,
             current: Mutex::new(
                 HdrHistogram::new_with_bounds(1, MAX_VALUE, sigdigs)
-                    .expect("failed to create HDR histogram")
+                    .expect("failed to create HDR histogram"),
             ),
             total: AtomicU64::new(0),
         }
@@ -66,10 +65,7 @@ impl Histogram {
     /// the configured [`HDR_SIGDIGS_PROP`] property. Falls back
     /// to [`DEFAULT_HDR_SIGDIGS`] if no ancestor declares it.
     /// SRD 40 §"HDR significant digits — subtree-scoped setting".
-    pub fn with_sigdigs_from(
-        labels: Labels,
-        component: &crate::component::Component,
-    ) -> Self {
+    pub fn with_sigdigs_from(labels: Labels, component: &crate::component::Component) -> Self {
         let sigdigs = resolve_hdr_sigdigs(component);
         Self::with_sigdigs(labels, sigdigs)
     }
@@ -80,14 +76,14 @@ impl Histogram {
 /// [`DEFAULT_HDR_SIGDIGS`] if no ancestor declares
 /// [`HDR_SIGDIGS_PROP`] or the value is unparseable.
 pub fn resolve_hdr_sigdigs(component: &crate::component::Component) -> u8 {
-    component.get_prop(HDR_SIGDIGS_PROP)
+    component
+        .get_prop(HDR_SIGDIGS_PROP)
         .and_then(|s| s.parse::<u8>().ok())
         .filter(|&n| (1..=5).contains(&n))
         .unwrap_or(DEFAULT_HDR_SIGDIGS)
 }
 
 impl Histogram {
-
     /// Record a value (typically nanoseconds).
     pub fn record(&self, value: u64) {
         // Count the observation in the lifetime total regardless of the
@@ -95,10 +91,11 @@ impl Histogram {
         // observation) — keeps `total()` the authoritative cumulative.
         self.total.fetch_add(1, Ordering::Relaxed);
         let value = value.min(MAX_VALUE);
-        let mut h = self.current.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut h = self.current.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = h.record(value) {
-            crate::diag::warn(&format!("warning: histogram record failed for value {value}: {e}"));
+            crate::diag::warn(&format!(
+                "warning: histogram record failed for value {value}: {e}"
+            ));
         }
     }
 
@@ -114,8 +111,7 @@ impl Histogram {
     /// The returned histogram contains all data since the last
     /// `snapshot()` call. The internal histogram is reset.
     pub fn snapshot(&self) -> HdrHistogram<u64> {
-        let mut current = self.current.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = current.clone();
         current.reset();
         snapshot
@@ -131,7 +127,8 @@ impl Histogram {
     /// precision over a 1-hour range). Acceptable for occasional
     /// calls — not intended for the per-sample hot path.
     pub fn peek_snapshot(&self) -> HdrHistogram<u64> {
-        self.current.lock()
+        self.current
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
@@ -159,10 +156,7 @@ mod tests {
     fn resolve_hdr_sigdigs_reads_root_property() {
         let mut props = std::collections::HashMap::new();
         props.insert(HDR_SIGDIGS_PROP.to_string(), "4".to_string());
-        let comp = crate::component::Component::root(
-            crate::labels::Labels::empty(),
-            props,
-        );
+        let comp = crate::component::Component::root(crate::labels::Labels::empty(), props);
         let guard = comp.read().unwrap();
         assert_eq!(resolve_hdr_sigdigs(&guard), 4);
     }
@@ -194,29 +188,23 @@ mod tests {
     fn resolve_hdr_sigdigs_clamps_invalid_value_to_default() {
         let mut props = std::collections::HashMap::new();
         props.insert(HDR_SIGDIGS_PROP.to_string(), "99".to_string());
-        let comp = crate::component::Component::root(
-            crate::labels::Labels::empty(),
-            props,
-        );
+        let comp = crate::component::Component::root(crate::labels::Labels::empty(), props);
         let guard = comp.read().unwrap();
-        assert_eq!(resolve_hdr_sigdigs(&guard), DEFAULT_HDR_SIGDIGS,
-            "invalid sigdigs values fall back to the default");
+        assert_eq!(
+            resolve_hdr_sigdigs(&guard),
+            DEFAULT_HDR_SIGDIGS,
+            "invalid sigdigs values fall back to the default"
+        );
     }
 
     #[test]
     fn histogram_with_sigdigs_from_uses_walk_up_value() {
         let mut props = std::collections::HashMap::new();
         props.insert(HDR_SIGDIGS_PROP.to_string(), "2".to_string());
-        let comp = crate::component::Component::root(
-            crate::labels::Labels::empty(),
-            props,
-        );
+        let comp = crate::component::Component::root(crate::labels::Labels::empty(), props);
         let guard = comp.read().unwrap();
         // Constructs without panic at the resolved precision.
-        let _h = Histogram::with_sigdigs_from(
-            Labels::of("name", "latency"),
-            &guard,
-        );
+        let _h = Histogram::with_sigdigs_from(Labels::of("name", "latency"), &guard);
     }
 
     #[test]

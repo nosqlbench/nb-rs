@@ -63,7 +63,11 @@ pub fn copy_command(args: &[String]) -> Result<(), String> {
     );
     std::fs::write(&dest, format!("{provenance}{}", bundled.source))
         .map_err(|e| format!("write {}: {e}", dest.display()))?;
-    println!("copied bundled workload `{}` to {}", bundled.name, dest.display());
+    println!(
+        "copied bundled workload `{}` to {}",
+        bundled.name,
+        dest.display()
+    );
     Ok(())
 }
 
@@ -91,8 +95,7 @@ pub fn spec() -> crate::cli_spec::Command {
             name: "name",
             help: "Bundled workload to copy (catalog name).",
             kind: crate::cli_spec::PositionalKind::One,
-            value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::catalog_name_provider),
+            value: crate::cli_spec::ValueProvider::Custom(crate::completion::catalog_name_provider),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

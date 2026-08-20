@@ -67,10 +67,10 @@
 //! See `docs/SRD/notes/19_rate_limiter.md` for the design brief and
 //! the coordinated-omission rationale.
 
-mod spec;
-mod limiter;
 mod applier;
+mod limiter;
+mod spec;
 
-pub use spec::{RateSpec, TimeUnit, Verb};
-pub use limiter::RateLimiter;
 pub use applier::RateLimiterApplier;
+pub use limiter::RateLimiter;
+pub use spec::{RateSpec, TimeUnit, Verb};

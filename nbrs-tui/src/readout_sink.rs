@@ -49,11 +49,15 @@ pub struct TuiReadoutSink {
 
 impl TuiReadoutSink {
     pub fn new() -> Self {
-        Self { inner: ro::StringSink::with_capacity(192) }
+        Self {
+            inner: ro::StringSink::with_capacity(192),
+        }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self { inner: ro::StringSink::with_capacity(cap) }
+        Self {
+            inner: ro::StringSink::with_capacity(cap),
+        }
     }
 
     /// Consume the sink, returning the rendered output as
@@ -64,11 +68,12 @@ impl TuiReadoutSink {
         let raw = self.inner.take();
         parse_ansi_to_lines(&raw)
     }
-
 }
 
 impl Default for TuiReadoutSink {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ro::ReadoutSink for TuiReadoutSink {
@@ -247,8 +252,8 @@ fn palette_256_to_color(n: u8) -> Color {
     // Indices 0-15 are the 16 base colors; 16-231 are the
     // 6×6×6 RGB cube; 232-255 are grayscale.
     match n {
-        0..=7   => standard_fg(n as u16),
-        8..=15  => bright_fg(n as u16 - 8),
+        0..=7 => standard_fg(n as u16),
+        8..=15 => bright_fg(n as u16 - 8),
         16..=231 => {
             let v = n - 16;
             let r = ((v / 36) % 6) * 51;
@@ -268,7 +273,9 @@ mod tests {
     use super::*;
     use nbrs_runtime::readouts::ReadoutSink;
 
-    fn span_str<'a>(span: &'a Span<'static>) -> &'a str { &span.content }
+    fn span_str<'a>(span: &'a Span<'static>) -> &'a str {
+        &span.content
+    }
 
     #[test]
     fn plain_text_yields_single_default_styled_span() {
@@ -316,8 +323,18 @@ mod tests {
         sink.literal("\x1b[1mbold\x1b[22m normal");
         let lines = sink.take();
         assert_eq!(lines[0].spans.len(), 2);
-        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
-        assert!(!lines[0].spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert!(
+            !lines[0].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]
@@ -326,9 +343,19 @@ mod tests {
         sink.literal("\x1b[3mit\x1b[0m\x1b[2mdim\x1b[0m\x1b[4mun\x1b[0m");
         let lines = sink.take();
         assert_eq!(lines[0].spans.len(), 3);
-        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::ITALIC));
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
         assert!(lines[0].spans[1].style.add_modifier.contains(Modifier::DIM));
-        assert!(lines[0].spans[2].style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(
+            lines[0].spans[2]
+                .style
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
     }
 
     #[test]
@@ -386,18 +413,42 @@ mod tests {
         // styled lines.
         struct Ctx;
         impl ro::ReadoutContext for Ctx {
-            fn subject_name(&self) -> &str { "setup" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { Some((1, 2)) }
-            fn cycles_completed(&self) -> u64 { 3 }
-            fn cycles_total(&self) -> u64 { 3 }
-            fn ops_ok(&self) -> u64 { 3 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.01 }
-            fn consumed(&self) -> u64 { 3 }
-            fn use_color(&self) -> bool { true }
-            fn event(&self) -> nbrs_runtime::lifecycle::EventType { nbrs_runtime::lifecycle::EventType::PhaseEnd }
+            fn subject_name(&self) -> &str {
+                "setup"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                Some((1, 2))
+            }
+            fn cycles_completed(&self) -> u64 {
+                3
+            }
+            fn cycles_total(&self) -> u64 {
+                3
+            }
+            fn ops_ok(&self) -> u64 {
+                3
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.01
+            }
+            fn consumed(&self) -> u64 {
+                3
+            }
+            fn use_color(&self) -> bool {
+                true
+            }
+            fn event(&self) -> nbrs_runtime::lifecycle::EventType {
+                nbrs_runtime::lifecycle::EventType::PhaseEnd
+            }
         }
         let mut sink = TuiReadoutSink::new();
         let phase_outcome = ro::Registry::lookup("phase_outcome").unwrap();
@@ -408,9 +459,10 @@ mod tests {
         // The phase_outcome renderer emits a green ✓ — confirm
         // some span on the first line carries Color::Green
         // (or LightGreen depending on the bright/dim variant).
-        let has_green = lines[0].spans.iter().any(|s| {
-            matches!(s.style.fg, Some(Color::Green) | Some(Color::LightGreen))
-        });
+        let has_green = lines[0]
+            .spans
+            .iter()
+            .any(|s| matches!(s.style.fg, Some(Color::Green) | Some(Color::LightGreen)));
         assert!(has_green, "expected green ✓ span: {:?}", lines[0].spans);
     }
 }

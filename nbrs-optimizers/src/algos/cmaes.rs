@@ -40,7 +40,12 @@ impl Optimizer for Cmaes {
         "cmaes"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         if d == 0 {
@@ -73,7 +78,8 @@ impl Optimizer for Cmaes {
         let damps = 1.0 + 2.0 * (((mueff - 1.0) / (dn + 1.0)).sqrt() - 1.0).max(0.0) + cs;
         let cc = (4.0 + mueff / dn) / (dn + 4.0 + 2.0 * mueff / dn);
         let mut c1 = 2.0 / ((dn + 1.3).powi(2) + mueff);
-        let mut cmu = (2.0 * (mueff - 2.0 + 1.0 / mueff) / ((dn + 2.0).powi(2) + mueff)).min(1.0 - c1);
+        let mut cmu =
+            (2.0 * (mueff - 2.0 + 1.0 / mueff) / ((dn + 2.0).powi(2) + mueff)).min(1.0 - c1);
         let boost = (dn + 2.0) / 3.0;
         c1 = (c1 * boost).min(1.0);
         cmu = (cmu * boost).min(1.0 - c1);

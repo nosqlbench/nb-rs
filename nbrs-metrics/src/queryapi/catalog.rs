@@ -52,7 +52,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{Matcher, MatchOp as MatcherOp, QueryError as DataSourceError};
+use super::{MatchOp as MatcherOp, Matcher, QueryError as DataSourceError};
 
 /// One metric family's OpenMetrics metadata. Identifies the
 /// family by name and surfaces its type / unit / help.
@@ -138,14 +138,14 @@ impl MetricType {
     /// text format).
     pub fn as_str(&self) -> &'static str {
         match self {
-            MetricType::Counter        => "counter",
-            MetricType::Gauge          => "gauge",
-            MetricType::Histogram      => "histogram",
+            MetricType::Counter => "counter",
+            MetricType::Gauge => "gauge",
+            MetricType::Histogram => "histogram",
             MetricType::GaugeHistogram => "gaugehistogram",
-            MetricType::Summary        => "summary",
-            MetricType::Info           => "info",
-            MetricType::StateSet       => "stateset",
-            MetricType::Unknown        => "unknown",
+            MetricType::Summary => "summary",
+            MetricType::Info => "info",
+            MetricType::StateSet => "stateset",
+            MetricType::Unknown => "unknown",
         }
     }
 
@@ -156,14 +156,14 @@ impl MetricType {
     /// generic series) instead of disappearing.
     pub fn parse(s: &str) -> MetricType {
         match s.trim().to_ascii_lowercase().as_str() {
-            "counter"        => MetricType::Counter,
-            "gauge"          => MetricType::Gauge,
-            "histogram"      => MetricType::Histogram,
+            "counter" => MetricType::Counter,
+            "gauge" => MetricType::Gauge,
+            "histogram" => MetricType::Histogram,
             "gaugehistogram" => MetricType::GaugeHistogram,
-            "summary"        => MetricType::Summary,
-            "info"           => MetricType::Info,
-            "stateset"       => MetricType::StateSet,
-            _                => MetricType::Unknown,
+            "summary" => MetricType::Summary,
+            "info" => MetricType::Info,
+            "stateset" => MetricType::StateSet,
+            _ => MetricType::Unknown,
         }
     }
 
@@ -176,10 +176,9 @@ impl MetricType {
     /// to expand a family-name suggestion into its OpenMetrics
     /// siblings when the user asks.
     pub fn has_derived_series(&self) -> bool {
-        matches!(self,
-            MetricType::Histogram
-            | MetricType::GaugeHistogram
-            | MetricType::Summary,
+        matches!(
+            self,
+            MetricType::Histogram | MetricType::GaugeHistogram | MetricType::Summary,
         )
     }
 
@@ -258,10 +257,7 @@ pub trait MetricCatalog: Send + Sync {
     ///
     /// Excludes synthetic keys: `__name__` is implicit
     /// (it's the family name) and is never returned.
-    fn label_keys(
-        &self,
-        family_filter: Option<&str>,
-    ) -> Result<Vec<String>, DataSourceError>;
+    fn label_keys(&self, family_filter: Option<&str>) -> Result<Vec<String>, DataSourceError>;
 
     /// Distinct values observed for `key`, optionally
     /// restricted to one metric family. Returns an empty list
@@ -296,8 +292,7 @@ pub trait MetricCatalog: Send + Sync {
     /// reject excessively wide queries with
     /// [`DataSourceError`] — local sqlite tolerates it,
     /// remote backends often don't.
-    fn series(&self, matchers: &[Matcher])
-        -> Result<Vec<LabelSet>, DataSourceError>;
+    fn series(&self, matchers: &[Matcher]) -> Result<Vec<LabelSet>, DataSourceError>;
 
     /// OpenMetrics §4.6.1 exemplars matching `matchers`,
     /// optionally restricted to a `[start_ms, end_ms]`
@@ -449,17 +444,21 @@ impl<C: MetricCatalog + ?Sized + 'static> CachedCatalog<C> {
     /// True if `entry` is still fresh according to all three
     /// invalidation layers. Caller holds the state lock.
     fn is_fresh<T>(&self, entry: &CacheEntry<T>, gen_now: u64) -> bool {
-        if entry.generation != gen_now { return false; }
-        if !self.ttl.is_zero()
-            && entry.filled_at.elapsed() >= self.ttl { return false; }
+        if entry.generation != gen_now {
+            return false;
+        }
+        if !self.ttl.is_zero() && entry.filled_at.elapsed() >= self.ttl {
+            return false;
+        }
         if let Some(f) = &self.mtime_fn
-            && let Some(now_mtime) = f() {
-                match entry.backend_mtime {
-                    Some(prev) if now_mtime > prev => return false,
-                    None => return false,
-                    _ => {}
-                }
+            && let Some(now_mtime) = f()
+        {
+            match entry.backend_mtime {
+                Some(prev) if now_mtime > prev => return false,
+                None => return false,
+                _ => {}
             }
+        }
         true
     }
 
@@ -472,7 +471,9 @@ impl<C: MetricCatalog + ?Sized + 'static> MetricCatalog for CachedCatalog<C> {
     fn metric_families(&self) -> Result<Vec<MetricFamilyMeta>, DataSourceError> {
         let gen_now;
         {
-            let state = self.state.lock()
+            let state = self
+                .state
+                .lock()
                 .map_err(|_| DataSourceError::new("cache poisoned"))?;
             gen_now = state.generation;
             if let Some(entry) = &state.families
@@ -494,14 +495,13 @@ impl<C: MetricCatalog + ?Sized + 'static> MetricCatalog for CachedCatalog<C> {
         Ok(value)
     }
 
-    fn label_keys(
-        &self,
-        family_filter: Option<&str>,
-    ) -> Result<Vec<String>, DataSourceError> {
+    fn label_keys(&self, family_filter: Option<&str>) -> Result<Vec<String>, DataSourceError> {
         let key = family_filter.map(|s| s.to_string());
         let gen_now;
         {
-            let state = self.state.lock()
+            let state = self
+                .state
+                .lock()
                 .map_err(|_| DataSourceError::new("cache poisoned"))?;
             gen_now = state.generation;
             if let Some(entry) = state.label_keys.get(&key)
@@ -531,7 +531,9 @@ impl<C: MetricCatalog + ?Sized + 'static> MetricCatalog for CachedCatalog<C> {
         let cache_key = (key.to_string(), family_filter.map(|s| s.to_string()));
         let gen_now;
         {
-            let state = self.state.lock()
+            let state = self
+                .state
+                .lock()
                 .map_err(|_| DataSourceError::new("cache poisoned"))?;
             gen_now = state.generation;
             if let Some(entry) = state.label_values.get(&cache_key)
@@ -553,14 +555,13 @@ impl<C: MetricCatalog + ?Sized + 'static> MetricCatalog for CachedCatalog<C> {
         Ok(value)
     }
 
-    fn series(
-        &self,
-        matchers: &[Matcher],
-    ) -> Result<Vec<LabelSet>, DataSourceError> {
+    fn series(&self, matchers: &[Matcher]) -> Result<Vec<LabelSet>, DataSourceError> {
         let cache_key = encode_matchers(matchers);
         let gen_now;
         {
-            let state = self.state.lock()
+            let state = self
+                .state
+                .lock()
                 .map_err(|_| DataSourceError::new("cache poisoned"))?;
             gen_now = state.generation;
             if let Some(entry) = state.series.get(&cache_key)
@@ -597,7 +598,9 @@ impl<C: MetricCatalog + ?Sized + 'static> MetricCatalog for CachedCatalog<C> {
         }
         let gen_now;
         {
-            let state = self.state.lock()
+            let state = self
+                .state
+                .lock()
                 .map_err(|_| DataSourceError::new("cache poisoned"))?;
             gen_now = state.generation;
             if let Some(entry) = state.exemplars.get(&cache_key)
@@ -629,8 +632,8 @@ fn encode_matchers(matchers: &[Matcher]) -> String {
     let mut out = String::new();
     for m in sorted {
         let op = match m.op {
-            MatcherOp::Eq      => "=",
-            MatcherOp::Ne      => "!=",
+            MatcherOp::Eq => "=",
+            MatcherOp::Ne => "!=",
             MatcherOp::EqRegex => "=~",
             MatcherOp::NeRegex => "!~",
         };
@@ -684,13 +687,11 @@ mod tests {
                     (None, vec!["phase".into(), "scenario".into()]),
                     (Some("ops_total".into()), vec!["phase".into()]),
                 ],
-                values: vec![
-                    ("phase".into(), None, vec!["setup".into(), "run".into()]),
-                ],
-                series: vec![
-                    vec![("__name__".into(), "ops_total".into()),
-                         ("phase".into(), "setup".into())],
-                ],
+                values: vec![("phase".into(), None, vec!["setup".into(), "run".into()])],
+                series: vec![vec![
+                    ("__name__".into(), "ops_total".into()),
+                    ("phase".into(), "setup".into()),
+                ]],
                 family_calls: AtomicUsize::new(0),
                 key_calls: AtomicUsize::new(0),
                 value_calls: AtomicUsize::new(0),
@@ -704,9 +705,7 @@ mod tests {
             self.family_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.families.clone())
         }
-        fn label_keys(&self, filter: Option<&str>)
-            -> Result<Vec<String>, DataSourceError>
-        {
+        fn label_keys(&self, filter: Option<&str>) -> Result<Vec<String>, DataSourceError> {
             self.key_calls.fetch_add(1, Ordering::SeqCst);
             for (f, v) in &self.keys {
                 if f.as_deref() == filter {
@@ -715,9 +714,11 @@ mod tests {
             }
             Ok(Vec::new())
         }
-        fn label_values(&self, key: &str, filter: Option<&str>)
-            -> Result<Vec<String>, DataSourceError>
-        {
+        fn label_values(
+            &self,
+            key: &str,
+            filter: Option<&str>,
+        ) -> Result<Vec<String>, DataSourceError> {
             self.value_calls.fetch_add(1, Ordering::SeqCst);
             for (k, f, v) in &self.values {
                 if k == key && f.as_deref() == filter {
@@ -726,9 +727,7 @@ mod tests {
             }
             Ok(Vec::new())
         }
-        fn series(&self, _matchers: &[Matcher])
-            -> Result<Vec<LabelSet>, DataSourceError>
-        {
+        fn series(&self, _matchers: &[Matcher]) -> Result<Vec<LabelSet>, DataSourceError> {
             self.series_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.series.clone())
         }
@@ -737,9 +736,14 @@ mod tests {
     #[test]
     fn metric_type_round_trips_via_str() {
         for ty in [
-            MetricType::Counter, MetricType::Gauge, MetricType::Histogram,
-            MetricType::GaugeHistogram, MetricType::Summary, MetricType::Info,
-            MetricType::StateSet, MetricType::Unknown,
+            MetricType::Counter,
+            MetricType::Gauge,
+            MetricType::Histogram,
+            MetricType::GaugeHistogram,
+            MetricType::Summary,
+            MetricType::Info,
+            MetricType::StateSet,
+            MetricType::Unknown,
         ] {
             assert_eq!(MetricType::parse(ty.as_str()), ty);
         }
@@ -777,8 +781,11 @@ mod tests {
         let _ = cache.metric_families().unwrap();
         let _ = cache.metric_families().unwrap();
         let _ = cache.metric_families().unwrap();
-        assert_eq!(inner.family_calls.load(Ordering::SeqCst), 1,
-            "cache should have served repeated calls");
+        assert_eq!(
+            inner.family_calls.load(Ordering::SeqCst),
+            1,
+            "cache should have served repeated calls"
+        );
     }
 
     #[test]
@@ -788,8 +795,11 @@ mod tests {
         let _ = cache.metric_families().unwrap();
         cache.invalidate();
         let _ = cache.metric_families().unwrap();
-        assert_eq!(inner.family_calls.load(Ordering::SeqCst), 2,
-            "invalidate should have forced a refetch");
+        assert_eq!(
+            inner.family_calls.load(Ordering::SeqCst),
+            2,
+            "invalidate should have forced a refetch"
+        );
     }
 
     #[test]
@@ -801,8 +811,11 @@ mod tests {
         let cache = CachedCatalog::new(inner.clone()).with_ttl(Duration::ZERO);
         let _ = cache.metric_families().unwrap();
         let _ = cache.metric_families().unwrap();
-        assert_eq!(inner.family_calls.load(Ordering::SeqCst), 1,
-            "TTL=0 alone still caches via generation");
+        assert_eq!(
+            inner.family_calls.load(Ordering::SeqCst),
+            1,
+            "TTL=0 alone still caches via generation"
+        );
     }
 
     #[test]
@@ -813,8 +826,11 @@ mod tests {
         let _ = cache.label_keys(Some("ops_total")).unwrap();
         let _ = cache.label_keys(None).unwrap();
         let _ = cache.label_keys(Some("ops_total")).unwrap();
-        assert_eq!(inner.key_calls.load(Ordering::SeqCst), 2,
-            "different family filters should be cached separately");
+        assert_eq!(
+            inner.key_calls.load(Ordering::SeqCst),
+            2,
+            "different family filters should be cached separately"
+        );
     }
 
     #[test]
@@ -832,17 +848,36 @@ mod tests {
         let inner = Arc::new(MockCatalog::new());
         let cache = CachedCatalog::new(inner.clone());
         let m1 = vec![
-            Matcher { label: "a".into(), op: MatcherOp::Eq, value: "1".into() },
-            Matcher { label: "b".into(), op: MatcherOp::Eq, value: "2".into() },
+            Matcher {
+                label: "a".into(),
+                op: MatcherOp::Eq,
+                value: "1".into(),
+            },
+            Matcher {
+                label: "b".into(),
+                op: MatcherOp::Eq,
+                value: "2".into(),
+            },
         ];
         let m2 = vec![
-            Matcher { label: "b".into(), op: MatcherOp::Eq, value: "2".into() },
-            Matcher { label: "a".into(), op: MatcherOp::Eq, value: "1".into() },
+            Matcher {
+                label: "b".into(),
+                op: MatcherOp::Eq,
+                value: "2".into(),
+            },
+            Matcher {
+                label: "a".into(),
+                op: MatcherOp::Eq,
+                value: "1".into(),
+            },
         ];
         let _ = cache.series(&m1).unwrap();
         let _ = cache.series(&m2).unwrap();
-        assert_eq!(inner.series_calls.load(Ordering::SeqCst), 1,
-            "matcher-order shouldn't fragment the cache");
+        assert_eq!(
+            inner.series_calls.load(Ordering::SeqCst),
+            1,
+            "matcher-order shouldn't fragment the cache"
+        );
     }
 
     #[test]
@@ -859,19 +894,38 @@ mod tests {
         // Advance the mtime — next call should refetch.
         *mtime.lock().unwrap() += Duration::from_millis(1);
         let _ = cache.metric_families().unwrap();
-        assert_eq!(inner.family_calls.load(Ordering::SeqCst), 2,
-            "advanced mtime should have invalidated the cache");
+        assert_eq!(
+            inner.family_calls.load(Ordering::SeqCst),
+            2,
+            "advanced mtime should have invalidated the cache"
+        );
     }
 
     #[test]
     fn encode_matchers_sorts_by_label() {
         let m1 = vec![
-            Matcher { label: "a".into(), op: MatcherOp::Eq, value: "1".into() },
-            Matcher { label: "b".into(), op: MatcherOp::EqRegex, value: ".*".into() },
+            Matcher {
+                label: "a".into(),
+                op: MatcherOp::Eq,
+                value: "1".into(),
+            },
+            Matcher {
+                label: "b".into(),
+                op: MatcherOp::EqRegex,
+                value: ".*".into(),
+            },
         ];
         let m2 = vec![
-            Matcher { label: "b".into(), op: MatcherOp::EqRegex, value: ".*".into() },
-            Matcher { label: "a".into(), op: MatcherOp::Eq, value: "1".into() },
+            Matcher {
+                label: "b".into(),
+                op: MatcherOp::EqRegex,
+                value: ".*".into(),
+            },
+            Matcher {
+                label: "a".into(),
+                op: MatcherOp::Eq,
+                value: "1".into(),
+            },
         ];
         assert_eq!(encode_matchers(&m1), encode_matchers(&m2));
     }

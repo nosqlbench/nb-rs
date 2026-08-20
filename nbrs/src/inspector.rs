@@ -46,8 +46,10 @@ pub fn inspector_command(args: &[String]) {
     // shows connection errors. `phases` is a cheap read-only
     // query every server answers.
     if let Err(e) = query(&target, "phases") {
-        eprintln!("nbrs attach: cannot reach inspector at {}: {e}",
-            target.display());
+        eprintln!(
+            "nbrs attach: cannot reach inspector at {}: {e}",
+            target.display()
+        );
         eprintln!();
         eprintln!("The socket exists but no nbrs is listening on it");
         eprintln!("(stale file from a previous run, or the server died");
@@ -68,8 +70,12 @@ pub fn inspector_command(args: &[String]) {
             match query(&target, cmd) {
                 Ok(resp) => {
                     print!("{resp}");
-                    if !resp.ends_with('\n') { println!(); }
-                    if resp.starts_with("ERR ") { any_err = true; }
+                    if !resp.ends_with('\n') {
+                        println!();
+                    }
+                    if resp.starts_with("ERR ") {
+                        any_err = true;
+                    }
                 }
                 Err(e) => {
                     eprintln!("inspector: {cmd}: {e}");
@@ -112,10 +118,16 @@ fn run_line_repl(socket: &std::path::Path) {
     let mut stdout = io::stdout().lock();
     let prompt_to_tty = std::io::stderr().is_terminal();
     for line in stdin.lock().lines() {
-        let Ok(line) = line else { break; };
+        let Ok(line) = line else {
+            break;
+        };
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        if matches!(trimmed, ":q" | ":quit" | "quit" | "exit") { break; }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if matches!(trimmed, ":q" | ":quit" | "quit" | "exit") {
+            break;
+        }
         match query(socket, trimmed) {
             Ok(resp) => {
                 let _ = stdout.write_all(resp.as_bytes());
@@ -140,7 +152,9 @@ fn run_line_repl(socket: &std::path::Path) {
 }
 
 fn resolve_socket(opts: &InspectorOpts) -> Option<PathBuf> {
-    if let Some(p) = opts.socket.clone() { return Some(p); }
+    if let Some(p) = opts.socket.clone() {
+        return Some(p);
+    }
     let mut sockets = discover_sockets();
     if let Some(pid) = opts.pid_filter {
         sockets.retain(|s| s.pid == pid);
@@ -151,9 +165,10 @@ fn resolve_socket(opts: &InspectorOpts) -> Option<PathBuf> {
             eprintln!();
             eprintln!("nbrs publishes its inspector socket while `nbrs run` is");
             eprintln!("executing a workload. Searched:");
-            eprintln!("  {}/nbrs-<pid>.sock",
-                std::env::var("XDG_RUNTIME_DIR")
-                    .unwrap_or_else(|_| "/tmp".to_string()));
+            eprintln!(
+                "  {}/nbrs-<pid>.sock",
+                std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string())
+            );
             eprintln!();
             eprintln!("Try: --socket /path/to/nbrs-<pid>.sock");
             None
@@ -229,8 +244,7 @@ fn parse_args(args: &[String]) -> InspectorOpts {
 // ── cli_spec entry ─────────────────────────────────────────
 
 use crate::cli_spec::{
-    Arity, Category, Command, Flag, Handler, Level,
-    ParsedCommand, ValueProvider,
+    Arity, Category, Command, Flag, Handler, Level, ParsedCommand, ValueProvider,
 };
 
 /// `nbrs attach` — connect to a running nbrs's OOB
@@ -244,35 +258,47 @@ pub fn spec() -> Command {
         level: Level::Workload,
         flags: vec![
             Flag {
-                long: "--pid", short: None, aliases: &[],
+                long: "--pid",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::pid_provider),
                 help: "Filter by PID (resolves <runtime-dir>/nbrs-<pid>.sock).",
                 repeatable: false,
             },
             Flag {
-                long: "--socket", short: None, aliases: &[],
+                long: "--socket",
+                short: None,
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::socket_path_provider),
                 help: "Direct path to the inspector socket.",
                 repeatable: false,
             },
             Flag {
-                long: "--command", short: Some("-c"), aliases: &[],
+                long: "--command",
+                short: Some("-c"),
+                aliases: &[],
                 arity: Arity::Value,
                 value: ValueProvider::Custom(crate::completion::inspector_command_provider),
                 help: "One-shot command(s); repeat for multiple.",
                 repeatable: true,
             },
             Flag {
-                long: "--no-tui", short: None, aliases: &[],
-                arity: Arity::Bool, value: ValueProvider::None,
+                long: "--no-tui",
+                short: None,
+                aliases: &[],
+                arity: Arity::Bool,
+                value: ValueProvider::None,
                 help: "Disable TUI mode.",
                 repeatable: false,
             },
             Flag {
-                long: "--tui", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::Custom(static_tui),
+                long: "--tui",
+                short: None,
+                aliases: &[],
+                arity: Arity::Value,
+                value: ValueProvider::Custom(static_tui),
                 help: "tui=on|off override.",
                 repeatable: false,
             },
@@ -288,9 +314,11 @@ pub fn spec() -> Command {
 }
 
 fn static_tui(p: &str, _: &[&str]) -> Vec<String> {
-    ["on", "off"].iter()
+    ["on", "off"]
+        .iter()
         .filter(|s| s.starts_with(p))
-        .map(|s| s.to_string()).collect()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn handle(p: ParsedCommand) -> Result<(), String> {
@@ -298,13 +326,21 @@ fn handle(p: ParsedCommand) -> Result<(), String> {
     // can run unchanged. The spec validated the flag set
     // upstream; this just translates ParsedCommand → argv.
     let mut argv: Vec<String> = Vec::new();
-    if let Some(v) = p.flag("--pid")    { argv.push("--pid".into());    argv.push(v.into()); }
-    if let Some(v) = p.flag("--socket") { argv.push("--socket".into()); argv.push(v.into()); }
+    if let Some(v) = p.flag("--pid") {
+        argv.push("--pid".into());
+        argv.push(v.into());
+    }
+    if let Some(v) = p.flag("--socket") {
+        argv.push("--socket".into());
+        argv.push(v.into());
+    }
     for c in p.flag_all("--command") {
         argv.push("--command".into());
         argv.push(c.clone());
     }
-    if p.bool("--no-tui") { argv.push("--no-tui".into()); }
+    if p.bool("--no-tui") {
+        argv.push("--no-tui".into());
+    }
     if let Some(v) = p.flag("--tui") {
         argv.push(format!("tui={v}"));
     }

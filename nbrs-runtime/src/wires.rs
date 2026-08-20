@@ -26,8 +26,8 @@
 
 use std::sync::OnceLock;
 
-use polydat::kernel::PolydatKernel;
 use polydat::ast::{PortType, Value};
+use polydat::kernel::PolydatKernel;
 
 /// Cached `NBRS_DIRTY_DEBUG` flag. Per-cycle env reads cost ~30%
 /// of CPU on single-fiber benches; the OnceLock makes the gate
@@ -174,9 +174,13 @@ impl WireSource for PolydatKernel {
         // Ordering is stable for a given program; consumers should
         // not assume a particular order between the two groups.
         let program = self.program();
-        let outputs: Vec<String> = program.output_names()
-            .iter().map(|s| s.to_string()).collect();
-        let inputs_only: Vec<String> = program.input_names()
+        let outputs: Vec<String> = program
+            .output_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let inputs_only: Vec<String> = program
+            .input_names()
             .iter()
             .filter(|n| !outputs.contains(n))
             .cloned()
@@ -226,7 +230,9 @@ impl<'a> CycleWires<'a> {
     /// keeps the local view consistent with the owning scope's
     /// kernel without external chain composition.
     pub fn new(kernel: &'a mut PolydatKernel) -> Self {
-        Self { kernel: std::sync::Mutex::new(kernel) }
+        Self {
+            kernel: std::sync::Mutex::new(kernel),
+        }
     }
 }
 
@@ -253,7 +259,8 @@ impl<'a> WireSource for CycleWires<'a> {
         }
         let v = k.lookup(name);
         if nbrs_dirty_debug_enabled() && name == "query" {
-            let head = v.as_ref()
+            let head = v
+                .as_ref()
                 .map(|x| x.to_display_string().chars().take(64).collect::<String>())
                 .unwrap_or_else(|| "<none>".into());
             eprintln!("DIRTY: wires.get(query) INPUT/CONST head=\"{head}\"");
@@ -264,9 +271,13 @@ impl<'a> WireSource for CycleWires<'a> {
     fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
         let k = self.kernel.lock().expect("CycleWires mutex poisoned");
         let program = k.program();
-        let outputs: Vec<String> = program.output_names()
-            .iter().map(|s| s.to_string()).collect();
-        let inputs_only: Vec<String> = program.input_names()
+        let outputs: Vec<String> = program
+            .output_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let inputs_only: Vec<String> = program
+            .input_names()
             .iter()
             .filter(|n| !outputs.contains(n))
             .cloned()
@@ -290,21 +301,31 @@ impl<'a> WireSource for CycleWires<'a> {
         match k.set_wire_idx(idx, default) {
             Ok(()) => WriteOutcome::Stored,
             Err(WriteError::UnknownWire { .. }) => WriteOutcome::NoSlot,
-            Err(e @ WriteError::TypeMismatch { .. }) => {
-                WriteOutcome::TypeMismatch { reason: e.to_string() }
-            }
+            Err(e @ WriteError::TypeMismatch { .. }) => WriteOutcome::TypeMismatch {
+                reason: e.to_string(),
+            },
         }
     }
 
     fn write(&self, name: &str, value: Value) -> WriteOutcome {
         use polydat::kernel::{Dataflow, WriteError};
         let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
-        if std::env::var("NBRS_DEBUG_WIRES").map(|v| v == "1").unwrap_or(false) {
-            let cells: Vec<String> = k.shared_cells_in_scope().iter()
-                .map(|c| c.name.clone()).collect();
-            let slot_cell = k.program().find_input(name)
+        if std::env::var("NBRS_DEBUG_WIRES")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            let cells: Vec<String> = k
+                .shared_cells_in_scope()
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
+            let slot_cell = k
+                .program()
+                .find_input(name)
                 .map(|idx| k.state_ref().shared_cell(idx).is_some());
-            eprintln!("WIRES.write name={name} value={value:?} slot_cell_bound={slot_cell:?} cells_in_scope={cells:?}");
+            eprintln!(
+                "WIRES.write name={name} value={value:?} slot_cell_bound={slot_cell:?} cells_in_scope={cells:?}"
+            );
         }
         // Go through the typed Dataflow surface (per S4): the
         // boundary enforces T1+T2 and routes through the auto-
@@ -312,9 +333,9 @@ impl<'a> WireSource for CycleWires<'a> {
         match k.set_wire(name, value) {
             Ok(()) => WriteOutcome::Stored,
             Err(WriteError::UnknownWire { .. }) => WriteOutcome::NoSlot,
-            Err(e @ WriteError::TypeMismatch { .. }) => {
-                WriteOutcome::TypeMismatch { reason: e.to_string() }
-            }
+            Err(e @ WriteError::TypeMismatch { .. }) => WriteOutcome::TypeMismatch {
+                reason: e.to_string(),
+            },
         }
     }
 
@@ -372,10 +393,7 @@ pub static NULL_WIRES: NullWireSource = NullWireSource;
 /// I-1 forbids silent fallback. Callers (typically the cycle
 /// dispatch error path) surface this as a phase-stopping
 /// diagnostic.
-pub fn substitute_via_wires(
-    template: &str,
-    wires: &dyn WireSource,
-) -> Result<String, String> {
+pub fn substitute_via_wires(template: &str, wires: &dyn WireSource) -> Result<String, String> {
     // Mirror the brace-handling algorithm of
     // `nbrs_workload::bindpoints::extract_bind_points`: when `{` is
     // followed by a literal-start character (`'` or `"`), emit the
@@ -423,9 +441,7 @@ pub fn substitute_via_wires(
         // multi-line CQL maps written with the opening brace
         // on its own line (e.g. `compaction = {\n  'class':
         // …\n}`).
-        let next_nonspace = chars[i + 1..].iter()
-            .find(|c| !c.is_whitespace())
-            .copied();
+        let next_nonspace = chars[i + 1..].iter().find(|c| !c.is_whitespace()).copied();
         if matches!(next_nonspace, Some('\'') | Some('"')) {
             out.push('{');
             i += 1;
@@ -437,8 +453,15 @@ pub fn substitute_via_wires(
         let mut j = body_start;
         let mut depth: u32 = 1;
         while j < n {
-            if chars[j] == '{' { depth += 1; }
-            if chars[j] == '}' { depth -= 1; if depth == 0 { break; } }
+            if chars[j] == '{' {
+                depth += 1;
+            }
+            if chars[j] == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
             j += 1;
         }
         if j >= n {
@@ -526,7 +549,8 @@ pub fn substitute_via_wires(
                          wire is bound as a typed parameter alongside a \
                          text template containing placeholders (e.g. CQL \
                          `?`).",
-                        v.port_type()));
+                        v.port_type()
+                    ));
                 }
                 match v.to_display_strict() {
                     Some(s) => out.push_str(&s),
@@ -616,7 +640,9 @@ pub fn resolve_op_fields_via_wires(
             && trimmed.ends_with('}')
             && !trimmed.starts_with("{{")
             && trimmed.len() >= 2
-            && trimmed[1..trimmed.len() - 1].chars().all(|c| c != '{' && c != '}');
+            && trimmed[1..trimmed.len() - 1]
+                .chars()
+                .all(|c| c != '{' && c != '}');
         if pure_token {
             let body = trimmed[1..trimmed.len() - 1].trim();
             let bare = match body.split_once(':') {
@@ -638,8 +664,7 @@ pub fn resolve_op_fields_via_wires(
                 }
             }
         }
-        let rendered = substitute_via_wires(s, wires)
-            .map_err(|e| format!("field '{key}': {e}"))?;
+        let rendered = substitute_via_wires(s, wires).map_err(|e| format!("field '{key}': {e}"))?;
         values.push(Value::Str(rendered.into()));
     }
     Ok(crate::adapter::ResolvedFields::new(names, values))
@@ -657,15 +682,16 @@ pub fn resolve_op_fields_via_wires(
 /// the future op-template construction-time guard (init-time
 /// shape check) to reject equivalent misuse before any cycle runs.
 fn is_binary_natural(t: PortType) -> bool {
-    matches!(t,
+    matches!(
+        t,
         PortType::VecF32
-        | PortType::VecI32
-        | PortType::VecF64
-        | PortType::VecI64
-        | PortType::VecF16
-        | PortType::VecI16
-        | PortType::Handle
-        | PortType::Bytes
+            | PortType::VecI32
+            | PortType::VecF64
+            | PortType::VecI64
+            | PortType::VecF16
+            | PortType::VecI16
+            | PortType::Handle
+            | PortType::Bytes
     )
 }
 
@@ -705,7 +731,8 @@ mod tests {
         let mut k = compile_polydat(
             "input cycle: u64\n\
              folded := 42\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[7]);
         let wires: &dyn WireSource = &k;
         assert_eq!(wires.get("folded").map(|v| v.as_u64()), Some(42));
@@ -723,7 +750,8 @@ mod tests {
         let mut k = compile_polydat(
             "input cycle: u64\n\
              cyc_dep := hash(cycle)\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[7]);
         let wires: &dyn WireSource = &k;
         assert!(wires.get("cyc_dep").is_none());
@@ -741,8 +769,14 @@ mod tests {
         let k = compile_polydat("input cycle: u64\nfolded := 42\n").unwrap();
         let wires: &dyn WireSource = &k;
         let names: Vec<String> = wires.names().collect();
-        assert!(names.iter().any(|n| n == "folded"), "folded should appear: {names:?}");
-        assert!(names.iter().any(|n| n == "cycle"), "cycle should appear: {names:?}");
+        assert!(
+            names.iter().any(|n| n == "folded"),
+            "folded should appear: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "cycle"),
+            "cycle should appear: {names:?}"
+        );
     }
 
     #[test]
@@ -762,7 +796,8 @@ mod tests {
             "input cycle: u64\n\
              folded := 42\n\
              cyc_dep := hash(cycle)\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[7]);
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
@@ -781,19 +816,28 @@ mod tests {
     /// and never leaves a stale prior reading.
     #[test]
     fn cycle_wires_reset_restores_declared_default() {
-        let mut k = compile_polydat(
-            "input cycle: u64\nextern pressure: u64 = 7\nx := pressure + 1\n",
-        ).unwrap();
+        let mut k =
+            compile_polydat("input cycle: u64\nextern pressure: u64 = 7\nx := pressure + 1\n")
+                .unwrap();
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
 
-        assert_eq!(wires.write("pressure", Value::U64(42)), WriteOutcome::Stored);
+        assert_eq!(
+            wires.write("pressure", Value::U64(42)),
+            WriteOutcome::Stored
+        );
         assert_eq!(wires.get("pressure").map(|v| v.as_u64()), Some(42));
 
-        assert_eq!(wires.reset("pressure"), WriteOutcome::Stored,
-            "reset writes the declared default through the typed boundary");
-        assert_eq!(wires.get("pressure").map(|v| v.as_u64()), Some(7),
-            "the wire returns to its declared initial value, not to None/0");
+        assert_eq!(
+            wires.reset("pressure"),
+            WriteOutcome::Stored,
+            "reset writes the declared default through the typed boundary"
+        );
+        assert_eq!(
+            wires.get("pressure").map(|v| v.as_u64()),
+            Some(7),
+            "the wire returns to its declared initial value, not to None/0"
+        );
 
         assert_eq!(wires.reset("nonesuch"), WriteOutcome::NoSlot);
     }
@@ -829,12 +873,15 @@ mod tests {
              # `pick`-equivalent with constant booleans for testability:\n\
              # take the first value when its selector is true.\n\
              target_index_table := \"system_views.sai_column_indexes\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[0]);
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
         assert_eq!(
-            wires.get("target_index_table").map(|v| v.as_str().to_string()),
+            wires
+                .get("target_index_table")
+                .map(|v| v.as_str().to_string()),
             Some("system_views.sai_column_indexes".to_string()),
             "phase-binding LHS should resolve through CycleWires",
         );
@@ -850,12 +897,11 @@ mod tests {
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"vec_label_00\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let cw = CycleWires::new(&mut k);
-        let resolved = substitute_via_wires(
-            "SELECT * FROM {keyspace}.{table} WHERE x = 1",
-            &cw,
-        ).unwrap();
+        let resolved =
+            substitute_via_wires("SELECT * FROM {keyspace}.{table} WHERE x = 1", &cw).unwrap();
         assert_eq!(resolved, "SELECT * FROM baselines.vec_label_00 WHERE x = 1");
     }
 
@@ -864,14 +910,16 @@ mod tests {
         let mut k = compile_polydat(
             "input cycle: u64\n\
              ks := \"baselines\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let cw = CycleWires::new(&mut k);
         // CQL map literal: brace bodies starting with quotes are
         // not bare identifiers, pass through verbatim.
         let resolved = substitute_via_wires(
             "CREATE KEYSPACE {ks} WITH replication = {'class': 'SimpleStrategy'}",
             &cw,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             resolved,
             "CREATE KEYSPACE baselines WITH replication = {'class': 'SimpleStrategy'}",
@@ -897,9 +945,7 @@ mod tests {
             fn get(&self, name: &str) -> Option<Value> {
                 match name {
                     "id" => Some(Value::U64(7)),
-                    "vec" => Some(Value::VecF32(
-                        SliceArc::from_vec(vec![0.1_f32, 0.2, 0.3])
-                    )),
+                    "vec" => Some(Value::VecF32(SliceArc::from_vec(vec![0.1_f32, 0.2, 0.3]))),
                     _ => None,
                 }
             }
@@ -907,16 +953,20 @@ mod tests {
                 Box::new(["id", "vec"].iter().map(|s| s.to_string()))
             }
         }
-        let err = substitute_via_wires(
-            "INSERT ... VALUES ('{id}', {vec})",
-            &VecWire,
-        ).expect_err("VecF32 splice into text template must error");
-        assert!(err.contains("vec"),
-            "diagnostic should name the offending wire: {err}");
-        assert!(err.contains("vec_f32") || err.contains("VecF32"),
-            "diagnostic should name the offending type: {err}");
-        assert!(err.contains("pure-token") || err.contains("typed"),
-            "diagnostic should point at the fix: {err}");
+        let err = substitute_via_wires("INSERT ... VALUES ('{id}', {vec})", &VecWire)
+            .expect_err("VecF32 splice into text template must error");
+        assert!(
+            err.contains("vec"),
+            "diagnostic should name the offending wire: {err}"
+        );
+        assert!(
+            err.contains("vec_f32") || err.contains("VecF32"),
+            "diagnostic should name the offending type: {err}"
+        );
+        assert!(
+            err.contains("pure-token") || err.contains("typed"),
+            "diagnostic should point at the fix: {err}"
+        );
     }
 
     /// The escape hatch: a field whose entire value is a pure
@@ -935,18 +985,20 @@ mod tests {
         impl WireSource for VecI32Wire {
             fn get(&self, name: &str) -> Option<Value> {
                 if name == "vec" {
-                    Some(Value::VecI32(
-                        SliceArc::from_vec(vec![1_i32, 2, 3])
-                    ))
-                } else { None }
+                    Some(Value::VecI32(SliceArc::from_vec(vec![1_i32, 2, 3])))
+                } else {
+                    None
+                }
             }
             fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
                 Box::new(std::iter::once("vec".to_string()))
             }
         }
         let err = substitute_via_wires("x = {vec}", &VecI32Wire).unwrap_err();
-        assert!(err.contains("vec_i32") || err.contains("VecI32"),
-            "VecI32 should also be rejected: {err}");
+        assert!(
+            err.contains("vec_i32") || err.contains("VecI32"),
+            "VecI32 should also be rejected: {err}"
+        );
     }
 
     #[test]
@@ -954,8 +1006,14 @@ mod tests {
         let mut k = compile_polydat("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("hi {nonexistent}", &cw).unwrap_err();
-        assert!(err.contains("nonexistent"), "diagnostic should name the wire: {err}");
-        assert!(err.contains("unresolved"), "diagnostic should call out unresolved: {err}");
+        assert!(
+            err.contains("nonexistent"),
+            "diagnostic should name the wire: {err}"
+        );
+        assert!(
+            err.contains("unresolved"),
+            "diagnostic should call out unresolved: {err}"
+        );
     }
 
     #[test]
@@ -971,14 +1029,19 @@ mod tests {
         let mut k = compile_polydat(
             "input cycle: u64\n\
              extern undef: str\n\
-             const x := \"{undef}\"\n"
-        ).unwrap();
+             const x := \"{undef}\"\n",
+        )
+        .unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("source_model='{x}'", &cw).unwrap_err();
-        assert!(err.contains("`{x}`"),
-            "diagnostic should name the bind-point: {err}");
-        assert!(err.contains("Value::None") || err.contains("no value bound"),
-            "diagnostic should explain the None resolution: {err}");
+        assert!(
+            err.contains("`{x}`"),
+            "diagnostic should name the bind-point: {err}"
+        );
+        assert!(
+            err.contains("Value::None") || err.contains("no value bound"),
+            "diagnostic should explain the None resolution: {err}"
+        );
     }
 
     #[test]
@@ -986,10 +1049,11 @@ mod tests {
         // The strict primitive itself; render sites consume it.
         use polydat::ast::Value;
         assert_eq!(Value::None.to_display_strict(), None);
-        assert_eq!(Value::Str("hello".into()).to_display_strict(),
-                   Some("hello".to_string()));
-        assert_eq!(Value::U64(42).to_display_strict(),
-                   Some("42".to_string()));
+        assert_eq!(
+            Value::Str("hello".into()).to_display_strict(),
+            Some("hello".to_string())
+        );
+        assert_eq!(Value::U64(42).to_display_strict(), Some("42".to_string()));
     }
 
     #[test]
@@ -1008,7 +1072,8 @@ mod tests {
             "input cycle: u64\n\
              optimize_for := \"RECALL\"\n\
              similarity_function := \"EUCLIDEAN\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let cw = CycleWires::new(&mut k);
         let resolved = substitute_via_wires(
             "WITH OPTIONS = {'optimize_for': '{optimize_for}', 'similarity_function': '{similarity_function}'}",
@@ -1026,7 +1091,10 @@ mod tests {
         let mut k = compile_polydat("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("hi {bind:x}", &cw).unwrap_err();
-        assert!(err.contains("bind:x"), "diagnostic should name the qualifier form: {err}");
+        assert!(
+            err.contains("bind:x"),
+            "diagnostic should name the qualifier form: {err}"
+        );
     }
 
     #[test]
@@ -1061,8 +1129,8 @@ mod tests {
         // populated value; child kernel declares the same name;
         // verify the value propagates through `build_subscope`
         // and is visible via `CycleWires::get`.
-        use polydat::dsl::compile::compile_polydat;
         use polydat::ast::Value;
+        use polydat::dsl::compile::compile_polydat;
         use polydat::kernel::subcontext::PolydatMatter;
 
         // Parent: declares `optimize_for` as extern + auto-passthrough
@@ -1071,23 +1139,36 @@ mod tests {
         let mut parent = compile_polydat(
             "input cycle: u64\n\
              extern optimize_for: String\n",
-        ).unwrap();
+        )
+        .unwrap();
         // Populate the input slot the way the phase kernel does
         // after `materialize_wiring_from_outer` from the for_each bound_kernel.
-        let opt_idx = parent.program().find_input("optimize_for")
+        let opt_idx = parent
+            .program()
+            .find_input("optimize_for")
             .expect("optimize_for input slot");
-        parent.state().set_input(opt_idx, Value::Str("RECALL".into()));
+        parent
+            .state()
+            .set_input(opt_idx, Value::Str("RECALL".into()));
 
         // Child: program declares the same name as an extern.
         // Mimics the per-op canonical the dispenser owns.
         let child_program = compile_polydat(
             "input cycle: u64\n\
              extern optimize_for: String\n",
-        ).unwrap().program().clone();
+        )
+        .unwrap()
+        .program()
+        .clone();
 
-        let mut child = parent.build_subscope(
-            PolydatMatter::builder().program(child_program).build().unwrap(),
-        ).expect("subscope build is infallible");
+        let mut child = parent
+            .build_subscope(
+                PolydatMatter::builder()
+                    .program(child_program)
+                    .build()
+                    .unwrap(),
+            )
+            .expect("subscope build is infallible");
 
         let cw = CycleWires::new(&mut child);
         let wires: &dyn WireSource = &cw;
@@ -1124,7 +1205,8 @@ mod tests {
         let k = compile_polydat(
             "input cycle: u64\n\
              extern optimize_for: String\n",
-        ).unwrap();
+        )
+        .unwrap();
         let outputs: Vec<&str> = k.program().output_names().to_vec();
         // If this assertion fails (i.e. `optimize_for` IS in
         // outputs), then the chain test above was a no-op and we
@@ -1142,17 +1224,27 @@ mod tests {
         let mut k = compile_polydat(
             "input cycle: u64\n\
              id := format_u64(cycle, 10)\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[0]);
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
         // First read at cycle=0.
-        assert_eq!(wires.get("id").map(|v| v.as_str().to_string()), Some("0".to_string()));
+        assert_eq!(
+            wires.get("id").map(|v| v.as_str().to_string()),
+            Some("0".to_string())
+        );
         // Advance and re-read.
         wires.advance(42);
-        assert_eq!(wires.get("id").map(|v| v.as_str().to_string()), Some("42".to_string()));
+        assert_eq!(
+            wires.get("id").map(|v| v.as_str().to_string()),
+            Some("42".to_string())
+        );
         wires.advance(7);
-        assert_eq!(wires.get("id").map(|v| v.as_str().to_string()), Some("7".to_string()));
+        assert_eq!(
+            wires.get("id").map(|v| v.as_str().to_string()),
+            Some("7".to_string())
+        );
     }
 
     #[test]
@@ -1176,7 +1268,8 @@ mod tests {
             "input cycle: u64\n\
              extern count: u64\n\
              extern body: Json\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[0]);
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
@@ -1209,7 +1302,8 @@ mod tests {
             "input cycle: u64\n\
              extern count: u64\n\
              row_count := count\n",
-        ).unwrap();
+        )
+        .unwrap();
         k.set_inputs(&[0]);
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
@@ -1236,45 +1330,59 @@ mod tests {
             "input cycle: u64\n\
              table := \"users\"\n\
              count := 42\n",
-        ).unwrap();
+        )
+        .unwrap();
         let cw = CycleWires::new(&mut k);
 
         let fields: Vec<(String, serde_json::Value)> = vec![
             // Case 1: non-string JSON scalar — stringified.
             ("limit_num".into(), serde_json::json!(100)),
             // Case 2: pure-token — typed wire reference, count is U64(42).
-            ("typed_ref".into(), serde_json::Value::String("{count}".into())),
+            (
+                "typed_ref".into(),
+                serde_json::Value::String("{count}".into()),
+            ),
             // Case 3: text template — wires.get(table).to_display_string()
             //          interpolated into the surrounding text.
-            ("templated".into(), serde_json::Value::String(
-                "SELECT * FROM {table} WHERE x = 1".into(),
-            )),
+            (
+                "templated".into(),
+                serde_json::Value::String("SELECT * FROM {table} WHERE x = 1".into()),
+            ),
             // Case 4: bare-string literal — no placeholders, passes through.
-            ("literal_stmt".into(), serde_json::Value::String(
-                "SELECT 1".into(),
-            )),
+            (
+                "literal_stmt".into(),
+                serde_json::Value::String("SELECT 1".into()),
+            ),
         ];
 
-        let resolved = resolve_op_fields_via_wires(&fields, &cw)
-            .expect("four-case dispatch");
+        let resolved = resolve_op_fields_via_wires(&fields, &cw).expect("four-case dispatch");
 
         // Case 1: stringified — exact form is implementation-defined,
         // verify the value contains the digits.
-        assert!(matches!(resolved.get_value("limit_num"),
+        assert!(
+            matches!(resolved.get_value("limit_num"),
             Some(polydat::ast::Value::Str(s)) if s.contains("100")),
-            "case 1: got {:?}", resolved.get_value("limit_num"));
+            "case 1: got {:?}",
+            resolved.get_value("limit_num")
+        );
         // Case 2: typed U64.
-        assert_eq!(resolved.get_value("typed_ref").map(|v| v.as_u64()),
+        assert_eq!(
+            resolved.get_value("typed_ref").map(|v| v.as_u64()),
             Some(42),
-            "case 2: typed wire ref preserves U64");
+            "case 2: typed wire ref preserves U64"
+        );
         // Case 3: interpolated string.
-        assert_eq!(resolved.get_str("templated"),
+        assert_eq!(
+            resolved.get_str("templated"),
             Some("SELECT * FROM users WHERE x = 1"),
-            "case 3: text template");
+            "case 3: text template"
+        );
         // Case 4: literal pass-through.
-        assert_eq!(resolved.get_str("literal_stmt"),
+        assert_eq!(
+            resolved.get_str("literal_stmt"),
             Some("SELECT 1"),
-            "case 4: bare string literal");
+            "case 4: bare string literal"
+        );
     }
 
     #[test]
@@ -1286,9 +1394,7 @@ mod tests {
         // (hash is deterministic per coordinate, but the kernel's
         // dirty-tracking would require a state mutation to
         // re-fire — the property still holds).
-        let mut k = compile_polydat(
-            "input cycle: u64\nh := hash(cycle)\n"
-        ).unwrap();
+        let mut k = compile_polydat("input cycle: u64\nh := hash(cycle)\n").unwrap();
         k.set_inputs(&[42]);
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;

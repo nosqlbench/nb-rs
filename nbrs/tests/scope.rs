@@ -26,7 +26,9 @@ use std::process::Command;
 
 const WORKLOAD: &str = "examples/workloads/scope/scope_coverage.yaml";
 
-struct SessionDir { path: PathBuf }
+struct SessionDir {
+    path: PathBuf,
+}
 
 impl SessionDir {
     fn new() -> Self {
@@ -35,16 +37,21 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-scope-coverage-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-scope-coverage-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
-        Self { path: parent.join("session") }
+        Self {
+            path: parent.join("session"),
+        }
     }
-    fn parent(&self) -> &Path { self.path.parent().unwrap() }
+    fn parent(&self) -> &Path {
+        self.path.parent().unwrap()
+    }
 }
 
 impl Drop for SessionDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(self.parent()); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.parent());
+    }
 }
 
 fn run_scenario(scenario: &str) -> (String, String, bool) {
@@ -53,7 +60,8 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     cmd.current_dir(workspace_root)
         .arg("run")
-        .arg("--session-path").arg(&session.path)
+        .arg("--session-path")
+        .arg(&session.path)
         .arg(format!("workload={WORKLOAD}"));
     if !scenario.is_empty() {
         cmd.arg(format!("scenario={scenario}"));
@@ -85,8 +93,10 @@ fn scope_shared_types_all_four_with_edge_values() {
         "cm/shared_types kind=bool sub=off value=false",
     ];
     for expected in expected_lines {
-        assert!(stdout.contains(expected),
-            "missing line `{expected}` in:\n{stdout}");
+        assert!(
+            stdout.contains(expected),
+            "missing line `{expected}` in:\n{stdout}"
+        );
     }
 }
 
@@ -99,8 +109,10 @@ fn scope_const_modifier_round_trips() {
     let (stdout, stderr, ok) = run_scenario("const_modifier");
     assert!(ok, "scenario failed: {stderr}");
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains("cm/const base_dim=256"),
-        "const-modifier value missing:\n{stdout}");
+    assert!(
+        stdout.contains("cm/const base_dim=256"),
+        "const-modifier value missing:\n{stdout}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -116,8 +128,10 @@ fn scope_derived_binding_consumes_shared_cell() {
     let (stdout, stderr, ok) = run_scenario("derived_from_shared");
     assert!(ok, "scenario failed: {stderr}");
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains("cm/derived count_big=1000 doubled=2000"),
-        "derived binding output missing:\n{stdout}");
+    assert!(
+        stdout.contains("cm/derived count_big=1000 doubled=2000"),
+        "derived binding output missing:\n{stdout}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -134,14 +148,17 @@ fn scope_for_each_chain_three_levels() {
     assert!(ok, "scenario failed: {stderr}");
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
 
-    let lines: Vec<&str> = stdout.lines()
+    let lines: Vec<&str> = stdout
+        .lines()
         .filter(|l| l.starts_with("cm/for_each_chain "))
         .collect();
     assert_eq!(lines.len(), 3, "expected 3 iterations:\n{stdout}");
     for (i, line) in lines.iter().enumerate() {
-        assert_eq!(line, &format!(
-            "cm/for_each_chain iter={i} count_big=1000 label=matrix"
-        ), "line {i} shape mismatch: {line}");
+        assert_eq!(
+            line,
+            &format!("cm/for_each_chain iter={i} count_big=1000 label=matrix"),
+            "line {i} shape mismatch: {line}"
+        );
     }
 }
 
@@ -155,14 +172,17 @@ fn scope_do_while_chain_three_levels() {
     assert!(ok, "scenario failed: {stderr}");
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
 
-    let lines: Vec<&str> = stdout.lines()
+    let lines: Vec<&str> = stdout
+        .lines()
         .filter(|l| l.starts_with("cm/do_while_chain "))
         .collect();
     assert_eq!(lines.len(), 3, "expected 3 do-while iterations:\n{stdout}");
     for (i, line) in lines.iter().enumerate() {
-        assert_eq!(line, &format!(
-            "cm/do_while_chain i={i} count_big=1000 label=matrix"
-        ), "line {i} shape mismatch: {line}");
+        assert_eq!(
+            line,
+            &format!("cm/do_while_chain i={i} count_big=1000 label=matrix"),
+            "line {i} shape mismatch: {line}"
+        );
     }
 }
 
@@ -178,12 +198,18 @@ fn scope_conditional_op_gated_by_shared_bool() {
 
     // gated_on (if: flag_on=true) fires, gated_off (if:
     // flag_off=false) is suppressed, always fires.
-    assert!(stdout.contains("cm/conditional gated=on result=fired"),
-        "gated_on (true) must fire:\n{stdout}");
-    assert!(stdout.contains("cm/conditional gated=always result=fired"),
-        "always must fire:\n{stdout}");
-    assert!(!stdout.contains("cm/conditional gated=off"),
-        "gated_off (false) must be suppressed:\n{stdout}");
+    assert!(
+        stdout.contains("cm/conditional gated=on result=fired"),
+        "gated_on (true) must fire:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("cm/conditional gated=always result=fired"),
+        "always must fire:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("cm/conditional gated=off"),
+        "gated_off (false) must be suppressed:\n{stdout}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -195,9 +221,10 @@ fn scope_multi_cell_no_cross_name_interference() {
     let (stdout, stderr, ok) = run_scenario("multi_cell");
     assert!(ok, "scenario failed: {stderr}");
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains(
-        "cm/multi_cell zero=0 big=1000 pi=3.14159 text=matrix on=true off=false"
-    ), "multi-cell output missing or malformed:\n{stdout}");
+    assert!(
+        stdout.contains("cm/multi_cell zero=0 big=1000 pi=3.14159 text=matrix on=true off=false"),
+        "multi-cell output missing or malformed:\n{stdout}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -220,15 +247,21 @@ fn scope_nested_for_each_inner_sees_outer_iter_var() {
     // Outer iterates over a,b,c — three iterations. Each
     // inner_for_each enumerates a single value (`pre_<outer>`),
     // so the leaf phase fires three times total.
-    let lines: Vec<&str> = stdout.lines()
+    let lines: Vec<&str> = stdout
+        .lines()
         .filter(|l| l.starts_with("cm/nested "))
         .collect();
-    assert_eq!(lines.len(), 3,
-        "expected 3 nested-iteration leaf calls:\n{stdout}");
+    assert_eq!(
+        lines.len(),
+        3,
+        "expected 3 nested-iteration leaf calls:\n{stdout}"
+    );
     for (outer, expected) in [("a", "pre_a"), ("b", "pre_b"), ("c", "pre_c")] {
         let target = format!("cm/nested outer={outer} inner={expected}");
-        assert!(lines.contains(&target.as_str()),
-            "missing nested line `{target}`:\n{stdout}");
+        assert!(
+            lines.contains(&target.as_str()),
+            "missing nested line `{target}`:\n{stdout}"
+        );
     }
 }
 
@@ -255,8 +288,10 @@ fn scope_default_runs_full_matrix() {
         "cm/multi_cell ",
     ];
     for prefix in prefixes {
-        assert!(stdout.lines().any(|l| l.starts_with(prefix)),
-            "default scenario missing prefix `{prefix}`:\n{stdout}");
+        assert!(
+            stdout.lines().any(|l| l.starts_with(prefix)),
+            "default scenario missing prefix `{prefix}`:\n{stdout}"
+        );
     }
 }
 

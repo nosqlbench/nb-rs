@@ -66,16 +66,24 @@ impl PeakTracker {
     }
 
     /// Max-tracker convenience constructor.
-    pub fn max(window: Duration) -> Self { Self::new(window, PeakDir::Max) }
+    pub fn max(window: Duration) -> Self {
+        Self::new(window, PeakDir::Max)
+    }
 
     /// Min-tracker convenience constructor.
-    pub fn min(window: Duration) -> Self { Self::new(window, PeakDir::Min) }
+    pub fn min(window: Duration) -> Self {
+        Self::new(window, PeakDir::Min)
+    }
 
     /// Configured window.
-    pub fn window(&self) -> Duration { self.window }
+    pub fn window(&self) -> Duration {
+        self.window
+    }
 
     /// Configured direction.
-    pub fn direction(&self) -> PeakDir { self.dir }
+    pub fn direction(&self) -> PeakDir {
+        self.dir
+    }
 
     /// Record a sample taken at `now`.
     ///
@@ -84,8 +92,7 @@ impl PeakTracker {
     /// appending. Also evicts any front entries older than the
     /// window so the deque stays bounded.
     pub fn record(&self, value: u64, now: Instant) {
-        let mut g = self.entries.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut g = self.entries.lock().unwrap_or_else(|e| e.into_inner());
 
         // Evict stale entries from the front (oldest first).
         self.evict_stale(&mut g, now);
@@ -94,12 +101,20 @@ impl PeakTracker {
         match self.dir {
             PeakDir::Max => {
                 while let Some(&(_, v)) = g.back() {
-                    if v <= value { g.pop_back(); } else { break; }
+                    if v <= value {
+                        g.pop_back();
+                    } else {
+                        break;
+                    }
                 }
             }
             PeakDir::Min => {
                 while let Some(&(_, v)) = g.back() {
-                    if v >= value { g.pop_back(); } else { break; }
+                    if v >= value {
+                        g.pop_back();
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -115,8 +130,7 @@ impl PeakTracker {
     /// Current rolling peak. Returns `None` if no in-window
     /// samples have been recorded.
     pub fn peek(&self, now: Instant) -> Option<u64> {
-        let mut g = self.entries.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut g = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         self.evict_stale(&mut g, now);
         g.front().map(|&(_, v)| v)
     }
@@ -130,13 +144,14 @@ impl PeakTracker {
     /// tests). Bounded by arrival rate within one window in the
     /// worst case.
     pub fn len(&self) -> usize {
-        let g = self.entries.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let g = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         g.len()
     }
 
     /// True when no in-window samples remain.
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     // ---- helpers -------------------------------------------------
 

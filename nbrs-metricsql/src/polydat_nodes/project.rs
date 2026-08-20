@@ -41,7 +41,9 @@ pub struct ProjectError {
 
 impl ProjectError {
     fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
+        Self {
+            message: msg.into(),
+        }
     }
 }
 
@@ -141,8 +143,17 @@ mod tests {
 
     fn series(labels: &[(&str, &str)], samples: &[(i64, f64)]) -> Series {
         Series {
-            labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            samples: samples.iter().map(|(t, v)| Sample { timestamp_ms: *t, value: *v }).collect(),
+            labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            samples: samples
+                .iter()
+                .map(|(t, v)| Sample {
+                    timestamp_ms: *t,
+                    value: *v,
+                })
+                .collect(),
         }
     }
 
@@ -161,11 +172,20 @@ mod tests {
             series(&[("a", "1")], &[(0, 1.0)]),
             series(&[("a", "2")], &[(0, 2.0)]),
         ]);
-        assert!(project(&multi, Shape::Scalar).is_err(), "multi-series is not a scalar");
+        assert!(
+            project(&multi, Shape::Scalar).is_err(),
+            "multi-series is not a scalar"
+        );
         let range = Vector::new(vec![series(&[], &[(0, 1.0), (1, 2.0)])]);
-        assert!(project(&range, Shape::Scalar).is_err(), "range is not a scalar");
+        assert!(
+            project(&range, Shape::Scalar).is_err(),
+            "range is not a scalar"
+        );
         let empty = Vector::default();
-        assert!(project(&empty, Shape::Scalar).is_err(), "empty is not a scalar");
+        assert!(
+            project(&empty, Shape::Scalar).is_err(),
+            "empty is not a scalar"
+        );
     }
 
     #[test]

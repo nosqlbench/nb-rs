@@ -97,7 +97,10 @@ phases:
         .trim_start_matches("since=")
         .parse()
         .unwrap_or_else(|e| panic!("non-numeric render {line:?}: {e}"));
-    assert!(n > 1_700_000_000_000, "expected an epoch-ms render, got {n}");
+    assert!(
+        n > 1_700_000_000_000,
+        "expected an epoch-ms render, got {n}"
+    );
 }
 
 /// The same, with `metrics:` as the phase-level declaration — the shape the

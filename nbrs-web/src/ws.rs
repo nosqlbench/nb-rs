@@ -10,8 +10,8 @@
 
 use std::collections::VecDeque;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 
@@ -163,7 +163,9 @@ fn extract_raw_counters(snapshot: &MetricSet) -> RawCounters {
     for family in snapshot.families() {
         let fname = family.name();
         for metric in family.metrics() {
-            let Some(point) = metric.point() else { continue };
+            let Some(point) = metric.point() else {
+                continue;
+            };
             match point.value() {
                 MetricValue::Counter(c) => {
                     if fname.contains("ops") || fname.contains("cycles") {

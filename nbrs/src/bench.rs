@@ -4,9 +4,9 @@
 //! The `bench polydat` subcommand: benchmark Polydat expressions across all
 //! compilation levels, provenance modes, and thread counts.
 
-use std::sync::Arc;
 use polydat::dsl::compile::compile_polydat_to_assembler;
 use polydat::kernel::PolydatProgram;
+use std::sync::Arc;
 
 /// How a compiled kernel evaluates per cycle.
 ///
@@ -32,7 +32,9 @@ fn resolve_weighted_slots(
     scenario: &BenchScenario,
     resolve: impl Fn(&str) -> Option<usize>,
 ) -> (Vec<(usize, u32)>, u32) {
-    let slots: Vec<(usize, u32)> = scenario.pull_weights.iter()
+    let slots: Vec<(usize, u32)> = scenario
+        .pull_weights
+        .iter()
         .filter_map(|(name, w)| resolve(name).map(|s| (s, *w)))
         .collect();
     let total: u32 = slots.iter().map(|(_, w)| w).sum();
@@ -62,8 +64,17 @@ fn compute_stats(samples: &mut [f64]) -> BenchStats {
     let p99 = samples[p99_idx.min(n - 1)];
     let mean: f64 = samples.iter().sum::<f64>() / n as f64;
     let variance: f64 = samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
-    let cv = if mean > 0.0 { variance.sqrt() / mean } else { 0.0 };
-    BenchStats { min, median, p99, _cv: cv }
+    let cv = if mean > 0.0 {
+        variance.sqrt() / mean
+    } else {
+        0.0
+    };
+    BenchStats {
+        min,
+        median,
+        p99,
+        _cv: cv,
+    }
 }
 
 /// Subtract driver overhead from stats (floor at 0.1).
@@ -109,15 +120,20 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
         }
 
         if !trimmed.starts_with("/// ") && !trimmed.starts_with("//") {
-            if current_section == "driver" || current_section == "selector"
-                || current_section == "pull_weights" {
+            if current_section == "driver"
+                || current_section == "selector"
+                || current_section == "pull_weights"
+            {
                 current_section = "";
             }
             continue;
         }
 
-        let content = if let Some(c) = trimmed.strip_prefix("/// ") { c }
-            else { continue };
+        let content = if let Some(c) = trimmed.strip_prefix("/// ") {
+            c
+        } else {
+            continue;
+        };
 
         match current_section {
             "driver" => {
@@ -127,9 +143,10 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
             }
             "pull_weights" => {
                 if let Some((name, weight)) = content.split_once(':')
-                    && let Ok(w) = weight.trim().parse::<u32>() {
-                        pull_weights.push((name.trim().to_string(), w));
-                    }
+                    && let Ok(w) = weight.trim().parse::<u32>()
+                {
+                    pull_weights.push((name.trim().to_string(), w));
+                }
             }
             _ => {}
         }
@@ -138,12 +155,13 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
     let (driver_source, driver_outputs) = if !driver_lines.is_empty() {
         let src = format!("input meta: u64\n{}", driver_lines.join("\n"));
         let outputs = match polydat::dsl::compile::compile_polydat(&src) {
-            Ok(kernel) => {
-                kernel.program().output_names().iter()
-                    .filter(|n| !n.starts_with("__"))
-                    .map(|n| n.to_string())
-                    .collect()
-            }
+            Ok(kernel) => kernel
+                .program()
+                .output_names()
+                .iter()
+                .filter(|n| !n.starts_with("__"))
+                .map(|n| n.to_string())
+                .collect(),
             Err(e) => {
                 eprintln!("warning: failed to compile @driver: {e}");
                 Vec::new()
@@ -154,7 +172,11 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
         (None, Vec::new())
     };
 
-    BenchScenario { driver_source, driver_outputs, pull_weights }
+    BenchScenario {
+        driver_source,
+        driver_outputs,
+        pull_weights,
+    }
 }
 
 /// Per-thread driver state: compiled driver kernel + state.
@@ -181,7 +203,9 @@ impl DriverState {
         self.state.set_inputs(&[meta_cycle]);
         let mut inputs = vec![0u64; n_inputs];
         for (i, name) in self.output_names.iter().enumerate() {
-            if i >= n_inputs { break; }
+            if i >= n_inputs {
+                break;
+            }
             inputs[i] = self.state.pull(&self.program, name).as_u64();
         }
         inputs
@@ -197,7 +221,9 @@ fn build_inputs_from_driver(
         d.eval(meta_cycle, n_inputs)
     } else {
         let mut inputs = vec![0u64; n_inputs];
-        if n_inputs > 0 { inputs[0] = meta_cycle; }
+        if n_inputs > 0 {
+            inputs[0] = meta_cycle;
+        }
         inputs
     }
 }
@@ -219,17 +245,15 @@ fn pick_weighted_slot(
     let mut acc = 0u32;
     for &(sl, w) in weighted_slots {
         acc += w;
-        if b < acc { return sl; }
+        if b < acc {
+            return sl;
+        }
     }
     default_slot
 }
 
 /// Select output names for a cycle (used by P1 engines).
-fn select_outputs(
-    scenario: &BenchScenario,
-    default_output: &str,
-    meta_cycle: u64,
-) -> Vec<String> {
+fn select_outputs(scenario: &BenchScenario, default_output: &str, meta_cycle: u64) -> Vec<String> {
     if scenario.pull_weights.is_empty() {
         return vec![default_output.to_string()];
     }
@@ -269,12 +293,13 @@ where
 
     for _ in 0..iters {
         let kernels: Vec<_> = (0..nthreads).filter_map(|_| make_kernel()).collect();
-        if kernels.len() != nthreads { break; }
+        if kernels.len() != nthreads {
+            break;
+        }
 
         let barrier = Arc::new(std::sync::Barrier::new(nthreads));
         let elapsed = Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
-        let kernel_cells: Vec<_> = kernels.into_iter()
-            .map(std::sync::Mutex::new).collect();
+        let kernel_cells: Vec<_> = kernels.into_iter().map(std::sync::Mutex::new).collect();
 
         std::thread::scope(|s| {
             for (tid, cell) in kernel_cells.iter().enumerate() {
@@ -283,13 +308,19 @@ where
                 s.spawn(move || {
                     let mut kernel = cell.lock().unwrap();
                     let base = tid as u64 * per_thread;
-                    for c in base..base + warmup { (kernel)(c); }
+                    for c in base..base + warmup {
+                        (kernel)(c);
+                    }
                     barrier.wait();
                     let start = std::time::Instant::now();
-                    for c in base..base + per_thread { (kernel)(c); }
+                    for c in base..base + per_thread {
+                        (kernel)(c);
+                    }
                     let e = start.elapsed();
                     let mut guard = elapsed.lock().unwrap();
-                    if e > *guard { *guard = e; }
+                    if e > *guard {
+                        *guard = e;
+                    }
                 });
             }
         });
@@ -382,10 +413,14 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.thread_counts = parse_range(val);
         } else if arg == "--cycles" || arg == "-c" {
             i += 1;
-            if i < args.len() { ba.cycles = args[i].parse().unwrap_or(100_000); }
+            if i < args.len() {
+                ba.cycles = args[i].parse().unwrap_or(100_000);
+            }
         } else if arg == "--threads" || arg == "-t" {
             i += 1;
-            if i < args.len() { ba.thread_counts = parse_range(&args[i]); }
+            if i < args.len() {
+                ba.thread_counts = parse_range(&args[i]);
+            }
         } else if let Some(rest) = arg.strip_prefix("--cycles=") {
             ba.cycles = rest.parse().unwrap_or(100_000);
         } else if let Some(rest) = arg.strip_prefix("--threads=") {
@@ -412,13 +447,21 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.compare_modes = true;
         } else if arg == "--profile" {
             ba.iters = 1;
-            if ba.cycles < 1_000_000 { ba.cycles = 1_000_000; }
+            if ba.cycles < 1_000_000 {
+                ba.cycles = 1_000_000;
+            }
             eprintln!("profile mode: 1 iter, {} cycles", ba.cycles);
-            eprintln!("  Run with: perf record -g --call-graph dwarf target/release/nbrs bench Polydat <expr> --profile cycles=N");
-            eprintln!("  Then:     perf script | inferno-collapse-perf | inferno-flamegraph > flame.svg");
+            eprintln!(
+                "  Run with: perf record -g --call-graph dwarf target/release/nbrs bench Polydat <expr> --profile cycles=N"
+            );
+            eprintln!(
+                "  Then:     perf script | inferno-collapse-perf | inferno-flamegraph > flame.svg"
+            );
         } else if arg.starts_with('-') {
             eprintln!("error: unrecognized option '{arg}'");
-            eprintln!("  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE, --explain, --cones, --engine=NAME");
+            eprintln!(
+                "  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE, --explain, --cones, --engine=NAME"
+            );
             std::process::exit(1);
         } else {
             ba.exprs.push(arg.clone());
@@ -486,40 +529,65 @@ fn explain_source(source: &str) {
 
     let tokens = match polydat::dsl::lexer::lex(source) {
         Ok(t) => t,
-        Err(e) => { eprintln!("error: lex failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("error: lex failed: {e}");
+            return;
+        }
     };
     let ast = match polydat::dsl::parser::parse(tokens) {
         Ok(a) => a,
-        Err(e) => { eprintln!("error: parse failed: {e}"); return; }
+        Err(e) => {
+            eprintln!("error: parse failed: {e}");
+            return;
+        }
     };
-    log.push(CompileEvent::Parsed { statements: ast.statements.len() });
+    log.push(CompileEvent::Parsed {
+        statements: ast.statements.len(),
+    });
 
     match compile_polydat_to_assembler(source) {
-        Err(e) => { eprintln!("error: compile failed: {e}"); }
+        Err(e) => {
+            eprintln!("error: compile failed: {e}");
+        }
         Ok(asm) => {
             for name in asm.output_names() {
-                log.push(CompileEvent::OutputDeclared { name: name.to_string() });
+                log.push(CompileEvent::OutputDeclared {
+                    name: name.to_string(),
+                });
             }
 
             match asm.compile_with_log(Some(&mut log)) {
                 Ok(kernel) => {
                     let program = kernel.program();
                     let events = log.events();
-                    let has_optimizations = events.iter().any(|e| matches!(e,
-                        CompileEvent::ConstantFolded { .. } |
-                        CompileEvent::TypeAdapterInserted { .. } |
-                        CompileEvent::FusionApplied { .. }
-                    ));
+                    let has_optimizations = events.iter().any(|e| {
+                        matches!(
+                            e,
+                            CompileEvent::ConstantFolded { .. }
+                                | CompileEvent::TypeAdapterInserted { .. }
+                                | CompileEvent::FusionApplied { .. }
+                        )
+                    });
                     if has_optimizations {
                         println!("{bold}Optimizations:{reset}");
                         for event in events {
                             match event {
-                                CompileEvent::ConstantFolded { node, value } =>
-                                    println!("  {green}constant folded:{reset} {node} → {value}"),
-                                CompileEvent::TypeAdapterInserted { from_node, to_node, adapter } =>
-                                    println!("  type adapter: {from_node} → {to_node} ({adapter})"),
-                                CompileEvent::FusionApplied { pattern, nodes_replaced } =>
-                                    println!("  {green}fusion:{reset} {pattern} ({nodes_replaced} nodes merged)"),
+                                CompileEvent::ConstantFolded { node, value } => {
+                                    println!("  {green}constant folded:{reset} {node} → {value}")
+                                }
+                                CompileEvent::TypeAdapterInserted {
+                                    from_node,
+                                    to_node,
+                                    adapter,
+                                } => {
+                                    println!("  type adapter: {from_node} → {to_node} ({adapter})")
+                                }
+                                CompileEvent::FusionApplied {
+                                    pattern,
+                                    nodes_replaced,
+                                } => println!(
+                                    "  {green}fusion:{reset} {pattern} ({nodes_replaced} nodes merged)"
+                                ),
                                 _ => {}
                             }
                         }
@@ -537,10 +605,12 @@ fn explain_source(source: &str) {
                     }
                     println!();
 
-                    println!("{bold}Summary:{reset} {} nodes, {} outputs, {} constant(s) folded",
+                    println!(
+                        "{bold}Summary:{reset} {} nodes, {} outputs, {} constant(s) folded",
                         program.node_count(),
                         program.output_names().len(),
-                        kernel.constants_folded);
+                        kernel.constants_folded
+                    );
                     println!();
                 }
                 Err(e) => {
@@ -555,12 +625,20 @@ fn explain_source(source: &str) {
         match asm.auto_compile_p3() {
             Ok((engine, analysis)) => {
                 println!("{bold}Engine Selection:{reset}");
-                println!("  {dim}inputs: {}, nodes: {}, outputs: {}{reset}",
-                    analysis.num_inputs, analysis.total_nodes, analysis.num_outputs);
-                println!("  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
-                    analysis.max_cone_ratio, analysis.avg_cone_ratio);
+                println!(
+                    "  {dim}inputs: {}, nodes: {}, outputs: {}{reset}",
+                    analysis.num_inputs, analysis.total_nodes, analysis.num_outputs
+                );
+                println!(
+                    "  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
+                    analysis.max_cone_ratio, analysis.avg_cone_ratio
+                );
                 for (name, size) in &analysis.output_cone_sizes {
-                    let ratio = if analysis.total_nodes > 0 { *size as f64 / analysis.total_nodes as f64 } else { 0.0 };
+                    let ratio = if analysis.total_nodes > 0 {
+                        *size as f64 / analysis.total_nodes as f64
+                    } else {
+                        0.0
+                    };
                     println!("  {dim}  {name}: {size} nodes ({ratio:.0}%){reset}");
                 }
                 println!("  → {green}{:?}{reset}", engine.prov_mode());
@@ -569,13 +647,16 @@ fn explain_source(source: &str) {
             Err(_) => {
                 // P3 not available, try P2
                 if let Ok(asm2) = compile_polydat_to_assembler(source)
-                    && let Ok((engine, analysis)) = asm2.auto_compile_p2() {
-                        println!("{bold}Engine Selection (P2):{reset}");
-                        println!("  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
-                            analysis.max_cone_ratio, analysis.avg_cone_ratio);
-                        println!("  → {green}{:?}{reset}", engine.prov_mode());
-                        println!();
-                    }
+                    && let Ok((engine, analysis)) = asm2.auto_compile_p2()
+                {
+                    println!("{bold}Engine Selection (P2):{reset}");
+                    println!(
+                        "  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
+                        analysis.max_cone_ratio, analysis.avg_cone_ratio
+                    );
+                    println!("  → {green}{:?}{reset}", engine.prov_mode());
+                    println!();
+                }
             }
         }
     }
@@ -595,12 +676,13 @@ struct ExprResult {
 /// Normalize an expression or file path into Polydat source.
 fn normalize_source(expr: &str) -> Result<String, String> {
     if expr.ends_with(".polydat") {
-        std::fs::read_to_string(expr)
-            .map_err(|e| format!("failed to read '{expr}': {e}"))
+        std::fs::read_to_string(expr).map_err(|e| format!("failed to read '{expr}': {e}"))
     } else {
         let expr = expr.replace(';', "\n");
         if expr.contains(":=") {
-            let lines: Vec<&str> = expr.lines().map(|l| l.trim())
+            let lines: Vec<&str> = expr
+                .lines()
+                .map(|l| l.trim())
                 .filter(|l| !l.is_empty() && !l.starts_with("//"))
                 .collect();
             let mut out_lines = vec!["input cycle: u64".to_string()];
@@ -622,7 +704,9 @@ fn normalize_source(expr: &str) -> Result<String, String> {
 
 /// Find the last binding name from Polydat source (for output slot resolution).
 fn last_binding_name(source: &str) -> String {
-    source.lines().rev()
+    source
+        .lines()
+        .rev()
         .filter_map(|line| {
             let line = line.trim();
             if let Some(pos) = line.find(":=") {
@@ -678,7 +762,10 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
         match asm.compile() {
             Ok(kernel) => {
                 println!("{bold}Lattice (jit=auto){reset}");
-                print!("{}", polydat::compile::lattice::lattice_report(kernel.program()));
+                print!(
+                    "{}",
+                    polydat::compile::lattice::lattice_report(kernel.program())
+                );
                 println!();
             }
             Err(e) => eprintln!("error: {e:?}"),
@@ -699,47 +786,72 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
         && let Ok(kernel) = {
             asm.set_jit_mode(polydat::JitMode::Off);
             asm.compile()
-        } {
-            let program = kernel.program();
-            bench_node_count = program.node_count();
-            let n_inputs = program.input_names().len();
-            let n_outputs = program.output_names().iter()
-                .filter(|n| !n.starts_with("__")).count();
-            let n_nodes = program.node_count();
-            let n_wires = program.wire_count();
-            let avg_deg = program.avg_degree();
-
-            let label = if expr.len() > 50 {
-                format!("{}...", &expr[..47])
-            } else {
-                expr.to_string()
-            };
-            println!("{bold}{label}{reset}");
-            println!("  {dim}{n_nodes} nodes, {n_wires} wires, {avg_deg:.1} avg degree, {n_inputs} inputs, {n_outputs} outputs{reset}");
         }
+    {
+        let program = kernel.program();
+        bench_node_count = program.node_count();
+        let n_inputs = program.input_names().len();
+        let n_outputs = program
+            .output_names()
+            .iter()
+            .filter(|n| !n.starts_with("__"))
+            .count();
+        let n_nodes = program.node_count();
+        let n_wires = program.wire_count();
+        let avg_deg = program.avg_degree();
+
+        let label = if expr.len() > 50 {
+            format!("{}...", &expr[..47])
+        } else {
+            expr.to_string()
+        };
+        println!("{bold}{label}{reset}");
+        println!(
+            "  {dim}{n_nodes} nodes, {n_wires} wires, {avg_deg:.1} avg degree, {n_inputs} inputs, {n_outputs} outputs{reset}"
+        );
+    }
 
     // Calibrate driver overhead
     let driver_ns_per_cycle = if scenario.driver_source.is_some() {
         let mut driver = DriverState::new(&scenario);
         if let Some(ref mut d) = driver {
             let n_inputs = if let Ok(asm) = compile_polydat_to_assembler(&source) {
-                asm.compile().map(|k| k.program().input_names().len()).unwrap_or(1)
-            } else { 1 };
-            for c in 0..warmup { d.eval(c, n_inputs); }
+                asm.compile()
+                    .map(|k| k.program().input_names().len())
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+            for c in 0..warmup {
+                d.eval(c, n_inputs);
+            }
             let mut samples = Vec::with_capacity(iters);
             for _ in 0..iters {
                 let start = std::time::Instant::now();
-                for c in 0..cycles { d.eval(c, n_inputs); }
+                for c in 0..cycles {
+                    d.eval(c, n_inputs);
+                }
                 let elapsed = start.elapsed();
                 samples.push(elapsed.as_nanos() as f64 / cycles as f64);
             }
             let stats = compute_stats(&mut samples);
-            println!("  {dim}driver overhead: {:.1}ns/cycle (subtracted from results){reset}", stats.min);
+            println!(
+                "  {dim}driver overhead: {:.1}ns/cycle (subtracted from results){reset}",
+                stats.min
+            );
             stats.min
-        } else { 0.0 }
-    } else { 0.0 };
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
 
-    let prov_label = if provenance { "provenance on" } else { "provenance off" };
+    let prov_label = if provenance {
+        "provenance on"
+    } else {
+        "provenance off"
+    };
     println!("  {dim}{cycles} cycles × {iters} iters, {warmup} warmup, {prov_label}{reset}");
     println!();
 
@@ -748,11 +860,15 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
 
         if args.thread_counts.len() > 1 {
             println!();
-            println!("  {bold}--- {nthreads} thread{} ---{reset}",
-                if nthreads == 1 { "" } else { "s" });
+            println!(
+                "  {bold}--- {nthreads} thread{} ---{reset}",
+                if nthreads == 1 { "" } else { "s" }
+            );
         }
-        println!("  {bold}{:<16} {:>10} {:>10} {:>10} {:>8} {:>12}{reset}",
-            "Level", "min ns", "median ns", "p99 ns", "Speedup", "ops/s");
+        println!(
+            "  {bold}{:<16} {:>10} {:>10} {:>10} {:>8} {:>12}{reset}",
+            "Level", "min ns", "median ns", "p99 ns", "Speedup", "ops/s"
+        );
         println!("  {}", "-".repeat(72));
 
         let mut p1_ns: Option<f64> = None;
@@ -771,68 +887,106 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
                 eprintln!("  {bold}compile error:{reset} {e}");
                 return None;
             }
-            Ok(mut asm) => if let Ok(kernel) = {
-                asm.set_jit_mode(polydat::JitMode::Off);
-                asm.compile()
-            } {
-                let program = kernel.program().clone();
-                let output_name = program.output_names().first()
-                    .map(|s| s.to_string()).unwrap_or_else(|| "out".to_string());
-                let n_inputs = program.input_names().len();
+            Ok(mut asm) => {
+                if let Ok(kernel) = {
+                    asm.set_jit_mode(polydat::JitMode::Off);
+                    asm.compile()
+                } {
+                    let program = kernel.program().clone();
+                    let output_name = program
+                        .output_names()
+                        .first()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "out".to_string());
+                    let n_inputs = program.input_names().len();
 
-                // Shared closure builder for all P1 variants
-                let bench_p1 = |create_state: fn(&Arc<PolydatProgram>) -> Box<dyn P1Engine + Send>| {
-                    run_threaded_bench(nthreads, iters, cycles, warmup, || {
-                        let program = program.clone();
-                        let out = output_name.clone();
-                        let ni = n_inputs;
-                        let sc = scenario.clone();
-                        let mut state = create_state(&program);
-                        let mut driver = DriverState::new(&sc);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut driver, c, ni);
-                            state.set_inputs(&iv);
-                            let outs = select_outputs(&sc, &out, c);
-                            for o in &outs { state.pull_discard(&program, o); }
-                        }))
-                    })
-                };
+                    // Shared closure builder for all P1 variants
+                    let bench_p1 =
+                        |create_state: fn(&Arc<PolydatProgram>) -> Box<dyn P1Engine + Send>| {
+                            run_threaded_bench(nthreads, iters, cycles, warmup, || {
+                                let program = program.clone();
+                                let out = output_name.clone();
+                                let ni = n_inputs;
+                                let sc = scenario.clone();
+                                let mut state = create_state(&program);
+                                let mut driver = DriverState::new(&sc);
+                                Some(Box::new(move |c: u64| {
+                                    let iv = build_inputs_from_driver(&mut driver, c, ni);
+                                    state.set_inputs(&iv);
+                                    let outs = select_outputs(&sc, &out, c);
+                                    for o in &outs {
+                                        state.pull_discard(&program, o);
+                                    }
+                                }))
+                            })
+                        };
 
-                if run_raw {
-                    let mut samples = bench_p1(|p| Box::new(p.create_raw_state()));
-                    if !samples.is_empty() {
-                        let stats = adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
-                        p1_ns = Some(stats.min);
-                        println!("  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
-                            "P1", stats.min, stats.median, stats.p99, 1.0, 1e9 / stats.min);
-                    }
-                }
-
-                if run_deplist {
-                    let mut samples = bench_p1(|p| Box::new(p.create_state()));
-                    if !samples.is_empty() {
-                        let stats = adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
-                        let label = if compare_provenance { "P1/prov" }
-                            else if run_provscan { "P1/dep_list" }
-                            else { "P1" };
-                        let speedup = p1_ns.map(|base| base / stats.min).unwrap_or(1.0);
-                        println!("  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
-                            label, stats.min, stats.median, stats.p99, speedup, 1e9 / stats.min);
-                        if p1_ns.is_none() || stats.min < p1_ns.unwrap() {
+                    if run_raw {
+                        let mut samples = bench_p1(|p| Box::new(p.create_raw_state()));
+                        if !samples.is_empty() {
+                            let stats =
+                                adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
                             p1_ns = Some(stats.min);
+                            println!(
+                                "  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
+                                "P1",
+                                stats.min,
+                                stats.median,
+                                stats.p99,
+                                1.0,
+                                1e9 / stats.min
+                            );
                         }
                     }
-                }
 
-                if run_provscan {
-                    let mut samples = bench_p1(|p| Box::new(p.create_provscan_state()));
-                    if !samples.is_empty() {
-                        let stats = adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
-                        if p1_ns.is_none() { p1_ns = Some(stats.min); }
-                        let speedup = p1_ns.map(|base| base / stats.min).unwrap_or(1.0);
-                        let label = if run_deplist { "P1/prov_scan" } else { "P1" };
-                        println!("  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
-                            label, stats.min, stats.median, stats.p99, speedup, 1e9 / stats.min);
+                    if run_deplist {
+                        let mut samples = bench_p1(|p| Box::new(p.create_state()));
+                        if !samples.is_empty() {
+                            let stats =
+                                adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
+                            let label = if compare_provenance {
+                                "P1/prov"
+                            } else if run_provscan {
+                                "P1/dep_list"
+                            } else {
+                                "P1"
+                            };
+                            let speedup = p1_ns.map(|base| base / stats.min).unwrap_or(1.0);
+                            println!(
+                                "  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
+                                label,
+                                stats.min,
+                                stats.median,
+                                stats.p99,
+                                speedup,
+                                1e9 / stats.min
+                            );
+                            if p1_ns.is_none() || stats.min < p1_ns.unwrap() {
+                                p1_ns = Some(stats.min);
+                            }
+                        }
+                    }
+
+                    if run_provscan {
+                        let mut samples = bench_p1(|p| Box::new(p.create_provscan_state()));
+                        if !samples.is_empty() {
+                            let stats =
+                                adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
+                            if p1_ns.is_none() {
+                                p1_ns = Some(stats.min);
+                            }
+                            let speedup = p1_ns.map(|base| base / stats.min).unwrap_or(1.0);
+                            let label = if run_deplist { "P1/prov_scan" } else { "P1" };
+                            println!(
+                                "  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
+                                label,
+                                stats.min,
+                                stats.median,
+                                stats.p99,
+                                speedup,
+                                1e9 / stats.min
+                            );
+                        }
                     }
                 }
             }
@@ -841,38 +995,91 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
         // P2 / Hybrid / P3 engines
         let last_binding = last_binding_name(&source);
 
-        let base_levels: Vec<(&str, bool)> = vec![
-            ("P2", false),
-            ("Hybrid", true),
-            ("P3", true),
-        ];
-        struct LevelConfig { label: String, highlight: bool, base: String, prov: bool, eval_mode: EvalMode }
+        let base_levels: Vec<(&str, bool)> = vec![("P2", false), ("Hybrid", true), ("P3", true)];
+        struct LevelConfig {
+            label: String,
+            highlight: bool,
+            base: String,
+            prov: bool,
+            eval_mode: EvalMode,
+        }
         let mut levels: Vec<LevelConfig> = Vec::new();
         if args.compare_modes {
             // 4-way: raw, push-only, pull-only, push+pull
             for &(name, _) in &base_levels {
-                levels.push(LevelConfig { label: name.to_string(), highlight: false, base: name.to_string(), prov: false, eval_mode: EvalMode::Raw });
-                levels.push(LevelConfig { label: format!("{name}/push"), highlight: false, base: name.to_string(), prov: true, eval_mode: EvalMode::PushOnly });
-                levels.push(LevelConfig { label: format!("{name}/pull"), highlight: false, base: name.to_string(), prov: true, eval_mode: EvalMode::PullOnly });
-                levels.push(LevelConfig { label: format!("{name}/push+pull"), highlight: true, base: name.to_string(), prov: true, eval_mode: EvalMode::PushPull });
+                levels.push(LevelConfig {
+                    label: name.to_string(),
+                    highlight: false,
+                    base: name.to_string(),
+                    prov: false,
+                    eval_mode: EvalMode::Raw,
+                });
+                levels.push(LevelConfig {
+                    label: format!("{name}/push"),
+                    highlight: false,
+                    base: name.to_string(),
+                    prov: true,
+                    eval_mode: EvalMode::PushOnly,
+                });
+                levels.push(LevelConfig {
+                    label: format!("{name}/pull"),
+                    highlight: false,
+                    base: name.to_string(),
+                    prov: true,
+                    eval_mode: EvalMode::PullOnly,
+                });
+                levels.push(LevelConfig {
+                    label: format!("{name}/push+pull"),
+                    highlight: true,
+                    base: name.to_string(),
+                    prov: true,
+                    eval_mode: EvalMode::PushPull,
+                });
             }
         } else if compare_provenance {
             for &(name, hl) in &base_levels {
-                levels.push(LevelConfig { label: name.to_string(), highlight: false, base: name.to_string(), prov: false, eval_mode: EvalMode::Raw });
-                levels.push(LevelConfig { label: format!("{name}/prov"), highlight: hl, base: name.to_string(), prov: true, eval_mode: EvalMode::PushPull });
+                levels.push(LevelConfig {
+                    label: name.to_string(),
+                    highlight: false,
+                    base: name.to_string(),
+                    prov: false,
+                    eval_mode: EvalMode::Raw,
+                });
+                levels.push(LevelConfig {
+                    label: format!("{name}/prov"),
+                    highlight: hl,
+                    base: name.to_string(),
+                    prov: true,
+                    eval_mode: EvalMode::PushPull,
+                });
             }
         } else {
             for &(name, hl) in &base_levels {
-                let label = if !provenance { name.to_string() } else { format!("{name}/prov") };
-                let mode = if provenance { EvalMode::PushPull } else { EvalMode::Raw };
-                levels.push(LevelConfig { label, highlight: hl, base: name.to_string(), prov: provenance, eval_mode: mode });
+                let label = if !provenance {
+                    name.to_string()
+                } else {
+                    format!("{name}/prov")
+                };
+                let mode = if provenance {
+                    EvalMode::PushPull
+                } else {
+                    EvalMode::Raw
+                };
+                levels.push(LevelConfig {
+                    label,
+                    highlight: hl,
+                    base: name.to_string(),
+                    prov: provenance,
+                    eval_mode: mode,
+                });
             }
         }
 
         for level in &levels {
             let level_name = level.base.as_str();
             let use_prov = level.prov;
-            let available = compile_polydat_to_assembler(&source).ok()
+            let available = compile_polydat_to_assembler(&source)
+                .ok()
                 .and_then(|asm| match (level_name, &level.eval_mode) {
                     ("P2", EvalMode::Raw) => asm.try_compile_raw().ok().map(|_| ()),
                     ("P2", EvalMode::PushOnly) => asm.try_compile_push().ok().map(|_| ()),
@@ -884,7 +1091,8 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
                     ("P3", EvalMode::PullOnly) => asm.try_compile_jit_pull().ok().map(|_| ()),
                     ("P3", EvalMode::PushPull) => asm.try_compile_jit().ok().map(|_| ()),
                     _ => None,
-                }).is_some();
+                })
+                .is_some();
 
             if !available {
                 println!("  {dim}{:<16} {:>10}{reset}", level.label, "—");
@@ -899,21 +1107,39 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
                 build_compiled_kernel(asm, level_name, use_prov, eval_mode, &sc, &lb)
             });
 
-            if samples.is_empty() { continue; }
+            if samples.is_empty() {
+                continue;
+            }
             let stats = adjust_stats(&compute_stats(&mut samples), driver_ns_per_cycle);
             let speedup = p1_ns.map(|p| p / stats.min).unwrap_or(0.0);
             let throughput = 1e9 / stats.min;
             if level.highlight {
-                println!("  {green}{:<16}{reset} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
-                    level.label, stats.min, stats.median, stats.p99, speedup, throughput);
+                println!(
+                    "  {green}{:<16}{reset} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
+                    level.label, stats.min, stats.median, stats.p99, speedup, throughput
+                );
             } else {
-                println!("  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
-                    level.label, stats.min, stats.median, stats.p99, speedup, throughput);
+                println!(
+                    "  {:<16} {:>8.1}ns {:>8.1}ns {:>8.1}ns {:>7.1}x {:>12.0}",
+                    level.label, stats.min, stats.median, stats.p99, speedup, throughput
+                );
             }
             match level_name {
-                "P2" => if stats.min < bench_p2_ns || bench_p2_ns == 0.0 { bench_p2_ns = stats.min; },
-                "Hybrid" => if stats.min < bench_hybrid_ns || bench_hybrid_ns == 0.0 { bench_hybrid_ns = stats.min; },
-                "P3" => if stats.min < bench_p3_ns || bench_p3_ns == 0.0 { bench_p3_ns = stats.min; },
+                "P2" => {
+                    if stats.min < bench_p2_ns || bench_p2_ns == 0.0 {
+                        bench_p2_ns = stats.min;
+                    }
+                }
+                "Hybrid" => {
+                    if stats.min < bench_hybrid_ns || bench_hybrid_ns == 0.0 {
+                        bench_hybrid_ns = stats.min;
+                    }
+                }
+                "P3" => {
+                    if stats.min < bench_p3_ns || bench_p3_ns == 0.0 {
+                        bench_p3_ns = stats.min;
+                    }
+                }
                 _ => {}
             }
         }
@@ -957,21 +1183,27 @@ trait P1Engine {
 }
 
 impl P1Engine for polydat::kernel::PolydatState {
-    fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
+    fn set_inputs(&mut self, coords: &[u64]) {
+        self.set_inputs(coords);
+    }
     fn pull_discard(&mut self, program: &PolydatProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
 
 impl P1Engine for polydat::kernel::RawState {
-    fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
+    fn set_inputs(&mut self, coords: &[u64]) {
+        self.set_inputs(coords);
+    }
     fn pull_discard(&mut self, program: &PolydatProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
 
 impl P1Engine for polydat::kernel::ProvScanState {
-    fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
+    fn set_inputs(&mut self, coords: &[u64]) {
+        self.set_inputs(coords);
+    }
     fn pull_discard(&mut self, program: &PolydatProgram, name: &str) {
         let _ = self.pull(program, name);
     }
@@ -996,130 +1228,114 @@ fn build_compiled_kernel(
         "P2" => {
             // Each EvalMode selects a distinct monomorphic kernel type
             match eval_mode {
-                EvalMode::Raw => {
-                    asm.try_compile_raw().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-                EvalMode::PushOnly => {
-                    asm.try_compile_push().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-                EvalMode::PullOnly => {
-                    asm.try_compile_pull().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-                EvalMode::PushPull => {
-                    asm.try_compile().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
+                EvalMode::Raw => asm.try_compile_raw().ok().and_then(|mut k| {
+                    let default_out = k.resolve_output(last_binding)?;
+                    let n = k.coord_count();
+                    let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                    let mut drv = DriverState::new(scenario);
+                    Some(Box::new(move |c: u64| {
+                        let iv = build_inputs_from_driver(&mut drv, c, n);
+                        let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                        let _ = k.eval_for_slot(&iv, slot);
+                    }) as Box<dyn FnMut(u64) + Send>)
+                }),
+                EvalMode::PushOnly => asm.try_compile_push().ok().and_then(|mut k| {
+                    let default_out = k.resolve_output(last_binding)?;
+                    let n = k.coord_count();
+                    let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                    let mut drv = DriverState::new(scenario);
+                    Some(Box::new(move |c: u64| {
+                        let iv = build_inputs_from_driver(&mut drv, c, n);
+                        let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                        let _ = k.eval_for_slot(&iv, slot);
+                    }) as Box<dyn FnMut(u64) + Send>)
+                }),
+                EvalMode::PullOnly => asm.try_compile_pull().ok().and_then(|mut k| {
+                    let default_out = k.resolve_output(last_binding)?;
+                    let n = k.coord_count();
+                    let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                    let mut drv = DriverState::new(scenario);
+                    Some(Box::new(move |c: u64| {
+                        let iv = build_inputs_from_driver(&mut drv, c, n);
+                        let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                        let _ = k.eval_for_slot(&iv, slot);
+                    }) as Box<dyn FnMut(u64) + Send>)
+                }),
+                EvalMode::PushPull => asm.try_compile().ok().and_then(|mut k| {
+                    let default_out = k.resolve_output(last_binding)?;
+                    let n = k.coord_count();
+                    let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                    let mut drv = DriverState::new(scenario);
+                    Some(Box::new(move |c: u64| {
+                        let iv = build_inputs_from_driver(&mut drv, c, n);
+                        let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                        let _ = k.eval_for_slot(&iv, slot);
+                    }) as Box<dyn FnMut(u64) + Send>)
+                }),
             }
         }
         "Hybrid" => {
-            asm.compile_hybrid().ok().and_then(|mut k: polydat::compile::hybrid::HybridKernel| {
+            asm.compile_hybrid()
+                .ok()
+                .and_then(|mut k: polydat::compile::hybrid::HybridKernel| {
+                    let default_out = k.resolve_output(last_binding)?;
+                    let n = k.coord_count();
+                    let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                    let mut drv = DriverState::new(scenario);
+                    Some(Box::new(move |c: u64| {
+                        let iv = build_inputs_from_driver(&mut drv, c, n);
+                        k.eval(&iv);
+                        let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                        let _ = k.get_slot(slot);
+                    }) as Box<dyn FnMut(u64) + Send>)
+                })
+        }
+        "P3" => match eval_mode {
+            EvalMode::Raw => asm.try_compile_jit_raw().ok().and_then(|mut k| {
                 let default_out = k.resolve_output(last_binding)?;
                 let n = k.coord_count();
                 let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
                 let mut drv = DriverState::new(scenario);
                 Some(Box::new(move |c: u64| {
                     let iv = build_inputs_from_driver(&mut drv, c, n);
-                    k.eval(&iv);
                     let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                    let _ = k.get_slot(slot);
+                    let _ = k.eval_for_slot(&iv, slot);
                 }) as Box<dyn FnMut(u64) + Send>)
-            })
-        }
-        "P3" => {
-            match eval_mode {
-                EvalMode::Raw => {
-                    asm.try_compile_jit_raw().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-                EvalMode::PushOnly => {
-                    asm.try_compile_jit_push().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-                EvalMode::PullOnly => {
-                    asm.try_compile_jit_pull().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-                EvalMode::PushPull => {
-                    asm.try_compile_jit().ok().and_then(|mut k| {
-                        let default_out = k.resolve_output(last_binding)?;
-                        let n = k.coord_count();
-                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
-                        let mut drv = DriverState::new(scenario);
-                        Some(Box::new(move |c: u64| {
-                            let iv = build_inputs_from_driver(&mut drv, c, n);
-                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
-                            let _ = k.eval_for_slot(&iv, slot);
-                        }) as Box<dyn FnMut(u64) + Send>)
-                    })
-                }
-            }
-        }
+            }),
+            EvalMode::PushOnly => asm.try_compile_jit_push().ok().and_then(|mut k| {
+                let default_out = k.resolve_output(last_binding)?;
+                let n = k.coord_count();
+                let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                let mut drv = DriverState::new(scenario);
+                Some(Box::new(move |c: u64| {
+                    let iv = build_inputs_from_driver(&mut drv, c, n);
+                    let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                    let _ = k.eval_for_slot(&iv, slot);
+                }) as Box<dyn FnMut(u64) + Send>)
+            }),
+            EvalMode::PullOnly => asm.try_compile_jit_pull().ok().and_then(|mut k| {
+                let default_out = k.resolve_output(last_binding)?;
+                let n = k.coord_count();
+                let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                let mut drv = DriverState::new(scenario);
+                Some(Box::new(move |c: u64| {
+                    let iv = build_inputs_from_driver(&mut drv, c, n);
+                    let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                    let _ = k.eval_for_slot(&iv, slot);
+                }) as Box<dyn FnMut(u64) + Send>)
+            }),
+            EvalMode::PushPull => asm.try_compile_jit().ok().and_then(|mut k| {
+                let default_out = k.resolve_output(last_binding)?;
+                let n = k.coord_count();
+                let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                let mut drv = DriverState::new(scenario);
+                Some(Box::new(move |c: u64| {
+                    let iv = build_inputs_from_driver(&mut drv, c, n);
+                    let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                    let _ = k.eval_for_slot(&iv, slot);
+                }) as Box<dyn FnMut(u64) + Send>)
+            }),
+        },
         _ => None,
     }
 }
@@ -1136,24 +1352,37 @@ fn print_comparison_table(results: &[ExprResult]) {
 
     println!();
     println!("{bold}Comparison (ns/cycle){reset}");
-    println!("  {bold}{:<20} {:>5} {:>10} {:>10} {:>10} {:>10} {:>7}{reset}",
-        "Graph", "Nodes", "P1", "P2", "Hybrid", "P3", "P3/P1");
+    println!(
+        "  {bold}{:<20} {:>5} {:>10} {:>10} {:>10} {:>10} {:>7}{reset}",
+        "Graph", "Nodes", "P1", "P2", "Hybrid", "P3", "P3/P1"
+    );
     println!("  {}", "-".repeat(77));
 
     let fmt = |ns: f64| -> String {
-        if ns == 0.0 { "—".to_string() }
-        else { format!("{ns:.1}") }
+        if ns == 0.0 {
+            "—".to_string()
+        } else {
+            format!("{ns:.1}")
+        }
     };
 
     for r in results {
         let speedup = if r.p3_ns > 0.0 && r.p1_ns > 0.0 {
             r.p1_ns / r.p3_ns
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
-        println!("  {:<20} {:>5} {:>10} {:>10} {:>10} {green}{:>10}{reset} {:>6.1}x",
-            r.label, r.nodes,
-            fmt(r.p1_ns), fmt(r.p2_ns), fmt(r.hybrid_ns), fmt(r.p3_ns),
-            speedup);
+        println!(
+            "  {:<20} {:>5} {:>10} {:>10} {:>10} {green}{:>10}{reset} {:>6.1}x",
+            r.label,
+            r.nodes,
+            fmt(r.p1_ns),
+            fmt(r.p2_ns),
+            fmt(r.hybrid_ns),
+            fmt(r.p3_ns),
+            speedup
+        );
     }
     println!();
 }
@@ -1163,9 +1392,13 @@ fn print_comparison_table(results: &[ExprResult]) {
 pub fn bench_command(args: &[String]) {
     let topic = args.first().map(|s| s.as_str()).unwrap_or("");
     if topic != "wiring" {
-        eprintln!("Usage: nbrs bench wiring <expr> [cycles=N] [threads=RANGE] [--explain] [--cones]");
+        eprintln!(
+            "Usage: nbrs bench wiring <expr> [cycles=N] [threads=RANGE] [--explain] [--cones]"
+        );
         eprintln!("  Example: nbrs bench wiring \"hash_range(hash(cycle), 1000)\"");
-        eprintln!("  Example: nbrs bench wiring \"weighted_pick(hash(cycle), \\\"10:0.5;20:0.3\\\")\" threads=1:8*2");
+        eprintln!(
+            "  Example: nbrs bench wiring \"weighted_pick(hash(cycle), \\\"10:0.5;20:0.3\\\")\" threads=1:8*2"
+        );
         eprintln!();
         eprintln!("Range syntax: N | start:end:step | start:end*factor");
         return;
@@ -1174,7 +1407,9 @@ pub fn bench_command(args: &[String]) {
     let ba = parse_bench_args(&args[1..]);
 
     if ba.exprs.is_empty() {
-        eprintln!("Usage: nbrs bench Polydat <expr|file.polydat ...> [cycles=N] [threads=RANGE] [--explain] [--cones]");
+        eprintln!(
+            "Usage: nbrs bench Polydat <expr|file.polydat ...> [cycles=N] [threads=RANGE] [--explain] [--cones]"
+        );
         eprintln!("  Example: nbrs bench Polydat \"hash_range(hash(cycle), 1000)\"");
         eprintln!("  Example: nbrs bench Polydat tests/bench_graphs/*.polydat --engine=all");
         return;
@@ -1218,8 +1453,7 @@ pub fn spec() -> crate::cli_spec::Command {
             name: "topic",
             help: "Benchmark topic.",
             kind: crate::cli_spec::PositionalKind::One,
-            value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::bench_topic_provider),
+            value: crate::cli_spec::ValueProvider::Custom(crate::completion::bench_topic_provider),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

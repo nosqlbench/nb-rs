@@ -161,9 +161,7 @@ pub fn scan_one(text: &str, out: &mut HashSet<String>) {
     let n = bytes.len();
     let mut i = 0;
     while i < n {
-        if bytes[i] == b'\\' && i + 1 < n
-            && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}')
-        {
+        if bytes[i] == b'\\' && i + 1 < n && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
             i += 2;
             continue;
         }
@@ -171,8 +169,7 @@ pub fn scan_one(text: &str, out: &mut HashSet<String>) {
             let mut j = i + 1;
             let mut nested = false;
             while j < n {
-                if bytes[j] == b'\\' && j + 1 < n
-                    && (bytes[j + 1] == b'{' || bytes[j + 1] == b'}')
+                if bytes[j] == b'\\' && j + 1 < n && (bytes[j + 1] == b'{' || bytes[j + 1] == b'}')
                 {
                     j += 2;
                     continue;
@@ -218,7 +215,10 @@ mod tests {
     fn format_value_as_polydat_literal_renders_scalars() {
         assert_eq!(format_value_as_polydat_literal(&Value::U64(42)), "42");
         assert_eq!(format_value_as_polydat_literal(&Value::Bool(true)), "true");
-        assert_eq!(format_value_as_polydat_literal(&Value::Str("x".into())), "\"x\"");
+        assert_eq!(
+            format_value_as_polydat_literal(&Value::Str("x".into())),
+            "\"x\""
+        );
         // f64 with integral value still gets decimal point so the
         // parser doesn't see it as u64.
         assert_eq!(format_value_as_polydat_literal(&Value::F64(2.0)), "2.0");
@@ -227,7 +227,10 @@ mod tests {
     #[test]
     fn format_workload_param_quotes_non_numeric() {
         assert_eq!(format_workload_param_as_polydat_literal("42"), "42");
-        assert_eq!(format_workload_param_as_polydat_literal("hello"), "\"hello\"");
+        assert_eq!(
+            format_workload_param_as_polydat_literal("hello"),
+            "\"hello\""
+        );
         // Bool string routes through quoted path (lexer has no
         // bool keyword).
         assert_eq!(format_workload_param_as_polydat_literal("true"), "\"true\"");
@@ -236,7 +239,10 @@ mod tests {
     #[test]
     fn value_to_param_string_handles_scalars_only() {
         assert_eq!(value_to_param_string(&Value::U64(7)), Some("7".to_string()));
-        assert_eq!(value_to_param_string(&Value::Str("y".into())), Some("y".to_string()));
+        assert_eq!(
+            value_to_param_string(&Value::Str("y".into())),
+            Some("y".to_string())
+        );
         // Non-scalar variants return None — caller falls back.
         assert_eq!(value_to_param_string(&Value::None), None);
     }

@@ -95,15 +95,35 @@ pub trait RunObserver: Send + Sync {
     /// directly instead of re-matching by `(name, status)` in DFS
     /// order, which races under concurrent same-name dispatch
     /// (sweep cells, comprehension iterations, daemon+foreground).
-    fn phase_starting(&self, scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize);
+    fn phase_starting(
+        &self,
+        scene_node_id: crate::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        op_templates: usize,
+        total_cycles: u64,
+        concurrency: usize,
+    );
 
     /// A phase completed successfully. `scene_node_id` keys the
     /// node to flip (see [`Self::phase_starting`]).
-    fn phase_completed(&self, scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64);
+    fn phase_completed(
+        &self,
+        scene_node_id: crate::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        duration_secs: f64,
+    );
 
     /// A phase failed. `scene_node_id` keys the node to flip (see
     /// [`Self::phase_starting`]).
-    fn phase_failed(&self, scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str);
+    fn phase_failed(
+        &self,
+        scene_node_id: crate::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        error: &str,
+    );
 
     /// Update live metrics for the active phase (called at progress tick rate).
     fn phase_progress(&self, update: &PhaseProgressUpdate);
@@ -117,7 +137,13 @@ pub trait RunObserver: Send + Sync {
 
     /// An op-level execution leaf completed. `duration_secs` is the op's own
     /// cumulative execution time. Default no-op.
-    fn op_completed(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _duration_secs: f64) {}
+    fn op_completed(
+        &self,
+        _parent_phase: crate::scene_tree::SceneNodeId,
+        _op_name: &str,
+        _duration_secs: f64,
+    ) {
+    }
 
     /// The op's KEY MEASURABLE, rendered from its `measure:` template at
     /// completion — "12 sstables", "1.4 GiB", "98.1%".
@@ -126,10 +152,22 @@ pub trait RunObserver: Send + Sync {
     /// actually produced, which is the number a reader is usually after. Sent
     /// as its own hook (rather than widening `op_completed`) so every existing
     /// observer keeps compiling and ignoring it costs nothing.
-    fn op_measure(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _text: &str) {}
+    fn op_measure(
+        &self,
+        _parent_phase: crate::scene_tree::SceneNodeId,
+        _op_name: &str,
+        _text: &str,
+    ) {
+    }
 
     /// An op-level execution leaf failed. Default no-op.
-    fn op_failed(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _error: &str) {}
+    fn op_failed(
+        &self,
+        _parent_phase: crate::scene_tree::SceneNodeId,
+        _op_name: &str,
+        _error: &str,
+    ) {
+    }
 
     /// SRD-100 P2 — attach the per-phase [`PhaseRenderHandle`] to the live
     /// display fold, **once**, after the activity's metrics/binder exist
@@ -165,7 +203,9 @@ pub trait RunObserver: Send + Sync {
 
     /// Whether to suppress the inline stderr progress line
     /// (because the TUI is handling display).
-    fn suppresses_stderr(&self) -> bool { false }
+    fn suppresses_stderr(&self) -> bool {
+        false
+    }
 
     /// Optional shared flag mirroring [`Self::suppresses_stderr`]
     /// that the runner threads into long-lived components
@@ -187,14 +227,21 @@ pub trait RunObserver: Send + Sync {
     /// Kept for back-compat; for observers that want multiple reporters
     /// at different cadences, override [`reporters`] instead — the
     /// default impl forwards this single reporter as the base cadence.
-    fn reporter(&self) -> Option<Box<dyn nbrs_metrics::scheduler::Reporter>> { None }
+    fn reporter(&self) -> Option<Box<dyn nbrs_metrics::scheduler::Reporter>> {
+        None
+    }
 
     /// Multiple reporters with explicit cadences. The runner calls
     /// this once during setup. Each `(interval, reporter)` entry is
     /// registered with the scheduler at that interval. The default
     /// implementation returns whatever [`reporter`] produced at the
     /// base 1s cadence, so existing observers work unchanged.
-    fn reporters(&self) -> Vec<(std::time::Duration, Box<dyn nbrs_metrics::scheduler::Reporter>)> {
+    fn reporters(
+        &self,
+    ) -> Vec<(
+        std::time::Duration,
+        Box<dyn nbrs_metrics::scheduler::Reporter>,
+    )> {
         match self.reporter() {
             Some(r) => vec![(std::time::Duration::from_secs(1), r)],
             None => vec![],
@@ -211,7 +258,9 @@ pub trait RunObserver: Send + Sync {
     /// Observers that don't need windowed views (e.g. StderrObserver)
     /// return `None` and the runner falls back to
     /// `Cadences::defaults()`.
-    fn cadences(&self) -> Option<nbrs_metrics::cadence::Cadences> { None }
+    fn cadences(&self) -> Option<nbrs_metrics::cadence::Cadences> {
+        None
+    }
 
     /// Callback invoked once the runner has built the shared
     /// [`nbrs_metrics::metrics_query::MetricsQuery`]. Observers that
@@ -442,8 +491,7 @@ impl CompletedPhaseDisplay {
     }
 }
 
-static COMPLETED_PHASE_DISPLAY: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(0);
+static COMPLETED_PHASE_DISPLAY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Set the run's completed-phase display mode (runner, at param parse).
 pub fn set_completed_phase_display(mode: CompletedPhaseDisplay) {
@@ -516,7 +564,9 @@ pub fn use_color() -> bool {
     use std::sync::OnceLock;
     static CACHE: OnceLock<bool> = OnceLock::new();
     *CACHE.get_or_init(|| {
-        if std::env::var_os("NO_COLOR").is_some() { return false; }
+        if std::env::var_os("NO_COLOR").is_some() {
+            return false;
+        }
         std::io::stderr().is_terminal()
     })
 }
@@ -535,16 +585,14 @@ pub fn use_color() -> bool {
 /// while on flips it back off immediately. Auto-revert ensures
 /// the operator can't leave the overlay stuck on after walking
 /// away.
-static EXPLAIN_HELD_UNTIL_NS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static EXPLAIN_HELD_UNTIL_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Wall-clock nanos of the most recent `?` press. Drives the
 /// auto-repeat debounce — terminals in raw mode send a stream
 /// of keystrokes while `?` is held, and without this the
 /// second auto-repeat would flip the overlay off again
 /// 30 ms after the operator's first press.
-static EXPLAIN_LAST_PRESS_NS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static EXPLAIN_LAST_PRESS_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How long the overlay stays on after a `?` toggle. Picked
 /// to be long enough that the operator can read the explainer
@@ -572,9 +620,7 @@ fn now_nanos() -> u64 {
 pub fn toggle_explain() {
     let now = now_nanos();
     let last_press = EXPLAIN_LAST_PRESS_NS.load(std::sync::atomic::Ordering::Acquire);
-    if last_press != 0
-        && now.saturating_sub(last_press) < EXPLAIN_TOGGLE_DEBOUNCE_MS * 1_000_000
-    {
+    if last_press != 0 && now.saturating_sub(last_press) < EXPLAIN_TOGGLE_DEBOUNCE_MS * 1_000_000 {
         return;
     }
     EXPLAIN_LAST_PRESS_NS.store(now, std::sync::atomic::Ordering::Release);
@@ -607,8 +653,7 @@ pub fn is_explain_held() -> bool {
 /// without the surface repainting underneath the selection. The
 /// full-TUI app keeps its own snapshot-based pause; this global
 /// serves the line-mode frontends, which have no App state.
-static READOUT_PAUSED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static READOUT_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Toggle the readout pause; returns the NEW state (`true` =
 /// now paused).
@@ -688,29 +733,33 @@ pub fn log(level: LogLevel, message: &str) {
 /// managed phase-history region instead).
 pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
     if level >= retain_level()
-        && let Some(sink) = crate::log_sink::global() {
-            let tag = match level {
-                LogLevel::Trace => "TRC",
-                LogLevel::Debug => "DBG",
-                LogLevel::Info  => "INF",
-                LogLevel::Warn  => "WRN",
-                LogLevel::Error => "ERR",
-            };
-            // Human-readable wall-clock timestamp from the session
-            // formatter — matches the session id's date/time style
-            // so log lines correlate visually with the session
-            // directory.
-            let ts = crate::session::now_log_timestamp();
-            // The durable session.log is plain text — strip any ANSI
-            // a colored readout render carried in `message` (notably
-            // the phase `✓` outcome, SRD-81 push 1b). The live ring
-            // keeps the colored version for the terminal scrollback,
-            // and the replay capture is untouched; only this file
-            // projection is stripped.
-            let line = format!("{ts} {tag} {}\n",
-                crate::readouts::snapshot::strip_ansi(message)).into_bytes();
-            let _ = sink.try_send(line);
-        }
+        && let Some(sink) = crate::log_sink::global()
+    {
+        let tag = match level {
+            LogLevel::Trace => "TRC",
+            LogLevel::Debug => "DBG",
+            LogLevel::Info => "INF",
+            LogLevel::Warn => "WRN",
+            LogLevel::Error => "ERR",
+        };
+        // Human-readable wall-clock timestamp from the session
+        // formatter — matches the session id's date/time style
+        // so log lines correlate visually with the session
+        // directory.
+        let ts = crate::session::now_log_timestamp();
+        // The durable session.log is plain text — strip any ANSI
+        // a colored readout render carried in `message` (notably
+        // the phase `✓` outcome, SRD-81 push 1b). The live ring
+        // keeps the colored version for the terminal scrollback,
+        // and the replay capture is untouched; only this file
+        // projection is stripped.
+        let line = format!(
+            "{ts} {tag} {}\n",
+            crate::readouts::snapshot::strip_ansi(message)
+        )
+        .into_bytes();
+        let _ = sink.try_send(line);
+    }
     // SRD-88: route through the current execution's observer (task-local) or
     // the process-global default; `global_observer()` resolves both.
     if let Some(obs) = global_observer() {
@@ -750,7 +799,8 @@ pub(crate) fn op_output_raw(line: &str) {
         && let Some(sink) = crate::log_sink::global()
     {
         let ts = crate::session::now_log_timestamp();
-        let bytes = format!("{ts} INF {}\n", crate::readouts::snapshot::strip_ansi(line)).into_bytes();
+        let bytes =
+            format!("{ts} INF {}\n", crate::readouts::snapshot::strip_ansi(line)).into_bytes();
         let _ = sink.try_send(bytes);
     }
     use std::io::Write;
@@ -768,24 +818,29 @@ pub(crate) fn op_output_raw(line: &str) {
 /// TTY or `NO_COLOR` is set (per [`use_color`]); pipeline
 /// captures stay readable.
 pub fn colorize_log_line(level: LogLevel, message: &str) -> String {
-    if !use_color() { return message.to_string(); }
+    if !use_color() {
+        return message.to_string();
+    }
     let (color, reset) = match level {
         // Faintest grey for trace — even more de-emphasized
         // than debug; rarely reaches console anyway.
-        LogLevel::Trace => ("\x1b[2;90m",   "\x1b[0m"),
+        LogLevel::Trace => ("\x1b[2;90m", "\x1b[0m"),
         // Dim grey for debug — present but de-emphasized.
-        LogLevel::Debug => ("\x1b[2m",      "\x1b[0m"),
+        LogLevel::Debug => ("\x1b[2m", "\x1b[0m"),
         // Default-color for info — the baseline; no
         // override so user-themed terminals show their
         // preferred default.
-        LogLevel::Info  => ("",             ""),
+        LogLevel::Info => ("", ""),
         // Yellow for warn.
-        LogLevel::Warn  => ("\x1b[33m",     "\x1b[0m"),
+        LogLevel::Warn => ("\x1b[33m", "\x1b[0m"),
         // Bold red for error.
-        LogLevel::Error => ("\x1b[1;31m",   "\x1b[0m"),
+        LogLevel::Error => ("\x1b[1;31m", "\x1b[0m"),
     };
-    if color.is_empty() { message.to_string() }
-    else { format!("{color}{message}{reset}") }
+    if color.is_empty() {
+        message.to_string()
+    } else {
+        format!("{color}{message}{reset}")
+    }
 }
 
 /// Convenience macros for logging through the global observer.
@@ -845,7 +900,9 @@ pub struct StderrObserver {
 
 impl Default for StderrObserver {
     fn default() -> Self {
-        Self { min_level: LogLevel::Info }
+        Self {
+            min_level: LogLevel::Info,
+        }
     }
 }
 
@@ -857,17 +914,39 @@ impl StderrObserver {
 }
 
 impl RunObserver for StderrObserver {
-    fn phase_starting(&self, _scene_node_id: crate::scene_tree::SceneNodeId, name: &str, _labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
+    fn phase_starting(
+        &self,
+        _scene_node_id: crate::scene_tree::SceneNodeId,
+        name: &str,
+        _labels: &str,
+        op_templates: usize,
+        total_cycles: u64,
+        concurrency: usize,
+    ) {
         // Route through the canonical event channel so the line
         // lands in `session.log` AND on stderr (via the recursive
         // call back into `StderrObserver::log` below).
-        let template_word = if op_templates == 1 { "op template" } else { "op templates" };
+        let template_word = if op_templates == 1 {
+            "op template"
+        } else {
+            "op templates"
+        };
         let cycle_word = if total_cycles == 1 { "cycle" } else { "cycles" };
-        crate::observer::log(LogLevel::Info,
-            &format!("phase '{name}': {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
+        crate::observer::log(
+            LogLevel::Info,
+            &format!(
+                "phase '{name}': {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"
+            ),
+        );
     }
 
-    fn phase_completed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, _name: &str, _labels: &str, _duration_secs: f64) {
+    fn phase_completed(
+        &self,
+        _scene_node_id: crate::scene_tree::SceneNodeId,
+        _name: &str,
+        _labels: &str,
+        _duration_secs: f64,
+    ) {
         // No-op — the executor's own diag emits a fully-formatted
         // "phase 'X' complete (Ns)" line via the log path. Doing
         // it here too produced a duplicate (and a less
@@ -875,7 +954,13 @@ impl RunObserver for StderrObserver {
         // callback stays for non-stderr consumers.
     }
 
-    fn phase_failed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, _name: &str, _labels: &str, _error: &str) {
+    fn phase_failed(
+        &self,
+        _scene_node_id: crate::scene_tree::SceneNodeId,
+        _name: &str,
+        _labels: &str,
+        _error: &str,
+    ) {
         // Same reasoning as phase_completed — the executor diags
         // already emit "phase 'X' stopped by error handler (Ns)"
         // (or other failure messages) right before calling this.
@@ -923,14 +1008,20 @@ mod display_mode_tests {
 
     #[test]
     fn completed_phase_display_parses_and_rejects() {
-        assert_eq!(CompletedPhaseDisplay::parse("full"),
-            Some(CompletedPhaseDisplay::Full));
-        assert_eq!(CompletedPhaseDisplay::parse(" HEADERS "),
-            Some(CompletedPhaseDisplay::Headers));
+        assert_eq!(
+            CompletedPhaseDisplay::parse("full"),
+            Some(CompletedPhaseDisplay::Full)
+        );
+        assert_eq!(
+            CompletedPhaseDisplay::parse(" HEADERS "),
+            Some(CompletedPhaseDisplay::Headers)
+        );
         assert_eq!(CompletedPhaseDisplay::parse("collapse"), None);
         // Default is Full — completion is never a full collapse
         // (SRD-92 R5).
-        assert_eq!(CompletedPhaseDisplay::default(),
-            CompletedPhaseDisplay::Full);
+        assert_eq!(
+            CompletedPhaseDisplay::default(),
+            CompletedPhaseDisplay::Full
+        );
     }
 }

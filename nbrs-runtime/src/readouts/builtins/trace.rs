@@ -35,9 +35,16 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct Trace;
 
 impl Readout for Trace {
-    fn name(&self) -> &'static str { "trace" }
+    fn name(&self) -> &'static str {
+        "trace"
+    }
     fn accepts(&self) -> &'static [SubjectKind] {
-        &[SubjectKind::Session, SubjectKind::Phase, SubjectKind::Iteration, SubjectKind::Scope]
+        &[
+            SubjectKind::Session,
+            SubjectKind::Phase,
+            SubjectKind::Iteration,
+            SubjectKind::Scope,
+        ]
     }
 
     fn render(
@@ -70,21 +77,9 @@ impl Readout for Trace {
         // Context fields, one per line under the header.
         // Order kept stable across runs so test assertions
         // can pin against it.
-        let _ = write!(
-            &mut tmp,
-            "\n  refresh_tick={t}",
-            t = ctx.refresh_tick(),
-        );
-        let _ = write!(
-            &mut tmp,
-            "\n  phase_name={n:?}",
-            n = ctx.subject_name(),
-        );
-        let _ = write!(
-            &mut tmp,
-            "\n  activity_name={n:?}",
-            n = ctx.activity_name(),
-        );
+        let _ = write!(&mut tmp, "\n  refresh_tick={t}", t = ctx.refresh_tick(),);
+        let _ = write!(&mut tmp, "\n  phase_name={n:?}", n = ctx.subject_name(),);
+        let _ = write!(&mut tmp, "\n  activity_name={n:?}", n = ctx.activity_name(),);
         match ctx.subject_seq() {
             Some((i, t)) => {
                 let _ = write!(&mut tmp, "\n  phase_seq=({i}/{t})");
@@ -93,11 +88,7 @@ impl Readout for Trace {
                 let _ = write!(&mut tmp, "\n  phase_seq=None");
             }
         }
-        let _ = write!(
-            &mut tmp,
-            "\n  phase_labels={l:?}",
-            l = ctx.subject_labels(),
-        );
+        let _ = write!(&mut tmp, "\n  phase_labels={l:?}", l = ctx.subject_labels(),);
         let _ = write!(
             &mut tmp,
             "\n  cycles={c}/{t}",
@@ -112,21 +103,9 @@ impl Readout for Trace {
             e = ctx.errors(),
             r = ctx.retries(),
         );
-        let _ = write!(
-            &mut tmp,
-            "\n  concurrency={c}",
-            c = ctx.concurrency(),
-        );
-        let _ = write!(
-            &mut tmp,
-            "\n  consumed={c}",
-            c = ctx.consumed(),
-        );
-        let _ = write!(
-            &mut tmp,
-            "\n  elapsed_secs={e:.3}",
-            e = ctx.elapsed_secs(),
-        );
+        let _ = write!(&mut tmp, "\n  concurrency={c}", c = ctx.concurrency(),);
+        let _ = write!(&mut tmp, "\n  consumed={c}", c = ctx.consumed(),);
+        let _ = write!(&mut tmp, "\n  elapsed_secs={e:.3}", e = ctx.elapsed_secs(),);
         match ctx.eta_secs() {
             Some(s) => {
                 let _ = write!(&mut tmp, "\n  eta_secs={s:.3}");
@@ -152,11 +131,7 @@ impl Readout for Trace {
             "\n  depth_indent_len={d}",
             d = ctx.depth_indent().len(),
         );
-        let _ = write!(
-            &mut tmp,
-            "\n  use_color={c}",
-            c = ctx.use_color(),
-        );
+        let _ = write!(&mut tmp, "\n  use_color={c}", c = ctx.use_color(),);
 
         let len = tmp.len();
         let _ = out.write_str(&tmp);
@@ -167,10 +142,7 @@ impl Readout for Trace {
 /// Schema dump for Explanation mode. Same field list as
 /// the value render, but each row reads
 /// `name: <semantic type>` instead of `name=<value>`.
-fn render_explanation(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_explanation(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let s = "event=on_<event-slot> lod=<density> mode=<value|explanation>\n  \
 refresh_tick: monotonic counter advanced once per refresh fire\n  \
 phase_name: bare phase identifier (no coord suffix)\n  \
@@ -187,7 +159,8 @@ status_metric_chips: workload-emphasised metric tail\n  \
 adapter_counters_text: per-dispenser counter chips\n  \
 batch_info_text: rows-per-batch summary\n  \
 depth_indent_len: scope-tree indent width\n  \
-use_color: surface accepts ANSI styling".to_string();
+use_color: surface accepts ANSI styling"
+        .to_string();
     let _ = out.write_str(&s);
     let _ = ctx; // schema doesn't depend on context
     s.len()
@@ -225,37 +198,80 @@ mod tests {
     }
 
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { &self.phase_name }
+        fn subject_name(&self) -> &str {
+            &self.phase_name
+        }
         fn activity_name(&self) -> &str {
             self.activity_name.as_deref().unwrap_or(&self.phase_name)
         }
-        fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
-        fn subject_labels(&self) -> &str { &self.phase_labels }
-        fn cycles_completed(&self) -> u64 { self.cycles_completed }
-        fn cycles_total(&self) -> u64 { self.cycles_total }
-        fn ops_started(&self) -> u64 { self.ops_started }
-        fn ops_ok(&self) -> u64 { self.ops_ok }
-        fn errors(&self) -> u64 { self.errors }
-        fn retries(&self) -> u64 { self.retries }
-        fn concurrency(&self) -> usize { self.concurrency }
-        fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-        fn eta_secs(&self) -> Option<f64> { self.eta_secs }
-        fn consumed(&self) -> u64 { self.consumed }
-        fn status_metric_chips(&self) -> String { self.chips.clone() }
-        fn adapter_counters_text(&self) -> String { self.adapter.clone() }
-        fn batch_info_text(&self) -> String { self.batch.clone() }
-        fn depth_indent(&self) -> &str { &self.depth_indent }
-        fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> EventType { self.event.unwrap_or(EventType::PhaseEnd) }
-        fn refresh_tick(&self) -> u64 { self.refresh_tick }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            self.phase_seq
+        }
+        fn subject_labels(&self) -> &str {
+            &self.phase_labels
+        }
+        fn cycles_completed(&self) -> u64 {
+            self.cycles_completed
+        }
+        fn cycles_total(&self) -> u64 {
+            self.cycles_total
+        }
+        fn ops_started(&self) -> u64 {
+            self.ops_started
+        }
+        fn ops_ok(&self) -> u64 {
+            self.ops_ok
+        }
+        fn errors(&self) -> u64 {
+            self.errors
+        }
+        fn retries(&self) -> u64 {
+            self.retries
+        }
+        fn concurrency(&self) -> usize {
+            self.concurrency
+        }
+        fn elapsed_secs(&self) -> f64 {
+            self.elapsed_secs
+        }
+        fn eta_secs(&self) -> Option<f64> {
+            self.eta_secs
+        }
+        fn consumed(&self) -> u64 {
+            self.consumed
+        }
+        fn status_metric_chips(&self) -> String {
+            self.chips.clone()
+        }
+        fn adapter_counters_text(&self) -> String {
+            self.adapter.clone()
+        }
+        fn batch_info_text(&self) -> String {
+            self.batch.clone()
+        }
+        fn depth_indent(&self) -> &str {
+            &self.depth_indent
+        }
+        fn use_color(&self) -> bool {
+            self.use_color
+        }
+        fn event(&self) -> EventType {
+            self.event.unwrap_or(EventType::PhaseEnd)
+        }
+        fn refresh_tick(&self) -> u64 {
+            self.refresh_tick
+        }
     }
 
     fn render(ctx: &TestCtx) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         Trace.render(
-            ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -266,10 +282,14 @@ mod tests {
         // header. If a future Event variant gets added and
         // the reverse-mapping forgets it, this test fails.
         for ev in [
-            EventType::SessionStart, EventType::SessionEnd,
-            EventType::PhaseStart,   EventType::PhaseEnd,
-            EventType::EachStart,    EventType::EachEnd,
-            EventType::ScopeStart,   EventType::ScopeEnd,
+            EventType::SessionStart,
+            EventType::SessionEnd,
+            EventType::PhaseStart,
+            EventType::PhaseEnd,
+            EventType::EachStart,
+            EventType::EachEnd,
+            EventType::ScopeStart,
+            EventType::ScopeEnd,
             EventType::Update,
         ] {
             let ctx = TestCtx {
@@ -278,8 +298,10 @@ mod tests {
                 ..Default::default()
             };
             let out = render(&ctx);
-            assert!(out.starts_with(&format!("event={}", ev.slot_name())),
-                "event {ev:?} not surfaced in trace header: {out}");
+            assert!(
+                out.starts_with(&format!("event={}", ev.slot_name())),
+                "event {ev:?} not surfaced in trace header: {out}"
+            );
         }
     }
 
@@ -329,8 +351,10 @@ mod tests {
             "depth_indent_len=4",
             "use_color=true",
         ] {
-            assert!(out.contains(needle),
-                "trace missing {needle:?} — actual: {out}");
+            assert!(
+                out.contains(needle),
+                "trace missing {needle:?} — actual: {out}"
+            );
         }
     }
 
@@ -342,11 +366,17 @@ mod tests {
         };
         let out = render(&ctx);
         // Empty chips / adapter / batch suppressed.
-        assert!(!out.contains("status_metric_chips="),
-            "empty chips should not surface: {out}");
-        assert!(!out.contains("adapter_counters_text="),
-            "empty adapter text should not surface: {out}");
-        assert!(!out.contains("batch_info_text="),
-            "empty batch text should not surface: {out}");
+        assert!(
+            !out.contains("status_metric_chips="),
+            "empty chips should not surface: {out}"
+        );
+        assert!(
+            !out.contains("adapter_counters_text="),
+            "empty adapter text should not surface: {out}"
+        );
+        assert!(
+            !out.contains("batch_info_text="),
+            "empty batch text should not surface: {out}"
+        );
     }
 }

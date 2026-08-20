@@ -6,16 +6,16 @@
 //! Parses a YAML workload definition and normalizes all shorthand
 //! forms into the canonical `ParsedOp` model.
 
-use std::collections::HashMap;
-use serde_json::Value as JVal;
-use polydat::iteration::comprehension::spec::{
-    parse_clause, parse_clause_list, ComprehensionSpec, ForSpec,
-};
 use crate::model::{
-    BindingsDef, ContinueIfSpec, MetricSpec, ParsedOp, ScenarioNode, ScopeLevel,
-    StopConditionSpec, Workload, WorkloadPhase,
+    BindingsDef, ContinueIfSpec, MetricSpec, ParsedOp, ScenarioNode, ScopeLevel, StopConditionSpec,
+    Workload, WorkloadPhase,
 };
 use crate::template::expand_templates;
+use polydat::iteration::comprehension::spec::{
+    ComprehensionSpec, ForSpec, parse_clause, parse_clause_list,
+};
+use serde_json::Value as JVal;
+use std::collections::HashMap;
 
 /// Parse a YAML workload string into a normalized Workload.
 ///
@@ -24,16 +24,18 @@ use crate::template::expand_templates;
 /// resolution context for the relative path (no including-file
 /// directory). Callers that need `extends:` support must use
 /// [`parse_workload_from_path`].
-pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Result<Workload, String> {
+pub fn parse_workload(
+    yaml_source: &str,
+    params: &HashMap<String, String>,
+) -> Result<Workload, String> {
     // Stage 1: TEMPLATE expansion
     let expanded = expand_templates(yaml_source, params);
 
     // Stage 2: Parse YAML into generic Value
-    let doc: JVal = serde_yaml::from_str(&expanded)
-        .map_err(|e| format!("YAML parse error: {e}"))?;
+    let doc: JVal =
+        serde_yaml::from_str(&expanded).map_err(|e| format!("YAML parse error: {e}"))?;
 
-    let obj = doc.as_object()
-        .ok_or("workload must be a YAML mapping")?;
+    let obj = doc.as_object().ok_or("workload must be a YAML mapping")?;
 
     // SRD-72: `extends:` requires a resolution context. The
     // text-only entry point has no including-file directory, so
@@ -48,7 +50,8 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     }
 
     // Stage 3: Extract top-level fields
-    let description = obj.get("description")
+    let description = obj
+        .get("description")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -82,9 +85,17 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // Top-level ops (no blocks): no block sugar to inline.
     for key in ["ops", "op", "operations", "statements", "statement"] {
         if let Some(ops_val) = obj.get(key)
-            && obj.get("blocks").is_none() {
-                parse_ops_field(ops_val, "block0", &BindingsDef::default(), &doc_params, &doc_tags, &mut all_ops)?;
-            }
+            && obj.get("blocks").is_none()
+        {
+            parse_ops_field(
+                ops_val,
+                "block0",
+                &BindingsDef::default(),
+                &doc_params,
+                &doc_tags,
+                &mut all_ops,
+            )?;
+        }
     }
 
     // Stage 5: Parse phases
@@ -110,17 +121,19 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // `extends:` a blueprint and contributes tagged block ops
     // that these selectors pick up.
     for (phase_name, phase) in phases.iter_mut() {
-        let Some(selector) = phase.tags.clone() else { continue };
+        let Some(selector) = phase.tags.clone() else {
+            continue;
+        };
         if !phase.ops.is_empty() {
             return Err(format!(
                 "phase '{phase_name}' declares both inline ops and a \
                  `tags:` selector — a phase has exactly one source of \
                  ops. Drop the selector or move the ops into a tagged \
-                 block."));
+                 block."
+            ));
         }
         let mut selected = crate::tags::TagFilter::filter_ops(&all_ops, &selector)
-            .map_err(|e| format!(
-                "phase '{phase_name}' `tags:` selector: {e}"))?;
+            .map_err(|e| format!("phase '{phase_name}' `tags:` selector: {e}"))?;
         if selected.is_empty() {
             return Err(format!(
                 "phase '{phase_name}' `tags:` selector '{selector}' \
@@ -128,7 +141,8 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
                  selector-only phase must bind at least one op — \
                  check the tag vocabulary against the blocks this \
                  workload (or its extends chain) declares.",
-                all_ops.len()));
+                all_ops.len()
+            ));
         }
         // Mirror the inline-op auto-tagging: selected clones gain
         // the `phase` tag their inline siblings get at parse.
@@ -172,16 +186,14 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // Operators must migrate to the unified `report:` block
     // (SRD-46). The error message names both new homes.
     if obj.contains_key("summary") || obj.contains_key("summaries") {
-        return Err(
-            "`summary:` / `summaries:` removed; use `report:` with \
-             `table <name> ...` directives instead (SRD-46)".to_string()
-        );
+        return Err("`summary:` / `summaries:` removed; use `report:` with \
+             `table <name> ...` directives instead (SRD-46)"
+            .to_string());
     }
     if obj.contains_key("plot") || obj.contains_key("plots") {
-        return Err(
-            "`plot:` / `plots:` removed; use `report:` with \
-             `plot <name> ...` directives instead (SRD-46)".to_string()
-        );
+        return Err("`plot:` / `plots:` removed; use `report:` with \
+             `plot <name> ...` directives instead (SRD-46)"
+            .to_string());
     }
 
     // ── Construction-model enforcement gate ──
@@ -195,17 +207,20 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // a generic unknown-element finding).
     {
         let doc = serde_json::Value::Object(obj.clone());
-        let violations = crate::construction::validate_workload(
-            &doc, crate::construction::Mode::Complete);
+        let violations =
+            crate::construction::validate_workload(&doc, crate::construction::Mode::Complete);
         if !violations.is_empty() {
-            let mut lines: Vec<String> = violations.iter()
+            let mut lines: Vec<String> = violations
+                .iter()
                 .map(|v| format!("  {}: {}", v.path, v.message))
                 .collect();
             lines.sort();
             return Err(format!(
                 "workload construction: {} violation(s) \
                  (docs/guide/construction_model.md):\n{}",
-                violations.len(), lines.join("\n")));
+                violations.len(),
+                lines.join("\n")
+            ));
         }
     }
 
@@ -214,8 +229,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // returned warnings are stashed on the Workload for
     // strict-mode promotion downstream (SRD-15).
     let (report, report_warnings) = if let Some(val) = obj.get("report") {
-        let parsed = crate::report::parse_report(val)
-            .map_err(|e| format!("report: {e}"))?;
+        let parsed = crate::report::parse_report(val).map_err(|e| format!("report: {e}"))?;
         (parsed.report, parsed.warnings)
     } else {
         (crate::report::Report::default(), Vec::new())
@@ -238,7 +252,8 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
                 if ACTIVITY_PARAM_KEYS.contains(&key.as_str()) {
                     continue;
                 }
-                op.params.insert(key.clone(), serde_json::Value::String(value.clone()));
+                op.params
+                    .insert(key.clone(), serde_json::Value::String(value.clone()));
             }
         }
     }
@@ -276,19 +291,23 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // strings, single string, or comma-separated string.
     let doc_status_metrics: Vec<String> = match obj.get("status_metrics") {
         None => Vec::new(),
-        Some(JVal::Array(items)) => items.iter()
+        Some(JVal::Array(items)) => items
+            .iter()
             .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
             .filter(|s| !s.is_empty())
             .collect(),
-        Some(JVal::String(s)) => s.split(',')
+        Some(JVal::String(s)) => s
+            .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(String::from)
             .collect(),
-        Some(other) => return Err(format!(
-            "status_metrics: must be a list of names/patterns, a \
+        Some(other) => {
+            return Err(format!(
+                "status_metrics: must be a list of names/patterns, a \
              comma-separated string, or omitted; got {other:?}"
-        )),
+            ));
+        }
     };
     if !doc_status_metrics.is_empty() {
         for phase in phases.values_mut() {
@@ -328,26 +347,39 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // document provides op bodies for. A non-string value is
     // rejected rather than ignored.
     let implements: Option<String> = match obj.get("implements") {
-        Some(v) => Some(v.as_str()
-            .ok_or_else(|| format!(
-                "`implements:` must be a workload reference string, got {v}"))?
-            .to_string()),
+        Some(v) => Some(
+            v.as_str()
+                .ok_or_else(|| {
+                    format!("`implements:` must be a workload reference string, got {v}")
+                })?
+                .to_string(),
+        ),
         None => None,
     };
 
     // SRD-106 Part 3 — `stick_session:` top-level bool. A non-bool
     // value is rejected rather than ignored (never-ignore-silently).
     let stick_session: Option<bool> = match obj.get("stick_session") {
-        Some(v) => Some(v.as_bool().ok_or_else(|| format!(
-            "`stick_session:` must be a boolean, got {v}"))?),
+        Some(v) => Some(
+            v.as_bool()
+                .ok_or_else(|| format!("`stick_session:` must be a boolean, got {v}"))?,
+        ),
         None => None,
     };
 
     Ok(Workload {
-        description, scenarios, ops: all_ops, bindings: doc_bindings,
-        params: resolved_params, phases, phase_order, declared_params,
+        description,
+        scenarios,
+        ops: all_ops,
+        bindings: doc_bindings,
+        params: resolved_params,
+        phases,
+        phase_order,
+        declared_params,
         stop_when,
-        report, report_warnings, scenario_parse_errors,
+        report,
+        report_warnings,
+        scenario_parse_errors,
         status_metrics: doc_status_metrics,
         readouts,
         wrappers: None,
@@ -400,7 +432,8 @@ fn parse_readouts_block(value: Option<&JVal>) -> Result<crate::model::ReadoutsBi
     for (key, val) in map {
         let bodies: Vec<String> = match val {
             JVal::String(s) => vec![s.trim().to_string()],
-            JVal::Array(items) => items.iter()
+            JVal::Array(items) => items
+                .iter()
                 .map(|item| match item {
                     JVal::String(s) => Ok(s.trim().to_string()),
                     other => Err(format!(
@@ -409,13 +442,13 @@ fn parse_readouts_block(value: Option<&JVal>) -> Result<crate::model::ReadoutsBi
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             JVal::Null => continue,
-            other => return Err(format!(
-                "readouts.{key}: must be a string or list of strings; got {other:?}"
-            )),
+            other => {
+                return Err(format!(
+                    "readouts.{key}: must be a string or list of strings; got {other:?}"
+                ));
+            }
         };
-        let bodies: Vec<String> = bodies.into_iter()
-            .filter(|s| !s.is_empty())
-            .collect();
+        let bodies: Vec<String> = bodies.into_iter().filter(|s| !s.is_empty()).collect();
         // Wildcard expansion (SRD-63 §4.1.1). The yaml key
         // can match a family rather than a single slot:
         //   `each_*`    → on_each_start + on_each_end
@@ -431,43 +464,49 @@ fn parse_readouts_block(value: Option<&JVal>) -> Result<crate::model::ReadoutsBi
         // expansions appended.
         let target_slots: Vec<&str> = match key.as_str() {
             "on_session_start" => vec!["on_session_start"],
-            "on_session_end"   => vec!["on_session_end"],
-            "on_phase_start"   => vec!["on_phase_start"],
-            "on_phase_end"     => vec!["on_phase_end"],
-            "on_each_start"    => vec!["on_each_start"],
-            "on_each_end"      => vec!["on_each_end"],
-            "on_scope_start"   => vec!["on_scope_start"],
-            "on_scope_end"     => vec!["on_scope_end"],
-            "on_update"        => vec!["on_update"],
-            "session_*"        => vec!["on_session_start", "on_session_end"],
-            "phase_*"          => vec!["on_phase_start",   "on_phase_end"],
-            "each_*"           => vec!["on_each_start",    "on_each_end"],
-            "scope_*"          => vec!["on_scope_start",   "on_scope_end"],
-            "*"                => vec![
-                "on_session_start", "on_session_end",
-                "on_phase_start",   "on_phase_end",
-                "on_each_start",    "on_each_end",
-                "on_scope_start",   "on_scope_end",
+            "on_session_end" => vec!["on_session_end"],
+            "on_phase_start" => vec!["on_phase_start"],
+            "on_phase_end" => vec!["on_phase_end"],
+            "on_each_start" => vec!["on_each_start"],
+            "on_each_end" => vec!["on_each_end"],
+            "on_scope_start" => vec!["on_scope_start"],
+            "on_scope_end" => vec!["on_scope_end"],
+            "on_update" => vec!["on_update"],
+            "session_*" => vec!["on_session_start", "on_session_end"],
+            "phase_*" => vec!["on_phase_start", "on_phase_end"],
+            "each_*" => vec!["on_each_start", "on_each_end"],
+            "scope_*" => vec!["on_scope_start", "on_scope_end"],
+            "*" => vec![
+                "on_session_start",
+                "on_session_end",
+                "on_phase_start",
+                "on_phase_end",
+                "on_each_start",
+                "on_each_end",
+                "on_scope_start",
+                "on_scope_end",
                 "on_update",
             ],
-            other => return Err(format!(
-                "readouts: unknown slot '{other}'. Known: \
+            other => {
+                return Err(format!(
+                    "readouts: unknown slot '{other}'. Known: \
                  on_session_start/end, on_phase_start/end, \
                  on_each_start/end, on_scope_start/end, on_update; \
                  wildcards: each_*, phase_*, scope_*, session_*, *"
-            )),
+                ));
+            }
         };
         for slot in target_slots {
             let target: &mut Vec<String> = match slot {
                 "on_session_start" => &mut out.on_session_start,
-                "on_session_end"   => &mut out.on_session_end,
-                "on_phase_start"   => &mut out.on_phase_start,
-                "on_phase_end"     => &mut out.on_phase_end,
-                "on_each_start"    => &mut out.on_each_start,
-                "on_each_end"      => &mut out.on_each_end,
-                "on_scope_start"   => &mut out.on_scope_start,
-                "on_scope_end"     => &mut out.on_scope_end,
-                "on_update"        => &mut out.on_update,
+                "on_session_end" => &mut out.on_session_end,
+                "on_phase_start" => &mut out.on_phase_start,
+                "on_phase_end" => &mut out.on_phase_end,
+                "on_each_start" => &mut out.on_each_start,
+                "on_each_end" => &mut out.on_each_end,
+                "on_scope_start" => &mut out.on_scope_start,
+                "on_scope_end" => &mut out.on_scope_end,
+                "on_update" => &mut out.on_update,
                 _ => unreachable!(),
             };
             target.extend(bodies.iter().cloned());
@@ -491,7 +530,8 @@ fn collect_idempotent_under_do_loop(
         match node {
             ScenarioNode::Phase(name) => {
                 if in_do_loop {
-                    let idempotent = phases.get(name)
+                    let idempotent = phases
+                        .get(name)
                         .and_then(|p| p.checkpoint.as_ref())
                         .map(|c| c.idempotent)
                         .unwrap_or(false);
@@ -500,8 +540,7 @@ fn collect_idempotent_under_do_loop(
                     }
                 }
             }
-            ScenarioNode::DoWhile { children, .. }
-            | ScenarioNode::DoUntil { children, .. } => {
+            ScenarioNode::DoWhile { children, .. } | ScenarioNode::DoUntil { children, .. } => {
                 collect_idempotent_under_do_loop(children, true, phases, out);
             }
             ScenarioNode::Comprehension { children, .. } => {
@@ -578,8 +617,12 @@ fn parse_scenarios(
     errors: &mut Vec<String>,
 ) -> HashMap<String, Vec<ScenarioNode>> {
     let mut scenarios = HashMap::new();
-    let Some(val) = val else { return scenarios; };
-    let Some(obj) = val.as_object() else { return scenarios; };
+    let Some(val) = val else {
+        return scenarios;
+    };
+    let Some(obj) = val.as_object() else {
+        return scenarios;
+    };
 
     for (scenario_name, steps_val) in obj {
         let nodes = parse_scenario_nodes_with_errors(steps_val, scenario_name, errors);
@@ -603,7 +646,8 @@ fn parse_scenario_nodes_with_errors(
     errors: &mut Vec<String>,
 ) -> Vec<ScenarioNode> {
     match val {
-        JVal::Array(arr) => arr.iter()
+        JVal::Array(arr) => arr
+            .iter()
             .flat_map(|item| parse_scenario_nodes_with_errors(item, scenario_name, errors))
             .collect(),
         JVal::Object(obj) => {
@@ -630,7 +674,8 @@ fn parse_scenario_nodes_with_errors(
             //    silently dropping these used to cause
             //    confusing downstream errors (`phase 'iterate'
             //    not found` masking a typoed `for_each` key).
-            let bad: Vec<&String> = obj.iter()
+            let bad: Vec<&String> = obj
+                .iter()
                 .filter(|(_, v)| !matches!(v, JVal::String(_) | JVal::Null))
                 .map(|(k, _)| k)
                 .collect();
@@ -661,7 +706,9 @@ fn parse_scenario_nodes_with_errors(
 /// (no recognized key) from "legitimate node" before the
 /// silent-catchall in the legacy path can fire.
 fn has_recognised_scenario_key(obj: &serde_json::Map<String, JVal>) -> bool {
-    crate::vocab::scenario_node_keys().iter().any(|k| obj.contains_key(*k))
+    crate::vocab::scenario_node_keys()
+        .iter()
+        .any(|k| obj.contains_key(*k))
 }
 
 /// Emit the polydat RHS for a scenario `set:` value. A **bare identifier is a
@@ -710,9 +757,7 @@ fn emit_set_value_literal(value: &JVal) -> String {
 /// quoted string element.
 fn emit_set_array_element(e: &JVal) -> String {
     match e {
-        JVal::String(s) if crate::bindpoints::is_bare_identifier(s.trim()) => {
-            s.trim().to_string()
-        }
+        JVal::String(s) if crate::bindpoints::is_bare_identifier(s.trim()) => s.trim().to_string(),
         JVal::Number(n) => n.to_string(),
         JVal::Bool(b) => b.to_string(),
         JVal::String(s) => {
@@ -768,12 +813,17 @@ fn parse_continue_if(val: Option<&JVal>) -> Option<ContinueIfSpec> {
             let when = map.get("when").and_then(|v| v.as_str())?.to_string();
             let each: Vec<ScopeLevel> = match map.get("each") {
                 Some(JVal::String(s)) => parse_scope_level(s).into_iter().collect(),
-                Some(JVal::Array(arr)) => arr.iter()
+                Some(JVal::Array(arr)) => arr
+                    .iter()
                     .filter_map(|v| v.as_str().and_then(parse_scope_level))
                     .collect(),
                 _ => Vec::new(),
             };
-            let each = if each.is_empty() { vec![ScopeLevel::Scenario] } else { each };
+            let each = if each.is_empty() {
+                vec![ScopeLevel::Scenario]
+            } else {
+                each
+            };
             Some(ContinueIfSpec { when, each })
         }
         _ => None,
@@ -785,10 +835,12 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
         JVal::String(s) => vec![ScenarioNode::Phase(s.clone())],
         JVal::Array(arr) => arr.iter().flat_map(parse_scenario_nodes).collect(),
         JVal::Object(obj) => {
-            let children = obj.get("phases")
+            let children = obj
+                .get("phases")
                 .map(parse_scenario_nodes)
                 .unwrap_or_default();
-            let counter = obj.get("counter")
+            let counter = obj
+                .get("counter")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
@@ -832,10 +884,15 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                         // singleton inner-list so the
                         // UnionOfClauseLists shape carries the
                         // "one entry = one sub-space" semantic.
-                        let groups: Vec<Vec<String>> = arr.iter()
+                        let groups: Vec<Vec<String>> = arr
+                            .iter()
                             .filter_map(|item| item.as_str().map(|s| vec![s.to_string()]))
                             .collect();
-                        if groups.is_empty() { None } else { Some(ForSpec::UnionOfClauseLists(groups)) }
+                        if groups.is_empty() {
+                            None
+                        } else {
+                            Some(ForSpec::UnionOfClauseLists(groups))
+                        }
                     }
                     JVal::Object(map) => {
                         // Map form is always a single sub-space
@@ -845,7 +902,8 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                         if map.is_empty() {
                             None
                         } else {
-                            let inline = map.iter()
+                            let inline = map
+                                .iter()
                                 .map(|(k, v)| format!("{k} in {}", v.as_str().unwrap_or("")))
                                 .collect::<Vec<_>>()
                                 .join(", ");
@@ -863,21 +921,18 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                             // Optional `where:` key carries a
                             // filter predicate evaluated per
                             // emitted tuple.
-                            r#where: obj.get("where")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
+                            r#where: obj.get("where").and_then(|v| v.as_str()).map(String::from),
                             // Optional `order:` key carries a
                             // traversal order spec (GK text form,
                             // e.g. "extrema/1").
-                            order: obj.get("order")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
+                            order: obj.get("order").and_then(|v| v.as_str()).map(String::from),
                         };
                         match spec.into_algebra() {
                             Ok(comprehension) => vec![ScenarioNode::Comprehension {
-                        comprehension, children,
-                        continue_if: parse_continue_if(obj.get("continue_if")),
-                    }],
+                                comprehension,
+                                children,
+                                continue_if: parse_continue_if(obj.get("continue_if")),
+                            }],
                             Err(e) => {
                                 eprintln!("warning: comprehension: {e}");
                                 vec![]
@@ -910,20 +965,23 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 // includes with other scenario-node shapes
                 // already supported by `parse_scenario_nodes`.
                 match scenarios_val {
-                    JVal::Array(arr) => arr.iter().flat_map(|item| {
-                        match item {
-                            JVal::String(s) => vec![ScenarioNode::IncludedScenario {
-                                name: s.clone(),
-                                children: Vec::new(),
-                            }],
-                            // Anything else (object with
-                            // `scenario:`, `for_each:`, etc.)
-                            // routes through the standard parse
-                            // path so list entries can be
-                            // heterogeneous.
-                            _ => parse_scenario_nodes(item),
-                        }
-                    }).collect(),
+                    JVal::Array(arr) => arr
+                        .iter()
+                        .flat_map(|item| {
+                            match item {
+                                JVal::String(s) => vec![ScenarioNode::IncludedScenario {
+                                    name: s.clone(),
+                                    children: Vec::new(),
+                                }],
+                                // Anything else (object with
+                                // `scenario:`, `for_each:`, etc.)
+                                // routes through the standard parse
+                                // path so list entries can be
+                                // heterogeneous.
+                                _ => parse_scenario_nodes(item),
+                            }
+                        })
+                        .collect(),
                     JVal::String(s) => vec![ScenarioNode::IncludedScenario {
                         name: s.clone(),
                         children: Vec::new(),
@@ -940,7 +998,8 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 // — same semantics as the legacy direct
                 // `Comprehension::cartesian(...)` path.
                 let specs = parse_combination_specs(combo_val);
-                let inline = specs.iter()
+                let inline = specs
+                    .iter()
                     .map(|(v, e)| format!("{v} in {e}"))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -951,7 +1010,8 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 };
                 match spec.into_algebra() {
                     Ok(comprehension) => vec![ScenarioNode::Comprehension {
-                        comprehension, children,
+                        comprehension,
+                        children,
                         continue_if: parse_continue_if(obj.get("continue_if")),
                     }],
                     Err(e) => {
@@ -960,9 +1020,17 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     }
                 }
             } else if let Some(cond) = obj.get("do_while").and_then(|v| v.as_str()) {
-                vec![ScenarioNode::DoWhile { condition: cond.to_string(), counter, children }]
+                vec![ScenarioNode::DoWhile {
+                    condition: cond.to_string(),
+                    counter,
+                    children,
+                }]
             } else if let Some(cond) = obj.get("do_until").and_then(|v| v.as_str()) {
-                vec![ScenarioNode::DoUntil { condition: cond.to_string(), counter, children }]
+                vec![ScenarioNode::DoUntil {
+                    condition: cond.to_string(),
+                    counter,
+                    children,
+                }]
             } else if let Some(bindings_val) = obj.get("bindings") {
                 // Scenario-tree-level `bindings:` — arbitrary GK
                 // matter that installs as a scope-tree layer over
@@ -1031,24 +1099,19 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 // collision via the standard Polydat shadow semantics
                 // for the same source.
                 let pairs: Vec<(String, JVal)> = match set_val {
-                    JVal::Object(map) => map.iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    JVal::String(s) => {
-                        match s.split_once('=') {
-                            Some((k, v)) => vec![(
-                                k.trim().to_string(),
-                                JVal::String(v.trim().to_string()),
-                            )],
-                            None => {
-                                eprintln!(
-                                    "warning: scenario `set:` string form must be \
-                                     `name=value`, got `{s}` — ignoring"
-                                );
-                                Vec::new()
-                            }
+                    JVal::Object(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    JVal::String(s) => match s.split_once('=') {
+                        Some((k, v)) => {
+                            vec![(k.trim().to_string(), JVal::String(v.trim().to_string()))]
                         }
-                    }
+                        None => {
+                            eprintln!(
+                                "warning: scenario `set:` string form must be \
+                                     `name=value`, got `{s}` — ignoring"
+                            );
+                            Vec::new()
+                        }
+                    },
                     _ => Vec::new(),
                 };
                 if pairs.is_empty() {
@@ -1093,13 +1156,16 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     let mut source = String::new();
                     for (name, value) in &pairs {
                         source.push_str(&format!(
-                            "const {name} := {}\n", emit_set_value_literal(value),
+                            "const {name} := {}\n",
+                            emit_set_value_literal(value),
                         ));
                     }
                     vec![ScenarioNode::Bindings { source, children }]
                 }
             } else {
-                obj.iter().map(|(name, _cmd)| ScenarioNode::Phase(name.clone())).collect()
+                obj.iter()
+                    .map(|(name, _cmd)| ScenarioNode::Phase(name.clone()))
+                    .collect()
             }
         }
         _ => Vec::new(),
@@ -1165,15 +1231,17 @@ pub fn resolve_scenario_includes(
                         path.join(" -> "),
                     ));
                 }
-                let target = input.get(name).ok_or_else(|| format!(
-                    "scenario include 'scenario: {name}' references an unknown \
+                let target = input.get(name).ok_or_else(|| {
+                    format!(
+                        "scenario include 'scenario: {name}' references an unknown \
                      scenario. Known scenarios: {}",
-                    {
-                        let mut names: Vec<&str> = input.keys().map(|s| s.as_str()).collect();
-                        names.sort();
-                        names.join(", ")
-                    },
-                ))?;
+                        {
+                            let mut names: Vec<&str> = input.keys().map(|s| s.as_str()).collect();
+                            names.sort();
+                            names.join(", ")
+                        },
+                    )
+                })?;
                 stack.push(name.clone());
                 let children = resolve_nodes(target, input, out, stack)?;
                 stack.pop();
@@ -1187,40 +1255,46 @@ pub fn resolve_scenario_includes(
                     children,
                 })
             }
-            ScenarioNode::Comprehension { comprehension, children, continue_if } => {
-                Ok(ScenarioNode::Comprehension {
-                    comprehension: comprehension.clone(),
-                    children: resolve_nodes(children, input, out, stack)?,
-                    continue_if: continue_if.clone(),
-                })
-            }
-            ScenarioNode::DoWhile { condition, counter, children } => {
-                Ok(ScenarioNode::DoWhile {
-                    condition: condition.clone(),
-                    counter: counter.clone(),
-                    children: resolve_nodes(children, input, out, stack)?,
-                })
-            }
-            ScenarioNode::DoUntil { condition, counter, children } => {
-                Ok(ScenarioNode::DoUntil {
-                    condition: condition.clone(),
-                    counter: counter.clone(),
-                    children: resolve_nodes(children, input, out, stack)?,
-                })
-            }
-            ScenarioNode::Bindings { source, children } => {
-                Ok(ScenarioNode::Bindings {
-                    source: source.clone(),
-                    children: resolve_nodes(children, input, out, stack)?,
-                })
-            }
+            ScenarioNode::Comprehension {
+                comprehension,
+                children,
+                continue_if,
+            } => Ok(ScenarioNode::Comprehension {
+                comprehension: comprehension.clone(),
+                children: resolve_nodes(children, input, out, stack)?,
+                continue_if: continue_if.clone(),
+            }),
+            ScenarioNode::DoWhile {
+                condition,
+                counter,
+                children,
+            } => Ok(ScenarioNode::DoWhile {
+                condition: condition.clone(),
+                counter: counter.clone(),
+                children: resolve_nodes(children, input, out, stack)?,
+            }),
+            ScenarioNode::DoUntil {
+                condition,
+                counter,
+                children,
+            } => Ok(ScenarioNode::DoUntil {
+                condition: condition.clone(),
+                counter: counter.clone(),
+                children: resolve_nodes(children, input, out, stack)?,
+            }),
+            ScenarioNode::Bindings { source, children } => Ok(ScenarioNode::Bindings {
+                source: source.clone(),
+                children: resolve_nodes(children, input, out, stack)?,
+            }),
         }
     }
 
     let mut visited: HashSet<String> = HashSet::new();
     let names: Vec<String> = scenarios.keys().cloned().collect();
     for name in names {
-        if visited.contains(&name) { continue; }
+        if visited.contains(&name) {
+            continue;
+        }
         let mut stack = vec![name.clone()];
         let resolved = resolve_nodes(&input[&name], &input, &mut out, &mut stack)?;
         out.insert(name.clone(), resolved);
@@ -1253,43 +1327,40 @@ pub fn resolve_scenario_includes(
 fn parse_combination_specs(val: &JVal) -> Vec<(String, String)> {
     match val {
         // Map form: { "profile": "expr", "k": "expr" }
-        JVal::Object(map) => {
-            map.iter()
-                .map(|(key, val)| {
-                    let expr = val.as_str().unwrap_or("").to_string();
-                    (key.clone(), expr)
-                })
-                .collect()
-        }
+        JVal::Object(map) => map
+            .iter()
+            .map(|(key, val)| {
+                let expr = val.as_str().unwrap_or("").to_string();
+                (key.clone(), expr)
+            })
+            .collect(),
         // List form: ["profile in expr", "k in expr"]
-        JVal::Array(arr) => {
-            arr.iter()
-                .filter_map(|item| {
-                    let s = item.as_str()?;
-                    match parse_clause(s) {
-                        Ok(c) => Some((c.var().to_string(), c.expr().to_string())),
-                        Err(e) => {
-                            eprintln!("warning: for_combinations: {e}");
-                            None
-                        }
+        JVal::Array(arr) => arr
+            .iter()
+            .filter_map(|item| {
+                let s = item.as_str()?;
+                match parse_clause(s) {
+                    Ok(c) => Some((c.var().to_string(), c.expr().to_string())),
+                    Err(e) => {
+                        eprintln!("warning: for_combinations: {e}");
+                        None
                     }
-                })
-                .collect()
-        }
+                }
+            })
+            .collect(),
         // Inline form: "profile in expr, k in expr"
         // Split on commas that are NOT inside parentheses (respects
         // function calls like `matching_profiles('{dataset}', '{prefix}')`).
-        JVal::String(s) => {
-            match parse_clause_list(s) {
-                Ok(clauses) => clauses.into_iter()
-                    .map(|c| (c.var().to_string(), c.expr().to_string()))
-                    .collect(),
-                Err(e) => {
-                    eprintln!("warning: for_combinations: {e}");
-                    Vec::new()
-                }
+        JVal::String(s) => match parse_clause_list(s) {
+            Ok(clauses) => clauses
+                .into_iter()
+                .map(|c| (c.var().to_string(), c.expr().to_string()))
+                .collect(),
+            Err(e) => {
+                eprintln!("warning: for_combinations: {e}");
+                Vec::new()
             }
-        }
+        },
         _ => {
             eprintln!("warning: for_combinations value must be a map, list, or string");
             Vec::new()
@@ -1313,25 +1384,29 @@ fn parse_phases(
 ) -> Result<(HashMap<String, WorkloadPhase>, Vec<String>), String> {
     let mut phases = HashMap::new();
     let mut phase_order = Vec::new();
-    let Some(val) = val else { return Ok((phases, phase_order)); };
-    let Some(obj) = val.as_object() else { return Ok((phases, phase_order)); };
+    let Some(val) = val else {
+        return Ok((phases, phase_order));
+    };
+    let Some(obj) = val.as_object() else {
+        return Ok((phases, phase_order));
+    };
 
     for (phase_name, phase_val) in obj {
-        let Some(phase_obj) = phase_val.as_object() else { continue; };
+        let Some(phase_obj) = phase_val.as_object() else {
+            continue;
+        };
 
-        let cycles = phase_obj.get("cycles")
-            .map(|v| match v {
-                JVal::Number(n) => n.to_string(),
-                JVal::String(s) => s.clone(),
-                other => other.to_string(),
-            });
+        let cycles = phase_obj.get("cycles").map(|v| match v {
+            JVal::Number(n) => n.to_string(),
+            JVal::String(s) => s.clone(),
+            other => other.to_string(),
+        });
 
-        let concurrency = phase_obj.get("concurrency")
-            .map(|v| match v {
-                JVal::Number(n) => n.to_string(),
-                JVal::String(s) => s.clone(),
-                other => other.to_string(),
-            });
+        let concurrency = phase_obj.get("concurrency").map(|v| match v {
+            JVal::Number(n) => n.to_string(),
+            JVal::String(s) => s.clone(),
+            other => other.to_string(),
+        });
 
         // A number or a `{param}` / iter-var reference (resolved at
         // the phase gather, the `timeout:` discipline). Anything
@@ -1341,33 +1416,40 @@ fn parse_phases(
             None => None,
             Some(JVal::Number(n)) => Some(n.to_string()),
             Some(JVal::String(s)) => Some(s.clone()),
-            Some(other) => return Err(format!(
-                "phase '{phase_name}': `rate` must be a number (ops/sec) \
-                 or a {{param}} reference; got: {other}")),
+            Some(other) => {
+                return Err(format!(
+                    "phase '{phase_name}': `rate` must be a number (ops/sec) \
+                 or a {{param}} reference; got: {other}"
+                ));
+            }
         };
 
         // SRD-82 Part 6 — daemon phase (runs concurrently with foreground
         // siblings, stopped when they complete). Accept bool / 0|1 / on|off.
-        let daemon = phase_obj.get("daemon")
+        let daemon = phase_obj
+            .get("daemon")
             .map(|v| match v {
                 JVal::Bool(b) => *b,
                 JVal::Number(n) => n.as_u64().map(|u| u != 0).unwrap_or(false),
-                JVal::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(),
-                    "true" | "on" | "yes" | "1"),
+                JVal::String(s) => matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "true" | "on" | "yes" | "1"
+                ),
                 _ => false,
             })
             .unwrap_or(false);
 
-        let adapter = phase_obj.get("adapter")
+        let adapter = phase_obj
+            .get("adapter")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let errors = phase_obj.get("errors")
+        let errors = phase_obj
+            .get("errors")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let error_rate_max = phase_obj.get("error_rate_max")
-            .and_then(|v| v.as_f64());
+        let error_rate_max = phase_obj.get("error_rate_max").and_then(|v| v.as_f64());
 
         // SRD-83 governance `timeout:` (GAP-12). A duration string, a
         // bare number (fractional seconds), or a `{param}` reference.
@@ -1382,20 +1464,23 @@ fn parse_phases(
                 let s = match v {
                     serde_json::Value::String(s) => s.clone(),
                     n if n.is_u64() || n.is_f64() => n.to_string(),
-                    other => return Err(format!(
-                        "phase '{phase_name}': `timeout` must be a duration \
+                    other => {
+                        return Err(format!(
+                            "phase '{phase_name}': `timeout` must be a duration \
                          string (e.g. \"2.5h\"), a number of seconds, or a \
-                         {{param}} reference; got: {other}")),
+                         {{param}} reference; got: {other}"
+                        ));
+                    }
                 };
                 let t = s.trim();
                 if t.is_empty()
-                    || !(t.starts_with('{')
-                        || t.starts_with(|c: char| c.is_ascii_digit()))
+                    || !(t.starts_with('{') || t.starts_with(|c: char| c.is_ascii_digit()))
                 {
                     return Err(format!(
                         "phase '{phase_name}': `timeout: \"{s}\"` is not a \
                          duration ('{{param}}', \"2.5h\", \"150ms\", or \
-                         seconds)"));
+                         seconds)"
+                    ));
                 }
                 Some(s)
             }
@@ -1411,18 +1496,21 @@ fn parse_phases(
             Some(v) if v.is_u64() || v.is_i64() => (v.as_u64().map(|n| n as u32), None),
             Some(serde_json::Value::Object(m)) => {
                 let count = m.get("count").and_then(|c| c.as_u64()).map(|n| n as u32);
-                let backoff = m.get("backoff")
-                    .and_then(|b| b.as_object())
-                    .map(|bo| crate::model::BackoffSpec {
+                let backoff = m.get("backoff").and_then(|b| b.as_object()).map(|bo| {
+                    crate::model::BackoffSpec {
                         ratio: bo.get("ratio").and_then(|r| r.as_f64()),
                         min: bo.get("min").and_then(json_scalar_to_dur_string),
                         max: bo.get("max").and_then(json_scalar_to_dur_string),
-                    });
+                    }
+                });
                 (count, backoff)
             }
-            Some(other) => return Err(format!(
-                "phase '{phase_name}': `tries` must be a number or a map \
-                 {{count, backoff: {{ratio, min, max}}}}, got {other}")),
+            Some(other) => {
+                return Err(format!(
+                    "phase '{phase_name}': `tries` must be a number or a map \
+                 {{count, backoff: {{ratio, min, max}}}}, got {other}"
+                ));
+            }
         };
 
         // SRD-83 — `stop_when:` is a list of {when, trigger?, effect?}.
@@ -1440,7 +1528,8 @@ fn parse_phases(
                 .map_err(|e| format!("phase `stop_when`: {e}"))?;
         }
 
-        let tags = phase_obj.get("tags")
+        let tags = phase_obj
+            .get("tags")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -1468,7 +1557,14 @@ fn parse_phases(
                 // bindings sugar" — they're directly under the
                 // phase, no block wrapper. Workload + phase
                 // bindings reach them via the Polydat Kernel chain.
-                parse_ops_field(ops_val, phase_name, &BindingsDef::default(), doc_params, &phase_tags, &mut inline_ops)?;
+                parse_ops_field(
+                    ops_val,
+                    phase_name,
+                    &BindingsDef::default(),
+                    doc_params,
+                    &phase_tags,
+                    &mut inline_ops,
+                )?;
                 break;
             }
         }
@@ -1483,17 +1579,20 @@ fn parse_phases(
             }
         }
 
-        let for_each = phase_obj.get("for_each")
+        let for_each = phase_obj
+            .get("for_each")
             .or_else(|| phase_obj.get("for"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         // SRD-101 — phase-level `continue_if` gate (bounds a `for_each` sweep).
         let continue_if = parse_continue_if(phase_obj.get("continue_if"));
 
-        let loop_scope = phase_obj.get("loop_scope")
+        let loop_scope = phase_obj
+            .get("loop_scope")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let iter_scope = phase_obj.get("iter_scope")
+        let iter_scope = phase_obj
+            .get("iter_scope")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         // Phase-level `summary:` is gone (SRD-46 made `report:`
@@ -1511,7 +1610,8 @@ fn parse_phases(
         // [`Checkpoint`]'s custom deserialize. Absent → None →
         // phase always re-runs on resume (per SRD-44 §"No
         // workload-level default").
-        let checkpoint = phase_obj.get("checkpoint")
+        let checkpoint = phase_obj
+            .get("checkpoint")
             .map(|v| serde_json::from_value::<crate::model::Checkpoint>(v.clone()))
             .transpose()
             .map_err(|e| format!("phase '{phase_name}' checkpoint: {e}"))?;
@@ -1528,18 +1628,23 @@ fn parse_phases(
         let phase_poll = match phase_obj.get("poll") {
             None => None,
             Some(v) => {
-                let map = v.as_object().ok_or_else(|| format!(
-                    "phase '{phase_name}': phase-level `poll:` must be a \
+                let map = v.as_object().ok_or_else(|| {
+                    format!(
+                        "phase '{phase_name}': phase-level `poll:` must be a \
                      mapping with at least `until: <expr>`. Got a non-object \
                      value; if you intended an OP-level `poll:` flag, attach \
                      it to a specific op under `ops:` instead. SRD-75."
-                ))?;
-                let until = map.get("until")
+                    )
+                })?;
+                let until = map
+                    .get("until")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| format!(
-                        "phase '{phase_name}': phase-level `poll:` requires \
+                    .ok_or_else(|| {
+                        format!(
+                            "phase '{phase_name}': phase-level `poll:` requires \
                          `until: <polydat-boolean-expression>`. SRD-75."
-                    ))?
+                        )
+                    })?
                     .to_string();
                 // Numbers or `{param}` / iter-var references
                 // (resolved at the phase gather); anything else is
@@ -1553,13 +1658,15 @@ fn parse_phases(
                         Some(other) => Err(format!(
                             "phase '{phase_name}' poll: `{field}` must be a \
                              number or a {{param}} reference; got: {other}. \
-                             SRD-75.")),
+                             SRD-75."
+                        )),
                     }
                 };
                 let interval_ms = numeric_or_ref("interval_ms")?;
                 let timeout_ms = numeric_or_ref("timeout_ms")?;
                 let max_error_retries = numeric_or_ref("max_error_retries")?;
-                let metric_name = map.get("metric_name")
+                let metric_name = map
+                    .get("metric_name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 // SRD-75 §"Open questions" → §"on_timeout" — what
@@ -1570,10 +1677,12 @@ fn parse_phases(
                 let on_timeout = match map.get("on_timeout") {
                     None => None,
                     Some(v) => {
-                        let s = v.as_str().ok_or_else(|| format!(
-                            "phase '{phase_name}' poll: `on_timeout` must be \
+                        let s = v.as_str().ok_or_else(|| {
+                            format!(
+                                "phase '{phase_name}' poll: `on_timeout` must be \
                              a string (`error` or `abort`). SRD-75."
-                        ))?;
+                            )
+                        })?;
                         let normalized = s.trim().to_ascii_lowercase();
                         if !matches!(normalized.as_str(), "error" | "abort") {
                             return Err(format!(
@@ -1590,20 +1699,30 @@ fn parse_phases(
                 let require: Vec<String> = match map.get("require") {
                     None => Vec::new(),
                     Some(serde_json::Value::String(s)) => vec![s.clone()],
-                    Some(serde_json::Value::Array(items)) => items.iter()
-                        .map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!(
-                            "phase '{phase_name}' poll: `require` entries must \
-                             be metric-selector strings. SRD-75.")))
+                    Some(serde_json::Value::Array(items)) => items
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(str::to_string).ok_or_else(|| {
+                                format!(
+                                    "phase '{phase_name}' poll: `require` entries must \
+                             be metric-selector strings. SRD-75."
+                                )
+                            })
+                        })
                         .collect::<Result<Vec<_>, _>>()?,
-                    Some(_) => return Err(format!(
-                        "phase '{phase_name}' poll: `require` must be a \
-                         selector string or a list of them. SRD-75.")),
+                    Some(_) => {
+                        return Err(format!(
+                            "phase '{phase_name}' poll: `require` must be a \
+                         selector string or a list of them. SRD-75."
+                        ));
+                    }
                 };
                 if let Some(bad) = require.iter().find(|s| s.trim().is_empty()) {
                     let _ = bad;
                     return Err(format!(
                         "phase '{phase_name}' poll: `require` entries must be \
-                         non-empty metric selectors. SRD-75."));
+                         non-empty metric selectors. SRD-75."
+                    ));
                 }
                 // Reject keys outside the documented surface — a
                 // typo like `tinerval_ms:` should fail loudly, not
@@ -1665,19 +1784,23 @@ fn parse_phases(
         // absent → no metrics tail (nothing presumed present).
         let status_metrics: Vec<String> = match phase_obj.get("status_metrics") {
             None => Vec::new(),
-            Some(JVal::Array(items)) => items.iter()
+            Some(JVal::Array(items)) => items
+                .iter()
                 .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
                 .filter(|s| !s.is_empty())
                 .collect(),
-            Some(JVal::String(s)) => s.split(',')
+            Some(JVal::String(s)) => s
+                .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from)
                 .collect(),
-            Some(other) => return Err(format!(
-                "phase '{phase_name}' status_metrics: must be a list of metric \
+            Some(other) => {
+                return Err(format!(
+                    "phase '{phase_name}' status_metrics: must be a list of metric \
                  names, a comma-separated string, or omitted; got {other:?}"
-            )),
+                ));
+            }
         };
 
         // Phase-level `metrics:` — same schema as op `metrics:`,
@@ -1715,35 +1838,39 @@ fn parse_phases(
         // the label-ownership case, a runtime panic).
         validate_cell_dimensions(phase_name, &dimensions, &inline_ops, &metrics)?;
 
-        phases.insert(phase_name.clone(), WorkloadPhase {
-            dimensions,
-            cycles,
-            concurrency,
-            rate,
-            daemon,
-            adapter,
-            errors,
-            tries,
-            tries_backoff,
-            interval: phase_obj.get("interval")
-                .and_then(|v| v.as_str().map(str::to_string)),
-            repeat: phase_obj.get("repeat").and_then(|v| v.as_u64()),
-            error_rate_max,
-            timeout,
-            stop_when,
-            tags,
-            ops: inline_ops,
-            for_each,
-            continue_if,
-            loop_scope,
-            iter_scope,
-            checkpoint,
-            status_metrics,
-            bindings: phase_bindings_only,
-            metrics,
-            poll: phase_poll,
-            optimize,
-        });
+        phases.insert(
+            phase_name.clone(),
+            WorkloadPhase {
+                dimensions,
+                cycles,
+                concurrency,
+                rate,
+                daemon,
+                adapter,
+                errors,
+                tries,
+                tries_backoff,
+                interval: phase_obj
+                    .get("interval")
+                    .and_then(|v| v.as_str().map(str::to_string)),
+                repeat: phase_obj.get("repeat").and_then(|v| v.as_u64()),
+                error_rate_max,
+                timeout,
+                stop_when,
+                tags,
+                ops: inline_ops,
+                for_each,
+                continue_if,
+                loop_scope,
+                iter_scope,
+                checkpoint,
+                status_metrics,
+                bindings: phase_bindings_only,
+                metrics,
+                poll: phase_poll,
+                optimize,
+            },
+        );
         phase_order.push(phase_name.clone());
     }
 
@@ -1768,7 +1895,8 @@ fn parse_blocks(
         }
         JVal::Array(arr) => {
             for (i, block_val) in arr.iter().enumerate() {
-                let name = block_val.get("name")
+                let name = block_val
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("block{}", i + 1));
@@ -1807,7 +1935,14 @@ fn parse_single_block(
     // Find ops field
     for key in ["ops", "op", "operations", "statements", "statement"] {
         if let Some(ops_val) = obj.get(key) {
-            parse_ops_field(ops_val, block_name, &block_bindings, &block_params, &block_tags, all_ops)?;
+            parse_ops_field(
+                ops_val,
+                block_name,
+                &block_bindings,
+                &block_params,
+                &block_tags,
+                all_ops,
+            )?;
             return Ok(());
         }
     }
@@ -1904,14 +2039,16 @@ fn normalize_op_item(
         JVal::Object(map) => {
             // Check if first entry is name:stmt pattern
             if let Some((first_key, first_val)) = map.iter().next()
-                && map.len() == 1 && first_val.is_string() {
-                    let mut op = ParsedOp::simple(first_key, first_val.as_str().unwrap());
-                    op.bindings = bindings.clone();
-                    op.params = params.clone();
-                    op.tags = tags.clone();
-                    op.tags.insert("block".to_string(), block_name.to_string());
-                    return Ok(op);
-                }
+                && map.len() == 1
+                && first_val.is_string()
+            {
+                let mut op = ParsedOp::simple(first_key, first_val.as_str().unwrap());
+                op.bindings = bindings.clone();
+                op.params = params.clone();
+                op.tags = tags.clone();
+                op.tags.insert("block".to_string(), block_name.to_string());
+                return Ok(op);
+            }
             // Full op object
             normalize_op_object(map, auto_name, block_name, bindings, params, tags)
         }
@@ -1937,9 +2074,7 @@ fn normalize_op_entry(
             op.tags.insert("block".to_string(), block_name.to_string());
             Ok(op)
         }
-        JVal::Object(map) => {
-            normalize_op_object(map, key, block_name, bindings, params, tags)
-        }
+        JVal::Object(map) => normalize_op_object(map, key, block_name, bindings, params, tags),
         JVal::Array(arr) => {
             // Array at op level → moved to op.stmt
             let mut op_fields = HashMap::new();
@@ -1958,8 +2093,8 @@ fn normalize_op_entry(
                 result: None,
                 wrappers: None,
                 captures: Vec::new(),
-            abstract_interface: None,
-            interface_bound: false,
+                abstract_interface: None,
+                interface_bound: false,
                 daemon: crate::model::DaemonSpec::Disabled,
                 daemon_cancel_grace_ms: None,
                 while_cond: None,
@@ -2005,12 +2140,14 @@ fn normalize_op_object(
     parent_params: &HashMap<String, JVal>,
     parent_tags: &HashMap<String, String>,
 ) -> Result<ParsedOp, String> {
-    let name = map.get("name")
+    let name = map
+        .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or(default_name)
         .to_string();
 
-    let description = map.get("description")
+    let description = map
+        .get("description")
         .or_else(|| map.get("desc"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -2023,7 +2160,8 @@ fn normalize_op_object(
     // `bindings:` field is a copy-paste reducer over each
     // enclosed op's bindings). The expansion below is the only
     // remaining parser-time inlining.
-    let mut op_bindings = inline_block_sugar_into_op(parent_bindings, &extract_bindings(map.get("bindings")));
+    let mut op_bindings =
+        inline_block_sugar_into_op(parent_bindings, &extract_bindings(map.get("bindings")));
     let op_params = merge_value_maps(parent_params, &extract_value_map(map.get("params")));
     let mut op_tags = merge_string_maps(parent_tags, &extract_string_map(map.get("tags")));
     op_tags.insert("block".to_string(), block_name.to_string());
@@ -2054,9 +2192,27 @@ fn normalize_op_object(
     // (`relevancy: { ... }` directly under the op); the canonical
     // form puts them inside `evaluations:` and is handled
     // separately below.
-    let activity_params = ["ratio", "adapter", "driver", "space", "instrument", "start-timers", "stop-timers",
-        "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
-        "batch", "max_batch_size", "batchtype", "memo", "gutter",
+    let activity_params = [
+        "ratio",
+        "adapter",
+        "driver",
+        "space",
+        "instrument",
+        "start-timers",
+        "stop-timers",
+        "verify",
+        "relevancy",
+        "strict",
+        "poll",
+        "poll_interval_ms",
+        "timeout_ms",
+        "poll_metric_name",
+        "emit",
+        "batch",
+        "max_batch_size",
+        "batchtype",
+        "memo",
+        "gutter",
         // SRD-63 op-level status visibility. `readout: visible` opts the
         // op into its own timed status leaf; excised into params so the
         // `readout` wrapper's trigger (which reads params) sees it rather
@@ -2068,20 +2224,18 @@ fn normalize_op_object(
         // total-attempts sigil for the conditional tries wrapper. Both are
         // excised from op fields so they never reach the adapter as
         // op-payload keys.
-        "errors", "tries"];
+        "errors",
+        "tries",
+    ];
 
-    let mut op_fields = if let Some(explicit_op) = op_field_names.iter()
-        .find_map(|k| map.get(*k))
-    {
+    let mut op_fields = if let Some(explicit_op) = op_field_names.iter().find_map(|k| map.get(*k)) {
         let mut m: HashMap<String, JVal> = match explicit_op {
             JVal::String(s) => {
                 let mut m = HashMap::new();
                 m.insert("stmt".to_string(), JVal::String(s.clone()));
                 m
             }
-            JVal::Object(o) => o.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            JVal::Object(o) => o.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             other => {
                 let mut m = HashMap::new();
                 m.insert("stmt".to_string(), other.clone());
@@ -2113,9 +2267,11 @@ fn normalize_op_object(
     } else {
         // All non-reserved, non-activity-param fields become op fields
         map.iter()
-            .filter(|(k, _)| !reserved.contains(&k.as_str())
-                && !op_field_names.contains(&k.as_str())
-                && !activity_params.contains(&k.as_str()))
+            .filter(|(k, _)| {
+                !reserved.contains(&k.as_str())
+                    && !op_field_names.contains(&k.as_str())
+                    && !activity_params.contains(&k.as_str())
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
@@ -2142,12 +2298,14 @@ fn normalize_op_object(
     // that the silent-routing path would otherwise drop on the
     // floor.
     if let Some(eval_val) = map.get("evaluations") {
-        let eval_obj = eval_val.as_object().ok_or_else(|| format!(
-            "op '{name}' (block '{block_name}'): `evaluations:` must be a \
+        let eval_obj = eval_val.as_object().ok_or_else(|| {
+            format!(
+                "op '{name}' (block '{block_name}'): `evaluations:` must be a \
              mapping, got {kind}. Expected shape: \
              `evaluations: {{ relevancy: {{...}}, verify: [...] }}`.",
-            kind = eval_value_kind(eval_val),
-        ))?;
+                kind = eval_value_kind(eval_val),
+            )
+        })?;
         for (k, v) in eval_obj.iter() {
             if !evaluations_vocab().contains(&k.as_str()) {
                 return Err(format!(
@@ -2183,41 +2341,45 @@ fn normalize_op_object(
     // are rejected; types are polydat DSL type names, verified
     // against the compiled op-template program at pre-map
     // synthesis.
-    let abstract_interface: Option<crate::model::OpInterface> =
-        match map.get("abstract") {
-            None => None,
-            Some(v) => {
-                let obj = v.as_object().ok_or_else(|| format!(
+    let abstract_interface: Option<crate::model::OpInterface> = match map.get("abstract") {
+        None => None,
+        Some(v) => {
+            let obj = v.as_object().ok_or_else(|| format!(
                     "op '{name}': `abstract:` must be a mapping with                      `needs:` / `yields:` / `results:` maps of wire-name -> type"))?;
-                let mut iface = crate::model::OpInterface::default();
-                for (k, section) in obj {
-                    let target = match k.as_str() {
-                        "needs" => &mut iface.needs,
-                        "yields" => &mut iface.yields,
-                        "results" => &mut iface.results,
-                        other => return Err(format!(
-                            "op '{name}': unknown key '{other}' under                              `abstract:` (allowed: needs, yields, results)")),
-                    };
-                    let entries = section.as_object().ok_or_else(|| format!(
-                        "op '{name}': `abstract.{k}:` must be a mapping                          of wire-name -> type"))?;
-                    for (wire, typ) in entries {
-                        let type_name = typ.as_str().ok_or_else(|| format!(
-                            "op '{name}': `abstract.{k}.{wire}:` type                              must be a string, got {typ}"))?;
-                        target.insert(wire.clone(), type_name.to_string());
+            let mut iface = crate::model::OpInterface::default();
+            for (k, section) in obj {
+                let target = match k.as_str() {
+                    "needs" => &mut iface.needs,
+                    "yields" => &mut iface.yields,
+                    "results" => &mut iface.results,
+                    other => {
+                        return Err(format!(
+                            "op '{name}': unknown key '{other}' under                              `abstract:` (allowed: needs, yields, results)"
+                        ));
                     }
+                };
+                let entries = section.as_object().ok_or_else(|| format!(
+                        "op '{name}': `abstract.{k}:` must be a mapping                          of wire-name -> type"))?;
+                for (wire, typ) in entries {
+                    let type_name = typ.as_str().ok_or_else(|| format!(
+                            "op '{name}': `abstract.{k}.{wire}:` type                              must be a string, got {typ}"))?;
+                    target.insert(wire.clone(), type_name.to_string());
                 }
-                Some(iface)
             }
-        };
+            Some(iface)
+        }
+    };
 
-    let condition = map.get("if")
+    let condition = map
+        .get("if")
         .and_then(|v| v.as_str())
         .map(normalize_condition_clause);
 
     let delay = match map.get("delay") {
         None => None,
-        Some(v) => Some(crate::model::parse_delay_spec_value(v)
-            .map_err(|e| format!("op '{name}': {e}"))?),
+        Some(v) => {
+            Some(crate::model::parse_delay_spec_value(v).map_err(|e| format!("op '{name}': {e}"))?)
+        }
     };
 
     // Daemon-op declaration. Parses bool / int / "on"/"off" /
@@ -2227,13 +2389,13 @@ fn normalize_op_object(
     // is enforced at spawn time.
     let daemon = match map.get("daemon") {
         Some(v) => crate::model::parse_daemon_spec_value(v)
-            .map_err(|e| format!(
-                "op '{name}' (block '{block_name}'): {e}",
-            ))?,
+            .map_err(|e| format!("op '{name}' (block '{block_name}'): {e}",))?,
         None => crate::model::DaemonSpec::Disabled,
     };
-    let daemon_cancel_grace_ms = map.get("daemon_cancel_grace_ms")
-        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+    let daemon_cancel_grace_ms = map.get("daemon_cancel_grace_ms").and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+    });
     let daemon_enabled = !daemon.is_disabled();
     if daemon_enabled {
         // `cycles:` and `ratio:` on a daemon op are workload-shape
@@ -2269,14 +2431,17 @@ fn normalize_op_object(
 
     // Loop / rate primitives (apply to both cycle-pool and
     // daemon ops, though the typical use case is daemon+while+rate).
-    let while_cond = map.get("while")
+    let while_cond = map
+        .get("while")
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let rate = map.get("rate")
-        .and_then(|v| v.as_str().map(|s| s.to_string())
+    let rate = map.get("rate").and_then(|v| {
+        v.as_str()
+            .map(|s| s.to_string())
             .or_else(|| v.as_u64().map(|n| n.to_string()))
-            .or_else(|| v.as_f64().map(|f| f.to_string())));
+            .or_else(|| v.as_f64().map(|f| f.to_string()))
+    });
     // Rate without while- or per-cycle dispatch is meaningless —
     // an op that fires once-per-cycle can't be rate-limited in
     // any observable way. Warn at parse rather than silently
@@ -2321,18 +2486,22 @@ fn normalize_op_object(
     // references; the declarative form is for adapters whose
     // responses are JSON and need positional / nested access.
     if let Some(cap_val) = map.get("capture") {
-        let cap_obj = cap_val.as_object().ok_or_else(|| format!(
-            "op '{name}' (block '{block_name}'): `capture:` must be a \
+        let cap_obj = cap_val.as_object().ok_or_else(|| {
+            format!(
+                "op '{name}' (block '{block_name}'): `capture:` must be a \
              mapping of <wire-name> → <json-pointer-path>. Got {kind}.",
-            kind = eval_value_kind(cap_val),
-        ))?;
+                kind = eval_value_kind(cap_val),
+            )
+        })?;
         for (wire_name, spec_val) in cap_obj.iter() {
-            let raw = spec_val.as_str().ok_or_else(|| format!(
-                "op '{name}' (block '{block_name}'): `capture.{wire_name}` \
+            let raw = spec_val.as_str().ok_or_else(|| {
+                format!(
+                    "op '{name}' (block '{block_name}'): `capture.{wire_name}` \
                  must be a string (JSON-Pointer path, optionally with a \
                  `:count` suffix). Got {kind}.",
-                kind = eval_value_kind(spec_val),
-            ))?;
+                    kind = eval_value_kind(spec_val),
+                )
+            })?;
             let (path, count, agg, row_filter) = match raw.strip_suffix(":count") {
                 Some(p) => (p.to_string(), true, None, None),
                 None => match parse_capture_agg_suffix(raw) {
@@ -2391,7 +2560,10 @@ fn normalize_op_object(
                 continue;
             }
             for cap in parsed.captures {
-                if !captures.iter().any(|existing| existing.as_name == cap.as_name) {
+                if !captures
+                    .iter()
+                    .any(|existing| existing.as_name == cap.as_name)
+                {
                     captures.push(cap);
                 }
             }
@@ -2461,7 +2633,8 @@ fn split_capture_row_filter(arg: &str) -> (String, Option<(String, String)>) {
     let k = k.trim();
     let v = v.trim();
     let unquoted = v
-        .strip_prefix('\'').and_then(|r| r.strip_suffix('\''))
+        .strip_prefix('\'')
+        .and_then(|r| r.strip_suffix('\''))
         .or_else(|| v.strip_prefix('"').and_then(|r| r.strip_suffix('"')));
     match unquoted {
         Some(val) if !k.is_empty() => (field, Some((k.to_string(), val.to_string()))),
@@ -2474,7 +2647,11 @@ fn split_capture_row_filter(arg: &str) -> (String, Option<(String, String)>) {
 
 fn parse_capture_agg_suffix(
     raw: &str,
-) -> Option<(String, crate::bindpoints::CaptureAgg, Option<(String, String)>)> {
+) -> Option<(
+    String,
+    crate::bindpoints::CaptureAgg,
+    Option<(String, String)>,
+)> {
     use crate::bindpoints::CaptureAgg;
     if !raw.ends_with(')') {
         return None;
@@ -2501,7 +2678,9 @@ fn parse_metrics_field(
     op_bindings: &mut BindingsDef,
 ) -> Result<HashMap<String, MetricSpec>, String> {
     use crate::model::MetricSpec;
-    let Some(v) = val else { return Ok(HashMap::new()); };
+    let Some(v) = val else {
+        return Ok(HashMap::new());
+    };
     let mut out: HashMap<String, MetricSpec> = HashMap::new();
     match v {
         JVal::String(s) => {
@@ -2509,15 +2688,26 @@ fn parse_metrics_field(
             if name.is_empty() {
                 return Err("scalar form requires a metric name".into());
             }
-            out.insert(name.clone(), MetricSpec {
-                value: name, family: None, kind: None,
-                unit: None, format: None, cell: Default::default(),});
+            out.insert(
+                name.clone(),
+                MetricSpec {
+                    value: name,
+                    family: None,
+                    kind: None,
+                    unit: None,
+                    format: None,
+                    cell: Default::default(),
+                },
+            );
         }
         JVal::Array(items) => {
             for (idx, item) in items.iter().enumerate() {
-                let raw = item.as_str().ok_or_else(|| format!(
-                    "metrics list entry {idx}: must be a string \
-                     (bare name or `name := <polydat expr>`)"))?;
+                let raw = item.as_str().ok_or_else(|| {
+                    format!(
+                        "metrics list entry {idx}: must be a string \
+                     (bare name or `name := <polydat expr>`)"
+                    )
+                })?;
                 let trimmed = raw.trim();
                 if let Some((name, expr)) = trimmed.split_once(":=") {
                     // Wire-expression form: declare the binding +
@@ -2527,37 +2717,50 @@ fn parse_metrics_field(
                     if name.is_empty() || expr.is_empty() {
                         return Err(format!(
                             "metrics list entry {idx} '{raw}': wire \
-                             expression must be `name := <expression>`"));
+                             expression must be `name := <expression>`"
+                        ));
                     }
                     inject_wire_into_bindings(op_bindings, name, expr, op_name)?;
                     if out.contains_key(name) {
-                        return Err(format!(
-                            "duplicate metric wire '{name}' in metrics list"));
+                        return Err(format!("duplicate metric wire '{name}' in metrics list"));
                     }
-                    out.insert(name.to_string(), MetricSpec {
-                        value: name.to_string(), family: None, kind: None,
-                        unit: None, format: None, cell: Default::default(),});
+                    out.insert(
+                        name.to_string(),
+                        MetricSpec {
+                            value: name.to_string(),
+                            family: None,
+                            kind: None,
+                            unit: None,
+                            format: None,
+                            cell: Default::default(),
+                        },
+                    );
                 } else {
                     // Bare-name form.
                     if trimmed.is_empty() {
-                        return Err(format!(
-                            "metrics list entry {idx}: empty name"));
+                        return Err(format!("metrics list entry {idx}: empty name"));
                     }
                     if out.contains_key(trimmed) {
-                        return Err(format!(
-                            "duplicate metric '{trimmed}' in metrics list"));
+                        return Err(format!("duplicate metric '{trimmed}' in metrics list"));
                     }
-                    out.insert(trimmed.to_string(), MetricSpec {
-                        value: trimmed.to_string(), family: None, kind: None,
-                        unit: None, format: None, cell: Default::default(),});
+                    out.insert(
+                        trimmed.to_string(),
+                        MetricSpec {
+                            value: trimmed.to_string(),
+                            family: None,
+                            kind: None,
+                            unit: None,
+                            format: None,
+                            cell: Default::default(),
+                        },
+                    );
                 }
             }
         }
         JVal::Object(map) => {
             for (key, val) in map {
                 if out.contains_key(key) {
-                    return Err(format!(
-                        "duplicate metric key '{key}' in metrics map"));
+                    return Err(format!("duplicate metric key '{key}' in metrics map"));
                 }
                 let mut spec = parse_metric_spec_value(val, key)?;
                 // SRD-13d Phase 9 mapping-form auto-inject: if
@@ -2567,7 +2770,9 @@ fn parse_metrics_field(
                 // Mirrors the list-form `name := expr` flow.
                 let value_trimmed = spec.value.trim();
                 let bare = !value_trimmed.is_empty()
-                    && value_trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    && value_trimmed
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_');
                 if !bare {
                     if !is_valid_ident(key) {
                         return Err(format!(
@@ -2578,7 +2783,8 @@ fn parse_metrics_field(
                              as a binding name. Rename the metric key, or \
                              move the expression into `bindings:` and set \
                              `value:` to the bare name.",
-                            value = spec.value));
+                            value = spec.value
+                        ));
                     }
                     inject_wire_into_bindings(op_bindings, key, value_trimmed, op_name)?;
                     spec.value = key.clone();
@@ -2586,8 +2792,11 @@ fn parse_metrics_field(
                 out.insert(key.clone(), spec);
             }
         }
-        _ => return Err(format!(
-            "metrics: expected scalar, sequence, or mapping; got {v:?}")),
+        _ => {
+            return Err(format!(
+                "metrics: expected scalar, sequence, or mapping; got {v:?}"
+            ));
+        }
     }
     Ok(out)
 }
@@ -2631,7 +2840,8 @@ fn validate_cell_dimensions(
         } else {
             format!(
                 "declared here: {}",
-                dimensions.keys().cloned().collect::<Vec<_>>().join(", "))
+                dimensions.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
         }
     };
     let check = |site: &str, metric: &str, spec: &MetricSpec| -> Result<(), String> {
@@ -2642,7 +2852,8 @@ fn validate_cell_dimensions(
                      dimension '{dim}' is not declared. A dimension is a label \
                      name owned by exactly one tier, so declare it on the phase \
                      ({dim}: str) before placing a metric in it — {}",
-                    declared()));
+                    declared()
+                ));
             }
         }
         Ok(())
@@ -2668,14 +2879,16 @@ fn parse_dimensions_field(
     let JVal::Object(map) = v else {
         return Err(format!(
             "phase '{phase_name}' dimensions: expected a mapping of \
-             <name>: <declaration>, got {v:?}"));
+             <name>: <declaration>, got {v:?}"
+        ));
     };
     for (name, decl) in map {
         if !is_valid_ident(name) {
             return Err(format!(
                 "phase '{phase_name}' dimension '{name}': a dimension name \
                  becomes a metric label, so it must be a valid identifier \
-                 (alphanumerics + underscore, not starting with a digit)"));
+                 (alphanumerics + underscore, not starting with a digit)"
+            ));
         }
         let value_type = match decl {
             // Shorthand: `tier: str`
@@ -2685,20 +2898,27 @@ fn parse_dimensions_field(
                     if k != "type" {
                         return Err(format!(
                             "phase '{phase_name}' dimension '{name}': unknown \
-                             field `{k}`. Recognised fields: type"));
+                             field `{k}`. Recognised fields: type"
+                        ));
                     }
                 }
                 match obj.get("type") {
                     None => DimensionType::default(),
                     Some(JVal::String(s)) => parse_dimension_type(s, phase_name, name)?,
-                    Some(other) => return Err(format!(
-                        "phase '{phase_name}' dimension '{name}' type: \
-                         expected a string, got {other:?}")),
+                    Some(other) => {
+                        return Err(format!(
+                            "phase '{phase_name}' dimension '{name}' type: \
+                         expected a string, got {other:?}"
+                        ));
+                    }
                 }
             }
-            other => return Err(format!(
-                "phase '{phase_name}' dimension '{name}': expected a type \
-                 name or a mapping, got {other:?}")),
+            other => {
+                return Err(format!(
+                    "phase '{phase_name}' dimension '{name}': expected a type \
+                 name or a mapping, got {other:?}"
+                ));
+            }
         };
         out.insert(name.clone(), DimensionSpec { value_type });
     }
@@ -2714,7 +2934,8 @@ fn parse_dimension_type(
         "str" | "string" => Ok(crate::model::DimensionType::Str),
         other => Err(format!(
             "phase '{phase_name}' dimension '{dim}' type '{other}': label \
-             values are strings; `str` is the only supported type")),
+             values are strings; `str` is the only supported type"
+        )),
     }
 }
 
@@ -2723,7 +2944,9 @@ fn parse_phase_metrics_field(
     phase_name: &str,
 ) -> Result<HashMap<String, MetricSpec>, String> {
     use crate::model::MetricSpec;
-    let Some(v) = val else { return Ok(HashMap::new()); };
+    let Some(v) = val else {
+        return Ok(HashMap::new());
+    };
     let mut out: HashMap<String, MetricSpec> = HashMap::new();
     match v {
         JVal::String(s) => {
@@ -2732,15 +2955,25 @@ fn parse_phase_metrics_field(
             if name.is_empty() {
                 return Err("scalar form requires a metric name".into());
             }
-            out.insert(name.clone(), MetricSpec {
-                value: name, family: None, kind: None, unit: None, format: None, cell: Default::default(),});
+            out.insert(
+                name.clone(),
+                MetricSpec {
+                    value: name,
+                    family: None,
+                    kind: None,
+                    unit: None,
+                    format: None,
+                    cell: Default::default(),
+                },
+            );
         }
         JVal::Array(items) => {
             // Sequence: bare wire names only (no `name := expr` form —
             // phase metrics don't inject bindings).
             for (idx, item) in items.iter().enumerate() {
-                let raw = item.as_str().ok_or_else(|| format!(
-                    "metrics list entry {idx}: must be a bare wire name"))?;
+                let raw = item
+                    .as_str()
+                    .ok_or_else(|| format!("metrics list entry {idx}: must be a bare wire name"))?;
                 let name = raw.trim();
                 if name.is_empty() {
                     return Err(format!("metrics list entry {idx}: empty name"));
@@ -2750,14 +2983,23 @@ fn parse_phase_metrics_field(
                         "metrics list entry {idx} '{raw}': the `name := expr` \
                          form is op-only; for a phase, declare the wire in the \
                          phase `bindings:` block and list its bare name here, \
-                         or use the mapping form `{{ {name}: {{ value: <expr> }} }}`"));
+                         or use the mapping form `{{ {name}: {{ value: <expr> }} }}`"
+                    ));
                 }
                 if out.contains_key(name) {
                     return Err(format!("duplicate metric '{name}' in metrics list"));
                 }
-                out.insert(name.to_string(), MetricSpec {
-                    value: name.to_string(), family: None, kind: None,
-                    unit: None, format: None, cell: Default::default(),});
+                out.insert(
+                    name.to_string(),
+                    MetricSpec {
+                        value: name.to_string(),
+                        family: None,
+                        kind: None,
+                        unit: None,
+                        format: None,
+                        cell: Default::default(),
+                    },
+                );
             }
         }
         JVal::Object(map) => {
@@ -2769,9 +3011,12 @@ fn parse_phase_metrics_field(
                 out.insert(key.clone(), parse_metric_spec_value(val, key)?);
             }
         }
-        _ => return Err(format!(
-            "phase '{phase_name}' metrics: expected scalar, sequence, or \
-             mapping; got {v:?}")),
+        _ => {
+            return Err(format!(
+                "phase '{phase_name}' metrics: expected scalar, sequence, or \
+             mapping; got {v:?}"
+            ));
+        }
     }
     Ok(out)
 }
@@ -2783,8 +3028,13 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
     use crate::model::MetricSpec;
     match v {
         JVal::String(s) => Ok(MetricSpec {
-            value: s.clone(), family: None, kind: None,
-            unit: None, format: None, cell: Default::default(),}),
+            value: s.clone(),
+            family: None,
+            kind: None,
+            unit: None,
+            format: None,
+            cell: Default::default(),
+        }),
         JVal::Object(map) => {
             // SRD-30 unknown-field hygiene: reject any key outside the
             // MetricSpec surface rather than silently dropping it (a
@@ -2795,7 +3045,9 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
             // a targeted hint.
             const KNOWN: &[&str] = &["value", "family", "kind", "unit", "format", "cell"];
             for k in map.keys() {
-                if KNOWN.contains(&k.as_str()) { continue; }
+                if KNOWN.contains(&k.as_str()) {
+                    continue;
+                }
                 let hint = if k == "type" {
                     " — the instrument-type discriminator is `kind` \
                      (gauge | histogram | counter)"
@@ -2804,33 +3056,37 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
                 };
                 return Err(format!(
                     "metric '{key}': unknown field `{k}`{hint}. Recognised \
-                     fields: value, family, kind, unit, format, cell"));
+                     fields: value, family, kind, unit, format, cell"
+                ));
             }
-            let value = map.get("value")
+            let value = map
+                .get("value")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| format!(
-                    "metric '{key}': required field `value:` missing or \
-                     not a string"))?
+                .ok_or_else(|| {
+                    format!(
+                        "metric '{key}': required field `value:` missing or \
+                     not a string"
+                    )
+                })?
                 .to_string();
-            let family = map.get("family")
-                .and_then(|v| v.as_str()).map(String::from);
-            let unit = map.get("unit")
-                .and_then(|v| v.as_str()).map(String::from);
-            let format = map.get("format")
-                .and_then(|v| v.as_str()).map(String::from);
+            let family = map.get("family").and_then(|v| v.as_str()).map(String::from);
+            let unit = map.get("unit").and_then(|v| v.as_str()).map(String::from);
+            let format = map.get("format").and_then(|v| v.as_str()).map(String::from);
             // Validate format syntax at parse time so the user
             // hears about a bad `#.##` pattern at workload
             // load, not first-cycle. SRD-40b §1.
             if let Some(f) = format.as_deref() {
                 crate::metric_format::parse_format_spec(f)
-                    .map_err(|e| format!(
-                        "metric '{key}' format '{f}': {e}"))?;
+                    .map_err(|e| format!("metric '{key}' format '{f}': {e}"))?;
             }
             let kind = match map.get("kind") {
                 None => None,
                 Some(JVal::String(s)) => Some(parse_metric_kind(s, key)?),
-                Some(other) => return Err(format!(
-                    "metric '{key}' kind: expected string, got {other:?}")),
+                Some(other) => {
+                    return Err(format!(
+                        "metric '{key}' kind: expected string, got {other:?}"
+                    ));
+                }
             };
             // `cell:` — dimensional placement. Each entry is
             // `<dimension>: <polydat expression>`; the expression is
@@ -2844,34 +3100,49 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
                     if dims.is_empty() {
                         return Err(format!(
                             "metric '{key}' cell: empty. Omit `cell:` entirely, \
-                             or name at least one dimension."));
+                             or name at least one dimension."
+                        ));
                     }
                     for (dim, expr) in dims {
-                        let expr = expr.as_str().ok_or_else(|| format!(
-                            "metric '{key}' cell '{dim}': expected a polydat \
-                             expression string, got {expr:?}"))?;
+                        let expr = expr.as_str().ok_or_else(|| {
+                            format!(
+                                "metric '{key}' cell '{dim}': expected a polydat \
+                             expression string, got {expr:?}"
+                            )
+                        })?;
                         if expr.trim().is_empty() {
-                            return Err(format!(
-                                "metric '{key}' cell '{dim}': empty expression"));
+                            return Err(format!("metric '{key}' cell '{dim}': empty expression"));
                         }
                         if !is_valid_ident(dim) {
                             return Err(format!(
                                 "metric '{key}' cell '{dim}': a dimension name \
                                  becomes a metric label, so it must be a valid \
                                  identifier (alphanumerics + underscore, not \
-                                 starting with a digit)"));
+                                 starting with a digit)"
+                            ));
                         }
                         cell.insert(dim.clone(), expr.trim().to_string());
                     }
                 }
-                Some(other) => return Err(format!(
-                    "metric '{key}' cell: expected a mapping of \
-                     <dimension>: <expression>, got {other:?}")),
+                Some(other) => {
+                    return Err(format!(
+                        "metric '{key}' cell: expected a mapping of \
+                     <dimension>: <expression>, got {other:?}"
+                    ));
+                }
             }
-            Ok(MetricSpec { value, family, kind, unit, format, cell })
+            Ok(MetricSpec {
+                value,
+                family,
+                kind,
+                unit,
+                format,
+                cell,
+            })
         }
         _ => Err(format!(
-            "metric '{key}': expected string or mapping, got {v:?}")),
+            "metric '{key}': expected string or mapping, got {v:?}"
+        )),
     }
 }
 
@@ -2883,7 +3154,8 @@ fn parse_metric_kind(s: &str, key: &str) -> Result<crate::model::MetricKind, Str
         "counter" => Ok(MetricKind::Counter),
         other => Err(format!(
             "metric '{key}' kind '{other}': expected one of \
-             gauge / histogram / counter")),
+             gauge / histogram / counter"
+        )),
     }
 }
 
@@ -2918,9 +3190,12 @@ fn inject_wire_into_bindings(
                 return Err(format!(
                     "metric wire '{name}' (op '{op_name}') collides \
                      with existing `bindings:` declaration of the \
-                     same name"));
+                     same name"
+                ));
             }
-            if !src.ends_with('\n') { src.push('\n'); }
+            if !src.ends_with('\n') {
+                src.push('\n');
+            }
             src.push_str(&line_to_inject);
         }
         BindingsDef::Map(map) => {
@@ -2928,7 +3203,8 @@ fn inject_wire_into_bindings(
                 return Err(format!(
                     "metric wire '{name}' (op '{op_name}') collides \
                      with existing `bindings:` declaration of the \
-                     same name"));
+                     same name"
+                ));
             }
             map.insert(name.to_string(), expr.to_string());
         }
@@ -2992,14 +3268,16 @@ fn parse_traverse_field(
     let Some(v) = val else { return Ok(None) };
     let JVal::Object(map) = v else {
         return Err(format!(
-            "op '{op_name}' traverse: expected a mapping, got {v:?}"));
+            "op '{op_name}' traverse: expected a mapping, got {v:?}"
+        ));
     };
     const KNOWN: &[&str] = &["path", "on_missing"];
     for k in map.keys() {
         if !KNOWN.contains(&k.as_str()) {
             return Err(format!(
                 "op '{op_name}' traverse: unknown field `{k}`. Recognised \
-                 fields: path, on_missing"));
+                 fields: path, on_missing"
+            ));
         }
     }
     let path = match map.get("path") {
@@ -3009,12 +3287,16 @@ fn parse_traverse_field(
             if !p.is_empty() && !p.starts_with('/') {
                 return Err(format!(
                     "op '{op_name}' traverse: path '{p}' must start with '/' \
-                     (RFC 6901 JSON-Pointer); an empty path addresses the root"));
+                     (RFC 6901 JSON-Pointer); an empty path addresses the root"
+                ));
             }
             Some(p.to_string())
         }
-        Some(other) => return Err(format!(
-            "op '{op_name}' traverse: path expected a string, got {other:?}")),
+        Some(other) => {
+            return Err(format!(
+                "op '{op_name}' traverse: path expected a string, got {other:?}"
+            ));
+        }
     };
     let on_missing = match map.get("on_missing") {
         None => OnMissing::default(),
@@ -3022,12 +3304,18 @@ fn parse_traverse_field(
             "ignore" => OnMissing::Ignore,
             "warn" => OnMissing::Warn,
             "error" | "fail" => OnMissing::Error,
-            other => return Err(format!(
-                "op '{op_name}' traverse: on_missing '{other}': expected one of \
-                 ignore / warn / error")),
+            other => {
+                return Err(format!(
+                    "op '{op_name}' traverse: on_missing '{other}': expected one of \
+                 ignore / warn / error"
+                ));
+            }
         },
-        Some(other) => return Err(format!(
-            "op '{op_name}' traverse: on_missing expected a string, got {other:?}")),
+        Some(other) => {
+            return Err(format!(
+                "op '{op_name}' traverse: on_missing expected a string, got {other:?}"
+            ));
+        }
     };
     Ok(Some(TraverseSpec { path, on_missing }))
 }
@@ -3036,7 +3324,9 @@ fn parse_result_field(
     val: Option<&JVal>,
     op_name: &str,
 ) -> Result<Option<crate::model::ResultSpec>, String> {
-    let Some(v) = val else { return Ok(None); };
+    let Some(v) = val else {
+        return Ok(None);
+    };
     let spec = parse_result_spec(v, op_name)?;
     if spec.is_empty() {
         Ok(None)
@@ -3045,10 +3335,7 @@ fn parse_result_field(
     }
 }
 
-fn parse_result_spec(
-    v: &JVal,
-    op_name: &str,
-) -> Result<crate::model::ResultSpec, String> {
+fn parse_result_spec(v: &JVal, op_name: &str) -> Result<crate::model::ResultSpec, String> {
     use crate::model::ResultSpec;
     match v {
         JVal::Null => Ok(ResultSpec::String(String::new())),
@@ -3061,20 +3348,22 @@ fn parse_result_spec(
             Ok(ResultSpec::List(out))
         }
         JVal::Object(map) => {
-            let mut out: std::collections::BTreeMap<String, String>
-                = std::collections::BTreeMap::new();
+            let mut out: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
             for (key, val) in map {
                 let source = match val {
                     JVal::String(s) => s.clone(),
                     JVal::Null => String::new(),
-                    other => return Err(format!(
-                        "op '{op_name}' result.{key}: expected string \
+                    other => {
+                        return Err(format!(
+                            "op '{op_name}' result.{key}: expected string \
                          (short-form keyword `count`/`ok`, path \
-                         expression, or Polydat expression); got {other}")),
+                         expression, or Polydat expression); got {other}"
+                        ));
+                    }
                 };
                 if out.insert(key.clone(), source).is_some() {
-                    return Err(format!(
-                        "op '{op_name}' result: duplicate key '{key}'"));
+                    return Err(format!("op '{op_name}' result: duplicate key '{key}'"));
                 }
             }
             Ok(ResultSpec::Map(out))
@@ -3082,7 +3371,8 @@ fn parse_result_spec(
         _ => Err(format!(
             "op '{op_name}' result: expected string (GK source), \
              list (sequence of fragments), or mapping (named \
-             short-forms); got {v}")),
+             short-forms); got {v}"
+        )),
     }
 }
 
@@ -3182,9 +3472,7 @@ pub(crate) fn format_jval_as_polydat_literal(v: &JVal) -> String {
         // string-shape becomes a polydat-quoted Str.
         JVal::String(s) => s.clone(),
         JVal::Array(items) => {
-            let elts: Vec<String> = items.iter()
-                .map(format_jval_in_array_context)
-                .collect();
+            let elts: Vec<String> = items.iter().map(format_jval_in_array_context).collect();
             format!("[{}]", elts.join(", "))
         }
         JVal::Object(_) => v.to_string(),
@@ -3201,9 +3489,7 @@ fn format_jval_in_array_context(v: &JVal) -> String {
             format!("\"{escaped}\"")
         }
         JVal::Array(items) => {
-            let elts: Vec<String> = items.iter()
-                .map(format_jval_in_array_context)
-                .collect();
+            let elts: Vec<String> = items.iter().map(format_jval_in_array_context).collect();
             format!("[{}]", elts.join(", "))
         }
         _ => format_jval_as_polydat_literal(v),
@@ -3230,14 +3516,23 @@ fn extract_string_map(val: Option<&JVal>) -> HashMap<String, String> {
 // array-literal / quoted-string surface is consistent.
 
 fn is_polydat_quoted_string(s: &str) -> bool {
-    if s.len() < 2 { return false; }
-    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    if s.len() < 2 {
+        return false;
+    }
+    if !s.starts_with('"') || !s.ends_with('"') {
+        return false;
+    }
     let bytes = s.as_bytes();
     let mut i = 1;
     let last = bytes.len() - 1;
     while i < last {
-        if bytes[i] == b'\\' { i += 2; continue; }
-        if bytes[i] == b'"' { return false; }
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return false;
+        }
         i += 1;
     }
     true
@@ -3253,7 +3548,10 @@ fn extract_value_map(val: Option<&JVal>) -> HashMap<String, JVal> {
     map
 }
 
-fn merge_string_maps(parent: &HashMap<String, String>, child: &HashMap<String, String>) -> HashMap<String, String> {
+fn merge_string_maps(
+    parent: &HashMap<String, String>,
+    child: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut merged = parent.clone();
     for (k, v) in child {
         merged.insert(k.clone(), v.clone());
@@ -3266,8 +3564,7 @@ fn merge_string_maps(parent: &HashMap<String, String>, child: &HashMap<String, S
 /// makes an inherited `rate` collide with the `rate` wrapper's
 /// field-ownership guard (SRD-32a). The op-level `rate:` field reaches ops via
 /// the typed [`ParsedOp::rate`] path, not params, so this exclusion is safe.
-const ACTIVITY_PARAM_KEYS: &[&str] =
-    &["cycles", "concurrency", "rate", "errors", "error_rate_max"];
+const ACTIVITY_PARAM_KEYS: &[&str] = &["cycles", "concurrency", "rate", "errors", "error_rate_max"];
 
 /// Clone `params` minus the activity/phase-scope keys ([`ACTIVITY_PARAM_KEYS`]).
 fn exclude_activity_keys(params: &HashMap<String, JVal>) -> HashMap<String, JVal> {
@@ -3278,7 +3575,10 @@ fn exclude_activity_keys(params: &HashMap<String, JVal>) -> HashMap<String, JVal
         .collect()
 }
 
-fn merge_value_maps(parent: &HashMap<String, JVal>, child: &HashMap<String, JVal>) -> HashMap<String, JVal> {
+fn merge_value_maps(
+    parent: &HashMap<String, JVal>,
+    child: &HashMap<String, JVal>,
+) -> HashMap<String, JVal> {
     let mut merged = parent.clone();
     for (k, v) in child {
         merged.insert(k.clone(), v.clone());
@@ -3307,12 +3607,20 @@ scenarios:
 "#;
         let wl = parse_workload(yaml, &HashMap::new()).expect("parse");
         let phase = wl.phases.get("build_index").expect("phase build_index");
-        let m = phase.metrics.get("time_to_index").expect("time_to_index metric");
-        assert_eq!(m.value, "current_epoch_millis() - phase_start",
-            "raw value must be preserved verbatim");
+        let m = phase
+            .metrics
+            .get("time_to_index")
+            .expect("time_to_index metric");
+        assert_eq!(
+            m.value, "current_epoch_millis() - phase_start",
+            "raw value must be preserved verbatim"
+        );
         assert_eq!(m.kind, Some(crate::model::MetricKind::Gauge));
-        assert!(phase.bindings.is_empty(),
-            "phase metrics must NOT auto-inject into bindings: {:?}", phase.bindings);
+        assert!(
+            phase.bindings.is_empty(),
+            "phase metrics must NOT auto-inject into bindings: {:?}",
+            phase.bindings
+        );
     }
 
     #[test]
@@ -3356,8 +3664,10 @@ scenarios: { default: [load] }
 phases: { load: { tries: "lots", ops: { w: { stmt: "op" } } } }
 scenarios: { default: [load] }
 "#;
-        assert!(parse_workload(bad, &HashMap::new()).is_err(),
-            "non-number, non-map tries must fail to parse");
+        assert!(
+            parse_workload(bad, &HashMap::new()).is_err(),
+            "non-number, non-map tries must fail to parse"
+        );
     }
 
     #[test]
@@ -3377,10 +3687,14 @@ scenarios:
 "#;
         let err = parse_workload(yaml, &HashMap::new())
             .expect_err("unknown metric field `type` must be rejected");
-        assert!(err.contains("unknown field `type`"),
-            "must name the offending field; got: {err}");
-        assert!(err.contains("kind"),
-            "must hint at the canonical `kind` field; got: {err}");
+        assert!(
+            err.contains("unknown field `type`"),
+            "must name the offending field; got: {err}"
+        );
+        assert!(
+            err.contains("kind"),
+            "must hint at the canonical `kind` field; got: {err}"
+        );
     }
 
     #[test]
@@ -3397,8 +3711,10 @@ scenarios:
 "#;
         let err = parse_workload(yaml, &HashMap::new())
             .expect_err("arbitrary unknown metric field must be rejected");
-        assert!(err.contains("unknown field `flavour`"),
-            "must name the offending field; got: {err}");
+        assert!(
+            err.contains("unknown field `flavour`"),
+            "must name the offending field; got: {err}"
+        );
     }
 
     #[test]
@@ -3439,15 +3755,16 @@ scenarios:
 "#;
         let err = parse_workload(yaml, &HashMap::new())
             .expect_err("list `name := expr` form must be rejected for phases");
-        assert!(err.contains("op-only") || err.contains("mapping form"),
-            "diagnostic should point at the op-only form; got: {err}");
+        assert!(
+            err.contains("op-only") || err.contains("mapping form"),
+            "diagnostic should point at the op-only form; got: {err}"
+        );
     }
 
     #[test]
     fn readouts_block_form_a_scalar_binds_on_update() {
-        let workload: serde_yaml::Value = serde_yaml::from_str(
-            r#"readouts: phase_status"#
-        ).unwrap();
+        let workload: serde_yaml::Value =
+            serde_yaml::from_str(r#"readouts: phase_status"#).unwrap();
         let json = serde_json::to_value(&workload).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
         assert_eq!(r.on_update, vec!["phase_status".to_string()]);
@@ -3461,7 +3778,9 @@ scenarios:
 readouts:
   on_phase_end: phase_outcome
   on_update: "phase_status lod=compact"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
         assert_eq!(r.on_phase_end, vec!["phase_outcome".to_string()]);
@@ -3476,13 +3795,18 @@ readouts:
   on_phase_end:
     - phase_outcome
     - phase_failure_hint
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
-        assert_eq!(r.on_phase_end, vec![
-            "phase_outcome".to_string(),
-            "phase_failure_hint".to_string(),
-        ]);
+        assert_eq!(
+            r.on_phase_end,
+            vec![
+                "phase_outcome".to_string(),
+                "phase_failure_hint".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -3491,11 +3815,13 @@ readouts:
             r#"
 readouts:
   each_*: scope_bracket
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
         assert_eq!(r.on_each_start, vec!["scope_bracket".to_string()]);
-        assert_eq!(r.on_each_end,   vec!["scope_bracket".to_string()]);
+        assert_eq!(r.on_each_end, vec!["scope_bracket".to_string()]);
         // Other slots untouched.
         assert!(r.on_phase_end.is_empty());
         assert!(r.on_update.is_empty());
@@ -3507,11 +3833,13 @@ readouts:
             r#"
 readouts:
   phase_*: trace
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
         assert_eq!(r.on_phase_start, vec!["trace".to_string()]);
-        assert_eq!(r.on_phase_end,   vec!["trace".to_string()]);
+        assert_eq!(r.on_phase_end, vec!["trace".to_string()]);
         assert!(r.on_each_start.is_empty());
     }
 
@@ -3521,14 +3849,20 @@ readouts:
             r#"
 readouts:
   "*": trace
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
         for slot in [
-            &r.on_session_start, &r.on_session_end,
-            &r.on_phase_start,   &r.on_phase_end,
-            &r.on_each_start,    &r.on_each_end,
-            &r.on_scope_start,   &r.on_scope_end,
+            &r.on_session_start,
+            &r.on_session_end,
+            &r.on_phase_start,
+            &r.on_phase_end,
+            &r.on_each_start,
+            &r.on_each_end,
+            &r.on_scope_start,
+            &r.on_scope_end,
             &r.on_update,
         ] {
             assert_eq!(slot, &vec!["trace".to_string()]);
@@ -3541,11 +3875,15 @@ readouts:
             r#"
 readouts:
   on_unknown: phase_outcome
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let err = parse_readouts_block(json.get("readouts")).unwrap_err();
-        assert!(err.contains("unknown slot 'on_unknown'"),
-            "wrong message: {err}");
+        assert!(
+            err.contains("unknown slot 'on_unknown'"),
+            "wrong message: {err}"
+        );
     }
 
     #[test]
@@ -3677,10 +4015,7 @@ ops:
             normalize_condition_clause("a > 0 && b < 10"),
             "{{a > 0 && b < 10}}",
         );
-        assert_eq!(
-            normalize_condition_clause("foo(bar)"),
-            "{{foo(bar)}}",
-        );
+        assert_eq!(normalize_condition_clause("foo(bar)"), "{{foo(bar)}}",);
     }
 
     #[test]
@@ -3734,7 +4069,6 @@ ops:
         assert!(matches!(&default[1], ScenarioNode::Phase(n) if n == "main"));
     }
 
-
     #[test]
     fn parse_template_expansion() {
         let yaml = r#"
@@ -3779,16 +4113,27 @@ phases:
       noop: "x"
 "#;
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
-        assert!(!workload.scenario_parse_errors.is_empty(),
+        assert!(
+            !workload.scenario_parse_errors.is_empty(),
             "malformed `iterate:` node MUST surface a scenario_parse_error \
-             — silent drop is the safety bug being prevented");
+             — silent drop is the safety bug being prevented"
+        );
         let msg = workload.scenario_parse_errors[0].as_str();
-        assert!(msg.contains("bogus"), "error must name the offending scenario: {msg}");
-        assert!(msg.contains("iterate"), "error must name the bad key: {msg}");
+        assert!(
+            msg.contains("bogus"),
+            "error must name the offending scenario: {msg}"
+        );
+        assert!(
+            msg.contains("iterate"),
+            "error must name the bad key: {msg}"
+        );
         // Bogus scenario must NOT have absorbed phase_x as a Phase
         // node via the legacy catch-all.
-        assert_eq!(workload.scenarios.get("bogus").map(|v| v.len()), Some(0),
-            "malformed node must NOT silently produce ScenarioNode::Phase");
+        assert_eq!(
+            workload.scenarios.get("bogus").map(|v| v.len()),
+            Some(0),
+            "malformed node must NOT silently produce ScenarioNode::Phase"
+        );
     }
 
     #[test]
@@ -3808,9 +4153,11 @@ ops:
   op1: "test"
 "#;
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
-        assert!(workload.scenario_parse_errors.is_empty(),
+        assert!(
+            workload.scenario_parse_errors.is_empty(),
             "legacy command-string form must NOT be flagged as malformed: {:?}",
-            workload.scenario_parse_errors);
+            workload.scenario_parse_errors
+        );
         let default = &workload.scenarios["default"];
         assert_eq!(default.len(), 2);
         assert!(matches!(&default[0], ScenarioNode::Phase(n) if n == "schema"));
@@ -3838,9 +4185,11 @@ phases:
         let msg = &workload.scenario_parse_errors[0];
         // Must mention at least the load-bearing alternatives.
         for expected in ["for_each", "scenarios", "do_while", "bindings"] {
-            assert!(msg.contains(expected),
+            assert!(
+                msg.contains(expected),
                 "error message must mention `{expected}` as a valid \
-                 alternative; got: {msg}");
+                 alternative; got: {msg}"
+            );
         }
     }
 
@@ -3980,8 +4329,10 @@ phases:
         assert_eq!(setup.tags.as_deref(), Some("block:schema"));
         assert_eq!(setup.ops.len(), 1);
         assert_eq!(setup.ops[0].name, "create");
-        assert_eq!(setup.ops[0].tags.get("phase").map(String::as_str),
-            Some("setup"));
+        assert_eq!(
+            setup.ops[0].tags.get("phase").map(String::as_str),
+            Some("setup")
+        );
 
         let run = &workload.phases["run"];
         assert_eq!(run.tags.as_deref(), Some("block:main"));
@@ -4004,8 +4355,10 @@ phases:
     cycles: 1
 "#;
         let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
-        assert!(err.contains("setup") && err.contains("matched no ops"),
-            "error must name the phase and the failure: {err}");
+        assert!(
+            err.contains("setup") && err.contains("matched no ops"),
+            "error must name the phase and the failure: {err}"
+        );
     }
 
     /// SRD-108 Part A — inline ops and a selector together are
@@ -4025,8 +4378,10 @@ phases:
       also: "SELECT 1;"
 "#;
         let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
-        assert!(err.contains("both inline ops and a"),
-            "error must explain the conflict: {err}");
+        assert!(
+            err.contains("both inline ops and a"),
+            "error must explain the conflict: {err}"
+        );
     }
 
     #[test]
@@ -4116,8 +4471,10 @@ phases:
         // Wire expression auto-injected into op bindings.
         match &op.bindings {
             BindingsDef::PolydatSource(src) => {
-                assert!(src.contains("latency_pred := 0.5 + 1.5 * pow(limit, -0.4)"),
-                    "wire not injected; bindings: {src:?}");
+                assert!(
+                    src.contains("latency_pred := 0.5 + 1.5 * pow(limit, -0.4)"),
+                    "wire not injected; bindings: {src:?}"
+                );
             }
             other => panic!("expected PolydatSource bindings, got {other:?}"),
         }
@@ -4146,8 +4503,10 @@ phases:
         // The non-bare expression landed in op-template bindings.
         match &op.bindings {
             BindingsDef::PolydatSource(src) => {
-                assert!(src.contains("scaled := base * 2"),
-                    "expression not injected; bindings: {src:?}");
+                assert!(
+                    src.contains("scaled := base * 2"),
+                    "expression not injected; bindings: {src:?}"
+                );
             }
             other => panic!("expected PolydatSource bindings, got {other:?}"),
         }
@@ -4168,8 +4527,10 @@ phases:
             kind: gauge
 "#;
         let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
-        assert!(err.contains("must itself be a valid identifier"),
-            "expected identifier diagnostic, got: {err}");
+        assert!(
+            err.contains("must itself be a valid identifier"),
+            "expected identifier diagnostic, got: {err}"
+        );
     }
 
     #[test]
@@ -4186,8 +4547,10 @@ phases:
             format: "%3.2f"
 "##;
         let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
-        assert!(err.contains("printf-style"),
-            "format error not surfaced at parse time: {err}");
+        assert!(
+            err.contains("printf-style"),
+            "format error not surfaced at parse time: {err}"
+        );
     }
 
     #[test]
@@ -4204,8 +4567,7 @@ phases:
           - foo := 2.0
 "#;
         let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
-        assert!(err.contains("collides"),
-            "collision not detected: {err}");
+        assert!(err.contains("collides"), "collision not detected: {err}");
     }
 
     #[test]
@@ -4324,8 +4686,11 @@ blocks:
         let mut cli = HashMap::new();
         cli.insert("consistency".to_string(), "200".to_string());
         let workload = parse_workload(yaml, &cli).unwrap();
-        let ddl = workload.ops.iter()
-            .find(|o| o.name == "schema_create").unwrap();
+        let ddl = workload
+            .ops
+            .iter()
+            .find(|o| o.name == "schema_create")
+            .unwrap();
         assert_eq!(
             ddl.params.get("consistency").and_then(|v| v.as_str()),
             Some("200"),
@@ -4396,7 +4761,9 @@ phases:
         raw: "select {cycle}"
 "#;
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
-        let composed = workload.scenarios.get("composed")
+        let composed = workload
+            .scenarios
+            .get("composed")
             .expect("composed scenario must parse");
         // After resolution the IncludedScenario wrappers carry
         // their resolved children. The scenario tree shape is:
@@ -4404,12 +4771,18 @@ phases:
         //     └── IncludedScenario("rampup") [Phase("prep")]
         //     └── IncludedScenario("query")  [Phase("run")]
         // Walk one level deep into each include to assert.
-        assert_eq!(composed.len(), 2,
-            "scenarios: [a, b] should produce two top-level nodes");
-        let names: Vec<&str> = composed.iter().filter_map(|n| match n {
-            ScenarioNode::IncludedScenario { name, .. } => Some(name.as_str()),
-            _ => None,
-        }).collect();
+        assert_eq!(
+            composed.len(),
+            2,
+            "scenarios: [a, b] should produce two top-level nodes"
+        );
+        let names: Vec<&str> = composed
+            .iter()
+            .filter_map(|n| match n {
+                ScenarioNode::IncludedScenario { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(names, vec!["rampup", "query"]);
         // First include resolves to its sole `Phase("prep")`.
         let first_children = match &composed[0] {
@@ -4455,7 +4828,11 @@ phases:
             match node {
                 ScenarioNode::IncludedScenario { name, children } => {
                     assert_eq!(name, "rampup");
-                    assert!(children.iter().any(|c| matches!(c, ScenarioNode::Phase(p) if p == "prep")));
+                    assert!(
+                        children
+                            .iter()
+                            .any(|c| matches!(c, ScenarioNode::Phase(p) if p == "prep"))
+                    );
                 }
                 other => panic!("expected IncludedScenario, got {other:?}"),
             }
@@ -4469,14 +4846,24 @@ phases:
     fn parse_checkpoint_field(yaml: &str) -> Option<crate::model::Checkpoint> {
         let yaml = format!(
             "phases:\n  p:\n{}\n    ops:\n      - select 1;\n",
-            yaml.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
+            yaml.lines()
+                .map(|l| format!("    {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         let v: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
         let json: serde_json::Value = serde_json::to_value(&v).expect("json convert");
-        let phases_obj = json.get("phases").and_then(|p| p.as_object()).expect("phases");
-        let phase = phases_obj.get("p").and_then(|p| p.as_object()).expect("phase p");
-        phase.get("checkpoint")
-            .map(|v| serde_json::from_value::<crate::model::Checkpoint>(v.clone()).expect("checkpoint parse"))
+        let phases_obj = json
+            .get("phases")
+            .and_then(|p| p.as_object())
+            .expect("phases");
+        let phase = phases_obj
+            .get("p")
+            .and_then(|p| p.as_object())
+            .expect("phase p");
+        phase.get("checkpoint").map(|v| {
+            serde_json::from_value::<crate::model::Checkpoint>(v.clone()).expect("checkpoint parse")
+        })
     }
 
     #[test]
@@ -4515,9 +4902,8 @@ phases:
 
     #[test]
     fn checkpoint_full_form_all_explicit() {
-        let cp = parse_checkpoint_field(
-            "checkpoint:\n  idempotent: true\n  hashed: false"
-        ).expect("present");
+        let cp = parse_checkpoint_field("checkpoint:\n  idempotent: true\n  hashed: false")
+            .expect("present");
         assert!(cp.idempotent);
         assert!(!cp.hashed);
         assert!(cp.verify.is_none());
@@ -4526,8 +4912,9 @@ phases:
     #[test]
     fn checkpoint_full_form_with_verify() {
         let cp = parse_checkpoint_field(
-            "checkpoint:\n  idempotent: true\n  verify:\n    raw: 'SELECT 1'\n    poll: assert_one"
-        ).expect("present");
+            "checkpoint:\n  idempotent: true\n  verify:\n    raw: 'SELECT 1'\n    poll: assert_one",
+        )
+        .expect("present");
         assert!(cp.idempotent);
         assert!(cp.hashed); // default
         let v = cp.verify.expect("verify body");
@@ -4537,9 +4924,8 @@ phases:
 
     #[test]
     fn checkpoint_full_form_idempotent_false_equivalent_to_none() {
-        let cp = parse_checkpoint_field(
-            "checkpoint:\n  idempotent: false\n  hashed: true"
-        ).expect("present");
+        let cp = parse_checkpoint_field("checkpoint:\n  idempotent: false\n  hashed: true")
+            .expect("present");
         assert!(!cp.idempotent);
         assert!(cp.hashed);
     }
@@ -4556,8 +4942,14 @@ phases:
         let cp_val = phase.get("checkpoint").unwrap().clone();
         let err = serde_json::from_value::<crate::model::Checkpoint>(cp_val).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unknown short form"), "expected unknown-short-form error, got: {msg}");
-        assert!(msg.contains("'maybe'"), "expected the bad token in error, got: {msg}");
+        assert!(
+            msg.contains("unknown short form"),
+            "expected unknown-short-form error, got: {msg}"
+        );
+        assert!(
+            msg.contains("'maybe'"),
+            "expected the bad token in error, got: {msg}"
+        );
     }
 
     #[test]
@@ -4568,13 +4960,19 @@ phases:
         let cp_val = json.pointer("/phases/p/checkpoint").unwrap().clone();
         let err = serde_json::from_value::<crate::model::Checkpoint>(cp_val).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unknown key 'bogus'"), "expected unknown-key error, got: {msg}");
+        assert!(
+            msg.contains("unknown key 'bogus'"),
+            "expected unknown-key error, got: {msg}"
+        );
     }
 
     #[test]
     fn checkpoint_field_absent_yields_none() {
         let cp = parse_checkpoint_field("# no checkpoint declared\n");
-        assert!(cp.is_none(), "absent declaration should yield None, not Default");
+        assert!(
+            cp.is_none(),
+            "absent declaration should yield None, not Default"
+        );
     }
 
     /// SRD-44 validation: a phase declared `checkpoint:
@@ -4600,12 +4998,18 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("expected validation rejection");
-        assert!(err.contains("checkpoint: idempotent"),
-            "error should explain the rejection: {err}");
-        assert!(err.contains("'probe'"),
-            "error should name the offending phase: {err}");
-        assert!(err.contains("do_while") || err.contains("do_until"),
-            "error should mention the do-loop ancestor: {err}");
+        assert!(
+            err.contains("checkpoint: idempotent"),
+            "error should explain the rejection: {err}"
+        );
+        assert!(
+            err.contains("'probe'"),
+            "error should name the offending phase: {err}"
+        );
+        assert!(
+            err.contains("do_while") || err.contains("do_until"),
+            "error should mention the do-loop ancestor: {err}"
+        );
     }
 
     /// `do_until` triggers the same rejection.
@@ -4648,8 +5052,7 @@ phases:
       step:
         stmt: "probe"
 "#;
-        super::parse_workload(yaml, &HashMap::new())
-            .expect("plain do_while phase should parse");
+        super::parse_workload(yaml, &HashMap::new()).expect("plain do_while phase should parse");
     }
 
     /// Idempotent phases NOT inside a do-loop are fine.
@@ -4700,19 +5103,32 @@ phases:
         let wl = super::parse_workload(yaml, &HashMap::new())
             .expect("workload with declarative captures should parse");
         let phase = wl.phases.get("probe").expect("probe phase");
-        let op = phase.ops.iter().find(|o| o.name == "read_state")
+        let op = phase
+            .ops
+            .iter()
+            .find(|o| o.name == "read_state")
             .expect("read_state op");
-        assert_eq!(op.captures.len(), 3,
-            "expected 3 declarative captures, got {:?}", op.captures);
-        let by_name = |n: &str| op.captures.iter()
-            .find(|c| c.as_name == n)
-            .unwrap_or_else(|| panic!("capture {n} missing"));
+        assert_eq!(
+            op.captures.len(),
+            3,
+            "expected 3 declarative captures, got {:?}",
+            op.captures
+        );
+        let by_name = |n: &str| {
+            op.captures
+                .iter()
+                .find(|c| c.as_name == n)
+                .unwrap_or_else(|| panic!("capture {n} missing"))
+        };
         let sstables = by_name("sstables");
         assert_eq!(sstables.path.as_deref(), Some("/0/value"));
         assert!(!sstables.count);
         let active = by_name("active_count");
-        assert_eq!(active.path.as_deref(), Some("/1/value"),
-            ":count suffix should be stripped from stored path");
+        assert_eq!(
+            active.path.as_deref(),
+            Some("/1/value"),
+            ":count suffix should be stripped from stored path"
+        );
         assert!(active.count, ":count suffix should set CapturePoint.count");
         let pending = by_name("pending_for_cf");
         assert_eq!(pending.path.as_deref(), Some("/2/value"));
@@ -4742,8 +5158,8 @@ phases:
       read_state:
         stmt: "noop"
 "#;
-        let wl = super::parse_workload(yaml, &HashMap::new())
-            .expect("phase-poll block should parse");
+        let wl =
+            super::parse_workload(yaml, &HashMap::new()).expect("phase-poll block should parse");
         let phase = wl.phases.get("ensure").expect("ensure phase");
         let poll = phase.poll.as_ref().expect("phase.poll Some");
         assert_eq!(poll.until, "sstables == 1 && active_for_cf == 0");
@@ -4790,7 +5206,11 @@ phases:
         );
         let wl2 = super::parse_workload(&map_yaml, &HashMap::new())
             .expect("map-form optimize should parse");
-        let opt2 = wl2.phases.get("search").and_then(|p| p.optimize.as_ref()).unwrap();
+        let opt2 = wl2
+            .phases
+            .get("search")
+            .and_then(|p| p.optimize.as_ref())
+            .unwrap();
         assert_eq!(opt.objective.trim(), opt2.objective.trim());
         assert_eq!(opt.method, opt2.method);
     }
@@ -4818,8 +5238,10 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("poll: + concurrency > 1 must error");
-        assert!(err.contains("poll:") && err.contains("concurrency"),
-            "expected error to name both poll: and concurrency; got: {err}");
+        assert!(
+            err.contains("poll:") && err.contains("concurrency"),
+            "expected error to name both poll: and concurrency; got: {err}"
+        );
     }
 
     /// SRD-75 §"Workload-load validation": phase-poll with
@@ -4838,10 +5260,12 @@ phases:
     poll:
       until: "done == 1"
 "#;
-        let err = super::parse_workload(yaml, &HashMap::new())
-            .expect_err("poll: without ops must error");
-        assert!(err.contains("poll:") && err.contains("ops"),
-            "expected error to name poll: and ops:; got: {err}");
+        let err =
+            super::parse_workload(yaml, &HashMap::new()).expect_err("poll: without ops must error");
+        assert!(
+            err.contains("poll:") && err.contains("ops"),
+            "expected error to name poll: and ops:; got: {err}"
+        );
     }
 
     /// Unknown keys under `poll:` are typos waiting to
@@ -4862,10 +5286,12 @@ phases:
       op1:
         stmt: "noop"
 "#;
-        let err = super::parse_workload(yaml, &HashMap::new())
-            .expect_err("typo under poll: must error");
-        assert!(err.contains("tinerval_ms"),
-            "expected error to name the offending key; got: {err}");
+        let err =
+            super::parse_workload(yaml, &HashMap::new()).expect_err("typo under poll: must error");
+        assert!(
+            err.contains("tinerval_ms"),
+            "expected error to name the offending key; got: {err}"
+        );
     }
 
     /// SRD-75 §"on_timeout" — accepts the documented
@@ -4874,9 +5300,14 @@ phases:
     /// cleanly; case is normalised at parse time.
     #[test]
     fn parses_phase_poll_on_timeout_accepts_error_and_abort() {
-        for (input, expected) in [("error", "error"), ("abort", "abort"),
-                                  ("ABORT", "abort"), ("Error", "error")] {
-            let yaml = format!(r#"
+        for (input, expected) in [
+            ("error", "error"),
+            ("abort", "abort"),
+            ("ABORT", "abort"),
+            ("Error", "error"),
+        ] {
+            let yaml = format!(
+                r#"
 scenarios:
   default:
     - ensure
@@ -4889,13 +5320,17 @@ phases:
     ops:
       op1:
         stmt: "noop"
-"#);
+"#
+            );
             let wl = super::parse_workload(&yaml, &HashMap::new())
                 .expect("on_timeout value should parse");
             let phase = wl.phases.get("ensure").expect("ensure phase");
             let poll = phase.poll.as_ref().expect("phase.poll Some");
-            assert_eq!(poll.on_timeout.as_deref(), Some(expected),
-                "on_timeout '{input}' should normalise to '{expected}'");
+            assert_eq!(
+                poll.on_timeout.as_deref(),
+                Some(expected),
+                "on_timeout '{input}' should normalise to '{expected}'"
+            );
         }
     }
 
@@ -4922,8 +5357,10 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("unknown on_timeout value must error");
-        assert!(err.contains("on_timeout") && err.contains("'fail'"),
-            "expected error to name the offending value; got: {err}");
+        assert!(
+            err.contains("on_timeout") && err.contains("'fail'"),
+            "expected error to name the offending value; got: {err}"
+        );
     }
 
     /// `poll:` requires `until:` — the predicate is the
@@ -4945,8 +5382,10 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("poll: without until: must error");
-        assert!(err.contains("until"),
-            "expected error to require until:; got: {err}");
+        assert!(
+            err.contains("until"),
+            "expected error to require until:; got: {err}"
+        );
     }
 
     /// SRD-83 Part 5 — the `effect:`/`action:` verb vocabulary is
@@ -4970,16 +5409,18 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("unknown effect verb must be a load error");
-        assert!(err.contains("sotp") && err.contains("stop|fail|abort"),
-            "expected error to name the verb and the vocabulary; got: {err}");
+        assert!(
+            err.contains("sotp") && err.contains("stop|fail|abort"),
+            "expected error to name the verb and the vocabulary; got: {err}"
+        );
     }
 
     /// The three declared verbs — and the `action:` alias — all load.
     #[test]
     fn accepts_declared_stop_condition_effects() {
-        for (key, verb) in [("effect", "stop"), ("effect", "fail"),
-                            ("action", "abort")] {
-            let yaml = format!(r#"
+        for (key, verb) in [("effect", "stop"), ("effect", "fail"), ("action", "abort")] {
+            let yaml = format!(
+                r#"
 scenarios:
   default:
     - work
@@ -4992,7 +5433,8 @@ phases:
     ops:
       op1:
         stmt: "noop"
-"#);
+"#
+            );
             super::parse_workload(&yaml, &HashMap::new())
                 .unwrap_or_else(|e| panic!("{key}: {verb} must load: {e}"));
         }
@@ -5026,8 +5468,10 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("path without leading / must error");
-        assert!(err.contains("`capture.bad`") && err.contains("'/'"),
-            "expected parse error to name the offending capture and require '/'; got: {err}");
+        assert!(
+            err.contains("`capture.bad`") && err.contains("'/'"),
+            "expected parse error to name the offending capture and require '/'; got: {err}"
+        );
     }
 
     /// A bare top-level member name means exactly `/name`, and is
@@ -5053,20 +5497,39 @@ phases:
           pointer: "/value"
           rooted: ""
 "#;
-        let wl = super::parse_workload(yaml, &HashMap::new())
-            .expect("both spellings must parse");
-        let op = wl.phases.get("probe").expect("phase")
-            .ops.iter().find(|o| o.name == "read_state").expect("op");
-        let path_of = |wire: &str| op.captures.iter()
-            .find(|c| c.as_name == wire)
-            .unwrap_or_else(|| panic!("capture {wire} missing"))
-            .path.clone().expect("declarative capture carries a path");
-        assert_eq!(path_of("bare"), "/value",
-            "a bare name normalizes to the equivalent pointer");
-        assert_eq!(path_of("pointer"), "/value",
-            "and is indistinguishable from the pointer spelling downstream");
-        assert_eq!(path_of("rooted"), "",
-            "empty still addresses the root document");
+        let wl = super::parse_workload(yaml, &HashMap::new()).expect("both spellings must parse");
+        let op = wl
+            .phases
+            .get("probe")
+            .expect("phase")
+            .ops
+            .iter()
+            .find(|o| o.name == "read_state")
+            .expect("op");
+        let path_of = |wire: &str| {
+            op.captures
+                .iter()
+                .find(|c| c.as_name == wire)
+                .unwrap_or_else(|| panic!("capture {wire} missing"))
+                .path
+                .clone()
+                .expect("declarative capture carries a path")
+        };
+        assert_eq!(
+            path_of("bare"),
+            "/value",
+            "a bare name normalizes to the equivalent pointer"
+        );
+        assert_eq!(
+            path_of("pointer"),
+            "/value",
+            "and is indistinguishable from the pointer spelling downstream"
+        );
+        assert_eq!(
+            path_of("rooted"),
+            "",
+            "empty still addresses the root document"
+        );
     }
 
     /// `~` is a JSON-Pointer escape introducer (`~0` = `~`, `~1` = `/`), so
@@ -5090,8 +5553,10 @@ phases:
 "#;
         let err = super::parse_workload(yaml, &HashMap::new())
             .expect_err("a bare name with '~' must error");
-        assert!(err.contains("`capture.bad`") && err.contains("ambiguous"),
-            "expected an ambiguity error naming the capture; got: {err}");
+        assert!(
+            err.contains("`capture.bad`") && err.contains("ambiguous"),
+            "expected an ambiguity error naming the capture; got: {err}"
+        );
     }
 
     #[test]

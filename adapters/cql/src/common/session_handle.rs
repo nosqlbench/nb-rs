@@ -64,8 +64,7 @@ pub trait CqlSettingsSource: Send + Sync {
     /// Handles both the C* 4.x integer-KB `*_in_kb` and C* 5.0 unit-typed
     /// (`"50KiB"`) spellings. `None` on any failure or when the setting is
     /// absent in every recognised form.
-    fn read<'a>(&'a self, name: &'a str)
-        -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>;
+    fn read<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>;
 }
 
 /// Driver-agnostic CQL session handle — the SRD-104 accessor payload the
@@ -88,22 +87,34 @@ pub struct CqlSessionHandle {
 impl CqlSessionHandle {
     /// A live handle over `settings`.
     pub fn new(driver: &'static str, settings: Arc<dyn CqlSettingsSource>) -> Self {
-        Self { driver, settings: Some(settings), cached: Mutex::new(HashMap::new()) }
+        Self {
+            driver,
+            settings: Some(settings),
+            cached: Mutex::new(HashMap::new()),
+        }
     }
 
     /// An **unresolved** handle — no settings surface. Returned by
     /// `cql_session(key)` when the fingerprint isn't attached, so downstream
     /// nodes still type-check (they read `0`, not a panic).
     pub fn unresolved(driver: &'static str) -> Self {
-        Self { driver, settings: None, cached: Mutex::new(HashMap::new()) }
+        Self {
+            driver,
+            settings: None,
+            cached: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Sync memo read of setting `name` in bytes; `0` when un-primed or
     /// unknown. The pure read the `cql_read_cached` / `cql_read_current`
     /// nodes call at eval time (SRD-103 §5).
     pub fn cached_bytes(&self, name: &str) -> u64 {
-        *self.cached.lock().unwrap_or_else(|e| e.into_inner())
-            .get(name).unwrap_or(&0)
+        *self
+            .cached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .unwrap_or(&0)
     }
 
     /// The server-side batch limit with the SRD-103 §4 back-off:
@@ -116,9 +127,14 @@ impl CqlSessionHandle {
     /// Async **cached** prime: query `name` once and memoise it, skipping the
     /// query if the memo already has it. Backs `cql_read_cached`.
     pub async fn prime(&self, name: &str) {
-        let present = self.cached.lock().unwrap_or_else(|e| e.into_inner())
+        let present = self
+            .cached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .contains_key(name);
-        if present { return; }
+        if present {
+            return;
+        }
         self.refresh(name).await;
     }
 
@@ -129,9 +145,13 @@ impl CqlSessionHandle {
     }
 
     async fn refresh(&self, name: &str) {
-        let Some(settings) = &self.settings else { return; };
+        let Some(settings) = &self.settings else {
+            return;
+        };
         if let Some(bytes) = settings.read(name).await {
-            self.cached.lock().unwrap_or_else(|e| e.into_inner())
+            self.cached
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(name.to_string(), bytes);
         }
     }
@@ -151,7 +171,11 @@ pub fn bytes_from_unit_value(value: &str) -> Option<u64> {
 /// Parse a C* 4.x `*_in_kb` settings value (a bare integer number of KiB,
 /// e.g. `"50"`) to bytes.
 pub fn bytes_from_kb_value(value: &str) -> Option<u64> {
-    value.trim().parse::<u64>().ok().map(|kb| kb.saturating_mul(1024))
+    value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|kb| kb.saturating_mul(1024))
 }
 
 /// The C* 4.x `*_in_kb` row name for a logical setting (`batch_size_fail_threshold`
@@ -164,7 +188,9 @@ pub fn in_kb_setting_name(name: &str) -> String {
 /// deduplicated per source via `warned` (SRD-103 §5; mirrors the
 /// `system_traces` pattern in `cassandra_cpp/tracing.rs`). Never fatal.
 pub fn warn_settings_unavailable(warned: &AtomicBool, driver: &str, detail: &str) {
-    if warned.swap(true, Ordering::Relaxed) { return; }
+    if warned.swap(true, Ordering::Relaxed) {
+        return;
+    }
     nbrs_runtime::diag!(
         nbrs_runtime::observer::LogLevel::Warn,
         "cql/{driver}: system_views.settings unreadable ({detail}) — \
@@ -195,7 +221,9 @@ pub async fn resolve_max_batch_bytes(
     session_key: &str,
     param: Option<&serde_json::Value>,
 ) -> Result<Option<u64>, String> {
-    let Some(param) = param else { return Ok(None); };
+    let Some(param) = param else {
+        return Ok(None);
+    };
 
     // 1. Literal magnitude fast path (Phase 1a semantics preserved).
     if let Some(bytes) = crate::common::size_estimator::parse_max_batch_bytes(Some(param)) {
@@ -238,7 +266,9 @@ pub async fn resolve_batch_count(
     session_key: &str,
     param: Option<&serde_json::Value>,
 ) -> Result<Option<usize>, String> {
-    let Some(param) = param else { return Ok(None); };
+    let Some(param) = param else {
+        return Ok(None);
+    };
 
     // 1. Bare integer / numeric-string literal fast path.
     if let Some(n) = literal_batch_count(param) {
@@ -253,9 +283,9 @@ pub async fn resolve_batch_count(
     };
     prime_referenced_settings(session_key, expr).await;
     let value = eval_batch_field_expr(parent, session_key, expr, "batch")?;
-    let n = value_to_u64(&value).ok_or_else(|| format!(
-        "batch '{expr}' did not resolve to a non-negative number (got {value:?})"
-    ))?;
+    let n = value_to_u64(&value).ok_or_else(|| {
+        format!("batch '{expr}' did not resolve to a non-negative number (got {value:?})")
+    })?;
     Ok(Some((n as usize).max(1)))
 }
 
@@ -263,7 +293,8 @@ pub async fn resolve_batch_count(
 /// literal to a row count. `None` for any non-numeric value — that value is
 /// then treated as a GK expression.
 fn literal_batch_count(param: &serde_json::Value) -> Option<usize> {
-    param.as_u64()
+    param
+        .as_u64()
         .or_else(|| param.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
         .map(|n| n as usize)
 }
@@ -273,7 +304,9 @@ fn literal_batch_count(param: &serde_json::Value) -> Option<usize> {
 /// attached (the miss is handled upstream — the expression's `cql_session`
 /// node yields an unresolved handle).
 pub fn lookup_handle(session_key: &str) -> Option<Arc<CqlSessionHandle>> {
-    polydat::resource_lookup(session_key)?.downcast::<CqlSessionHandle>().ok()
+    polydat::resource_lookup(session_key)?
+        .downcast::<CqlSessionHandle>()
+        .ok()
 }
 
 /// Pre-read (async) the settings the `max_batch_size` expression references,
@@ -285,7 +318,9 @@ pub fn lookup_handle(session_key: &str) -> Option<Arc<CqlSessionHandle>> {
 /// "NAME")` argument). When the expression uses `cql_read_current`, the prime
 /// is a fresh refresh; otherwise it is the memoised cached prime.
 async fn prime_referenced_settings(session_key: &str, expr: &str) {
-    let Some(handle) = lookup_handle(session_key) else { return; };
+    let Some(handle) = lookup_handle(session_key) else {
+        return;
+    };
     let force_fresh = expr.contains("cql_read_current");
 
     let mut names: Vec<String> = vec![
@@ -311,15 +346,11 @@ async fn prime_referenced_settings(session_key: &str, expr: &str) {
 /// Thin numeric wrapper over the shared [`eval_batch_field_expr`] plumbing;
 /// the expression may reference the CQL session nodes and is evaluated against
 /// a subscope with `cql_session_key` bound by value.
-fn eval_batch_expr(
-    parent: &PolydatKernel,
-    session_key: &str,
-    expr: &str,
-) -> Result<u64, String> {
+fn eval_batch_expr(parent: &PolydatKernel, session_key: &str, expr: &str) -> Result<u64, String> {
     let value = eval_batch_field_expr(parent, session_key, expr, "max_batch_size")?;
-    value_to_u64(&value).ok_or_else(|| format!(
-        "max_batch_size '{expr}' did not resolve to a non-negative number (got {value:?})"
-    ))
+    value_to_u64(&value).ok_or_else(|| {
+        format!("max_batch_size '{expr}' did not resolve to a non-negative number (got {value:?})")
+    })
 }
 
 /// Compile and evaluate a CQL batch op-field GK expression to a raw [`Value`],
@@ -350,14 +381,18 @@ fn eval_batch_field_expr(
         .map_err(|e| format!("{label} '{expr}': {e}"))?
         .program()
         .clone();
-    let bindings = [("cql_session_key".to_string(), Value::Str(session_key.into()))];
+    let bindings = [(
+        "cql_session_key".to_string(),
+        Value::Str(session_key.into()),
+    )];
     let matter = PolydatMatter::builder()
         .label(format!("cql_{label}"))
         .program(program)
         .iter_bindings(&bindings)
         .build()
         .map_err(|e| format!("{label} '{expr}': {e}"))?;
-    let mut child = parent.build_subscope(matter)
+    let mut child = parent
+        .build_subscope(matter)
         .map_err(|e| format!("{label} '{expr}': {e:?}"))?;
     Ok(child.pull(&output).clone())
 }
@@ -369,7 +404,9 @@ fn extract_string_literals(expr: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut chars = expr.chars().peekable();
     while let Some(c) = chars.next() {
-        if c != '"' { continue; }
+        if c != '"' {
+            continue;
+        }
         let mut lit = String::new();
         while let Some(c) = chars.next() {
             if c == '\\' {
@@ -378,7 +415,9 @@ fn extract_string_literals(expr: &str) -> Vec<String> {
                 }
                 continue;
             }
-            if c == '"' { break; }
+            if c == '"' {
+                break;
+            }
             lit.push(c);
         }
         out.push(lit);
@@ -408,10 +447,13 @@ mod tests {
     }
 
     impl CqlSettingsSource for MockSource {
-        fn driver(&self) -> &'static str { self.driver }
-        fn read<'a>(&'a self, name: &'a str)
-            -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>
-        {
+        fn driver(&self) -> &'static str {
+            self.driver
+        }
+        fn read<'a>(
+            &'a self,
+            name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>> {
             let v = self.values.get(name).copied();
             Box::pin(async move { v })
         }
@@ -420,7 +462,13 @@ mod tests {
     fn handle_with(threshold_bytes: u64) -> CqlSessionHandle {
         let mut values = HashMap::new();
         values.insert(BATCH_FAIL_THRESHOLD.to_string(), threshold_bytes);
-        CqlSessionHandle::new("scylla", Arc::new(MockSource { driver: "scylla", values }))
+        CqlSessionHandle::new(
+            "scylla",
+            Arc::new(MockSource {
+                driver: "scylla",
+                values,
+            }),
+        )
     }
 
     #[tokio::test]
@@ -453,7 +501,10 @@ mod tests {
         // C* 4.x integer-KB.
         assert_eq!(bytes_from_kb_value("50"), Some(51_200));
         assert_eq!(bytes_from_kb_value("128"), Some(131_072));
-        assert_eq!(in_kb_setting_name(BATCH_FAIL_THRESHOLD), "batch_size_fail_threshold_in_kb");
+        assert_eq!(
+            in_kb_setting_name(BATCH_FAIL_THRESHOLD),
+            "batch_size_fail_threshold_in_kb"
+        );
     }
 
     #[test]
@@ -462,8 +513,10 @@ mod tests {
             extract_string_literals("cql_read_cached(cql_session(cql_session_key), \"foo\")"),
             vec!["foo".to_string()]
         );
-        assert!(extract_string_literals(
-            "cql_server_batch_limit(cql_session(cql_session_key))").is_empty());
+        assert!(
+            extract_string_literals("cql_server_batch_limit(cql_session(cql_session_key))")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -483,8 +536,7 @@ mod tests {
 
     impl polydat::ResourceAccessor for MockAccessor {
         fn lookup(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-            (key == self.key)
-                .then(|| self.handle.clone() as Arc<dyn std::any::Any + Send + Sync>)
+            (key == self.key).then(|| self.handle.clone() as Arc<dyn std::any::Any + Send + Sync>)
         }
     }
 
@@ -501,7 +553,10 @@ mod tests {
         values.insert(BATCH_FAIL_THRESHOLD.to_string(), 51_200u64); // 50 KiB
         let handle = Arc::new(CqlSessionHandle::new(
             "scylla",
-            Arc::new(MockSource { driver: "scylla", values }),
+            Arc::new(MockSource {
+                driver: "scylla",
+                values,
+            }),
         ));
         let _ = polydat::RESOURCE_ACCESSOR.set(Arc::new(MockAccessor {
             key: key.to_string(),
@@ -512,19 +567,27 @@ mod tests {
 
         // Literal magnitude → no cluster read, byte-identical to Phase 1a.
         let literal = resolve_max_batch_bytes(&parent, key, Some(&serde_json::json!("64KB")))
-            .await.expect("literal resolve");
+            .await
+            .expect("literal resolve");
         assert_eq!(literal, Some(64_000));
 
         // GK expression → server fail threshold (51200) with the 0.9 back-off
         // = 46080 bytes, pre-read from the mock source into the session memo.
         let expr = serde_json::json!("cql_server_batch_limit(cql_session(cql_session_key))");
         let resolved = resolve_max_batch_bytes(&parent, key, Some(&expr))
-            .await.expect("expression resolve");
-        assert_eq!(resolved, Some(46_080),
-            "dispenser must receive the backed-off byte budget");
+            .await
+            .expect("expression resolve");
+        assert_eq!(
+            resolved,
+            Some(46_080),
+            "dispenser must receive the backed-off byte budget"
+        );
 
         // Absent field → no byte cap.
-        assert_eq!(resolve_max_batch_bytes(&parent, key, None).await.unwrap(), None);
+        assert_eq!(
+            resolve_max_batch_bytes(&parent, key, None).await.unwrap(),
+            None
+        );
     }
 
     /// `batch:` resolution mirrors `max_batch_size`: bare integers / numeric
@@ -543,12 +606,14 @@ mod tests {
 
         // Bare integer literal → no kernel, no session read.
         let lit = resolve_batch_count(&parent, key, Some(&serde_json::json!(8)))
-            .await.expect("integer literal resolve");
+            .await
+            .expect("integer literal resolve");
         assert_eq!(lit, Some(8));
 
         // Numeric-string literal → same fast path.
         let lit_str = resolve_batch_count(&parent, key, Some(&serde_json::json!("8")))
-            .await.expect("numeric-string literal resolve");
+            .await
+            .expect("numeric-string literal resolve");
         assert_eq!(lit_str, Some(8));
 
         // GK expression (literal-bearing, no session nodes): floor_decade(292)
@@ -556,14 +621,20 @@ mod tests {
         // stride is workload-authored, resolved through the GK kernel.
         let expr = serde_json::json!("floor_decade(292)");
         let resolved = resolve_batch_count(&parent, key, Some(&expr))
-            .await.expect("expression resolve");
-        assert_eq!(resolved, Some(200),
-            "workload-authored batch stride resolves through the GK kernel");
+            .await
+            .expect("expression resolve");
+        assert_eq!(
+            resolved,
+            Some(200),
+            "workload-authored batch stride resolves through the GK kernel"
+        );
 
         // A second expression form (min over literals) → 8.
         let expr2 = serde_json::json!("min(8, 100)");
         assert_eq!(
-            resolve_batch_count(&parent, key, Some(&expr2)).await.expect("min resolve"),
+            resolve_batch_count(&parent, key, Some(&expr2))
+                .await
+                .expect("min resolve"),
             Some(8),
         );
 

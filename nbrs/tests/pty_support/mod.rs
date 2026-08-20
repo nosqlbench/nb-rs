@@ -77,27 +77,21 @@ pub async fn wait_until(
             return;
         }
         if tokio::time::Instant::now() >= deadline {
-            kill_and_panic(
-                stepper,
-                &format!("timed out waiting for {what}"),
-            ).await;
+            kill_and_panic(stepper, &format!("timed out waiting for {what}")).await;
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 }
 
 /// Step the emulator until `needle` appears on the screen.
-pub async fn wait_for(
-    stepper: &mut SteppableTerminal,
-    needle: &str,
-    timeout: Duration,
-) {
+pub async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
     wait_until(
         stepper,
         |s| s.contains(needle),
         timeout,
         &format!("{needle:?}"),
-    ).await;
+    )
+    .await;
 }
 
 /// Drain a few more passes so the final screen is complete.

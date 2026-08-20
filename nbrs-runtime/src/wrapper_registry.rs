@@ -203,8 +203,12 @@ impl WrapperRegistration {
 mod level_tests {
     use super::*;
 
-    fn no_trigger(_: WrapperSubject) -> bool { false }
-    fn no_describe(_: WrapperSubject) -> Option<String> { None }
+    fn no_trigger(_: WrapperSubject) -> bool {
+        false
+    }
+    fn no_describe(_: WrapperSubject) -> Option<String> {
+        None
+    }
 
     #[test]
     fn applies_at_reads_declared_levels() {
@@ -267,7 +271,9 @@ impl WrapperRegistry {
     /// Exposed for diagnostics (the closed-vocab guard names the full
     /// accepted wrapper vocabulary) and for the drift-guard test.
     pub fn all_owned_fields(&self) -> std::collections::BTreeSet<&'static str> {
-        self.iter().flat_map(|reg| reg.owned_fields.iter().copied()).collect()
+        self.iter()
+            .flat_map(|reg| reg.owned_fields.iter().copied())
+            .collect()
     }
 
     /// Look up by name. Returns `None` for unknown names; the
@@ -280,7 +286,10 @@ impl WrapperRegistry {
     /// Look up by raw string. Convenience for parsing the
     /// `--wrap-default-order` / `wrappers.order` lists.
     pub fn get_str(&self, name: &str) -> Option<&'static WrapperRegistration> {
-        self.entries.iter().copied().find(|r| r.name.as_str() == name)
+        self.entries
+            .iter()
+            .copied()
+            .find(|r| r.name.as_str() == name)
     }
 
     /// Number of registered wrappers.
@@ -313,10 +322,7 @@ impl WrapperRegistry {
     /// wrapper's trigger always live under `params:`, so a
     /// caller can pass a closure over `template.params
     /// .contains_key`.
-    pub fn misplaced_fields(
-        &self,
-        subject: WrapperSubject,
-    ) -> Vec<(WrapperName, &'static str)> {
+    pub fn misplaced_fields(&self, subject: WrapperSubject) -> Vec<(WrapperName, &'static str)> {
         let mut out: Vec<(WrapperName, &'static str)> = Vec::new();
         for reg in self.iter() {
             // Only wrappers legal at this subject's level can claim its
@@ -357,17 +363,19 @@ fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let (n, m) = (a.len(), b.len());
-    if n == 0 { return m; }
-    if m == 0 { return n; }
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
     let mut prev: Vec<usize> = (0..=m).collect();
     let mut curr: Vec<usize> = vec![0; m + 1];
     for i in 1..=n {
         curr[0] = i;
         for j in 1..=m {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

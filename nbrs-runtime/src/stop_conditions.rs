@@ -131,7 +131,10 @@ impl RuntimeState {
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
         if self.children_total > 0 {
-            parts.push(format!("children_done={}/{}", self.children_done, self.children_total));
+            parts.push(format!(
+                "children_done={}/{}",
+                self.children_done, self.children_total
+            ));
             if self.children_failed > 0 {
                 parts.push(format!("children_failed={}", self.children_failed));
             }
@@ -140,16 +143,20 @@ impl RuntimeState {
             parts.push(format!("result_failure={}", self.result_failure));
             parts.push(format!(
                 "result_failure/cycles_total={:.2}%",
-                self.result_failure_fraction() * 100.0));
+                self.result_failure_fraction() * 100.0
+            ));
             // Attempts earn a mention when they carry signal: retries
             // active (resolved attempts exceed cycles) or any attempt
             // failed (an attempt-wire guard may have tripped).
             if self.attempt_total > self.cycles_total || self.attempt_failure > 0 {
                 parts.push(format!(
-                    "attempt_failure={}/{}", self.attempt_failure, self.attempt_total));
+                    "attempt_failure={}/{}",
+                    self.attempt_failure, self.attempt_total
+                ));
                 parts.push(format!(
                     "attempt_failure_fraction={:.2}%",
-                    self.attempt_failure_fraction() * 100.0));
+                    self.attempt_failure_fraction() * 100.0
+                ));
             }
         }
         parts.push(format!("elapsed={:.1}s", self.elapsed_ms as f64 / 1000.0));
@@ -252,9 +259,15 @@ pub fn compile_stop_condition(
     // backstop landed logged "unknown wire: 'recent_result_failures'"
     // per tier and ran with NO stop conditions armed.)
     const CANONICAL: [&str; 9] = [
-        wire::CYCLES_TOTAL, wire::RESULT_FAILURE, wire::ELAPSED_MS,
-        wire::ATTEMPT_TOTAL, wire::ATTEMPT_SUCCESS, wire::ATTEMPT_FAILURE,
-        wire::CHILDREN_TOTAL, wire::CHILDREN_FAILED, wire::CHILDREN_DONE,
+        wire::CYCLES_TOTAL,
+        wire::RESULT_FAILURE,
+        wire::ELAPSED_MS,
+        wire::ATTEMPT_TOTAL,
+        wire::ATTEMPT_SUCCESS,
+        wire::ATTEMPT_FAILURE,
+        wire::CHILDREN_TOTAL,
+        wire::CHILDREN_FAILED,
+        wire::CHILDREN_DONE,
     ];
     let cells = phase_kernel.shared_cells_in_scope();
     for referenced in polydat::dsl::refs::referenced_names(when) {
@@ -294,11 +307,17 @@ pub fn compile_continue_if(
 ) -> Result<Arc<PolydatKernel>, String> {
     let mut source = String::new();
     for (name, value) in coords {
-        source.push_str(&format!("extern {name}: {}\n", value.port_type().to_keyword()));
+        source.push_str(&format!(
+            "extern {name}: {}\n",
+            value.port_type().to_keyword()
+        ));
     }
     source.push_str(&format!("__continue_if := {when}"));
     polydat::dsl::compile_polydat_with_outputs(
-        &source, None, &["__continue_if".to_string()], strict,
+        &source,
+        None,
+        &["__continue_if".to_string()],
+        strict,
     )
     .map(Arc::new)
     .map_err(|e| format!("continue_if predicate `{when}`: {e}"))
@@ -395,7 +414,8 @@ impl StopConditionDecl {
         Self {
             when: format!(
                 "cycles_total >= 50 && \
-                 to_f64(result_failure) > (to_f64(cycles_total) * {max})"),
+                 to_f64(result_failure) > (to_f64(cycles_total) * {max})"
+            ),
             effect: Outcome::failed(),
             reason: Some("error_rate_exceeded".to_string()),
             target: StopScope::Phase,
@@ -492,8 +512,10 @@ impl StopConditionSet {
             let expr = compile_stop_condition(phase_kernel, idx, &decl.when)?;
             conditions.push(StopCondition {
                 expr,
-                effect: decl.effect.clone(),   // Outcome no longer Copy (SRD-92 reason field)
-                reason: decl.reason.clone()
+                effect: decl.effect.clone(), // Outcome no longer Copy (SRD-92 reason field)
+                reason: decl
+                    .reason
+                    .clone()
                     .unwrap_or_else(|| format!("stop_condition: {}", decl.when)),
                 target: decl.target,
                 cancel_ops: decl.cancel_ops,
@@ -505,7 +527,9 @@ impl StopConditionSet {
     /// An installed-nothing set (used as the safe fallback when a
     /// predicate fails to compile at runtime).
     pub fn empty() -> Self {
-        Self { conditions: Vec::new() }
+        Self {
+            conditions: Vec::new(),
+        }
     }
 
     /// True when no condition is installed (skip evaluation entirely).
@@ -516,13 +540,15 @@ impl StopConditionSet {
     /// Evaluate every condition against `state`; return the error class
     /// of the first that trips, or `None`. (First-match: any trip stops
     /// the shell, so the order only affects which reason is recorded.)
-    pub fn evaluate(&mut self, state: &RuntimeState)
-        -> Option<(Outcome, String, StopScope, bool)>
-    {
+    pub fn evaluate(&mut self, state: &RuntimeState) -> Option<(Outcome, String, StopScope, bool)> {
         for cond in &mut self.conditions {
             if state.trips(&mut cond.expr) {
-                return Some((cond.effect.clone(), cond.reason.clone(),
-                    cond.target, cond.cancel_ops));
+                return Some((
+                    cond.effect.clone(),
+                    cond.reason.clone(),
+                    cond.target,
+                    cond.cancel_ops,
+                ));
             }
         }
         None
@@ -551,13 +577,16 @@ mod tests {
         let mut root = polydat::dsl::compile_polydat(
             "shared recent_result_failures: f64 := 0.0
              shared recent_result_total: f64 := 0.0
-             rx := 1")
-            .expect("root kernel");
+             rx := 1",
+        )
+        .expect("root kernel");
         // Phase kernel as a subscope whose matter does NOT reference
         // the shared wires (like load_increment_adaptive's bindings).
         let pm = polydat::kernel::subcontext::PolydatMatter::builder()
-            .label("phase_test").source("x := 5")
-            .build().expect("matter");
+            .label("phase_test")
+            .source("x := 5")
+            .build()
+            .expect("matter");
         let phase = root.build_subscope(pm).expect("phase kernel");
 
         // Canonical-only predicates keep compiling.
@@ -573,32 +602,50 @@ mod tests {
             .expect("shared-wire predicate must compile");
 
         // LIVE-READ proof: cells at 0 → no trip...
-        let state = RuntimeState { cycles_total: 1000, result_failure: 5, ..Default::default() };
+        let state = RuntimeState {
+            cycles_total: 1000,
+            result_failure: 5,
+            ..Default::default()
+        };
         assert!(!state.trips(&mut cond), "cells at 0 must not trip");
         // ...a daemon-style write through the ROOT cell trips it
         // WITHOUT rebinding. A detached extern (default 0) would stay
         // false forever — the silent-disarm failure this test pins.
-        let idx = root.program().find_input("recent_result_failures")
+        let idx = root
+            .program()
+            .find_input("recent_result_failures")
             .expect("root input slot for the shared wire");
         root.state().set_input(idx, polydat::ast::Value::F64(150.0));
-        assert!(state.trips(&mut cond),
-            "predicate must read the LIVE shared cell (150 >= 100, ratio floor 0)");
+        assert!(
+            state.trips(&mut cond),
+            "predicate must read the LIVE shared cell (150 >= 100, ratio floor 0)"
+        );
         // And back down: no latch.
         root.state().set_input(idx, polydat::ast::Value::F64(0.0));
         assert!(!state.trips(&mut cond), "cell reset must un-trip");
 
         // A misspelled name is neither canonical nor a cell: still a
         // loud compile error, never a silently-0 extern.
-        assert!(compile_stop_condition(&phase, 0, "recent_result_failurez >= 1")
-            .is_err(), "unknown names must stay compile errors");
+        assert!(
+            compile_stop_condition(&phase, 0, "recent_result_failurez >= 1").is_err(),
+            "unknown names must stay compile errors"
+        );
     }
 
     #[test]
     fn failure_fraction_is_safe_at_zero_cycles() {
         assert_eq!(RuntimeState::default().result_failure_fraction(), 0.0);
-        let s = RuntimeState { cycles_total: 100, result_failure: 10, ..Default::default() };
+        let s = RuntimeState {
+            cycles_total: 100,
+            result_failure: 10,
+            ..Default::default()
+        };
         assert_eq!(s.result_failure_fraction(), 0.1);
-        let s = RuntimeState { cycles_total: 50, result_failure: 50, ..Default::default() };
+        let s = RuntimeState {
+            cycles_total: 50,
+            result_failure: 50,
+            ..Default::default()
+        };
         assert_eq!(s.result_failure_fraction(), 1.0);
     }
 
@@ -610,19 +657,39 @@ mod tests {
         // never above. The default `error_rate_max: 1.0` guard
         // (`op_count >= 50 && error_rate > 1.0`) therefore never trips, as
         // documented ("allow 100% — never trip") — without clamping.
-        let all_fail = RuntimeState { cycles_total: 100, result_failure: 100, ..Default::default() };
+        let all_fail = RuntimeState {
+            cycles_total: 100,
+            result_failure: 100,
+            ..Default::default()
+        };
         assert_eq!(all_fail.result_failure_fraction(), 1.0);
-        let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
-            .expect("phase kernel");
+        let phase_kernel =
+            polydat::dsl::compile_polydat("input cycle: u64\nx := 5").expect("phase kernel");
         let mut cond = compile_stop_condition(
-            &phase_kernel, 0, "cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 1.0)")
-            .expect("compile scoped stop condition");
-        assert!(!all_fail.trips(&mut cond), "error_rate_max:1.0 must never trip");
+            &phase_kernel,
+            0,
+            "cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 1.0)",
+        )
+        .expect("compile scoped stop condition");
+        assert!(
+            !all_fail.trips(&mut cond),
+            "error_rate_max:1.0 must never trip"
+        );
         // A 0.5 guard still trips at >50% terminal failures.
         let mut half = compile_stop_condition(
-            &phase_kernel, 0, "cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.5)").unwrap();
-        assert!(RuntimeState { cycles_total: 100, result_failure: 60, ..Default::default() }
-            .trips(&mut half));
+            &phase_kernel,
+            0,
+            "cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.5)",
+        )
+        .unwrap();
+        assert!(
+            RuntimeState {
+                cycles_total: 100,
+                result_failure: 60,
+                ..Default::default()
+            }
+            .trips(&mut half)
+        );
     }
 
     #[test]
@@ -637,12 +704,20 @@ mod tests {
             volatile sum := cycles_total + result_failure";
         let mut k = polydat::dsl::compile_polydat(src).expect("compile predicate kernel");
 
-        RuntimeState { cycles_total: 10, result_failure: 5, ..Default::default() }
-            .inject_into(&mut k);
+        RuntimeState {
+            cycles_total: 10,
+            result_failure: 5,
+            ..Default::default()
+        }
+        .inject_into(&mut k);
         assert_eq!(*k.pull("sum"), Value::U64(15));
 
-        RuntimeState { cycles_total: 40, result_failure: 2, ..Default::default() }
-            .inject_into(&mut k);
+        RuntimeState {
+            cycles_total: 40,
+            result_failure: 2,
+            ..Default::default()
+        }
+        .inject_into(&mut k);
         assert_eq!(*k.pull("sum"), Value::U64(42));
     }
 
@@ -652,27 +727,48 @@ mod tests {
         // a `ScopedExpr` bound to the phase kernel, evaluated per trigger
         // against an injected runtime-state snapshot — never baked into
         // the phase matter.
-        let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
-            .expect("phase kernel");
+        let phase_kernel =
+            polydat::dsl::compile_polydat("input cycle: u64\nx := 5").expect("phase kernel");
         let mut cond = compile_stop_condition(
-            &phase_kernel, 0, "cycles_total > 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.1)")
-            .expect("compile scoped stop condition");
+            &phase_kernel,
+            0,
+            "cycles_total > 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.1)",
+        )
+        .expect("compile scoped stop condition");
         // op_count under threshold → does not trip (error_rate is 0.5
         // here, but the `&&` short of op_count > 50 fails).
-        assert!(!RuntimeState { cycles_total: 40, result_failure: 20, ..Default::default() }
-            .trips(&mut cond));
+        assert!(
+            !RuntimeState {
+                cycles_total: 40,
+                result_failure: 20,
+                ..Default::default()
+            }
+            .trips(&mut cond)
+        );
         // op_count 100 (> 50) and error_rate 0.2 (> 0.1) → trips.
-        assert!(RuntimeState { cycles_total: 100, result_failure: 20, ..Default::default() }
-            .trips(&mut cond));
+        assert!(
+            RuntimeState {
+                cycles_total: 100,
+                result_failure: 20,
+                ..Default::default()
+            }
+            .trips(&mut cond)
+        );
         // op_count over but error_rate 0.01 under → does not trip.
-        assert!(!RuntimeState { cycles_total: 100, result_failure: 1, ..Default::default() }
-            .trips(&mut cond));
+        assert!(
+            !RuntimeState {
+                cycles_total: 100,
+                result_failure: 1,
+                ..Default::default()
+            }
+            .trips(&mut cond)
+        );
     }
 
     #[test]
     fn stop_condition_set_installs_default_error_rate_and_declared_predicates() {
-        let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
-            .expect("phase kernel");
+        let phase_kernel =
+            polydat::dsl::compile_polydat("input cycle: u64\nx := 5").expect("phase kernel");
         // The synthesized error-rate guard (0.1) rides the SAME list
         // as the declared op-count predicate — one uniform path
         // (SRD-82: no hidden conditions).
@@ -680,9 +776,16 @@ mod tests {
             &phase_kernel,
             &[
                 StopConditionDecl::error_rate_guard(0.1),
-                StopConditionDecl { when: "cycles_total > 1000".to_string(), effect: Outcome::failed(), reason: None, target: StopScope::Phase, cancel_ops: false },
-            ])
-            .expect("build set");
+                StopConditionDecl {
+                    when: "cycles_total > 1000".to_string(),
+                    effect: Outcome::failed(),
+                    reason: None,
+                    target: StopScope::Phase,
+                    cancel_ops: false,
+                },
+            ],
+        )
+        .expect("build set");
         // The compiled set is independent of the parent kernel — drop it
         // and evaluation still works (each predicate is its own
         // sub-context). This is what lets the activity bind against a
@@ -690,19 +793,51 @@ mod tests {
         drop(phase_kernel);
         assert!(!set.is_empty());
         // Below the 50-op floor: even 100% errors does not trip yet.
-        assert!(set.evaluate(
-            &RuntimeState { cycles_total: 10, result_failure: 10, ..Default::default() }).is_none());
+        assert!(
+            set.evaluate(&RuntimeState {
+                cycles_total: 10,
+                result_failure: 10,
+                ..Default::default()
+            })
+            .is_none()
+        );
         // 5% errors, 100 ops → neither trips.
-        assert!(set.evaluate(
-            &RuntimeState { cycles_total: 100, result_failure: 5, ..Default::default() }).is_none());
+        assert!(
+            set.evaluate(&RuntimeState {
+                cycles_total: 100,
+                result_failure: 5,
+                ..Default::default()
+            })
+            .is_none()
+        );
         // 20% errors → the default error-rate condition trips.
         assert_eq!(
-            set.evaluate(&RuntimeState { cycles_total: 100, result_failure: 20, ..Default::default() }),
-            Some((Outcome::failed(), "error_rate_exceeded".to_string(), StopScope::Phase, false)));
+            set.evaluate(&RuntimeState {
+                cycles_total: 100,
+                result_failure: 20,
+                ..Default::default()
+            }),
+            Some((
+                Outcome::failed(),
+                "error_rate_exceeded".to_string(),
+                StopScope::Phase,
+                false
+            ))
+        );
         // Low errors but op_count over 1000 → the declared predicate trips.
         assert_eq!(
-            set.evaluate(&RuntimeState { cycles_total: 2000, result_failure: 1, ..Default::default() }),
-            Some((Outcome::failed(), "stop_condition: cycles_total > 1000".to_string(), StopScope::Phase, false)));
+            set.evaluate(&RuntimeState {
+                cycles_total: 2000,
+                result_failure: 1,
+                ..Default::default()
+            }),
+            Some((
+                Outcome::failed(),
+                "stop_condition: cycles_total > 1000".to_string(),
+                StopScope::Phase,
+                false
+            ))
+        );
     }
 
     /// SRD-83 follow-up — `action: abort` classifies as a FAILED outcome
@@ -714,10 +849,12 @@ mod tests {
         // Verb → outcome: abort shares fail's failing outcome.
         assert_eq!(
             StopConditionDecl::effect_from_str(Some("abort"), Outcome::interrupted()),
-            Outcome::failed());
+            Outcome::failed()
+        );
         assert_eq!(
             StopConditionDecl::effect_from_str(Some("fail"), Outcome::interrupted()),
-            Outcome::failed());
+            Outcome::failed()
+        );
         // Cancel-ops classifier: only abort escalates.
         assert!(StopConditionDecl::action_cancels_ops(Some("abort")));
         assert!(!StopConditionDecl::action_cancels_ops(Some("fail")));
@@ -725,8 +862,7 @@ mod tests {
         assert!(!StopConditionDecl::action_cancels_ops(None));
 
         // A compiled abort decl surfaces cancel_ops=true through evaluate.
-        let root = polydat::dsl::compile_polydat("input cycle: u64")
-            .expect("root kernel");
+        let root = polydat::dsl::compile_polydat("input cycle: u64").expect("root kernel");
         let mut set = StopConditionSet::build_for_phase(
             &root,
             &[StopConditionDecl {
@@ -735,11 +871,20 @@ mod tests {
                 reason: Some("terminal_failure".to_string()),
                 target: StopScope::Workload,
                 cancel_ops: true,
-            }])
-            .expect("build set");
+            }],
+        )
+        .expect("build set");
         assert_eq!(
-            set.evaluate(&RuntimeState { result_failure: 1, ..Default::default() }),
-            Some((Outcome::failed(), "terminal_failure".to_string(),
-                  StopScope::Workload, true)));
+            set.evaluate(&RuntimeState {
+                result_failure: 1,
+                ..Default::default()
+            }),
+            Some((
+                Outcome::failed(),
+                "terminal_failure".to_string(),
+                StopScope::Workload,
+                true
+            ))
+        );
     }
 }

@@ -117,10 +117,10 @@ pub struct LabelFilter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelFilterOp {
-    Eq,        // =
-    Ne,        // !=
-    EqRegex,   // =~
-    NeRegex,   // !~
+    Eq,      // =
+    Ne,      // !=
+    EqRegex, // =~
+    NeRegex, // !~
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,7 +144,10 @@ pub struct AggrModifier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AggrModifierOp { By, Without }
+pub enum AggrModifierOp {
+    By,
+    Without,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOpExpr {
@@ -169,11 +172,25 @@ pub struct BinaryOpExpr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
-    Add, Sub, Mul, Div, Mod, Pow,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or, Unless,
-    If, IfNot,
-    Default, Atan2,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Unless,
+    If,
+    IfNot,
+    Default,
+    Atan2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -184,7 +201,10 @@ pub struct GroupModifier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupOp { On, Ignoring }
+pub enum GroupOp {
+    On,
+    Ignoring,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JoinModifier {
@@ -194,7 +214,10 @@ pub struct JoinModifier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinOp { GroupLeft, GroupRight }
+pub enum JoinOp {
+    GroupLeft,
+    GroupRight,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParensExpr {

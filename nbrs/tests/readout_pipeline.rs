@@ -39,18 +39,23 @@ fn nbrs_binary() -> PathBuf {
 
 /// Hand-rolled tempdir so the test stays self-contained;
 /// cleans up on drop.
-struct TempDir { path: PathBuf }
+struct TempDir {
+    path: PathBuf,
+}
 impl TempDir {
     fn new() -> Self {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(
-            format!("nbrs-readout-pipeline-{pid}-{nanos}"));
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nbrs-readout-pipeline-{pid}-{nanos}"));
         std::fs::create_dir_all(&path).expect("create tempdir");
         Self { path }
     }
-    fn path(&self) -> &std::path::Path { &self.path }
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 impl Drop for TempDir {
     fn drop(&mut self) {
@@ -94,7 +99,8 @@ phases:
       out:
         stmt: "x={c}"
 "#,
-    ).expect("write workload yaml");
+    )
+    .expect("write workload yaml");
     (dir, yaml_path)
 }
 
@@ -115,11 +121,7 @@ fn build_config(workload: &Path, session: &Path) -> Config {
     }
 }
 
-async fn assert_screen_contains(
-    stepper: &mut SteppableTerminal,
-    needle: &str,
-    timeout: Duration,
-) {
+async fn assert_screen_contains(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
     pty_support::wait_for(stepper, needle, timeout).await;
 }
 
@@ -135,7 +137,8 @@ async fn workload_readouts_block_drives_terminal_output() {
     let session = dir.path().join("session");
     let config = build_config(&yaml, &session);
 
-    let mut stepper = SteppableTerminal::start(config).await
+    let mut stepper = SteppableTerminal::start(config)
+        .await
         .expect("start steppable terminal");
 
     // The trace readout's first emitted line for an
@@ -143,18 +146,9 @@ async fn workload_readouts_block_drives_terminal_output() {
     // binder didn't pick up the yaml binding, the default
     // `phase_outcome` ✓ line would fire instead and this
     // string never appears.
-    assert_screen_contains(
-        &mut stepper, "event=on_phase_end",
-        Duration::from_secs(10),
-    ).await;
-    assert_screen_contains(
-        &mut stepper, "phase_name=\"run\"",
-        Duration::from_secs(2),
-    ).await;
-    assert_screen_contains(
-        &mut stepper, "cycles=3/3",
-        Duration::from_secs(2),
-    ).await;
+    assert_screen_contains(&mut stepper, "event=on_phase_end", Duration::from_secs(10)).await;
+    assert_screen_contains(&mut stepper, "phase_name=\"run\"", Duration::from_secs(2)).await;
+    assert_screen_contains(&mut stepper, "cycles=3/3", Duration::from_secs(2)).await;
 
     let _ = stepper.kill();
 }

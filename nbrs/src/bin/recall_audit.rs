@@ -36,10 +36,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vectordata::{
-    TestDataGroup,
-    catalog::resolver::Catalog,
-    catalog::sources::CatalogSources,
-    open_facet_typed,
+    TestDataGroup, catalog::resolver::Catalog, catalog::sources::CatalogSources, open_facet_typed,
 };
 
 /// Per-query accumulator: `(oracle_recall, pvs_recall,
@@ -70,7 +67,10 @@ fn main() -> ExitCode {
         }
     };
     let label_count = global_to_local.iter().filter(|o| o.is_some()).count();
-    println!("  metadata_content==={}: {} positions", cfg.label, label_count);
+    println!(
+        "  metadata_content==={}: {} positions",
+        cfg.label, label_count
+    );
 
     let phases = match parse_audit_log(&cfg.audit_log) {
         Ok(p) => p,
@@ -99,7 +99,9 @@ fn main() -> ExitCode {
     let mut pvs_acc = (0u64, 0.0f64);
 
     for (q, oracle_cyc) in oracle_phase {
-        let Some(pvs_cyc) = pvs_phase.get(q) else { continue };
+        let Some(pvs_cyc) = pvs_phase.get(q) else {
+            continue;
+        };
         let gt: Vec<i64> = oracle_cyc.gt_oracle.iter().take(k).copied().collect();
         let gt_set: HashSet<i64> = gt.iter().copied().collect();
 
@@ -109,23 +111,38 @@ fn main() -> ExitCode {
         let oracle_recall = oracle_inter as f64 / k as f64;
 
         let pvs_keys = pvs_cyc.body.clone();
-        let pvs_local: HashSet<i64> = pvs_keys.iter().filter_map(|&g| {
-            global_to_local.get(g as usize).and_then(|o| o.map(|l| l as i64))
-        }).collect();
+        let pvs_local: HashSet<i64> = pvs_keys
+            .iter()
+            .filter_map(|&g| {
+                global_to_local
+                    .get(g as usize)
+                    .and_then(|o| o.map(|l| l as i64))
+            })
+            .collect();
         let pvs_inter = gt_set.intersection(&pvs_local).count();
         let pvs_recall = pvs_inter as f64 / k as f64;
 
-        oracle_acc.0 += 1; oracle_acc.1 += oracle_recall;
-        pvs_acc.0 += 1;    pvs_acc.1 += pvs_recall;
+        oracle_acc.0 += 1;
+        oracle_acc.1 += oracle_recall;
+        pvs_acc.0 += 1;
+        pvs_acc.1 += pvs_recall;
         per_q.insert(*q, (oracle_recall, pvs_recall, gt, oracle_keys, pvs_keys));
     }
 
     println!("\n=== aggregate ===");
     if oracle_acc.0 > 0 {
-        println!("  oracle  n={:<4} mean={:.4}", oracle_acc.0, oracle_acc.1 / oracle_acc.0 as f64);
+        println!(
+            "  oracle  n={:<4} mean={:.4}",
+            oracle_acc.0,
+            oracle_acc.1 / oracle_acc.0 as f64
+        );
     }
     if pvs_acc.0 > 0 {
-        println!("  pvs     n={:<4} mean={:.4}", pvs_acc.0, pvs_acc.1 / pvs_acc.0 as f64);
+        println!(
+            "  pvs     n={:<4} mean={:.4}",
+            pvs_acc.0,
+            pvs_acc.1 / pvs_acc.0 as f64
+        );
     }
 
     // Tally winners.
@@ -133,9 +150,13 @@ fn main() -> ExitCode {
     let mut pvs_wins = 0u64;
     let mut ties = 0u64;
     for (o, p, _, _, _) in per_q.values() {
-        if o > p { oracle_wins += 1; }
-        else if p > o { pvs_wins += 1; }
-        else { ties += 1; }
+        if o > p {
+            oracle_wins += 1;
+        } else if p > o {
+            pvs_wins += 1;
+        } else {
+            ties += 1;
+        }
     }
     let total = per_q.len();
     println!("\n=== per-q winners (k={k}, {total} aligned cycles) ===");
@@ -147,14 +168,21 @@ fn main() -> ExitCode {
         println!("\n=== q's where PVS strictly beats Oracle (first 10) ===");
         let mut shown = 0;
         for (q, (o, p, gt, ok, pk)) in &per_q {
-            if p <= o { continue; }
+            if p <= o {
+                continue;
+            }
             println!("  q={q:>4}  oracle={o:.2}  pvs={p:.2}");
             println!("    gt[:K]:         {gt:?}");
             println!("    oracle returned: {ok:?}");
             // PVS keys translated to label-local
-            let pvs_translated: Vec<i64> = pk.iter().filter_map(|&g| {
-                global_to_local.get(g as usize).and_then(|o| o.map(|l| l as i64))
-            }).collect();
+            let pvs_translated: Vec<i64> = pk
+                .iter()
+                .filter_map(|&g| {
+                    global_to_local
+                        .get(g as usize)
+                        .and_then(|o| o.map(|l| l as i64))
+                })
+                .collect();
             println!("    pvs (global):    {pk:?}");
             println!("    pvs (local):     {pvs_translated:?}");
             // Identify which true top-K keys PVS captured that
@@ -163,14 +191,22 @@ fn main() -> ExitCode {
             let oracle_set: HashSet<i64> = ok.iter().copied().collect();
             let pvs_local_set: HashSet<i64> = pvs_translated.iter().copied().collect();
             let gt_set: HashSet<i64> = gt.iter().copied().collect();
-            let pvs_caught: Vec<i64> = gt_set.intersection(&pvs_local_set)
-                .filter(|x| !oracle_set.contains(*x)).copied().collect();
-            let oracle_caught: Vec<i64> = gt_set.intersection(&oracle_set)
-                .filter(|x| !pvs_local_set.contains(*x)).copied().collect();
+            let pvs_caught: Vec<i64> = gt_set
+                .intersection(&pvs_local_set)
+                .filter(|x| !oracle_set.contains(*x))
+                .copied()
+                .collect();
+            let oracle_caught: Vec<i64> = gt_set
+                .intersection(&oracle_set)
+                .filter(|x| !pvs_local_set.contains(*x))
+                .copied()
+                .collect();
             println!("    gt keys ONLY pvs caught:    {pvs_caught:?}");
             println!("    gt keys ONLY oracle caught: {oracle_caught:?}");
             shown += 1;
-            if shown >= 10 { break; }
+            if shown >= 10 {
+                break;
+            }
         }
         if pvs_wins > 10 {
             println!("  ... and {} more pvs-wins.", pvs_wins - 10);
@@ -207,11 +243,17 @@ fn parse_args() -> Result<Config, String> {
                 dataset = Some(it.next().ok_or("--dataset requires a value")?.clone());
             }
             "--label" => {
-                label = it.next().ok_or("--label requires a value")?.parse()
+                label = it
+                    .next()
+                    .ok_or("--label requires a value")?
+                    .parse()
                     .map_err(|e| format!("invalid --label: {e}"))?;
             }
             "--k" => {
-                k = it.next().ok_or("--k requires a value")?.parse()
+                k = it
+                    .next()
+                    .ok_or("--k requires a value")?
+                    .parse()
                     .map_err(|e| format!("invalid --k: {e}"))?;
             }
             "--help" | "-h" => {
@@ -239,16 +281,21 @@ fn parse_args() -> Result<Config, String> {
 /// `None` when the byte is some other label.
 fn load_global_to_local(spec: &str, label: u8) -> Result<Vec<Option<u32>>, String> {
     let catalog = Catalog::of(&CatalogSources::new().configure_default());
-    let group: TestDataGroup = catalog.open(spec)
+    let group: TestDataGroup = catalog
+        .open(spec)
         .map_err(|e| format!("catalog open '{spec}': {e}"))?;
     let bytes = {
         let mut found: Option<Vec<u8>> = None;
         for p in group.profile_names() {
-            let Some(view) = group.generic_view(&p) else { continue };
+            let Some(view) = group.generic_view(&p) else {
+                continue;
+            };
             if let Ok(reader) = open_facet_typed::<u8>(&view, "metadata_content") {
                 let n = reader.count();
                 let mut out = Vec::with_capacity(n);
-                for i in 0..n { out.push(reader.get_native(i)); }
+                for i in 0..n {
+                    out.push(reader.get_native(i));
+                }
                 found = Some(out);
                 break;
             }
@@ -256,13 +303,18 @@ fn load_global_to_local(spec: &str, label: u8) -> Result<Vec<Option<u32>>, Strin
         found.ok_or_else(|| "no profile exposes `metadata_content`".to_string())?
     };
     let mut local = 0u32;
-    Ok(bytes.iter().map(|&b| {
-        if b == label {
-            let l = local;
-            local += 1;
-            Some(l)
-        } else { None }
-    }).collect())
+    Ok(bytes
+        .iter()
+        .map(|&b| {
+            if b == label {
+                let l = local;
+                local += 1;
+                Some(l)
+            } else {
+                None
+            }
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +348,8 @@ fn parse_audit_log(path: &PathBuf) -> Result<BTreeMap<String, BTreeMap<u64, Cycl
                 cur_phase = Some(phase);
                 cur_q = Some(q);
                 in_body = false;
-                phases.entry(cur_phase.clone().unwrap())
+                phases
+                    .entry(cur_phase.clone().unwrap())
                     .or_default()
                     .insert(q, CycleData::default());
             } else if let Some(rest) = payload.strip_prefix("gt_oracle ") {
@@ -304,26 +357,31 @@ fn parse_audit_log(path: &PathBuf) -> Result<BTreeMap<String, BTreeMap<u64, Cycl
                 if let Some(arr_start) = rest.find('[') {
                     let arr = parse_int_array(&rest[arr_start..]).unwrap_or_default();
                     if let (Some(ph), Some(q)) = (&cur_phase, cur_q)
-                        && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
-                            cyc.gt_oracle = arr;
-                        }
+                        && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q))
+                    {
+                        cyc.gt_oracle = arr;
+                    }
                 }
             } else if let Some(first_key) = parse_body_header(payload) {
                 in_body = true;
                 if let (Some(ph), Some(q)) = (&cur_phase, cur_q)
-                    && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
-                        cyc.body.clear();
-                        if let Some(k) = first_key { cyc.body.push(k); }
+                    && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q))
+                {
+                    cyc.body.clear();
+                    if let Some(k) = first_key {
+                        cyc.body.push(k);
                     }
+                }
             } else {
                 in_body = false;
             }
         } else if in_body
             && let Ok(k) = line.trim().parse::<i64>()
-                && let (Some(ph), Some(q)) = (&cur_phase, cur_q)
-                    && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
-                        cyc.body.push(k);
-                    }
+            && let (Some(ph), Some(q)) = (&cur_phase, cur_q)
+            && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q))
+        {
+            cyc.body.push(k);
+        }
     }
     Ok(phases)
 }
@@ -348,7 +406,9 @@ fn parse_cycle_header(payload: &str) -> Option<(String, u64)> {
     let after = &rest[cycle_pos + " cycle:".len()..];
     let q_pos = after.find("q=")?;
     let after_q = &after[q_pos + 2..];
-    let end = after_q.find(|c: char| !c.is_ascii_digit()).unwrap_or(after_q.len());
+    let end = after_q
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_q.len());
     let q: u64 = after_q[..end].parse().ok()?;
     Some((phase, q))
 }
@@ -364,7 +424,11 @@ fn parse_body_header(payload: &str) -> Option<Option<i64>> {
         return None;
     }
     let rest = payload[body_pos + " body:".len()..].trim_start();
-    let first = if rest.is_empty() { None } else { rest.parse::<i64>().ok() };
+    let first = if rest.is_empty() {
+        None
+    } else {
+        rest.parse::<i64>().ok()
+    };
     Some(first)
 }
 

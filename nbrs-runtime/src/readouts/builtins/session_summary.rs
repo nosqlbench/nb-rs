@@ -20,8 +20,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct SessionSummary;
 
 impl Readout for SessionSummary {
-    fn name(&self) -> &'static str { "session_summary" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Session] }
+    fn name(&self) -> &'static str {
+        "session_summary"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Session]
+    }
 
     fn render(
         &self,
@@ -32,8 +36,8 @@ impl Readout for SessionSummary {
         out: &mut dyn ReadoutBuf,
     ) -> usize {
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value) => render_compact(ctx, out),
-            (Lod::Labeled,  ContentMode::Value) => render_labeled(ctx, out),
+            (Lod::Compact, ContentMode::Value) => render_compact(ctx, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled(ctx, out),
             (Lod::Expanded, ContentMode::Value) => render_expanded(ctx, out),
             (_, ContentMode::Explanation) => render_explanation(out),
         }
@@ -42,15 +46,12 @@ impl Readout for SessionSummary {
 
 /// Compact: single-line tallies, no labels — matches the
 /// existing observer's bracket form.
-fn render_compact(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let dim    = if color { "\x1b[2m"    } else { "" };
-    let green  = if color { "\x1b[32m"   } else { "" };
-    let red    = if color { "\x1b[1;31m" } else { "" };
-    let reset  = if color { "\x1b[0m"    } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let green = if color { "\x1b[32m" } else { "" };
+    let red = if color { "\x1b[1;31m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let f = ctx.session_phases_failed();
     let p = ctx.session_phases_pending();
     let fail_color = if f > 0 { red } else { dim };
@@ -72,10 +73,7 @@ fn render_compact(
 /// Labeled: full-prose form matching the observer's
 /// pre-engine rollup `phases:  X completed, Y failed,
 /// Z not run (of N total)`.
-fn render_labeled(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let tmp = labeled_phase_rollup(
         ctx.session_phases_completed(),
         ctx.session_phases_failed(),
@@ -108,11 +106,11 @@ pub fn labeled_phase_rollup(
     total: usize,
     color: bool,
 ) -> String {
-    let bold   = if color { "\x1b[1m"    } else { "" };
-    let dim    = if color { "\x1b[2m"    } else { "" };
-    let green  = if color { "\x1b[32m"   } else { "" };
-    let red    = if color { "\x1b[1;31m" } else { "" };
-    let reset  = if color { "\x1b[0m"    } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let green = if color { "\x1b[32m" } else { "" };
+    let red = if color { "\x1b[1;31m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let fail_color = if failed > 0 { red } else { dim };
     let mut tmp = String::with_capacity(128);
     let _ = write!(
@@ -128,16 +126,13 @@ pub fn labeled_phase_rollup(
 
 /// Expanded: per-line breakdown — same data, friendlier
 /// to scan for debugging / scrollback.
-fn render_expanded(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"    } else { "" };
-    let dim    = if color { "\x1b[2m"    } else { "" };
-    let green  = if color { "\x1b[32m"   } else { "" };
-    let red    = if color { "\x1b[1;31m" } else { "" };
-    let reset  = if color { "\x1b[0m"    } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let green = if color { "\x1b[32m" } else { "" };
+    let red = if color { "\x1b[1;31m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let f = ctx.session_phases_failed();
     let fail_color = if f > 0 { red } else { dim };
     let mut tmp = String::with_capacity(192);
@@ -177,32 +172,74 @@ mod tests {
         total: usize,
     }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { "session" }
-        fn subject_seq(&self) -> Option<(usize, usize)> { None }
-        fn subject_labels(&self) -> &str { "" }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { "" }
-        fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::SessionEnd }
-        fn session_phases_completed(&self) -> usize { self.completed }
-        fn session_phases_failed(&self) -> usize { self.failed }
-        fn session_phases_pending(&self) -> usize { self.pending }
-        fn session_phases_total(&self) -> usize { self.total }
+        fn subject_name(&self) -> &str {
+            "session"
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            None
+        }
+        fn subject_labels(&self) -> &str {
+            ""
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            ""
+        }
+        fn use_color(&self) -> bool {
+            false
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::SessionEnd
+        }
+        fn session_phases_completed(&self) -> usize {
+            self.completed
+        }
+        fn session_phases_failed(&self) -> usize {
+            self.failed
+        }
+        fn session_phases_pending(&self) -> usize {
+            self.pending
+        }
+        fn session_phases_total(&self) -> usize {
+            self.total
+        }
     }
 
     fn render(ctx: &TestCtx, lod: Lod) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         SessionSummary.render(
-            ctx, lod, ContentMode::Value, &ReadoutOptions::new(), &mut buf,
+            ctx,
+            lod,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -210,7 +247,10 @@ mod tests {
     #[test]
     fn labeled_matches_pre_engine_format() {
         let ctx = TestCtx {
-            completed: 7, failed: 1, pending: 0, total: 8,
+            completed: 7,
+            failed: 1,
+            pending: 0,
+            total: 8,
         };
         assert_eq!(
             render(&ctx, Lod::Labeled),
@@ -221,7 +261,10 @@ mod tests {
     #[test]
     fn compact_packs_into_slash_form() {
         let ctx = TestCtx {
-            completed: 5, failed: 2, pending: 1, total: 8,
+            completed: 5,
+            failed: 2,
+            pending: 1,
+            total: 8,
         };
         assert_eq!(render(&ctx, Lod::Compact), "5/2/1/8");
     }
@@ -229,7 +272,10 @@ mod tests {
     #[test]
     fn expanded_breaks_onto_multiple_lines() {
         let ctx = TestCtx {
-            completed: 1, failed: 0, pending: 0, total: 1,
+            completed: 1,
+            failed: 0,
+            pending: 0,
+            total: 1,
         };
         let out = render(&ctx, Lod::Expanded);
         assert!(out.lines().count() >= 4);
@@ -243,8 +289,11 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         SessionSummary.render(
-            &ctx, Lod::Labeled, ContentMode::Explanation,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Explanation,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         assert!(s.contains("completed-count"));
         assert!(s.contains("failed-count"));

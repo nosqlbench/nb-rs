@@ -23,7 +23,9 @@ pub struct Bobyqa {
 
 impl Bobyqa {
     pub fn from_params(p: &OptimizerParams) -> Self {
-        Self { tol: p.get("tol", 1e-8) }
+        Self {
+            tol: p.get("tol", 1e-8),
+        }
     }
 }
 
@@ -32,7 +34,12 @@ impl Optimizer for Bobyqa {
         "bobyqa"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         if d == 0 {

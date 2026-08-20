@@ -100,10 +100,8 @@ impl std::fmt::Display for SkipBlocker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoPrior => write!(f, "no comparable prior outcome"),
-            Self::BaseChanged =>
-                write!(f, "scope or phase config changed"),
-            Self::ParamChanged(name) =>
-                write!(f, "param '{name}' changed"),
+            Self::BaseChanged => write!(f, "scope or phase config changed"),
+            Self::ParamChanged(name) => write!(f, "param '{name}' changed"),
         }
     }
 }
@@ -182,24 +180,26 @@ pub fn warn_multi_execution_default(session_dir: &std::path::Path) {
     }
     let conn = match rusqlite::Connection::open_with_flags(
         &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
          WHERE type='table' AND name='executions')",
-        [],
-        |r| r.get::<_, i64>(0),
-    ).map(|n| n != 0).unwrap_or(false);
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n != 0)
+        .unwrap_or(false);
     if !exists {
         return;
     }
     let mut stmt = match conn.prepare(
         "SELECT exec_id, verb, scope, disposition, started_at_nanos \
-         FROM executions ORDER BY exec_id DESC LIMIT 3"
+         FROM executions ORDER BY exec_id DESC LIMIT 3",
     ) {
         Ok(s) => s,
         Err(_) => return,
@@ -218,9 +218,9 @@ pub fn warn_multi_execution_default(session_dir: &std::path::Path) {
         Ok(it) => it.filter_map(Result::ok).collect(),
         Err(_) => return,
     };
-    let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM executions", [], |r| r.get(0),
-    ).unwrap_or(0);
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM executions", [], |r| r.get(0))
+        .unwrap_or(0);
     if total < 2 || rows.is_empty() {
         return;
     }
@@ -231,27 +231,29 @@ pub fn warn_multi_execution_default(session_dir: &std::path::Path) {
     );
     for (i, (exec_id, verb, scope, disposition, _)) in rows.iter().enumerate() {
         let marker = if i == 0 { " <-- latest" } else { "" };
-        let scope_part = scope.as_deref()
+        let scope_part = scope
+            .as_deref()
             .map(|s| format!(" scope={s}"))
             .unwrap_or_default();
-        let disp_part = disposition.as_deref()
+        let disp_part = disposition
+            .as_deref()
             .map(|d| format!(" {d}"))
             .unwrap_or_else(|| " (in-flight)".to_string());
-        eprintln!(
-            "  exec_id={exec_id} verb={verb}{scope_part}{disp_part}{marker}"
-        );
+        eprintln!("  exec_id={exec_id} verb={verb}{scope_part}{disp_part}{marker}");
     }
-    eprintln!(
-        "  (pass `--execution=<n>` to target one, `--all-executions` to aggregate)"
-    );
+    eprintln!("  (pass `--execution=<n>` to target one, `--all-executions` to aggregate)");
 }
 
 impl ExecutionQualifier {
     /// Single execution id.
-    pub fn specific(n: u64) -> Self { Self::Specific(n) }
+    pub fn specific(n: u64) -> Self {
+        Self::Specific(n)
+    }
 
     /// Aggregate across every execution.
-    pub fn all() -> Self { Self::All }
+    pub fn all() -> Self {
+        Self::All
+    }
 
     /// Resolve "the most recent execution" against the
     /// session db at `session_dir`. Returns
@@ -306,33 +308,35 @@ pub fn latest_exec_id_for_session(session_dir: &std::path::Path) -> Option<u64> 
     }
     let conn = rusqlite::Connection::open_with_flags(
         &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ).ok()?;
-    let table_exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
          WHERE type='table' AND name='phase_outcomes')",
-        [],
-        |r| r.get::<_, i64>(0),
-    ).map(|n| n != 0).unwrap_or(false);
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n != 0)
+        .unwrap_or(false);
     if !table_exists {
         return None;
     }
-    let max: Option<i64> = conn.query_row(
-        "SELECT MAX(exec_id) FROM phase_outcomes",
-        [],
-        |r| r.get::<_, Option<i64>>(0),
-    ).ok().flatten();
+    let max: Option<i64> = conn
+        .query_row("SELECT MAX(exec_id) FROM phase_outcomes", [], |r| {
+            r.get::<_, Option<i64>>(0)
+        })
+        .ok()
+        .flatten();
     max.map(|v| v.max(0) as u64)
 }
 
 impl RefinePlan {
     /// `O(1)` check used by the executor's phase-walk gate.
     pub fn is_completed(&self, phase_name: &str, phase_labels: &str) -> bool {
-        self.completed.contains(&(
-            phase_name.to_string(),
-            phase_labels.to_string(),
-        ))
+        self.completed
+            .contains(&(phase_name.to_string(), phase_labels.to_string()))
     }
 
     /// SRD-77 `--scope=changed` — true iff this phase has a
@@ -352,9 +356,8 @@ impl RefinePlan {
         current_hex: &str,
         current_params: &std::collections::HashMap<String, String>,
     ) -> bool {
-        self.unchanged_verdict(
-            phase_name, phase_labels, current_hex, current_params,
-        ).is_ok()
+        self.unchanged_verdict(phase_name, phase_labels, current_hex, current_params)
+            .is_ok()
     }
 
     /// SRD-107 Push 3 — the three-way skip-validity check with a
@@ -375,8 +378,7 @@ impl RefinePlan {
         };
         match prior.phase_hash.as_deref() {
             None => return Err(SkipBlocker::NoPrior),
-            Some(prior_hex) if prior_hex != current_hex =>
-                return Err(SkipBlocker::BaseChanged),
+            Some(prior_hex) if prior_hex != current_hex => return Err(SkipBlocker::BaseChanged),
             Some(_) => {}
         }
         let Some(json) = prior.params_consumed.as_deref() else {
@@ -384,12 +386,13 @@ impl RefinePlan {
             // not exist post-upgrade; treat as incomparable.
             return Err(SkipBlocker::NoPrior);
         };
-        let Ok(stored) = serde_json::from_str::<
-            std::collections::BTreeMap<String, String>>(json) else {
+        let Ok(stored) = serde_json::from_str::<std::collections::BTreeMap<String, String>>(json)
+        else {
             return Err(SkipBlocker::NoPrior);
         };
         for (name, stored_digest) in stored {
-            let current = current_params.get(&name)
+            let current = current_params
+                .get(&name)
                 .map(|v| crate::checkpoint::params_scope::value_digest(v));
             if current.as_deref() != Some(stored_digest.as_str()) {
                 return Err(SkipBlocker::ParamChanged(name));
@@ -413,8 +416,9 @@ impl RefinePlan {
         match self.scope {
             RefineScope::All => false,
             RefineScope::Missing => self.is_completed(phase_name, phase_labels),
-            RefineScope::Changed => self.is_unchanged(
-                phase_name, phase_labels, current_hex, current_params),
+            RefineScope::Changed => {
+                self.is_unchanged(phase_name, phase_labels, current_hex, current_params)
+            }
         }
     }
 
@@ -439,13 +443,15 @@ impl RefinePlan {
         }
         let conn = match rusqlite::Connection::open_with_flags(
             &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             Ok(c) => c,
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "refine: failed to open {}: {e}", db_path.display());
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "refine: failed to open {}: {e}",
+                    db_path.display()
+                );
                 return None;
             }
         };
@@ -453,12 +459,15 @@ impl RefinePlan {
         // dir from before SRD-76 lands won't have it, and
         // `prepare` against a missing table errors with a
         // message that's noisier than "no plan available".
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
              WHERE type='table' AND name='phase_outcomes')",
-            [],
-            |r| r.get::<_, i64>(0),
-        ).map(|n| n != 0).unwrap_or(false);
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n != 0)
+            .unwrap_or(false);
         if !exists {
             return None;
         }
@@ -466,8 +475,8 @@ impl RefinePlan {
         // may be absent on dbs never re-opened by a current
         // writer (this connection is read-only, so no migration
         // here); an absent column reads as NULL.
-        let has_params_col: bool = conn.prepare(
-            "PRAGMA table_info(phase_outcomes)")
+        let has_params_col: bool = conn
+            .prepare("PRAGMA table_info(phase_outcomes)")
             .ok()
             .and_then(|mut s| {
                 let mut found = false;
@@ -483,7 +492,11 @@ impl RefinePlan {
                 Some(found)
             })
             .unwrap_or(false);
-        let pc_col = if has_params_col { "params_consumed" } else { "NULL" };
+        let pc_col = if has_params_col {
+            "params_consumed"
+        } else {
+            "NULL"
+        };
         let mut stmt = match conn.prepare(&format!(
             "SELECT exec_id, phase_name, phase_labels, status, phase_hash, \
                     {pc_col}, ended_at_nanos \
@@ -492,8 +505,10 @@ impl RefinePlan {
         )) {
             Ok(s) => s,
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "refine: failed to prepare query: {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "refine: failed to prepare query: {e}"
+                );
                 return None;
             }
         };
@@ -509,15 +524,17 @@ impl RefinePlan {
         }) {
             Ok(r) => r,
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "refine: failed to query phase_outcomes: {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "refine: failed to query phase_outcomes: {e}"
+                );
                 return None;
             }
         };
         let mut completed = HashSet::new();
         let mut seen_identities: HashSet<(String, String)> = HashSet::new();
-        let mut completed_hashes: std::collections::HashMap<(String, String), PriorCompletion>
-            = std::collections::HashMap::new();
+        let mut completed_hashes: std::collections::HashMap<(String, String), PriorCompletion> =
+            std::collections::HashMap::new();
         let mut max_exec_id: u64 = 0;
         let mut count: usize = 0;
         // Rows arrive ordered by `ended_at_nanos`, so the
@@ -537,7 +554,10 @@ impl RefinePlan {
                 completed.insert((name.clone(), labels.clone()));
                 completed_hashes.insert(
                     (name, labels),
-                    PriorCompletion { phase_hash, params_consumed },
+                    PriorCompletion {
+                        phase_hash,
+                        params_consumed,
+                    },
                 );
             }
         }
@@ -547,23 +567,25 @@ impl RefinePlan {
         // executions row, so phase_outcomes alone would miss
         // the bump and the next invocation would collide on the
         // executions PK. Take MAX across both sources.
-        let executions_max: u64 = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+        let executions_max: u64 = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
              WHERE type='table' AND name='executions')",
-            [],
-            |r| r.get::<_, i64>(0),
-        ).map(|n| n != 0)
-        .ok()
-        .filter(|exists| *exists)
-        .and_then(|_| {
-            conn.query_row(
-                "SELECT MAX(exec_id) FROM executions",
                 [],
-                |r| r.get::<_, Option<i64>>(0),
-            ).ok().flatten()
-        })
-        .map(|v| v.max(0) as u64)
-        .unwrap_or(0);
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n != 0)
+            .ok()
+            .filter(|exists| *exists)
+            .and_then(|_| {
+                conn.query_row("SELECT MAX(exec_id) FROM executions", [], |r| {
+                    r.get::<_, Option<i64>>(0)
+                })
+                .ok()
+                .flatten()
+            })
+            .map(|v| v.max(0) as u64)
+            .unwrap_or(0);
         let max_exec_id = max_exec_id.max(executions_max);
         Some(Self {
             completed,
@@ -596,10 +618,7 @@ mod tests {
         assert!(RefinePlan::load_from_session_dir(tmp.path()).is_none());
     }
 
-    fn make_db_with_outcomes(
-        dir: &Path,
-        rows: &[(u64, &str, &str, &str)],
-    ) {
+    fn make_db_with_outcomes(dir: &Path, rows: &[(u64, &str, &str, &str)]) {
         let db_path = dir.join("metrics.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute(
@@ -614,25 +633,31 @@ mod tests {
                 ended_at_nanos   INTEGER NOT NULL DEFAULT 0,
                 phase_hash    TEXT,
                 PRIMARY KEY (session, exec_id, phase_name, phase_labels)
-            )", [],
-        ).unwrap();
+            )",
+            [],
+        )
+        .unwrap();
         for (exec, name, labels, status) in rows {
             conn.execute(
                 "INSERT INTO phase_outcomes (session, exec_id, phase_name, phase_labels, status) \
                  VALUES ('s', ?1, ?2, ?3, ?4)",
                 rusqlite::params![*exec as i64, name, labels, status],
-            ).unwrap();
+            )
+            .unwrap();
         }
     }
 
     #[test]
     fn completed_phases_populate_skip_set() {
         let tmp = tempfile::tempdir().unwrap();
-        make_db_with_outcomes(tmp.path(), &[
-            (1, "schema",    "",                "completed"),
-            (1, "load_data", "k=10",            "completed"),
-            (1, "query",     "k=10,limit=20",   "failed"),
-        ]);
+        make_db_with_outcomes(
+            tmp.path(),
+            &[
+                (1, "schema", "", "completed"),
+                (1, "load_data", "k=10", "completed"),
+                (1, "query", "k=10,limit=20", "failed"),
+            ],
+        );
         let plan = RefinePlan::load_from_session_dir(tmp.path()).unwrap();
         assert_eq!(plan.next_exec_id, 2);
         assert_eq!(plan.prior_outcomes_seen, 3);
@@ -646,11 +671,14 @@ mod tests {
     #[test]
     fn next_exec_id_bumps_past_max_prior() {
         let tmp = tempfile::tempdir().unwrap();
-        make_db_with_outcomes(tmp.path(), &[
-            (1, "schema", "", "completed"),
-            (3, "query",  "", "completed"),
-            (2, "load",   "", "completed"),
-        ]);
+        make_db_with_outcomes(
+            tmp.path(),
+            &[
+                (1, "schema", "", "completed"),
+                (3, "query", "", "completed"),
+                (2, "load", "", "completed"),
+            ],
+        );
         let plan = RefinePlan::load_from_session_dir(tmp.path()).unwrap();
         assert_eq!(plan.next_exec_id, 4);
     }
@@ -688,16 +716,24 @@ mod tests {
     #[test]
     fn execution_qualifier_latest_resolves_to_max_exec_id() {
         let tmp = tempfile::tempdir().unwrap();
-        make_db_with_outcomes(tmp.path(), &[
-            (1, "p1", "", "completed"),
-            (3, "p2", "", "completed"),
-            (2, "p3", "", "completed"),
-        ]);
+        make_db_with_outcomes(
+            tmp.path(),
+            &[
+                (1, "p1", "", "completed"),
+                (3, "p2", "", "completed"),
+                (2, "p3", "", "completed"),
+            ],
+        );
         let q = ExecutionQualifier::latest(tmp.path());
-        assert_eq!(q.specific_id(), Some(3),
-            "latest MUST resolve to max(exec_id)=3");
-        assert!(!q.matches_all(),
-            "latest MUST narrow to a specific id, not aggregate");
+        assert_eq!(
+            q.specific_id(),
+            Some(3),
+            "latest MUST resolve to max(exec_id)=3"
+        );
+        assert!(
+            !q.matches_all(),
+            "latest MUST narrow to a specific id, not aggregate"
+        );
     }
 
     /// Empty db falls back to `Specific(1)` rather than
@@ -709,8 +745,11 @@ mod tests {
     fn execution_qualifier_latest_on_empty_db_yields_specific_1() {
         let tmp = tempfile::tempdir().unwrap();
         let q = ExecutionQualifier::latest(tmp.path());
-        assert_eq!(q.specific_id(), Some(1),
-            "latest on empty db MUST yield Specific(1), not All");
+        assert_eq!(
+            q.specific_id(),
+            Some(1),
+            "latest on empty db MUST yield Specific(1), not All"
+        );
     }
 
     /// Db with no `phase_outcomes` table at all (legacy /

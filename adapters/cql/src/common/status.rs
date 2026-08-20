@@ -17,11 +17,9 @@ use nbrs_runtime::adapter::{StatusMetric, StatusRender};
 /// new metric here automatically picks up across every CQL engine
 /// adapter that consumes this crate.
 pub fn default_status_metrics() -> Vec<StatusMetric> {
-    vec![
-        StatusMetric {
-            metric_name: "rows_inserted".to_string(),
-            display: "rows/s".to_string(),
-            render: StatusRender::Rate,
-        },
-    ]
+    vec![StatusMetric {
+        metric_name: "rows_inserted".to_string(),
+        display: "rows/s".to_string(),
+        render: StatusRender::Rate,
+    }]
 }

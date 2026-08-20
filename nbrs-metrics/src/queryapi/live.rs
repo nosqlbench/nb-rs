@@ -66,7 +66,8 @@ impl MetricsQueryAccess {
             // The ring is oldest-first; its first entry is the oldest retained.
             // One window-view lookup, then read `ring.first()` directly — no
             // cloning the whole ring just to peek the head.
-            if let Some(oldest) = reporter.window_view(&component, cadence)
+            if let Some(oldest) = reporter
+                .window_view(&component, cadence)
                 .and_then(|v| v.ring.first().cloned())
             {
                 let ms = now_ms - oldest.captured_at().elapsed().as_millis() as i64;
@@ -146,7 +147,14 @@ impl MetricAccess for MetricsQueryAccess {
                         else {
                             continue;
                         };
-                        push_sample(&mut out, labels, Sample { timestamp_ms: window_ms, value });
+                        push_sample(
+                            &mut out,
+                            labels,
+                            Sample {
+                                timestamp_ms: window_ms,
+                                value,
+                            },
+                        );
                     }
                 }
             }
@@ -203,7 +211,10 @@ fn push_sample(out: &mut Vec<Series>, labels: Vec<(String, String)>, sample: Sam
     if let Some(existing) = out.iter_mut().find(|s| s.labels == labels) {
         existing.samples.push(sample);
     } else {
-        out.push(Series { labels, samples: vec![sample] });
+        out.push(Series {
+            labels,
+            samples: vec![sample],
+        });
     }
 }
 
@@ -215,8 +226,14 @@ mod tests {
     async fn value_projection_per_variant() {
         use crate::snapshot::{CounterValue, GaugeValue, HistogramValue};
         use hdrhistogram::Histogram as HdrHistogram;
-        assert_eq!(value_to_f64(&MetricValue::Counter(CounterValue::new(7))), Some(7.0));
-        assert_eq!(value_to_f64(&MetricValue::Gauge(GaugeValue::new(3.5))), Some(3.5));
+        assert_eq!(
+            value_to_f64(&MetricValue::Counter(CounterValue::new(7))),
+            Some(7.0)
+        );
+        assert_eq!(
+            value_to_f64(&MetricValue::Gauge(GaugeValue::new(3.5))),
+            Some(3.5)
+        );
         // A histogram projects its CUMULATIVE count (lifetime total), not the
         // per-window reservoir count — here a 2-sample window over a lifetime
         // of 42.
@@ -258,16 +275,25 @@ mod tests {
         let root = crate::component::Component::root(Labels::of("session", "s1"), HashMap::new());
         let access = MetricsQueryAccess::new(Arc::new(MetricsQuery::new(reporter.clone(), root)));
 
-        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
         let v = access
             .select_instant(&[Matcher::eq("__name__", "ops")], now_ms, Some(60_000))
             .expect("select");
 
         assert_eq!(v.len(), 1, "one series, got {v:?}");
         let s = &v.series()[0];
-        assert!(s.labels.iter().any(|(k, val)| k == "__name__" && val == "ops"));
         assert!(
-            s.labels.iter().any(|(k, val)| k == "phase" && val == "saturate"),
+            s.labels
+                .iter()
+                .any(|(k, val)| k == "__name__" && val == "ops")
+        );
+        assert!(
+            s.labels
+                .iter()
+                .any(|(k, val)| k == "phase" && val == "saturate"),
             "merged scope tag: {:?}",
             s.labels
         );

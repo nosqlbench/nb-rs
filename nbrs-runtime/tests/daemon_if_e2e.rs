@@ -32,14 +32,17 @@ fn run_args(args: &[String]) {
         .build()
         .expect("tokio rt");
     rt.block_on(async {
-        nbrs_runtime::runner::run(args).await
+        nbrs_runtime::runner::run(args)
+            .await
             .expect("runner.run returned Err — daemon `if:` pull resolution regressed")
     });
 }
 
 fn tempdir(prefix: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let d = std::env::temp_dir().join(format!("{prefix}-{n:x}"));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -56,7 +59,9 @@ fn in_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
     std::env::set_current_dir(dir).unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     std::env::set_current_dir(prev).unwrap();
-    if let Err(e) = result { std::panic::resume_unwind(e); }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
 }
 
 /// A phase whose only op is a daemon gated by an `if:` condition

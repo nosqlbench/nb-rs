@@ -133,10 +133,7 @@ impl CqlConfig {
     /// runs both `cassandra-cpp` and `scylla` against the
     /// same cluster gets two independent sessions (one per
     /// driver library).
-    pub fn to_resource_key(
-        &self,
-        driver_name: &str,
-    ) -> nbrs_runtime::resource_pool::ResourceKey {
+    pub fn to_resource_key(&self, driver_name: &str) -> nbrs_runtime::resource_pool::ResourceKey {
         nbrs_runtime::resource_pool::ResourceKey::new("cql")
             .with("driver", driver_name)
             .with("hosts", &self.hosts)
@@ -176,7 +173,8 @@ impl CqlConfig {
             config.hosts = v.clone();
         }
         if let Some(v) = params.get("port") {
-            config.port = v.parse()
+            config.port = v
+                .parse()
                 .map_err(|_| format!("invalid port value '{v}' — expected an integer"))?;
         }
         // connect_keyspace overrides keyspace for the driver
@@ -188,20 +186,24 @@ impl CqlConfig {
             config.keyspace = v.clone();
         }
         if let Some(v) = params.get("consistency") {
-            config.consistency = CqlConsistency::parse(v)
-                .ok_or_else(|| format!(
+            config.consistency = CqlConsistency::parse(v).ok_or_else(|| {
+                format!(
                     "unrecognized consistency level '{v}'. \
                      Valid: {}",
                     CqlConsistency::valid_names().join(", "),
-                ))?;
+                )
+            })?;
         }
-        if let Some(v) = params.get("username") { config.username = Some(v.clone()); }
-        if let Some(v) = params.get("password") { config.password = Some(v.clone()); }
+        if let Some(v) = params.get("username") {
+            config.username = Some(v.clone());
+        }
+        if let Some(v) = params.get("password") {
+            config.password = Some(v.clone());
+        }
         if let Some(v) = params.get("request_timeout_ms") {
-            config.request_timeout_ms = v.parse()
-                .map_err(|_| format!(
-                    "invalid request_timeout_ms value '{v}' — expected an integer"
-                ))?;
+            config.request_timeout_ms = v.parse().map_err(|_| {
+                format!("invalid request_timeout_ms value '{v}' — expected an integer")
+            })?;
         }
         // `timeout` is the canonical root request-timeout default: a duration
         // spec-string (`60s`, `500ms`) or a bare number = fractional seconds
@@ -249,10 +251,9 @@ impl CqlConfig {
                 .map_err(|e| format!("invalid connection_idle_timeout value '{v}': {e}"))?;
         }
         if let Some(v) = params.get("trace_rate") {
-            let parsed: f64 = v.parse()
-                .map_err(|_| format!(
-                    "invalid trace_rate value '{v}' — expected a probability in [0.0, 1.0]"
-                ))?;
+            let parsed: f64 = v.parse().map_err(|_| {
+                format!("invalid trace_rate value '{v}' — expected a probability in [0.0, 1.0]")
+            })?;
             if !(0.0..=1.0).contains(&parsed) || !parsed.is_finite() {
                 return Err(format!(
                     "trace_rate '{v}' out of range — must be a finite probability in [0.0, 1.0]"
@@ -261,9 +262,10 @@ impl CqlConfig {
             config.trace_rate = Some(parsed);
         }
         if let Some(v) = params.get("trace_log")
-            && !v.is_empty() {
-                config.trace_log_path = Some(v.clone());
-            }
+            && !v.is_empty()
+        {
+            config.trace_log_path = Some(v.clone());
+        }
         Ok(config)
     }
 }
@@ -290,15 +292,15 @@ impl CqlConsistency {
     /// Returns `None` for unrecognized values.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
-            "ANY"          => Some(Self::Any),
-            "ONE"          => Some(Self::One),
-            "TWO"          => Some(Self::Two),
-            "THREE"        => Some(Self::Three),
-            "QUORUM"       => Some(Self::Quorum),
-            "ALL"          => Some(Self::All),
+            "ANY" => Some(Self::Any),
+            "ONE" => Some(Self::One),
+            "TWO" => Some(Self::Two),
+            "THREE" => Some(Self::Three),
+            "QUORUM" => Some(Self::Quorum),
+            "ALL" => Some(Self::All),
             "LOCAL_QUORUM" => Some(Self::LocalQuorum),
-            "EACH_QUORUM"  => Some(Self::EachQuorum),
-            "LOCAL_ONE"    => Some(Self::LocalOne),
+            "EACH_QUORUM" => Some(Self::EachQuorum),
+            "LOCAL_ONE" => Some(Self::LocalOne),
             _ => None,
         }
     }
@@ -307,8 +309,15 @@ impl CqlConsistency {
     /// error messages when a parse fails.
     pub fn valid_names() -> &'static [&'static str] {
         &[
-            "ANY", "ONE", "TWO", "THREE", "QUORUM", "ALL",
-            "LOCAL_QUORUM", "EACH_QUORUM", "LOCAL_ONE",
+            "ANY",
+            "ONE",
+            "TWO",
+            "THREE",
+            "QUORUM",
+            "ALL",
+            "LOCAL_QUORUM",
+            "EACH_QUORUM",
+            "LOCAL_ONE",
         ]
     }
 }
@@ -319,9 +328,18 @@ mod tests {
 
     #[test]
     fn parse_consistency_case_insensitive() {
-        assert_eq!(CqlConsistency::parse("LOCAL_QUORUM"), Some(CqlConsistency::LocalQuorum));
-        assert_eq!(CqlConsistency::parse("local_quorum"), Some(CqlConsistency::LocalQuorum));
-        assert_eq!(CqlConsistency::parse("Local_Quorum"), Some(CqlConsistency::LocalQuorum));
+        assert_eq!(
+            CqlConsistency::parse("LOCAL_QUORUM"),
+            Some(CqlConsistency::LocalQuorum)
+        );
+        assert_eq!(
+            CqlConsistency::parse("local_quorum"),
+            Some(CqlConsistency::LocalQuorum)
+        );
+        assert_eq!(
+            CqlConsistency::parse("Local_Quorum"),
+            Some(CqlConsistency::LocalQuorum)
+        );
     }
 
     #[test]
@@ -347,7 +365,10 @@ mod tests {
         params.insert("consistency".into(), "BOGUS".into());
         let err = CqlConfig::from_params(&params).unwrap_err();
         assert!(err.contains("BOGUS"), "{err}");
-        assert!(err.contains("LOCAL_QUORUM"), "must list valid options: {err}");
+        assert!(
+            err.contains("LOCAL_QUORUM"),
+            "must list valid options: {err}"
+        );
     }
 
     #[test]
@@ -366,8 +387,10 @@ mod tests {
         assert_eq!(cfg.request_timeout_ms, 12_000);
         assert_eq!(cfg.reconnect_base_delay_ms, 2_000);
         assert_eq!(cfg.reconnect_max_delay_ms, 600_000);
-        assert!(!cfg.reconnect_params_explicit,
-            "defaults are not explicit — no scylla warn");
+        assert!(
+            !cfg.reconnect_params_explicit,
+            "defaults are not explicit — no scylla warn"
+        );
     }
 
     #[test]
@@ -383,9 +406,11 @@ mod tests {
         assert_eq!(cfg.request_timeout_ms, 45_000);
         assert_eq!(cfg.reconnect_base_delay_ms, 500);
         assert_eq!(cfg.reconnect_max_delay_ms, 120_000);
-        assert!(cfg.reconnect_params_explicit,
+        assert!(
+            cfg.reconnect_params_explicit,
             "explicit reconnect params must be marked so the scylla \
-             engine can warn instead of ignoring silently");
+             engine can warn instead of ignoring silently"
+        );
     }
 
     #[test]

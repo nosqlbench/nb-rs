@@ -32,16 +32,18 @@ fn every_leaf_dispenser_returns_its_op_template_kernel() {
 
     for entry in walk(&root.join("adapters")) {
         let src = std::fs::read_to_string(&entry).unwrap_or_default();
-        if !src.contains("impl OpDispenser for")
-            && !src.contains("OpDispenser for")
-        {
+        if !src.contains("impl OpDispenser for") && !src.contains("OpDispenser for") {
             continue;
         }
         // A wrapper delegates; a leaf does not. Only leaves must declare it.
         let is_leaf = !src.contains("fn inner_dispenser");
         if is_leaf && !src.contains("fn canonical_kernel") {
             offenders.push(
-                entry.strip_prefix(root).unwrap_or(&entry).display().to_string(),
+                entry
+                    .strip_prefix(root)
+                    .unwrap_or(&entry)
+                    .display()
+                    .to_string(),
             );
         }
     }
@@ -58,7 +60,9 @@ fn every_leaf_dispenser_returns_its_op_template_kernel() {
 
 fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {

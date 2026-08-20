@@ -116,7 +116,12 @@ impl ControlDesc {
     /// seeded at `initial`. The caller attaches the instance-specific applier
     /// (e.g. the fiber-pool resize) separately.
     pub fn build_u32(&self, initial: u32) -> Control<u32> {
-        debug_assert_eq!(self.value_type, ControlValueType::Count, "{} is not a Count control", self.name);
+        debug_assert_eq!(
+            self.value_type,
+            ControlValueType::Count,
+            "{} is not a Count control",
+            self.name
+        );
         let (name, min, max) = (self.name, self.min, self.max);
         ControlBuilder::new(name, initial)
             .reify_as_gauge(|v: &u32| Some(*v as f64))
@@ -133,7 +138,12 @@ impl ControlDesc {
 
     /// Derive an `f64` fraction/gauge control from this descriptor.
     pub fn build_f64(&self, initial: f64) -> Control<f64> {
-        debug_assert_eq!(self.value_type, ControlValueType::Fraction, "{} is not a Fraction control", self.name);
+        debug_assert_eq!(
+            self.value_type,
+            ControlValueType::Fraction,
+            "{} is not a Fraction control",
+            self.name
+        );
         let (name, min, max) = (self.name, self.min, self.max);
         ControlBuilder::new(name, initial)
             .reify_as_gauge(|v: &f64| Some(*v))
@@ -152,7 +162,12 @@ impl ControlDesc {
     /// *exclusive* floor: a non-positive value is rejected (a zero rate
     /// disables the limiter, which is a phase-config decision, not a servo).
     pub fn build_rate(&self, initial_ops_per_sec: f64) -> Control<nbrs_rate::RateSpec> {
-        debug_assert_eq!(self.value_type, ControlValueType::Rate, "{} is not a Rate control", self.name);
+        debug_assert_eq!(
+            self.value_type,
+            ControlValueType::Rate,
+            "{} is not a Rate control",
+            self.name
+        );
         let name = self.name;
         ControlBuilder::new(name, nbrs_rate::RateSpec::new(initial_ops_per_sec))
             .reify_as_gauge(|spec: &nbrs_rate::RateSpec| Some(spec.ops_per_sec))
@@ -237,7 +252,10 @@ pub struct ControlEntry {
 pub fn all_controls() -> Vec<ControlEntry> {
     let mut out: Vec<ControlEntry> = core_controls()
         .iter()
-        .map(|d| ControlEntry { desc: d, owner: ControlOwner::Core })
+        .map(|d| ControlEntry {
+            desc: d,
+            owner: ControlOwner::Core,
+        })
         .collect();
     for reg in inventory::iter::<crate::adapter::AdapterRegistration> {
         let owner_name = (reg.names)().first().copied().unwrap_or("?");
@@ -259,8 +277,14 @@ mod tests {
     #[test]
     fn core_controls_cover_concurrency_and_rate_with_conditions() {
         let core = core_controls();
-        let conc = core.iter().find(|d| d.name == "concurrency").expect("concurrency present");
-        let rate = core.iter().find(|d| d.name == "rate").expect("rate present");
+        let conc = core
+            .iter()
+            .find(|d| d.name == "concurrency")
+            .expect("concurrency present");
+        let rate = core
+            .iter()
+            .find(|d| d.name == "rate")
+            .expect("rate present");
         // The asymmetry the catalog fixes: concurrency is always present, rate
         // only when a phase sets `rate:` — both now *discoverable* statically.
         assert_eq!(conc.declared_when, DeclaredWhen::Always);
@@ -297,7 +321,10 @@ mod tests {
     #[test]
     fn all_controls_includes_core_and_is_owner_tagged() {
         let all = all_controls();
-        let conc = all.iter().find(|e| e.desc.name == "concurrency").expect("concurrency enumerated");
+        let conc = all
+            .iter()
+            .find(|e| e.desc.name == "concurrency")
+            .expect("concurrency enumerated");
         assert_eq!(conc.owner, ControlOwner::Core);
     }
 }

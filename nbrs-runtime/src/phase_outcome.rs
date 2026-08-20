@@ -113,7 +113,12 @@ pub struct Outcome {
 
 impl Outcome {
     pub const fn new(disposition: Disposition, validity: Validity) -> Self {
-        Self { disposition, validity, reason: None, payload: None }
+        Self {
+            disposition,
+            validity,
+            reason: None,
+            payload: None,
+        }
     }
     /// Ran fully, result trustworthy.
     pub const fn completed() -> Self {
@@ -195,7 +200,6 @@ impl Outcome {
         self.payload = Some(payload);
         self
     }
-
 }
 
 /// SRD-92 / ExecUnification — equality over the CONTROL FACTS only
@@ -280,7 +284,10 @@ pub struct PhaseIdentity {
 
 impl PhaseIdentity {
     pub fn new(name: impl Into<String>, labels: impl Into<String>) -> Self {
-        Self { name: name.into(), labels: labels.into() }
+        Self {
+            name: name.into(),
+            labels: labels.into(),
+        }
     }
 }
 
@@ -488,14 +495,14 @@ impl From<PhaseOutcomeWire> for PhaseOutcome {
     fn from(w: PhaseOutcomeWire) -> Self {
         let (disposition, validity) = match (w.disposition, w.validity, w.status) {
             (Some(d), Some(v), _) => (d, v),
-            (_, _, Some(LegacyPhaseStatus::Completed)) =>
-                (Disposition::Completed, Validity::Succeeded),
-            (_, _, Some(LegacyPhaseStatus::Failed)) =>
-                (Disposition::Interrupted, Validity::Failed),
-            (_, _, Some(LegacyPhaseStatus::Skipped)) =>
-                (Disposition::Skipped, Validity::Succeeded),
-            (_, _, Some(LegacyPhaseStatus::CursorSuspended)) =>
-                (Disposition::Interrupted, Validity::Succeeded),
+            (_, _, Some(LegacyPhaseStatus::Completed)) => {
+                (Disposition::Completed, Validity::Succeeded)
+            }
+            (_, _, Some(LegacyPhaseStatus::Failed)) => (Disposition::Interrupted, Validity::Failed),
+            (_, _, Some(LegacyPhaseStatus::Skipped)) => (Disposition::Skipped, Validity::Succeeded),
+            (_, _, Some(LegacyPhaseStatus::CursorSuspended)) => {
+                (Disposition::Interrupted, Validity::Succeeded)
+            }
             // Neither form present: benign default (a record this
             // malformed predates both formats).
             _ => (Disposition::Completed, Validity::Succeeded),
@@ -526,7 +533,10 @@ impl PhaseOutcome {
         match self.validity {
             Validity::Succeeded => None,
             Validity::Failed => Some(ReasonClass::from_error_class(
-                self.errors.first().map(|e| e.class.as_str()).unwrap_or("error"),
+                self.errors
+                    .first()
+                    .map(|e| e.class.as_str())
+                    .unwrap_or("error"),
             )),
         }
     }
@@ -570,8 +580,10 @@ impl PhaseOutcome {
         duration_secs: f64,
         errors: Vec<PhaseErrorDetail>,
     ) -> Self {
-        debug_assert!(!errors.is_empty(),
-            "PhaseOutcome::failed requires at least one error");
+        debug_assert!(
+            !errors.is_empty(),
+            "PhaseOutcome::failed requires at least one error"
+        );
         Self {
             phase_id,
             disposition: Disposition::Interrupted,
@@ -686,32 +698,33 @@ impl PhaseOutcome {
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(started_at_nanos);
         nbrs_metrics::reporters::sqlite::PhaseOutcomeRow {
-            session:          session.to_string(),
+            session: session.to_string(),
             exec_id,
-            phase_name:       self.phase_id.name.clone(),
-            phase_labels:     self.phase_id.labels.clone(),
-            status:           self.label().to_string(),
-            duration_secs:    self.duration_secs,
+            phase_name: self.phase_id.name.clone(),
+            phase_labels: self.phase_id.labels.clone(),
+            status: self.label().to_string(),
+            duration_secs: self.duration_secs,
             started_at_nanos,
             ended_at_nanos,
             // SRD-83 (C3) — denormalized for report GROUP BY; the
             // derived accessor is the single source of truth.
-            reason_class:     self.reason_class()
-                .map(|c| c.as_str().to_string()),
-            phase_hash:       self.phase_hash.clone(),
-            params_consumed:  self.params_consumed.clone(),
-            errors:           self.errors.iter().map(|e| {
-                nbrs_metrics::reporters::sqlite::PhaseErrorRow {
-                    class:       e.class.clone(),
-                    message:     e.message.clone(),
-                    op_name:     e.op_name.clone(),
-                    cycle:       e.cycle,
+            reason_class: self.reason_class().map(|c| c.as_str().to_string()),
+            phase_hash: self.phase_hash.clone(),
+            params_consumed: self.params_consumed.clone(),
+            errors: self
+                .errors
+                .iter()
+                .map(|e| nbrs_metrics::reporters::sqlite::PhaseErrorRow {
+                    class: e.class.clone(),
+                    message: e.message.clone(),
+                    op_name: e.op_name.clone(),
+                    cycle: e.cycle,
                     op_template: e.op_template.clone(),
                     op_resolved: e.op_resolved.clone(),
-                    at_nanos:    e.at_nanos as i64,
-                    retryable:   e.retryable,
-                }
-            }).collect(),
+                    at_nanos: e.at_nanos as i64,
+                    retryable: e.retryable,
+                })
+                .collect(),
         }
     }
 }
@@ -753,10 +766,7 @@ mod tests {
 
     #[test]
     fn outcome_completed_has_no_errors() {
-        let o = PhaseOutcome::completed(
-            PhaseIdentity::new("p", "x=1"),
-            1.5,
-        );
+        let o = PhaseOutcome::completed(PhaseIdentity::new("p", "x=1"), 1.5);
         assert_eq!(o.disposition, Disposition::Completed);
         assert_eq!(o.validity, Validity::Succeeded);
         assert!(o.errors.is_empty());
@@ -775,9 +785,7 @@ mod tests {
             at_nanos: 1_000_000_000,
             retryable: true,
         }];
-        let o = PhaseOutcome::failed(
-            PhaseIdentity::new("p", "x=1"), 30.0, errors.clone(),
-        );
+        let o = PhaseOutcome::failed(PhaseIdentity::new("p", "x=1"), 30.0, errors.clone());
         assert_eq!(o.disposition, Disposition::Interrupted);
         assert_eq!(o.validity, Validity::Failed);
         assert_eq!(o.errors, errors);
@@ -787,9 +795,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "at least one error")]
     fn outcome_failed_requires_non_empty_errors() {
-        let _ = PhaseOutcome::failed(
-            PhaseIdentity::new("p", ""), 1.0, Vec::new(),
-        );
+        let _ = PhaseOutcome::failed(PhaseIdentity::new("p", ""), 1.0, Vec::new());
     }
 
     #[test]
@@ -825,20 +831,25 @@ mod tests {
             params_consumed: None,
         };
         let json = serde_json::to_string(&original).expect("serialise");
-        let parsed: PhaseOutcome = serde_json::from_str(&json)
-            .expect("deserialise");
+        let parsed: PhaseOutcome = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(parsed, original);
     }
 
     #[test]
     fn two_axis_outcome_projects_to_and_from_status() {
         // The four constructors land in the right quadrants.
-        assert_eq!(Outcome::completed(),
-            Outcome::new(Disposition::Completed, Validity::Succeeded));
-        assert_eq!(Outcome::failed(),
-            Outcome::new(Disposition::Interrupted, Validity::Failed));
-        assert_eq!(Outcome::interrupted(),
-            Outcome::new(Disposition::Interrupted, Validity::Succeeded));
+        assert_eq!(
+            Outcome::completed(),
+            Outcome::new(Disposition::Completed, Validity::Succeeded)
+        );
+        assert_eq!(
+            Outcome::failed(),
+            Outcome::new(Disposition::Interrupted, Validity::Failed)
+        );
+        assert_eq!(
+            Outcome::interrupted(),
+            Outcome::new(Disposition::Interrupted, Validity::Succeeded)
+        );
 
         // Validity drives is_failure, orthogonal to disposition.
         assert!(Outcome::failed().is_failure());
@@ -862,7 +873,11 @@ mod tests {
             ("completed", Disposition::Completed, Validity::Succeeded),
             ("failed", Disposition::Interrupted, Validity::Failed),
             ("skipped", Disposition::Skipped, Validity::Succeeded),
-            ("cursor_suspended", Disposition::Interrupted, Validity::Succeeded),
+            (
+                "cursor_suspended",
+                Disposition::Interrupted,
+                Validity::Succeeded,
+            ),
         ];
         for (status, d, v) in cases {
             let json = format!(

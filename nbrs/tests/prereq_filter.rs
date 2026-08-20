@@ -27,8 +27,8 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-prereq-{tag}-{}-{nanos}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nbrs-prereq-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -55,8 +55,7 @@ fn run_filtered(tag: &str, phases: &str) -> (String, String, bool) {
         .arg("--session-path")
         .arg(&session);
     let out = cmd.output().expect("run nbrs");
-    let session_log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
     evidence.push_str(&session_log);
@@ -79,16 +78,30 @@ fn ticks(stdout: &str, needle: &str) -> usize {
 fn prereq_kept_in_live_scope_and_unselected_section_elided() {
     let (stdout, evidence, ok) = run_filtered("a", "measure_a");
     assert!(ok, "filtered run must complete; evidence:\n{evidence}");
-    assert_eq!(ticks(&stdout, "PREP_TICK"), 1,
-        "root prereq must run under the exemption");
-    assert_eq!(ticks(&stdout, "A_TICK"), 2,
-        "the selected measurement must run");
-    assert_eq!(ticks(&stdout, "B_TICK"), 0,
-        "the unselected measurement must not run");
-    assert_eq!(ticks(&stdout, "SIDE_PREP_TICK"), 0,
-        "an unselected section must not drag its prereq into execution");
-    assert!(evidence.contains("kept as an idempotent prerequisite"),
-        "the exemption must be announced, never silent; evidence:\n{evidence}");
+    assert_eq!(
+        ticks(&stdout, "PREP_TICK"),
+        1,
+        "root prereq must run under the exemption"
+    );
+    assert_eq!(
+        ticks(&stdout, "A_TICK"),
+        2,
+        "the selected measurement must run"
+    );
+    assert_eq!(
+        ticks(&stdout, "B_TICK"),
+        0,
+        "the unselected measurement must not run"
+    );
+    assert_eq!(
+        ticks(&stdout, "SIDE_PREP_TICK"),
+        0,
+        "an unselected section must not drag its prereq into execution"
+    );
+    assert!(
+        evidence.contains("kept as an idempotent prerequisite"),
+        "the exemption must be announced, never silent; evidence:\n{evidence}"
+    );
 }
 
 /// Selecting `measure_b`: both prereqs run (root-level, and the
@@ -99,11 +112,17 @@ fn selecting_the_section_activates_its_scope_and_prereqs() {
     let (stdout, evidence, ok) = run_filtered("b", "measure_b");
     assert!(ok, "filtered run must complete; evidence:\n{evidence}");
     assert_eq!(ticks(&stdout, "PREP_TICK"), 1, "root prereq runs");
-    assert_eq!(ticks(&stdout, "SIDE_PREP_TICK"), 1,
-        "the live section's own prereq runs");
+    assert_eq!(
+        ticks(&stdout, "SIDE_PREP_TICK"),
+        1,
+        "the live section's own prereq runs"
+    );
     assert_eq!(ticks(&stdout, "B_TICK"), 2, "the selected measurement runs");
-    assert_eq!(ticks(&stdout, "A_TICK"), 0,
-        "the unselected measurement is skipped");
+    assert_eq!(
+        ticks(&stdout, "A_TICK"),
+        0,
+        "the unselected measurement is skipped"
+    );
 }
 
 /// No filter: everything runs exactly once — the exemption is inert
@@ -126,8 +145,13 @@ fn unfiltered_run_is_unchanged() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(out.status.success());
     assert_eq!(
-        (ticks(&stdout, "PREP_TICK"), ticks(&stdout, "A_TICK"),
-         ticks(&stdout, "SIDE_PREP_TICK"), ticks(&stdout, "B_TICK")),
+        (
+            ticks(&stdout, "PREP_TICK"),
+            ticks(&stdout, "A_TICK"),
+            ticks(&stdout, "SIDE_PREP_TICK"),
+            ticks(&stdout, "B_TICK")
+        ),
         (1, 2, 1, 2),
-        "unfiltered traversal runs every phase");
+        "unfiltered traversal runs every phase"
+    );
 }

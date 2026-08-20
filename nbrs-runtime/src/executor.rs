@@ -9,8 +9,8 @@
 //! variable scoping at every nesting level.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
@@ -21,8 +21,8 @@ use crate::synthesis::OpBuilder;
 use nbrs_metrics::cadence_reporter::CadenceReporter;
 use nbrs_metrics::component::{self, Component, ComponentState};
 use nbrs_metrics::labels::Labels;
-use polydat::kernel::{format_scope_coordinate_path, ScopeCoord};
 use nbrs_workload::model::{ScenarioNode, WorkloadPhase};
+use polydat::kernel::{ScopeCoord, format_scope_coordinate_path};
 
 /// SRD-83 follow-up — resolve a stop condition's action scope from its
 /// explicit `at:` target and its `per:`/`each:` detection levels. `at`
@@ -36,7 +36,13 @@ pub(crate) fn resolve_stop_scope(
     use crate::stop_conditions::StopScope as S;
     use nbrs_workload::model::ScopeLevel as L;
     fn rank(l: L) -> u8 {
-        match l { L::SelfScope => 0, L::Op => 1, L::Phase => 2, L::Scenario => 3, L::Workload => 4 }
+        match l {
+            L::SelfScope => 0,
+            L::Op => 1,
+            L::Phase => 2,
+            L::Scenario => 3,
+            L::Workload => 4,
+        }
     }
     let level = at.or_else(|| each.iter().copied().min_by_key(|l| rank(*l)));
     match level {
@@ -211,8 +217,7 @@ pub struct ExecCtx {
     /// `None`, the leaf phase falls back to the workload-level
     /// `outer_manifest` / `outer_scope_values` (the legacy flat
     /// data flow that M3.4 retires for kernel-routed scopes).
-    pub current_parent_kernel:
-        Option<Arc<polydat::kernel::PolydatKernel>>,
+    pub current_parent_kernel: Option<Arc<polydat::kernel::PolydatKernel>>,
     /// Workload source text + path, kept for error diagnostics.
     /// Errors at the dispatch layer (for_each / do_while spec
     /// evaluation, interpolation failures) include the YAML
@@ -238,7 +243,8 @@ pub struct ExecCtx {
     /// `Arc<Mutex<Option<...>>>` shape mirrors the runner-side
     /// declaration: `None` when SQLite is disabled (in-memory
     /// adapters, fixture tests).
-    pub sqlite_reporter: Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    pub sqlite_reporter:
+        Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
     /// Driver-resource sharing pool (SRD-35). Owns the
     /// lifecycle of long-lived shared resources across
     /// phases — adapter shells attach via
@@ -355,16 +361,16 @@ impl WorkloadSource {
 /// this workload's location prefix (because an inner dispatcher
 /// already enriched it), the outer wrapper leaves it alone — no
 /// double-prefix.
-pub(crate) fn enrich_with_yaml_location(
-    ctx: &ExecCtx,
-    needle: &str,
-    err: String,
-) -> String {
-    let Some(src) = ctx.workload_source.as_ref() else { return err; };
+pub(crate) fn enrich_with_yaml_location(ctx: &ExecCtx, needle: &str, err: String) -> String {
+    let Some(src) = ctx.workload_source.as_ref() else {
+        return err;
+    };
     if err.starts_with(&format!("{}:", src.path)) {
         return err;
     }
-    let Some((line, col)) = src.locate(needle) else { return err; };
+    let Some((line, col)) = src.locate(needle) else {
+        return err;
+    };
     format!("{}:{line}:{col}: {err}", src.path)
 }
 
@@ -458,7 +464,10 @@ pub fn execute_tree<'a>(
     Box::pin(async move {
         let o = execute_tree_at(ctx, nodes, 0).await;
         if o.is_failure() {
-            Err(o.reason.clone().unwrap_or_else(|| "scenario: a unit failed".to_string()))
+            Err(o
+                .reason
+                .clone()
+                .unwrap_or_else(|| "scenario: a unit failed".to_string()))
         } else {
             Ok(())
         }
@@ -491,10 +500,16 @@ enum ShellAction {
 struct ShellHandler;
 
 impl ShellHandler {
-    fn scenario_default() -> Self { ShellHandler }
+    fn scenario_default() -> Self {
+        ShellHandler
+    }
     /// Decide the action for one child's outcome.
     fn decide(&self, child: &crate::phase_outcome::Outcome) -> ShellAction {
-        if child.is_failure() { ShellAction::Stop } else { ShellAction::Continue }
+        if child.is_failure() {
+            ShellAction::Stop
+        } else {
+            ShellAction::Continue
+        }
     }
 }
 
@@ -526,7 +541,9 @@ pub(crate) trait ExecShell: Send + Sync {
     fn run<'a>(
         &'a self,
         ctx: &'a mut ExecCtx,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+    >;
 
     /// POLL. The one cooperative stop, consulted at every boundary. The
     /// default folds the existing per-execution stop signals (a fault
@@ -577,7 +594,9 @@ trait CompositeShell: ExecShell {
         ctx: &'a mut ExecCtx,
         nodes: &'a [ScenarioNode],
         depth: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+    >;
 }
 
 /// The scenario-graph shell (SRD-82/92) — a [`CompositeShell`]. Carries the
@@ -591,7 +610,11 @@ struct ScenarioShell<'n> {
 
 impl<'n> ScenarioShell<'n> {
     fn scenario(nodes: &'n [ScenarioNode], depth: usize) -> Self {
-        Self { handler: ShellHandler::scenario_default(), nodes, depth }
+        Self {
+            handler: ShellHandler::scenario_default(),
+            nodes,
+            depth,
+        }
     }
 }
 
@@ -599,20 +622,28 @@ impl<'n> ExecShell for ScenarioShell<'n> {
     fn run<'a>(
         &'a self,
         ctx: &'a mut ExecCtx,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+    > {
         Box::pin(async move { self.dispatch(ctx, self.nodes, self.depth).await })
     }
-    fn shell_kind(&self) -> ShellKind { ShellKind::Scenario }
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Scenario
+    }
 }
 
 impl<'n> CompositeShell for ScenarioShell<'n> {
-    fn handler(&self) -> &ShellHandler { &self.handler }
+    fn handler(&self) -> &ShellHandler {
+        &self.handler
+    }
     fn dispatch<'a>(
         &'a self,
         ctx: &'a mut ExecCtx,
         nodes: &'a [ScenarioNode],
         depth: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+    > {
         Box::pin(run_scenario_body(&self.handler, ctx, nodes, depth))
     }
 }
@@ -688,7 +719,11 @@ fn fold_aggregate(
 ) -> crate::phase_outcome::Outcome {
     use crate::phase_outcome::{Disposition, Outcome, Validity};
     let cut_short = first_failure.is_some() || should_stop;
-    let disposition = if cut_short { Disposition::Interrupted } else { Disposition::Completed };
+    let disposition = if cut_short {
+        Disposition::Interrupted
+    } else {
+        Disposition::Completed
+    };
     let validity = if first_failure.is_some() || any_failed_reason.is_some() {
         Validity::Failed
     } else {
@@ -734,13 +769,17 @@ impl<'p> ExecShell for PhaseShell<'p> {
     fn run<'a>(
         &'a self,
         ctx: &'a mut ExecCtx,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>,
+    > {
         // SRD-92 — run_phase returns the two-axis Outcome directly; the
         // PhaseShell leaf forwards it (no Result re-derive). This is the
         // per-phase seam the `WrapperLevel::Phase` layers wrap.
         Box::pin(async move { run_phase(ctx, self.name, self.node_id).await })
     }
-    fn shell_kind(&self) -> ShellKind { ShellKind::Phase }
+    fn shell_kind(&self) -> ShellKind {
+        ShellKind::Phase
+    }
 }
 
 /// SRD-82/92 — run a phase through its shell, with the phase-level wrapper
@@ -764,7 +803,8 @@ async fn run_phase_layered(
     match crate::wrappers::interval::for_phase(&ctx.phases, &ctx.workload_params, name) {
         Some(spec) => {
             crate::wrappers::interval::IntervalShell::new(&leaf, spec, name)
-                .run(ctx).await
+                .run(ctx)
+                .await
         }
         None => leaf.run(ctx).await,
     }
@@ -833,7 +873,10 @@ mod srd92_leaf_shell_tests {
         assert!(o.payload.is_none());
 
         // skipped -> Skipped
-        assert_eq!(OpShell::project(Ok(OpResult::skipped())).disposition, Disposition::Skipped);
+        assert_eq!(
+            OpShell::project(Ok(OpResult::skipped())).disposition,
+            Disposition::Skipped
+        );
 
         // ran-and-errored -> Completed+Failed (NOT Interrupted), message on reason
         let err = ExecutionError::Op(AdapterError {
@@ -847,7 +890,10 @@ mod srd92_leaf_shell_tests {
         assert!(o.reason.as_deref().unwrap_or_default().contains("boom"));
 
         // clean WITH a body -> payload populated
-        let r = OpResult { body: Some(Box::new(TextBody("hi".into()))), skipped: false };
+        let r = OpResult {
+            body: Some(Box::new(TextBody("hi".into()))),
+            skipped: false,
+        };
         let o = OpShell::project(Ok(r));
         assert_eq!(o.disposition, Disposition::Completed);
         assert!(o.payload.is_some());
@@ -857,19 +903,31 @@ mod srd92_leaf_shell_tests {
     fn fold_aggregate_two_latch_quadrants() {
         // stop-policy fail: cascade reason + cut short -> Interrupted+Failed
         let o = fold_aggregate(Some("boom".into()), Some("boom".into()), false);
-        assert_eq!((o.disposition, o.validity), (Disposition::Interrupted, Validity::Failed));
+        assert_eq!(
+            (o.disposition, o.validity),
+            (Disposition::Interrupted, Validity::Failed)
+        );
         assert_eq!(o.reason.as_deref(), Some("boom"));
         // NON-STOP fail (the fix): a failed child the handler let through, all
         // ran -> Completed+Failed (failure NOT lost), reason carried.
         let o = fold_aggregate(None, Some("soft".into()), false);
-        assert_eq!((o.disposition, o.validity), (Disposition::Completed, Validity::Failed));
+        assert_eq!(
+            (o.disposition, o.validity),
+            (Disposition::Completed, Validity::Failed)
+        );
         assert_eq!(o.reason.as_deref(), Some("soft"));
         // workload halt, no failure -> Interrupted+Succeeded
         let o = fold_aggregate(None, None, true);
-        assert_eq!((o.disposition, o.validity), (Disposition::Interrupted, Validity::Succeeded));
+        assert_eq!(
+            (o.disposition, o.validity),
+            (Disposition::Interrupted, Validity::Succeeded)
+        );
         // all clean -> Completed+Succeeded
         let o = fold_aggregate(None, None, false);
-        assert_eq!((o.disposition, o.validity), (Disposition::Completed, Validity::Succeeded));
+        assert_eq!(
+            (o.disposition, o.validity),
+            (Disposition::Completed, Validity::Succeeded)
+        );
     }
 }
 
@@ -888,7 +946,8 @@ fn execute_tree_at<'a>(
     ctx: &'a mut ExecCtx,
     nodes: &'a [ScenarioNode],
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>
+{
     Box::pin(async move {
         // SRD-92 — the scenario-graph shell's two-axis Outcome flows up
         // unchanged (no `Result` re-projection): a failing child's
@@ -940,16 +999,19 @@ async fn run_scenario_body(
     // parallelism when there is none).
     let preview_useful = !matches!(limit, ConcurrencyLimit::Bounded(1));
     if preview_useful {
-        let scheduled_phases: Vec<(usize, String)> = nodes.iter()
+        let scheduled_phases: Vec<(usize, String)> = nodes
+            .iter()
             .filter_map(|node| match node {
                 ScenarioNode::Phase(name) => Some(name.clone()),
                 _ => None,
             })
             .filter_map(|name| {
-                crate::scene_tree::current()
-                    .and_then(|t| t.dfs_phases()
+                crate::scene_tree::current().and_then(|t| {
+                    t.dfs_phases()
                         .find(|n| n.name == name)
-                        .and_then(|n| n.seq).map(|seq| (seq, name.clone())))
+                        .and_then(|n| n.seq)
+                        .map(|seq| (seq, name.clone()))
+                })
             })
             .collect();
         if !scheduled_phases.is_empty() {
@@ -960,11 +1022,15 @@ async fn run_scenario_body(
             let total = crate::scene_tree::current()
                 .map(|t| t.total_phases())
                 .unwrap_or(scheduled_phases.len());
-            let listing: Vec<String> = scheduled_phases.iter()
+            let listing: Vec<String> = scheduled_phases
+                .iter()
                 .map(|(seq, name)| format!("[{seq}/{total}] {name}"))
                 .collect();
-            crate::diag!(crate::observer::LogLevel::Info,
-                "concurrent dispatch ({limit_disp}): {}", listing.join(", "));
+            crate::diag!(
+                crate::observer::LogLevel::Info,
+                "concurrent dispatch ({limit_disp}): {}",
+                listing.join(", ")
+            );
         }
     }
 
@@ -1026,16 +1092,20 @@ async fn run_scenario_body(
     // when the foreground completes. Daemons are spawned first, onto
     // their own `JoinSet` and without a foreground permit, so they are up
     // for the foreground's whole duration; the foreground loop skips them.
-    let daemon_flags: Vec<bool> = nodes.iter().map(|n| match n {
-        ScenarioNode::Phase(name) =>
-            ctx.phases.get(name).map(|p| p.daemon).unwrap_or(false),
-        _ => false,
-    }).collect();
+    let daemon_flags: Vec<bool> = nodes
+        .iter()
+        .map(|n| match n {
+            ScenarioNode::Phase(name) => ctx.phases.get(name).map(|p| p.daemon).unwrap_or(false),
+            _ => false,
+        })
+        .collect();
     let any_daemon = daemon_flags.iter().any(|&d| d);
     let daemon_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut daemon_set = tokio::task::JoinSet::new();
     for (i, node) in nodes.iter().enumerate() {
-        if !daemon_flags[i] { continue; }
+        if !daemon_flags[i] {
+            continue;
+        }
         // SRD-100 — a daemon is DISPATCHED ahead of its foreground siblings
         // (spawned here, before the foreground loop below), so its scene
         // node must also be PUSHED ahead of them: `seq` is assigned at push
@@ -1050,20 +1120,37 @@ async fn run_scenario_body(
         // skipped: its per-iter cells are pushed asynchronously by the
         // comprehension dispatcher, not here.)
         if let ScenarioNode::Phase(dname) = node
-            && ctx.phases.get(dname.as_str()).map(|p| p.for_each.is_none()).unwrap_or(true)
+            && ctx
+                .phases
+                .get(dname.as_str())
+                .map(|p| p.for_each.is_none())
+                .unwrap_or(true)
         {
-            let op_names: Vec<String> = ctx.phases.get(dname.as_str())
+            let op_names: Vec<String> = ctx
+                .phases
+                .get(dname.as_str())
                 .map(|p| p.ops.iter().map(|op| op.name.clone()).collect())
                 .unwrap_or_default();
             let phase_labels = canonical_phase_label(
-                &ctx.current_parent_kernel.as_ref()
-                    .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                &ctx.current_parent_kernel
+                    .as_ref()
+                    .map(|k| {
+                        k.scope_coordinates()
+                            .iter()
+                            .rev()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default(),
             );
             let mut phase_path = ctx.scene_tree_path.clone();
             phase_path.push(crate::checkpoint::PathSegment::Phase(dname.clone()));
             let _ = push_phase_scene_node(
-                ctx.scene_tree_parent_id, phase_path, dname.clone(), phase_labels, op_names,
+                ctx.scene_tree_parent_id,
+                phase_path,
+                dname.clone(),
+                phase_labels,
+                op_names,
             );
         }
         let node_scope_idx = child_scope_indices[i];
@@ -1089,11 +1176,16 @@ async fn run_scenario_body(
     // → `select_drive` = `BoundedSpawn` (this very JoinSet path). `poll_next`
     // yields `Node(i)` in declaration order — behaviour-identical to the old
     // `nodes.iter().enumerate()`; the walker resolves `nodes[i]` by position.
-    use crate::child_source::{select_drive, Child, ChildSource, CountedSource, Drive};
+    use crate::child_source::{Child, ChildSource, CountedSource, Drive, select_drive};
     let mut foreground = CountedSource::new(nodes.len());
-    debug_assert_eq!(select_drive(foreground.realizability()), Drive::BoundedSpawn);
+    debug_assert_eq!(
+        select_drive(foreground.realizability()),
+        Drive::BoundedSpawn
+    );
     while let Some(Child::Node(i)) = foreground.poll_next() {
-        if daemon_flags[i] { continue; }  // daemons already spawned off-budget
+        if daemon_flags[i] {
+            continue;
+        } // daemons already spawned off-budget
         let node = &nodes[i];
         let node_scope_idx = child_scope_indices[i];
         let permit = match sem.as_ref() {
@@ -1102,7 +1194,9 @@ async fn run_scenario_body(
                 // The semaphore is owned here and never closed, so this is
                 // effectively unreachable — surface it as a fault rather
                 // than panicking if it ever does.
-                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e.to_string()),
+                Err(e) => {
+                    return crate::phase_outcome::Outcome::failed().with_reason(e.to_string());
+                }
             },
             None => None,
         };
@@ -1143,9 +1237,11 @@ async fn run_scenario_body(
         // not-yet-dispatched ones and the in-flight ones unwind in
         // parallel.
         if ctx.workload_shell.should_stop() {
-            crate::diag!(crate::observer::LogLevel::Debug,
+            crate::diag!(
+                crate::observer::LogLevel::Debug,
                 "workload shell stopped — halting dispatch of remaining \
-                 siblings at depth {depth}");
+                 siblings at depth {depth}"
+            );
             drop(permit);
             break;
         }
@@ -1180,7 +1276,11 @@ async fn run_scenario_body(
         }
     }
     // AGGREGATE: SRD-92 two-latch fold (disposition × validity independent).
-    fold_aggregate(first_failure, any_failed_reason, ctx.workload_shell.should_stop())
+    fold_aggregate(
+        first_failure,
+        any_failed_reason,
+        ctx.workload_shell.should_stop(),
+    )
 }
 
 // ─── SceneTree push helpers ───────────────────────────────────────
@@ -1222,7 +1322,12 @@ fn push_scope_scene_node(
 ) -> crate::scene_tree::SceneNodeId {
     let mut id: crate::scene_tree::SceneNodeId = 0;
     crate::scene_tree::with_global_mut(|t| {
-        id = t.push(parent_id, crate::scene_tree::NodeKind::Scope, header, String::new());
+        id = t.push(
+            parent_id,
+            crate::scene_tree::NodeKind::Scope,
+            header,
+            String::new(),
+        );
         if !own_names.is_empty() {
             t.set_own_names(id, own_names);
         }
@@ -1234,7 +1339,8 @@ fn push_scope_scene_node(
 /// Format a per-iter binding tuple as `k=v, k=v`. Same shape
 /// pre-map used; surface visible in TUI / post-run summary.
 fn format_iter_label(bindings: &[(String, polydat::ast::Value)]) -> String {
-    bindings.iter()
+    bindings
+        .iter()
         .map(|(k, v)| format!("{k}={}", v.to_display_string()))
         .collect::<Vec<_>>()
         .join(", ")
@@ -1260,16 +1366,28 @@ fn do_loop_own_names(
     counter: Option<&str>,
     invert: bool,
 ) -> Vec<String> {
-    let idx = ctx.scope_tree.iter_dfs().find_map(|(idx, n)| match &n.kind {
-        crate::scope_tree::ScopeKind::DoWhile { condition: c, counter: ct }
-            if !invert && c == condition && ct.as_deref() == counter => Some(idx),
-        crate::scope_tree::ScopeKind::DoUntil { condition: c, counter: ct }
-            if invert && c == condition && ct.as_deref() == counter => Some(idx),
-        _ => None,
-    });
+    let idx = ctx
+        .scope_tree
+        .iter_dfs()
+        .find_map(|(idx, n)| match &n.kind {
+            crate::scope_tree::ScopeKind::DoWhile {
+                condition: c,
+                counter: ct,
+            } if !invert && c == condition && ct.as_deref() == counter => Some(idx),
+            crate::scope_tree::ScopeKind::DoUntil {
+                condition: c,
+                counter: ct,
+            } if invert && c == condition && ct.as_deref() == counter => Some(idx),
+            _ => None,
+        });
     idx.and_then(|i| ctx.scope_tree.nodes[i].cached_kernel.get().cloned())
-        .map(|k| k.program().own_output_names()
-            .into_iter().map(String::from).collect::<Vec<String>>())
+        .map(|k| {
+            k.program()
+                .own_output_names()
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<String>>()
+        })
         .unwrap_or_default()
 }
 
@@ -1294,7 +1412,8 @@ fn effective_parent_kernel(
     ctx: &ExecCtx,
     scope_idx: usize,
 ) -> Option<std::sync::Arc<polydat::kernel::PolydatKernel>> {
-    ctx.current_parent_kernel.clone()
+    ctx.current_parent_kernel
+        .clone()
         .or_else(|| ctx.scope_tree.nearest_installed_ancestor_kernel(scope_idx))
 }
 
@@ -1325,9 +1444,9 @@ fn subtree_has_active_phase(
         ScenarioNode::Comprehension { children, .. }
         | ScenarioNode::DoWhile { children, .. }
         | ScenarioNode::DoUntil { children, .. }
-        | ScenarioNode::IncludedScenario { children, .. } => {
-            children.iter().any(|c| subtree_has_active_phase(c, pattern))
-        }
+        | ScenarioNode::IncludedScenario { children, .. } => children
+            .iter()
+            .any(|c| subtree_has_active_phase(c, pattern)),
         // Non-phase, non-scope nodes (Bindings, etc.) carry no
         // phases themselves — treat as inactive so a branch
         // containing only them gets pruned. Sibling branches
@@ -1345,7 +1464,8 @@ fn execute_node<'a>(
     // their installed kernel — no AST lookup (One Walker positional resolution).
     node_scope_idx: crate::scope_tree::ScopeNodeIdx,
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>
+{
     Box::pin(async move {
         use crate::checkpoint::PathSegment;
         // Scope-elision gate: if a phases= filter is set and
@@ -1358,16 +1478,22 @@ fn execute_node<'a>(
         if let Some(pat) = ctx.phase_filter.clone() {
             let is_scope = !matches!(node, ScenarioNode::Phase(_));
             if is_scope && !subtree_has_active_phase(node, &pat) {
-                crate::diag!(crate::observer::LogLevel::Debug,
-                    "phases=<filter>: eliding scope (no descendant phase matches)");
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "phases=<filter>: eliding scope (no descendant phase matches)"
+                );
                 return crate::phase_outcome::Outcome::skipped();
             }
         }
         match node {
             ScenarioNode::Phase(name) => {
-                let phase_fe = ctx.phases.get(name.as_str())
+                let phase_fe = ctx
+                    .phases
+                    .get(name.as_str())
                     .and_then(|p| p.for_each.clone());
-                let op_names: Vec<String> = ctx.phases.get(name.as_str())
+                let op_names: Vec<String> = ctx
+                    .phases
+                    .get(name.as_str())
                     .map(|p| p.ops.iter().map(|op| op.name.clone()).collect())
                     .unwrap_or_default();
                 if let Some(spec) = phase_fe {
@@ -1381,23 +1507,29 @@ fn execute_node<'a>(
                     // value.
                     let scope_idx = match ctx.scope_tree.phase_node_by_name(name) {
                         Some(v) => v,
-                        None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                            "phase '{name}' for_each '{spec}': no matching scope-tree entry."
-                        )),
+                        None => {
+                            return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                                "phase '{name}' for_each '{spec}': no matching scope-tree entry."
+                            ));
+                        }
                     };
-                    let canonical = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
-                        .cloned() {
-                        Some(v) => v,
-                        None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                            "phase '{name}' for_each '{spec}': scope at index {scope_idx} \
+                    let canonical =
+                        match ctx.scope_tree.nodes[scope_idx].cached_kernel.get().cloned() {
+                            Some(v) => v,
+                            None => return crate::phase_outcome::Outcome::failed().with_reason(
+                                format!(
+                                    "phase '{name}' for_each '{spec}': scope at index {scope_idx} \
                              has no installed phase-for_each kernel."
-                        )),
-                    };
+                                ),
+                            ),
+                        };
                     let parent = match effective_parent_kernel(ctx, scope_idx) {
                         Some(v) => v,
-                        None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                            "phase '{name}' for_each '{spec}': no installed ancestor kernel."
-                        )),
+                        None => {
+                            return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                                "phase '{name}' for_each '{spec}': no installed ancestor kernel."
+                            ));
+                        }
                     };
                     // Delegate the for_each grammar to polydat (the single
                     // owner): `parse_inline` builds the algebra comprehension for
@@ -1406,8 +1538,10 @@ fn execute_node<'a>(
                     let comprehension =
                         match polydat::iteration::comprehension::spec::parse_inline(&spec) {
                             Ok(v) => v,
-                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(
-                                format!("phase '{name}' for_each '{spec}': {e}")),
+                            Err(e) => {
+                                return crate::phase_outcome::Outcome::failed()
+                                    .with_reason(format!("phase '{name}' for_each '{spec}': {e}"));
+                            }
                         };
                     let iter_vars: Vec<String> = comprehension
                         .coordinate_specs()
@@ -1418,34 +1552,53 @@ fn execute_node<'a>(
                     // common case; multi-clause joins them).
                     let var_label = iter_vars.join(", ");
                     let needle = spec.clone();
-                    let parent_coords = ctx.current_parent_kernel.as_ref()
-                        .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                    let parent_coords = ctx
+                        .current_parent_kernel
+                        .as_ref()
+                        .map(|k| {
+                            k.scope_coordinates()
+                                .iter()
+                                .rev()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
                         .unwrap_or_default();
-                    let optimize_block = ctx.phases.get(name.as_str())
+                    let optimize_block = ctx
+                        .phases
+                        .get(name.as_str())
                         .and_then(|p| p.optimize.clone());
                     // A continuous optimize axis (`x in lo .. hi`, float range) is
                     // SAMPLED by the optimizer — read its bounds from the
                     // comprehension and skip enumeration (a continuous source
                     // yields no tuples; the optimizer IS the sampling strategy,
                     // so V8's order-requirement never applies here).
-                    let continuous_axes = optimize_block.as_ref()
+                    let continuous_axes = optimize_block
+                        .as_ref()
                         .and_then(|_| continuous_axis_intervals(&comprehension));
                     let steps = if continuous_axes.is_some() {
                         Vec::new()
                     } else {
                         match runtime_iterate(
-                            ctx, &canonical, &parent, &parent_coords, &comprehension,
+                            ctx,
+                            &canonical,
+                            &parent,
+                            &parent_coords,
+                            &comprehension,
                         ) {
                             Ok(v) => v,
-                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(
-                                enrich_with_yaml_location(ctx, &needle, e)),
+                            Err(e) => {
+                                return crate::phase_outcome::Outcome::failed()
+                                    .with_reason(enrich_with_yaml_location(ctx, &needle, e));
+                            }
                         }
                     };
                     // Structural push: outer phase.for_each scope
                     // header. Per SRD 18b §"Single Walker Contract"
                     // point 2 — runs at every depth.
                     let mut scope_path = ctx.scene_tree_path.clone();
-                    scope_path.push(PathSegment::ForEach { var: var_label.clone() });
+                    scope_path.push(PathSegment::ForEach {
+                        var: var_label.clone(),
+                    });
                     let header = if let Some(b) = &optimize_block {
                         // SRD-86 A12 — a search node, not a sweep: its spec and
                         // budget, never an enumerated coordinate set. A continuous
@@ -1454,21 +1607,39 @@ fn execute_node<'a>(
                         let axes = if continuous_axes.is_some() {
                             var_label.clone()
                         } else {
-                            steps.first()
-                                .map(|s| s.bindings.iter().map(|(k, _)| k.as_str())
-                                    .collect::<Vec<_>>().join(", "))
+                            steps
+                                .first()
+                                .map(|s| {
+                                    s.bindings
+                                        .iter()
+                                        .map(|(k, _)| k.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                })
                                 .unwrap_or_default()
                         };
-                        format!("search · {} · maximize {} · {{{axes}}} · ≤{} evals",
-                            b.method, b.objective, b.max_evals)
+                        format!(
+                            "search · {} · maximize {} · {{{axes}}} · ≤{} evals",
+                            b.method, b.objective, b.max_evals
+                        )
                     } else {
-                        format!("phase.for_each {var_label} in [{}]",
-                            steps.iter()
-                                .filter_map(|s| s.bindings.first().map(|(_, v)| v.to_display_string()))
-                                .collect::<Vec<_>>().join(", "))
+                        format!(
+                            "phase.for_each {var_label} in [{}]",
+                            steps
+                                .iter()
+                                .filter_map(|s| s
+                                    .bindings
+                                    .first()
+                                    .map(|(_, v)| v.to_display_string()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
                     };
                     let scope_id = push_scope_scene_node(
-                        ctx.scene_tree_parent_id, scope_path.clone(), header, Vec::new(),
+                        ctx.scene_tree_parent_id,
+                        scope_path.clone(),
+                        header,
+                        Vec::new(),
                     );
                     // dispatch_comprehension pushes per-iter Phase
                     // nodes under this scope (TerminalAction::Phase).
@@ -1502,42 +1673,66 @@ fn execute_node<'a>(
                             (space, CoordEval::Enumerated { steps, index })
                         };
                         dispatch_optimization(
-                            ctx, space, coord_eval, b, name, depth + 1,
+                            ctx,
+                            space,
+                            coord_eval,
+                            b,
+                            name,
+                            depth + 1,
                             Some((name.clone(), op_names, phase_path_for_iters)),
-                        ).await
+                        )
+                        .await
                     } else {
                         // SRD-101 sweep gate (phase-level `for_each`) — compile
                         // the gate against the sweep's parent scope before
                         // `name` is moved into the terminal.
-                        let phase_continue_if = ctx.phases.get(name.as_str())
+                        let phase_continue_if = ctx
+                            .phases
+                            .get(name.as_str())
                             .and_then(|p| p.continue_if.clone());
-                        let coord_sample = steps.first()
-                            .map(|s| s.bindings.as_slice()).unwrap_or(&[]);
+                        let coord_sample =
+                            steps.first().map(|s| s.bindings.as_slice()).unwrap_or(&[]);
                         let gate = match resolve_continue_if(
-                            phase_continue_if, &parent, coord_sample, ctx.strict) {
+                            phase_continue_if,
+                            &parent,
+                            coord_sample,
+                            ctx.strict,
+                        ) {
                             Ok(g) => g,
-                            Err(e) => return crate::phase_outcome::Outcome::failed()
-                                .with_reason(e),
+                            Err(e) => {
+                                return crate::phase_outcome::Outcome::failed().with_reason(e);
+                            }
                         };
                         dispatch_comprehension(
-                            ctx, steps,
-                            TerminalAction::Phase(name), depth + 1, false,
+                            ctx,
+                            steps,
+                            TerminalAction::Phase(name),
+                            depth + 1,
+                            false,
                             "for_each",
                             Some((name.clone(), op_names, phase_path_for_iters)),
                             gate,
-                        ).await
+                        )
+                        .await
                     };
                     ctx.scene_tree_parent_id = saved_parent;
                     ctx.scene_tree_path = saved_path;
-                    return enrich_outcome(ctx, &needle, res);   // SRD-92: propagate the real Outcome, yaml-enriched
+                    return enrich_outcome(ctx, &needle, res); // SRD-92: propagate the real Outcome, yaml-enriched
                 } else {
                     // Structural push: leaf Phase node. Labels are
                     // the canonical leaf-first scope-coord path so
                     // run_phase's later `set_phase_running(name,
                     // &phase_labels, ..)` find_phase lookup matches.
                     let phase_labels = canonical_phase_label(
-                        &ctx.current_parent_kernel.as_ref()
-                            .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                        &ctx.current_parent_kernel
+                            .as_ref()
+                            .map(|k| {
+                                k.scope_coordinates()
+                                    .iter()
+                                    .rev()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            })
                             .unwrap_or_default(),
                     );
                     let mut phase_path = ctx.scene_tree_path.clone();
@@ -1551,8 +1746,11 @@ fn execute_node<'a>(
                     // threaded into the sentinel flips + `run_phase`
                     // so lifecycle routing never re-matches by name.
                     let phase_node_id = push_phase_scene_node(
-                        ctx.scene_tree_parent_id, phase_path, name.clone(),
-                        phase_labels, op_names,
+                        ctx.scene_tree_parent_id,
+                        phase_path,
+                        name.clone(),
+                        phase_labels,
+                        op_names,
                     );
                     let phase_labels = phase_labels_for_gate;
                     // Depth gating per SRD 17 §"Execution Depth"
@@ -1576,23 +1774,31 @@ fn execute_node<'a>(
                     // filter doesn't name it. Scope liveness itself
                     // comes from selected phases only — see
                     // `subtree_has_active_phase`.
-                    let is_prereq_class = ctx.phases.get(name)
+                    let is_prereq_class = ctx
+                        .phases
+                        .get(name)
                         .and_then(|p| p.checkpoint.as_ref())
                         .map(|c| c.idempotent)
                         .unwrap_or(false);
                     let prereq_exempt = ctx.phase_filter.is_some() && is_prereq_class;
-                    let pattern_active = ctx.phase_filter.as_ref()
+                    let pattern_active = ctx
+                        .phase_filter
+                        .as_ref()
                         .map(|pat| pat.is_match(name) || prereq_exempt)
                         .unwrap_or(true);
                     if prereq_exempt
-                        && !ctx.phase_filter.as_ref()
+                        && !ctx
+                            .phase_filter
+                            .as_ref()
                             .map(|pat| pat.is_match(name))
                             .unwrap_or(true)
                     {
-                        crate::diag!(crate::observer::LogLevel::Info,
+                        crate::diag!(
+                            crate::observer::LogLevel::Info,
                             "phases=<filter>: phase '{name}' kept as an \
                              idempotent prerequisite (checkpoint: idempotent) \
-                             — resume/refine provenance decides skip-or-run");
+                             — resume/refine provenance decides skip-or-run"
+                        );
                     }
                     // SRD-77 refine `--scope=missing` fast-path:
                     // for the default scope, we can skip without
@@ -1609,18 +1815,24 @@ fn execute_node<'a>(
                     //   requires hash equality (a stale load must
                     //   re-run), so it defers to the run_phase hash
                     //   gate exactly like scope=changed.
-                    let explicitly_selected = ctx.phase_filter.as_ref()
+                    let explicitly_selected = ctx
+                        .phase_filter
+                        .as_ref()
                         .map(|pat| pat.is_match(name))
                         .unwrap_or(false);
-                    let refine_missing_skip = ctx.refine_plan.as_ref()
+                    let refine_missing_skip = ctx
+                        .refine_plan
+                        .as_ref()
                         .filter(|p| p.scope == crate::refine_plan::RefineScope::Missing)
                         .map(|p| p.is_completed(name, &phase_labels))
                         .unwrap_or(false)
                         && !explicitly_selected
                         && !is_prereq_class;
                     if !pattern_active {
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "phases=<filter>: skipping phase '{name}' (does not match)");
+                        crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "phases=<filter>: skipping phase '{name}' (does not match)"
+                        );
                         // Mark the deliberate skip on the same observer +
                         // scene-tree surfaces every other skip path uses
                         // (checkpoint resume, refine scope=missing): a
@@ -1635,10 +1847,20 @@ fn execute_node<'a>(
                                 t.set_phase_running_at(phase_node_id, 0);
                                 t.set_phase_completed_at(phase_node_id, 0.0);
                             });
-                            ctx.observer.phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
-                            ctx.observer.phase_completed(phase_node_id, name, &phase_labels, 0.0);
+                            ctx.observer.phase_starting(
+                                phase_node_id,
+                                name,
+                                &phase_labels,
+                                0,
+                                0,
+                                0,
+                            );
+                            ctx.observer
+                                .phase_completed(phase_node_id, name, &phase_labels, 0.0);
                             crate::phase_end_triggers::fire_phase_completed(
-                                name, &phase_labels, 0.0,
+                                name,
+                                &phase_labels,
+                                0.0,
                             );
                         }
                     } else if ctx.diag.depth < crate::runner::ExecDepth::Dispenser {
@@ -1660,10 +1882,20 @@ fn execute_node<'a>(
                                 t.set_phase_running_at(phase_node_id, 0);
                                 t.set_phase_completed_at(phase_node_id, 0.0);
                             });
-                            ctx.observer.phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
-                            ctx.observer.phase_completed(phase_node_id, name, &phase_labels, 0.0);
+                            ctx.observer.phase_starting(
+                                phase_node_id,
+                                name,
+                                &phase_labels,
+                                0,
+                                0,
+                                0,
+                            );
+                            ctx.observer
+                                .phase_completed(phase_node_id, name, &phase_labels, 0.0);
                             crate::phase_end_triggers::fire_phase_completed(
-                                name, &phase_labels, 0.0,
+                                name,
+                                &phase_labels,
+                                0.0,
                             );
                         }
                     } else if refine_missing_skip {
@@ -1672,33 +1904,40 @@ fn execute_node<'a>(
                         // needed. Mark Completed (zero duration)
                         // on the scene tree + observer so the
                         // post-run summary shows `ok`.
-                        crate::diag!(crate::observer::LogLevel::Info,
+                        crate::diag!(
+                            crate::observer::LogLevel::Info,
                             "refine: skipping phase '{name}' [{phase_labels}] \
-                             (prior completed outcome)");
+                             (prior completed outcome)"
+                        );
                         crate::scene_tree::with_global_mut(|t| {
                             t.set_phase_running_at(phase_node_id, 0);
                             t.set_phase_completed_at(phase_node_id, 0.0);
                         });
-                        ctx.observer.phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
-                        ctx.observer.phase_completed(phase_node_id, name, &phase_labels, 0.0);
-                        crate::phase_end_triggers::fire_phase_completed(
-                            name, &phase_labels, 0.0,
-                        );
+                        ctx.observer
+                            .phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
+                        ctx.observer
+                            .phase_completed(phase_node_id, name, &phase_labels, 0.0);
+                        crate::phase_end_triggers::fire_phase_completed(name, &phase_labels, 0.0);
                     } else if ctx.diag.depth >= crate::runner::ExecDepth::Dispenser {
                         // Falls through for `scope=changed` (needs
                         // the hash, computed inside run_phase) and
                         // for non-refine runs.
                         let __o = run_phase_layered(ctx, name, phase_node_id).await;
                         if __o.is_failure() {
-                            return __o;   // SRD-92: propagate the phase's REAL Outcome (no round-trip)
+                            return __o; // SRD-92: propagate the phase's REAL Outcome (no round-trip)
                         }
                     }
                 }
             }
-            ScenarioNode::Comprehension { comprehension, children, continue_if } => {
+            ScenarioNode::Comprehension {
+                comprehension,
+                children,
+                continue_if,
+            } => {
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),
-                }.label();
+                }
+                .label();
                 // Positional resolution (One Walker): the dispatcher already
                 // mapped this scenario node to its scope-tree node by position,
                 // so AST-identical sibling comprehensions disambiguate (the old
@@ -1714,23 +1953,37 @@ fn execute_node<'a>(
                     ),
                     "{label}: positional scope node {scope_idx} is not the matching comprehension",
                 );
-                let canonical = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
-                    .cloned() {
+                let canonical = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get().cloned() {
                     Some(v) => v,
-                    None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                        "{label}: scope at index {scope_idx} has no installed kernel.",
-                    )),
+                    None => {
+                        return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                            "{label}: scope at index {scope_idx} has no installed kernel.",
+                        ));
+                    }
                 };
                 let parent = match effective_parent_kernel(ctx, scope_idx) {
                     Some(v) => v,
-                    None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                        "{label}: no installed ancestor kernel.",
-                    )),
+                    None => {
+                        return crate::phase_outcome::Outcome::failed()
+                            .with_reason(format!("{label}: no installed ancestor kernel.",));
+                    }
                 };
-                let own_names: Vec<String> = canonical.program().own_output_names()
-                    .into_iter().map(String::from).collect();
-                let parent_coords = ctx.current_parent_kernel.as_ref()
-                    .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                let own_names: Vec<String> = canonical
+                    .program()
+                    .own_output_names()
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+                let parent_coords = ctx
+                    .current_parent_kernel
+                    .as_ref()
+                    .map(|k| {
+                        k.scope_coordinates()
+                            .iter()
+                            .rev()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default();
                 // Algebra-native dispatch: one path for every
                 // shape (Cartesian / Union / Zip / Filter /
@@ -1741,11 +1994,17 @@ fn execute_node<'a>(
                 let coord_names = comprehension.coordinate_names();
                 let needle = coord_names.first().cloned().unwrap_or_default();
                 let steps = match runtime_iterate(
-                    ctx, &canonical, &parent, &parent_coords, comprehension,
+                    ctx,
+                    &canonical,
+                    &parent,
+                    &parent_coords,
+                    comprehension,
                 ) {
                     Ok(v) => v,
-                    Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(
-                        enrich_with_yaml_location(ctx, &needle, e)),
+                    Err(e) => {
+                        return crate::phase_outcome::Outcome::failed()
+                            .with_reason(enrich_with_yaml_location(ctx, &needle, e));
+                    }
                 };
                 // Scene-tree path segment: ForEach for single
                 // coord, ForCombinations for multi.
@@ -1762,18 +2021,25 @@ fn execute_node<'a>(
                     (format!("each {summary}"), "for_combinations")
                 };
                 let scope_id = push_scope_scene_node(
-                    ctx.scene_tree_parent_id, scope_path.clone(),
-                    header, own_names.clone(),
+                    ctx.scene_tree_parent_id,
+                    scope_path.clone(),
+                    header,
+                    own_names.clone(),
                 );
                 // SRD-101 sweep gate (scenario `for:`) — compile against the
                 // sweep's parent scope so coords + outer consts both resolve.
-                let coord_sample = steps.first()
-                    .map(|s| s.bindings.as_slice()).unwrap_or(&[]);
+                let coord_sample = steps.first().map(|s| s.bindings.as_slice()).unwrap_or(&[]);
                 let continue_if_gate = match resolve_continue_if(
-                    continue_if.clone(), &parent, coord_sample, ctx.strict) {
+                    continue_if.clone(),
+                    &parent,
+                    coord_sample,
+                    ctx.strict,
+                ) {
                     Ok(g) => g,
-                    Err(e) => return crate::phase_outcome::Outcome::failed()
-                        .with_reason(enrich_with_yaml_location(ctx, &needle, e)),
+                    Err(e) => {
+                        return crate::phase_outcome::Outcome::failed()
+                            .with_reason(enrich_with_yaml_location(ctx, &needle, e));
+                    }
                 };
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
@@ -1781,15 +2047,20 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = scope_id;
                 ctx.current_scope_idx = scope_idx;
                 let res = dispatch_comprehension(
-                    ctx, steps,
-                    TerminalAction::Children(children), depth + 1, false,
-                    kind, None,
+                    ctx,
+                    steps,
+                    TerminalAction::Children(children),
+                    depth + 1,
+                    false,
+                    kind,
+                    None,
                     continue_if_gate,
-                ).await;
+                )
+                .await;
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                return enrich_outcome(ctx, &needle, res);   // SRD-92: propagate the real Outcome, yaml-enriched
+                return enrich_outcome(ctx, &needle, res); // SRD-92: propagate the real Outcome, yaml-enriched
             }
             ScenarioNode::IncludedScenario { name, children } => {
                 // Structural push: scenario-include node. The
@@ -1798,15 +2069,19 @@ fn execute_node<'a>(
                 // the scene tree so operators can trace the include
                 // chain (SRD-44 §"Phase identity").
                 if !ctx.quiet() {
-                    crate::diag!(crate::observer::LogLevel::Debug,
+                    crate::diag!(
+                        crate::observer::LogLevel::Debug,
                         "include scenario '{name}' ({} children)",
-                        children.len());
+                        children.len()
+                    );
                 }
                 let mut scope_path = ctx.scene_tree_path.clone();
                 scope_path.push(PathSegment::ScenarioInclude(name.clone()));
                 let scope_id = push_scope_scene_node(
-                    ctx.scene_tree_parent_id, scope_path.clone(),
-                    format!("scenario '{name}'"), Vec::new(),
+                    ctx.scene_tree_parent_id,
+                    scope_path.clone(),
+                    format!("scenario '{name}'"),
+                    Vec::new(),
                 );
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
@@ -1819,20 +2094,33 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                if res.is_failure() { return res; }   // SRD-92: propagate the subtree's real Outcome
+                if res.is_failure() {
+                    return res;
+                } // SRD-92: propagate the subtree's real Outcome
             }
-            ScenarioNode::DoWhile { condition, counter, children } => {
-                crate::diag!(crate::observer::LogLevel::Debug, "=== do_while: {condition} ===");
+            ScenarioNode::DoWhile {
+                condition,
+                counter,
+                children,
+            } => {
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "=== do_while: {condition} ==="
+                );
                 // Structural push: do_while scope header. Iteration
                 // count is unknown a priori (condition-driven), so
                 // there's no per-iter expansion at the scene tree
                 // level — one scope node represents the whole loop.
                 let mut scope_path = ctx.scene_tree_path.clone();
-                scope_path.push(PathSegment::DoWhile { counter: counter.clone() });
+                scope_path.push(PathSegment::DoWhile {
+                    counter: counter.clone(),
+                });
                 let own_names = do_loop_own_names(ctx, condition, counter.as_deref(), false);
                 let scope_id = push_scope_scene_node(
-                    ctx.scene_tree_parent_id, scope_path.clone(),
-                    format!("do_while {condition}"), own_names,
+                    ctx.scene_tree_parent_id,
+                    scope_path.clone(),
+                    format!("do_while {condition}"),
+                    own_names,
                 );
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
@@ -1840,26 +2128,52 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = scope_id;
                 ctx.current_scope_idx = node_scope_idx; // One Walker positional cursor
                 fire_scope_lifecycle(
-                    ctx, crate::lifecycle::EventType::ScopeStart,
-                    &format!("do_while {condition}"), depth);
-                let r = run_do_loop(ctx, condition, counter.as_deref(), false,
-                    children, depth + 1).await;
+                    ctx,
+                    crate::lifecycle::EventType::ScopeStart,
+                    &format!("do_while {condition}"),
+                    depth,
+                );
+                let r = run_do_loop(
+                    ctx,
+                    condition,
+                    counter.as_deref(),
+                    false,
+                    children,
+                    depth + 1,
+                )
+                .await;
                 fire_scope_lifecycle(
-                    ctx, crate::lifecycle::EventType::ScopeEnd,
-                    &format!("do_while {condition}"), depth);
+                    ctx,
+                    crate::lifecycle::EventType::ScopeEnd,
+                    &format!("do_while {condition}"),
+                    depth,
+                );
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                if let Err(e) = r { return crate::phase_outcome::Outcome::failed().with_reason(e); }
+                if let Err(e) = r {
+                    return crate::phase_outcome::Outcome::failed().with_reason(e);
+                }
             }
-            ScenarioNode::DoUntil { condition, counter, children } => {
-                crate::diag!(crate::observer::LogLevel::Debug, "=== do_until: {condition} ===");
+            ScenarioNode::DoUntil {
+                condition,
+                counter,
+                children,
+            } => {
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "=== do_until: {condition} ==="
+                );
                 let mut scope_path = ctx.scene_tree_path.clone();
-                scope_path.push(PathSegment::DoUntil { counter: counter.clone() });
+                scope_path.push(PathSegment::DoUntil {
+                    counter: counter.clone(),
+                });
                 let own_names = do_loop_own_names(ctx, condition, counter.as_deref(), true);
                 let scope_id = push_scope_scene_node(
-                    ctx.scene_tree_parent_id, scope_path.clone(),
-                    format!("do_until {condition}"), own_names,
+                    ctx.scene_tree_parent_id,
+                    scope_path.clone(),
+                    format!("do_until {condition}"),
+                    own_names,
                 );
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
@@ -1867,17 +2181,32 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = scope_id;
                 ctx.current_scope_idx = node_scope_idx; // One Walker positional cursor
                 fire_scope_lifecycle(
-                    ctx, crate::lifecycle::EventType::ScopeStart,
-                    &format!("do_until {condition}"), depth);
-                let r = run_do_loop(ctx, condition, counter.as_deref(), true,
-                    children, depth + 1).await;
+                    ctx,
+                    crate::lifecycle::EventType::ScopeStart,
+                    &format!("do_until {condition}"),
+                    depth,
+                );
+                let r = run_do_loop(
+                    ctx,
+                    condition,
+                    counter.as_deref(),
+                    true,
+                    children,
+                    depth + 1,
+                )
+                .await;
                 fire_scope_lifecycle(
-                    ctx, crate::lifecycle::EventType::ScopeEnd,
-                    &format!("do_until {condition}"), depth);
+                    ctx,
+                    crate::lifecycle::EventType::ScopeEnd,
+                    &format!("do_until {condition}"),
+                    depth,
+                );
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                if let Err(e) = r { return crate::phase_outcome::Outcome::failed().with_reason(e); }
+                if let Err(e) = r {
+                    return crate::phase_outcome::Outcome::failed().with_reason(e);
+                }
             }
             ScenarioNode::Bindings { source, children } => {
                 // Push the bindings scope's installed kernel as
@@ -1917,20 +2246,26 @@ fn execute_node<'a>(
                     ),
                     "bindings: positional scope node {scope_idx} is not the matching bindings",
                 );
-                let installed = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
-                    .cloned() {
+                let installed = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get().cloned() {
                     Some(v) => v,
-                    None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                        "bindings scope at index {scope_idx} has no installed \
+                    None => {
+                        return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                            "bindings scope at index {scope_idx} has no installed \
                          kernel — install-spec walker missed this node",
-                    )),
+                        ));
+                    }
                 };
                 if !ctx.quiet() {
-                    let one_line = source.lines().map(str::trim)
-                        .find(|l| !l.is_empty()).unwrap_or("");
-                    crate::diag!(crate::observer::LogLevel::Debug,
+                    let one_line = source
+                        .lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or("");
+                    crate::diag!(
+                        crate::observer::LogLevel::Debug,
                         "bindings: {one_line} ({} children)",
-                        children.len());
+                        children.len()
+                    );
                 }
                 // Per-iter compile from the program preserves the
                 // cached parse + wiring (same Arc<PolydatProgram>) while
@@ -1949,20 +2284,28 @@ fn execute_node<'a>(
                     Some(parent) => {
                         let matter = match polydat::kernel::subcontext::PolydatMatter::builder()
                             .program(installed.program().clone())
-                            .build() {
+                            .build()
+                        {
                             Ok(v) => v,
-                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                                "bindings scope at index {scope_idx}: \
+                            Err(e) => {
+                                return crate::phase_outcome::Outcome::failed().with_reason(
+                                    format!(
+                                        "bindings scope at index {scope_idx}: \
                                  build subscope matter: {e:?}",
-                            )),
+                                    ),
+                                );
+                            }
                         };
-                        match parent.build_subscope(matter)
-                            .map(std::sync::Arc::new) {
+                        match parent.build_subscope(matter).map(std::sync::Arc::new) {
                             Ok(v) => v,
-                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                                "bindings scope at index {scope_idx}: \
+                            Err(e) => {
+                                return crate::phase_outcome::Outcome::failed().with_reason(
+                                    format!(
+                                        "bindings scope at index {scope_idx}: \
                                  chain to current parent kernel: {e:?}",
-                            )),
+                                    ),
+                                );
+                            }
                         }
                     }
                     None => installed,
@@ -1981,8 +2324,10 @@ fn execute_node<'a>(
                 let mut scope_path = ctx.scene_tree_path.clone();
                 scope_path.push(PathSegment::ScenarioInclude(label.clone()));
                 let scope_id = push_scope_scene_node(
-                    ctx.scene_tree_parent_id, scope_path.clone(),
-                    label, Vec::new(),
+                    ctx.scene_tree_parent_id,
+                    scope_path.clone(),
+                    label,
+                    Vec::new(),
                 );
                 let prior_parent = ctx.current_parent_kernel.take();
                 ctx.current_parent_kernel = Some(chained);
@@ -1996,7 +2341,9 @@ fn execute_node<'a>(
                 ctx.scene_tree_path = saved_scene_path;
                 ctx.current_scope_idx = saved_scope_idx;
                 ctx.current_parent_kernel = prior_parent;
-                if res.is_failure() { return res; }   // SRD-92: propagate the subtree's real Outcome
+                if res.is_failure() {
+                    return res;
+                } // SRD-92: propagate the subtree's real Outcome
             }
         }
         crate::phase_outcome::Outcome::completed()
@@ -2074,7 +2421,7 @@ fn runtime_iterate(
     parent_coords: &[ScopeCoord],
     comprehension: &polydat::iteration::comprehension::Comprehension,
 ) -> Result<Vec<IterationStep>, String> {
-    use polydat::iteration::comprehension::runtime::{evaluate_for_iteration, EmptyClause};
+    use polydat::iteration::comprehension::runtime::{EmptyClause, evaluate_for_iteration};
     use polydat::kernel::{PolydatKernel, ScopeCoord};
 
     let strict = ctx.strict;
@@ -2085,7 +2432,9 @@ fn runtime_iterate(
             None => format!("for_each clause '{var}'", var = empty.var),
         };
         let msg = format!("{label}: produced no values");
-        if strict { return Err(format!("strict: {msg}")); }
+        if strict {
+            return Err(format!("strict: {msg}"));
+        }
         if !quiet {
             crate::diag!(crate::observer::LogLevel::Warn, "warning: {msg}");
         }
@@ -2093,7 +2442,11 @@ fn runtime_iterate(
     };
 
     let tuples = evaluate_for_iteration(
-        comprehension, parent, canonical, &ctx.workload_params, on_empty,
+        comprehension,
+        parent,
+        canonical,
+        &ctx.workload_params,
+        on_empty,
     )
     .map_err(|e| e.to_string())?;
 
@@ -2184,9 +2537,13 @@ fn resolve_continue_if(
     match spec {
         None => Ok(None),
         Some(spec) => {
-            let gate_canonical = crate::stop_conditions::compile_continue_if(
-                &spec.when, coord_sample, strict)?;
-            Ok(Some(ContinueIfGate { spec, gate_canonical, parent: parent.clone() }))
+            let gate_canonical =
+                crate::stop_conditions::compile_continue_if(&spec.when, coord_sample, strict)?;
+            Ok(Some(ContinueIfGate {
+                spec,
+                gate_canonical,
+                parent: parent.clone(),
+            }))
         }
     }
 }
@@ -2235,7 +2592,8 @@ fn dispatch_comprehension<'a>(
     // SRD-101 — optional `continue_if` pre-entry gate bounding this sweep
     // (the parsed spec + compiled gate kernel + the sweep's parent scope).
     continue_if: Option<ContinueIfGate>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>
+{
     use crate::scheduler::ConcurrencyLimit;
     Box::pin(async move {
         if steps.is_empty() {
@@ -2281,7 +2639,11 @@ fn dispatch_comprehension<'a>(
         // (matches pre_map's set_own_names(inner_scope, own.clone())).
         let inner_own_names: Vec<String> = if phase_terminal_meta.is_none() {
             crate::scene_tree::current()
-                .and_then(|t| t.nodes.get(ctx.scene_tree_parent_id).map(|n| n.own_names.clone()))
+                .and_then(|t| {
+                    t.nodes
+                        .get(ctx.scene_tree_parent_id)
+                        .map(|n| n.own_names.clone())
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -2302,7 +2664,7 @@ fn dispatch_comprehension<'a>(
         // (one `poll_next` per instance, in declaration order); the owned
         // `IterationStep`s are consumed in lockstep (no extra clone — identical
         // to the old `for step in steps`).
-        use crate::child_source::{select_drive, Child, ChildSource, CountedSource, Drive};
+        use crate::child_source::{Child, ChildSource, CountedSource, Drive, select_drive};
         let mut csrc = CountedSource::new(steps.len());
         debug_assert_eq!(select_drive(csrc.realizability()), Drive::BoundedSpawn);
         let mut steps_iter = steps.into_iter();
@@ -2311,7 +2673,9 @@ fn dispatch_comprehension<'a>(
         // carrying this reason (the `PhaseOutcome` marker, §7).
         let mut continue_if_halt: Option<String> = None;
         while let Some(Child::Node(_)) = csrc.poll_next() {
-            let step = steps_iter.next().expect("CountedSource length matches steps");
+            let step = steps_iter
+                .next()
+                .expect("CountedSource length matches steps");
             // SRD-101 — `continue_if` PRE-ENTRY gate. Evaluate the predicate
             // against THIS iteration's coordinate context (its bound kernel)
             // BEFORE entering the body. While true the iteration runs; the
@@ -2327,16 +2691,20 @@ fn dispatch_comprehension<'a>(
             if let Some(gate) = continue_if.as_ref() {
                 if ctx.diag.depth >= crate::runner::ExecDepth::Op && !ctx.pre_map_only {
                     match crate::stop_conditions::eval_continue_if(
-                        &gate.gate_canonical, &gate.parent, &step.bindings,
+                        &gate.gate_canonical,
+                        &gate.parent,
+                        &step.bindings,
                     ) {
-                        Ok(true) => {}   // gate holds → run this iteration
+                        Ok(true) => {} // gate holds → run this iteration
                         Ok(false) => {
                             let coord = format_iter_label(&step.bindings);
-                            let reason = format!(
-                                "continue_if: {} — halted at {coord}", gate.spec.when);
-                            crate::diag!(crate::observer::LogLevel::Info,
+                            let reason =
+                                format!("continue_if: {} — halted at {coord}", gate.spec.when);
+                            crate::diag!(
+                                crate::observer::LogLevel::Info,
                                 "sweep halted (continue_if): `{}` false at {coord}",
-                                gate.spec.when);
+                                gate.spec.when
+                            );
                             // Signal a graceful early stop so the post-run
                             // "pre-mapped phase(s) not executed" guard treats
                             // the halted tail as deliberate (clean exit 0),
@@ -2348,8 +2716,11 @@ fn dispatch_comprehension<'a>(
                             // run via the shared walk_stop latch; otherwise the
                             // local break is the halt and the walk above this
                             // sweep continues.
-                            if gate.spec.each.iter().any(|l|
-                                matches!(l, nbrs_workload::model::ScopeLevel::Workload))
+                            if gate
+                                .spec
+                                .each
+                                .iter()
+                                .any(|l| matches!(l, nbrs_workload::model::ScopeLevel::Workload))
                             {
                                 ctx.workload_shell.request_stop(
                                     crate::phase_outcome::Outcome::interrupted()
@@ -2369,7 +2740,9 @@ fn dispatch_comprehension<'a>(
             let permit = match sem.as_ref() {
                 Some(s) => match s.clone().acquire_owned().await {
                     Ok(p) => Some(p),
-                    Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e.to_string()),
+                    Err(e) => {
+                        return crate::phase_outcome::Outcome::failed().with_reason(e.to_string());
+                    }
                 },
                 None => None,
             };
@@ -2423,14 +2796,12 @@ fn dispatch_comprehension<'a>(
                         op_names.clone(),
                     )
                 }
-                None => {
-                    push_scope_scene_node(
-                        ctx.scene_tree_parent_id,
-                        ctx.scene_tree_path.clone(),
-                        format_iter_label(&step.bindings),
-                        inner_own_names.clone(),
-                    )
-                }
+                None => push_scope_scene_node(
+                    ctx.scene_tree_parent_id,
+                    ctx.scene_tree_path.clone(),
+                    format_iter_label(&step.bindings),
+                    inner_own_names.clone(),
+                ),
             };
             let mut task_ctx = ctx.clone();
             // For Children terminal: per-iter inner scope becomes
@@ -2454,12 +2825,17 @@ fn dispatch_comprehension<'a>(
             match res {
                 Err(join_err) => {
                     if first_err.is_none() {
-                        first_err = Some(format!("concurrent comprehension iteration panicked: {join_err}"));
+                        first_err = Some(format!(
+                            "concurrent comprehension iteration panicked: {join_err}"
+                        ));
                     }
                 }
                 Ok(o) => {
                     if o.is_failure() && first_err.is_none() {
-                        first_err = Some(o.reason.unwrap_or_else(|| "comprehension iteration failed".to_string()));
+                        first_err = Some(
+                            o.reason
+                                .unwrap_or_else(|| "comprehension iteration failed".to_string()),
+                        );
                     }
                 }
             }
@@ -2498,7 +2874,8 @@ fn dispatch_optimization<'a>(
     phase_name: &'a str,
     depth: usize,
     phase_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>
+{
     Box::pin(async move {
         // SRD-92 — the niche `optimize:` subtree stays Result internally
         // (its helpers + run_one_eval); wrap to the universal Outcome here.
@@ -2681,7 +3058,10 @@ fn classify_control_axes(
                  values by re-running the phase"
             ));
         };
-        controls.push(ControlAxis { axis_idx: i, control });
+        controls.push(ControlAxis {
+            axis_idx: i,
+            control,
+        });
     }
     Ok(controls)
 }
@@ -2775,20 +3155,36 @@ fn run_control_search<'a>(
         let center = coord_eval.representative(&space).ok_or_else(|| {
             format!("phase '{phase_name}': control optimize has no representative coordinate")
         })?;
-        let outcome =
-            run_servo_cell(ctx, &center, space, control_axes, &block, phase_name, depth, &phase_meta)
-                .await?;
+        let outcome = run_servo_cell(
+            ctx,
+            &center,
+            space,
+            control_axes,
+            &block,
+            phase_name,
+            depth,
+            &phase_meta,
+        )
+        .await?;
         let (best_disp, best_value) = match &outcome.best {
             Some(b) => (
-                b.coord.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "),
+                b.coord
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 b.value,
             ),
             None => ("<none>".to_string(), f64::NEG_INFINITY),
         };
-        crate::diag!(crate::observer::LogLevel::Info,
+        crate::diag!(
+            crate::observer::LogLevel::Info,
             "optimizer '{method}' on '{phase_name}' (control): best [{best_disp}] → \
              {objective}={best_value} after {evals} evals",
-            method = block.method, objective = block.objective, evals = outcome.evals);
+            method = block.method,
+            objective = block.objective,
+            evals = outcome.evals
+        );
         Ok(())
     })
 }
@@ -2819,8 +3215,9 @@ fn run_hybrid_search<'a>(
         // (C, outer/rerun).
         let control_idx: std::collections::HashSet<usize> =
             control_axes.iter().map(|c| c.axis_idx).collect();
-        let coord_indices: Vec<usize> =
-            (0..space.axes.len()).filter(|i| !control_idx.contains(i)).collect();
+        let coord_indices: Vec<usize> = (0..space.axes.len())
+            .filter(|i| !control_idx.contains(i))
+            .collect();
 
         // The control subspace the daemon searches, with axis indices remapped
         // into K (the daemon proposes coordinates over K alone).
@@ -2873,7 +3270,13 @@ fn run_hybrid_search<'a>(
         let mut total_evals = 0usize;
         for cell in &cells {
             let outcome = run_servo_cell(
-                ctx, cell, k_space.clone(), k_controls.clone(), &block, phase_name, depth,
+                ctx,
+                cell,
+                k_space.clone(),
+                k_controls.clone(),
+                &block,
+                phase_name,
+                depth,
                 &phase_meta,
             )
             .await?;
@@ -2884,17 +3287,32 @@ fn run_hybrid_search<'a>(
                 best_value = b.value;
                 let c_disp = coord_indices
                     .iter()
-                    .map(|&i| format!("{}={}", cell.bindings[i].0, cell.bindings[i].1.to_display_string()))
+                    .map(|&i| {
+                        format!(
+                            "{}={}",
+                            cell.bindings[i].0,
+                            cell.bindings[i].1.to_display_string()
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
-                let k_disp = b.coord.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+                let k_disp = b
+                    .coord
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 best_disp = format!("{c_disp}; {k_disp}");
             }
         }
-        crate::diag!(crate::observer::LogLevel::Info,
+        crate::diag!(
+            crate::observer::LogLevel::Info,
             "optimizer '{method}' on '{phase_name}' (hybrid {ncells} coordinate cells × control): \
              best [{best_disp}] → {objective}={best_value} after {total_evals} evals",
-            method = block.method, objective = block.objective, ncells = cells.len());
+            method = block.method,
+            objective = block.objective,
+            ncells = cells.len()
+        );
         Ok(())
     })
 }
@@ -2927,7 +3345,11 @@ async fn run_one_eval(
     let res = run_one_iteration(ctx, step, &terminal, depth, "optimize").await;
     ctx.scene_tree_parent_id = saved;
     // The optimize helpers stay `Result`-typed (niche subtree); map here.
-    if res.is_failure() { Err(res.reason.clone().unwrap_or_default()) } else { Ok(()) }
+    if res.is_failure() {
+        Err(res.reason.clone().unwrap_or_default())
+    } else {
+        Ok(())
+    }
 }
 
 /// Pull the next coordinate batch from a source via its most-capable
@@ -2948,7 +3370,11 @@ pub(crate) fn source_next(
 /// A stable per-coordinate key (per-axis display value) for matching an
 /// optimizer-produced coordinate back to its enumerated `IterationStep`.
 fn coord_key(coord: &crate::optimize::Coord) -> String {
-    coord.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\u{1f}")
+    coord
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
 }
 
 /// Index the enumerated steps by their coordinate key.
@@ -3008,7 +3434,11 @@ fn search_space_from_steps(steps: &[IterationStep]) -> crate::optimize::SearchSp
         } else {
             AxisKind::Categorical { options: values }
         };
-        axes.push(Axis { name, kind, changeover: Changeover::Coordinate });
+        axes.push(Axis {
+            name,
+            kind,
+            changeover: Changeover::Coordinate,
+        });
     }
     SearchSpace::new(axes)
 }
@@ -3053,7 +3483,11 @@ fn search_space_continuous(
             .zip(intervals)
             .map(|(name, iv)| Axis {
                 name: name.clone(),
-                kind: AxisKind::Continuous { lo: iv.lo, hi: iv.hi, min_step: 0.0 },
+                kind: AxisKind::Continuous {
+                    lo: iv.lo,
+                    hi: iv.hi,
+                    min_step: 0.0,
+                },
                 changeover: Changeover::Coordinate,
             })
             .collect(),
@@ -3089,7 +3523,12 @@ impl CoordEval {
             CoordEval::Enumerated { steps, index } => {
                 index.get(&coord_key(coord)).map(|&i| steps[i].clone())
             }
-            CoordEval::Synthesized { axis_names, canonical, parent, parent_coords } => {
+            CoordEval::Synthesized {
+                axis_names,
+                canonical,
+                parent,
+                parent_coords,
+            } => {
                 let tuple: Vec<(String, polydat::ast::Value)> = axis_names
                     .iter()
                     .zip(coord)
@@ -3099,7 +3538,11 @@ impl CoordEval {
                     polydat::kernel::PolydatKernel::for_iteration(canonical, parent, &tuple);
                 let mut coord_path = parent_coords.clone();
                 coord_path.push(polydat::kernel::ScopeCoord::from(tuple.iter().cloned()));
-                Some(IterationStep { bindings: tuple, bound_kernel, coord_path })
+                Some(IterationStep {
+                    bindings: tuple,
+                    bound_kernel,
+                    coord_path,
+                })
             }
         }
     }
@@ -3211,7 +3654,9 @@ fn fire_scope_lifecycle(
 ) {
     let depth_indent = " ".repeat(depth.saturating_sub(1));
     let display_labels: String = {
-        let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+        let parent_coords: Vec<_> = ctx
+            .current_parent_kernel
+            .as_ref()
             .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
             .unwrap_or_default();
         polydat::kernel::format_scope_coordinate_path(&parent_coords)
@@ -3245,29 +3690,45 @@ async fn run_do_loop(
     // Both DoWhile and DoUntil get installed kernels per the
     // runner.rs install loop, but they're stored under their
     // own ScopeKind variants so the lookup needs to check both.
-    let scope_idx = ctx.scope_tree.iter_dfs().find_map(|(idx, node)| {
-        match &node.kind {
-            crate::scope_tree::ScopeKind::DoWhile { condition: c, counter: ct } => {
+    let scope_idx = ctx
+        .scope_tree
+        .iter_dfs()
+        .find_map(|(idx, node)| match &node.kind {
+            crate::scope_tree::ScopeKind::DoWhile {
+                condition: c,
+                counter: ct,
+            } => {
                 if c == condition && ct.as_deref() == counter && !invert {
                     Some(idx)
-                } else { None }
+                } else {
+                    None
+                }
             }
-            crate::scope_tree::ScopeKind::DoUntil { condition: c, counter: ct } => {
+            crate::scope_tree::ScopeKind::DoUntil {
+                condition: c,
+                counter: ct,
+            } => {
                 if c == condition && ct.as_deref() == counter && invert {
                     Some(idx)
-                } else { None }
+                } else {
+                    None
+                }
             }
             _ => None,
-        }
-    }).ok_or_else(|| format!(
-        "do-loop '{condition}': no matching scope-tree entry — \
+        })
+        .ok_or_else(|| {
+            format!(
+                "do-loop '{condition}': no matching scope-tree entry — \
          scenario/scope-tree drift bug."
-    ))?;
-    let canonical = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
+            )
+        })?;
+    let canonical = ctx.scope_tree.nodes[scope_idx]
+        .cached_kernel
+        .get()
         .cloned()
-        .ok_or_else(|| format!(
-            "do-loop '{condition}': scope at index {scope_idx} has no installed kernel."
-        ))?;
+        .ok_or_else(|| {
+            format!("do-loop '{condition}': scope at index {scope_idx} has no installed kernel.")
+        })?;
     let parent = effective_parent_kernel(ctx, scope_idx)
         .ok_or_else(|| format!("do-loop '{condition}': no installed ancestor kernel."))?;
 
@@ -3277,9 +3738,14 @@ async fn run_do_loop(
     // `from_program → materialize_wiring_from_outer` sequence through the
     // typed bridge so the rebind primitive sits behind a single
     // entry point.
-    let mut loop_kernel = parent.build_subscope(
-        polydat::kernel::subcontext::PolydatMatter::builder().program(canonical.program().clone()).build().unwrap(),
-    ).expect("subscope from program is infallible");
+    let mut loop_kernel = parent
+        .build_subscope(
+            polydat::kernel::subcontext::PolydatMatter::builder()
+                .program(canonical.program().clone())
+                .build()
+                .unwrap(),
+        )
+        .expect("subscope from program is infallible");
 
     let mut counter_value: u64 = 0;
     loop {
@@ -3287,28 +3753,30 @@ async fn run_do_loop(
         if let Some(c) = counter
             && let Some(idx) = loop_kernel.program().find_input(c)
         {
-            loop_kernel.state().set_input(
-                idx,
-                polydat::ast::Value::U64(counter_value),
-            );
+            loop_kernel
+                .state()
+                .set_input(idx, polydat::ast::Value::U64(counter_value));
         }
 
         // Evaluate the condition against the persistent kernel.
-        let interpolated = polydat::kernel::interp::interpolate_via_kernel(
-            condition, &loop_kernel,
-        ).map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
+        let interpolated = polydat::kernel::interp::interpolate_via_kernel(condition, &loop_kernel)
+            .map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
         let cond_value = polydat::dsl::compile::eval_const_expr(&interpolated)
             .map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
         let cond_true = match cond_value {
             polydat::ast::Value::Bool(b) => b,
             polydat::ast::Value::U64(n) => n != 0,
             polydat::ast::Value::F64(n) => n != 0.0,
-            other => return Err(format!(
-                "do-loop condition '{condition}': expected bool/u64/f64, got {other:?}",
-            )),
+            other => {
+                return Err(format!(
+                    "do-loop condition '{condition}': expected bool/u64/f64, got {other:?}",
+                ));
+            }
         };
         let should_continue = if invert { !cond_true } else { cond_true };
-        if !should_continue { break; }
+        if !should_continue {
+            break;
+        }
 
         // Install the persistent kernel as ctx.current_parent_kernel
         // for children to read via the standard scope chain. We
@@ -3323,9 +3791,14 @@ async fn run_do_loop(
             // Placeholder — overwritten on reclaim. Constructed
             // via the typed subscope path against the canonical;
             // shares cells but is otherwise throwaway.
-            canonical.build_subscope(
-                polydat::kernel::subcontext::PolydatMatter::builder().program(canonical.program().clone()).build().unwrap(),
-            ).expect("program-form subscope is infallible"),
+            canonical
+                .build_subscope(
+                    polydat::kernel::subcontext::PolydatMatter::builder()
+                        .program(canonical.program().clone())
+                        .build()
+                        .unwrap(),
+                )
+                .expect("program-form subscope is infallible"),
         ));
         ctx.current_parent_kernel = Some(arc_loop.clone());
 
@@ -3337,10 +3810,7 @@ async fn run_do_loop(
         let kind: &'static str = if invert { "do_until" } else { "do_while" };
         let mut iter_coords = std::collections::BTreeMap::new();
         if let Some(c) = counter {
-            iter_coords.insert(
-                c.to_string(),
-                serde_json::Value::from(counter_value),
-            );
+            iter_coords.insert(c.to_string(), serde_json::Value::from(counter_value));
         }
         let path: Vec<std::collections::BTreeMap<String, serde_json::Value>> = arc_loop
             .scope_coordinates()
@@ -3356,22 +3826,32 @@ async fn run_do_loop(
         let res = execute_tree_at(ctx, children, depth).await;
 
         if let Some(writer) = ctx.checkpoint_writer.as_ref() {
-            let outcome = if !res.is_failure() { "completed" } else { "interrupted" };
+            let outcome = if !res.is_failure() {
+                "completed"
+            } else {
+                "interrupted"
+            };
             writer.emit_scope_exit(kind, iter_coords, path, outcome);
         }
 
         ctx.current_parent_kernel = prior_parent;
-        if counter.is_some() { ctx.pop_label(); }
+        if counter.is_some() {
+            ctx.pop_label();
+        }
 
         // Reclaim the persistent kernel. Iterations are sequential
         // and concurrent children within the iteration body have
         // all awaited by this point, so the Arc is uniquely owned.
-        loop_kernel = std::sync::Arc::try_unwrap(arc_loop).map_err(|_| format!(
-            "do-loop '{condition}' iteration {counter_value}: persistent kernel \
+        loop_kernel = std::sync::Arc::try_unwrap(arc_loop).map_err(|_| {
+            format!(
+                "do-loop '{condition}' iteration {counter_value}: persistent kernel \
              still referenced after children completed — concurrency bug."
-        ))?;
+            )
+        })?;
 
-        if res.is_failure() { return Err(res.reason.clone().unwrap_or_default()); }
+        if res.is_failure() {
+            return Err(res.reason.clone().unwrap_or_default());
+        }
         counter_value = counter_value.saturating_add(1);
     }
 
@@ -3422,12 +3902,16 @@ async fn run_one_iteration(
     // the binding tuple as a sortable string. Subject
     // labels are the root-first display form a workload-
     // bound `scope_header` would render against.
-    let iter_label = step.bindings.iter()
+    let iter_label = step
+        .bindings
+        .iter()
         .map(|(k, v)| format!("{k}={}", v.to_display_string()))
         .collect::<Vec<_>>()
         .join(", ");
     let display_labels: String = {
-        let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+        let parent_coords: Vec<_> = ctx
+            .current_parent_kernel
+            .as_ref()
             .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
             .unwrap_or_default();
         polydat::kernel::format_scope_coordinate_path(&parent_coords)
@@ -3453,9 +3937,7 @@ async fn run_one_iteration(
     // `ctx.current_parent_kernel` (set above), no separate
     // HashMap parameter.
     let res = match terminal {
-        TerminalAction::Children(children) => {
-            execute_tree_at(ctx, children, depth).await
-        }
+        TerminalAction::Children(children) => execute_tree_at(ctx, children, depth).await,
         TerminalAction::Phase(name) => {
             // Depth gating: structural Phase scene node was
             // pushed by `dispatch_comprehension` before
@@ -3504,11 +3986,17 @@ async fn run_one_iteration(
     // errored or was unwound (a stop signal propagates as an
     // `Err` here).
     if let Some(writer) = ctx.checkpoint_writer.as_ref() {
-        let outcome = if !res.is_failure() { "completed" } else { "interrupted" };
+        let outcome = if !res.is_failure() {
+            "completed"
+        } else {
+            "interrupted"
+        };
         writer.emit_scope_exit(kind, enter_coords, enter_path, outcome);
     }
 
-    for _ in &step.bindings { ctx.pop_label(); }
+    for _ in &step.bindings {
+        ctx.pop_label();
+    }
     ctx.current_parent_kernel = prior_parent;
     res
 }
@@ -3530,9 +4018,7 @@ fn scope_event_coords(
     std::collections::BTreeMap<String, serde_json::Value>,
     Vec<std::collections::BTreeMap<String, serde_json::Value>>,
 ) {
-    let coords = coord_path.last()
-        .map(coord_to_btree)
-        .unwrap_or_default();
+    let coords = coord_path.last().map(coord_to_btree).unwrap_or_default();
     let path: Vec<_> = if coord_path.len() <= 1 {
         Vec::new()
     } else {
@@ -3549,7 +4035,9 @@ fn scope_event_coords(
 fn coord_to_btree(
     coord: &polydat::kernel::ScopeCoord,
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
-    coord.vars.iter()
+    coord
+        .vars
+        .iter()
         .map(|(k, v)| (k.clone(), v.to_json_value()))
         .collect()
 }
@@ -3602,8 +4090,9 @@ async fn run_phase(
     // recorded and routes it through the same visible surfaces as a
     // runtime failure.
     if outcome.is_failure() {
-        let recorded = crate::scene_tree::with_global(
-            |t| t.phase_outcome_present_at(scene_node_id)).unwrap_or(false);
+        let recorded =
+            crate::scene_tree::with_global(|t| t.phase_outcome_present_at(scene_node_id))
+                .unwrap_or(false);
         if !recorded {
             record_early_phase_failure(ctx, scene_node_id, phase_name, &outcome);
         }
@@ -3622,11 +4111,16 @@ fn record_early_phase_failure(
     phase_name: &str,
     outcome: &crate::phase_outcome::Outcome,
 ) {
-    let reason = outcome.reason.clone()
+    let reason = outcome
+        .reason
+        .clone()
         .unwrap_or_else(|| "phase configuration failed".to_string());
-    crate::diag!(crate::observer::LogLevel::Error,
-        "phase '{phase_name}': {reason} — failing phase (config)");
-    ctx.observer.phase_failed(scene_node_id, phase_name, "", &reason);
+    crate::diag!(
+        crate::observer::LogLevel::Error,
+        "phase '{phase_name}': {reason} — failing phase (config)"
+    );
+    ctx.observer
+        .phase_failed(scene_node_id, phase_name, "", &reason);
     let now_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -3646,12 +4140,11 @@ fn record_early_phase_failure(
         }],
     );
     if let Ok(mut guard) = ctx.sqlite_reporter.lock()
-        && let Some(reporter) = guard.as_mut() {
-            let row = phase_outcome.to_sqlite_row(
-                &ctx.session_id, ctx.exec_id, now_nanos as i64,
-            );
-            reporter.write_phase_outcome(&row);
-        }
+        && let Some(reporter) = guard.as_mut()
+    {
+        let row = phase_outcome.to_sqlite_row(&ctx.session_id, ctx.exec_id, now_nanos as i64);
+        reporter.write_phase_outcome(&row);
+    }
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_failed_at(scene_node_id, &reason);
         t.set_phase_outcome_at(scene_node_id, phase_outcome);
@@ -3661,17 +4154,17 @@ fn record_early_phase_failure(
         writer.phase_failed(&identity, &reason);
         let _ = writer.flush();
     }
-    if let Some((trip_outcome, trip_reason)) = ctx.workload_shell
-        .record_phase(true, 0, 0)
-    {
+    if let Some((trip_outcome, trip_reason)) = ctx.workload_shell.record_phase(true, 0, 0) {
         let cause = if trip_outcome.is_failure() {
             crate::session_signals::StopCause::Fault
         } else {
             crate::session_signals::StopCause::Interrupt
         };
         crate::session_signals::request_shell_stop(cause);
-        crate::diag!(crate::observer::LogLevel::Warn,
-            "scenario stop-on-error ({trip_reason}) after phase              '{phase_name}' — halting remaining walk");
+        crate::diag!(
+            crate::observer::LogLevel::Warn,
+            "scenario stop-on-error ({trip_reason}) after phase              '{phase_name}' — halting remaining walk"
+        );
     }
 }
 
@@ -3698,8 +4191,10 @@ async fn run_phase_inner(
         .unwrap_or(0);
     let phase = match ctx.phases.get(phase_name) {
         Some(p) => p.clone(),
-        None => return crate::phase_outcome::Outcome::failed()
-            .with_reason(format!("phase '{phase_name}' not found")),
+        None => {
+            return crate::phase_outcome::Outcome::failed()
+                .with_reason(format!("phase '{phase_name}' not found"));
+        }
     };
     let has_bindings = phase.ops.iter().any(|op| !op.bindings.is_empty());
 
@@ -3741,7 +4236,9 @@ async fn run_phase_inner(
                 }
             }
             for name in parent.program().input_names() {
-                if out.contains_key(&name) { continue; }
+                if out.contains_key(&name) {
+                    continue;
+                }
                 if let Some(v) = parent.lookup(&name) {
                     out.insert(name.clone(), v.to_display_string());
                 }
@@ -3758,10 +4255,11 @@ async fn run_phase_inner(
     // Demoted to Debug so default Info-level stderr stays
     // hierarchically-clean; `loglevel=debug` brings it back
     // for callers that want the visual section break.
-    crate::diag!(crate::observer::LogLevel::Debug, "=== phase: {phase_name} ===");
-    if is_iter
-        && let Some(parent) = ctx.current_parent_kernel.as_ref()
-    {
+    crate::diag!(
+        crate::observer::LogLevel::Debug,
+        "=== phase: {phase_name} ==="
+    );
+    if is_iter && let Some(parent) = ctx.current_parent_kernel.as_ref() {
         let prog = parent.program();
         for (var, val) in &iter_var_values {
             if !val.is_empty() && !prog.is_inherited(var) {
@@ -3794,9 +4292,11 @@ async fn run_phase_inner(
             // compares the FULL instance hash against the prior
             // outcome row, so it owns the skip decision here;
             // fall through to compile.
-            crate::diag!(crate::observer::LogLevel::Info,
+            crate::diag!(
+                crate::observer::LogLevel::Info,
                 "phase '{phase_name}' [checkpoint-resume skip deferred \
-                 to the refine hash gate]");
+                 to the refine hash gate]"
+            );
         }
         crate::checkpoint::ResumeAction::Skip => {
             // Surface the skip on the same observer + scene-tree
@@ -3807,22 +4307,26 @@ async fn run_phase_inner(
             // is left None on the writer's existing entry; the
             // saved hash and duration from the prior run are
             // preserved verbatim.
-            crate::diag!(crate::observer::LogLevel::Info,
-                "phase '{phase_name}' [skipped — checkpoint resume]");
+            crate::diag!(
+                crate::observer::LogLevel::Info,
+                "phase '{phase_name}' [skipped — checkpoint resume]"
+            );
             crate::scene_tree::with_global_mut(|t| {
                 t.set_phase_running_at(scene_node_id, 0);
                 t.set_phase_completed_at(scene_node_id, 0.0);
             });
-            ctx.observer.phase_starting(scene_node_id, phase_name, &early_phase_labels, 0, 0, 0);
-            ctx.observer.phase_completed(scene_node_id, phase_name, &early_phase_labels, 0.0);
-            crate::phase_end_triggers::fire_phase_completed(
-                phase_name, &early_phase_labels, 0.0,
-            );
+            ctx.observer
+                .phase_starting(scene_node_id, phase_name, &early_phase_labels, 0, 0, 0);
+            ctx.observer
+                .phase_completed(scene_node_id, phase_name, &early_phase_labels, 0.0);
+            crate::phase_end_triggers::fire_phase_completed(phase_name, &early_phase_labels, 0.0);
             return crate::phase_outcome::Outcome::skipped();
         }
         crate::checkpoint::ResumeAction::IdentityMismatch { reason } => {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "phase '{phase_name}' [resume: {reason} — re-running]");
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "phase '{phase_name}' [resume: {reason} — re-running]"
+            );
         }
         crate::checkpoint::ResumeAction::CursorResume { .. } => {
             // Tier 2: source-factory restore_cursor wiring lands
@@ -3830,9 +4334,11 @@ async fn run_phase_inner(
             // the action and fall through to a clean ReRun so
             // the run continues correctly even though it pays
             // the duplicate-work cost.
-            crate::diag!(crate::observer::LogLevel::Info,
+            crate::diag!(
+                crate::observer::LogLevel::Info,
                 "phase '{phase_name}' [resume: cursor-state available — \
-                 Tier 2 restore not yet wired, re-running from scratch]");
+                 Tier 2 restore not yet wired, re-running from scratch]"
+            );
         }
         crate::checkpoint::ResumeAction::ReRun => {}
     }
@@ -3847,8 +4353,7 @@ async fn run_phase_inner(
     // the Skipped outcome for replay, and the walk moves on. Gates
     // are evaluated on per-iteration hydrations of the ops' installed
     // template kernels — the same programs the fibers would use.
-    if crate::observer::skipped_phase_display()
-        == crate::observer::SkippedPhaseDisplay::Prune
+    if crate::observer::skipped_phase_display() == crate::observer::SkippedPhaseDisplay::Prune
         && let Some(phase_def) = ctx.phases.get(phase_name)
         && !phase_def.ops.is_empty()
         && phase_def.ops.iter().all(|op| op.condition.is_some())
@@ -3858,29 +4363,39 @@ async fn run_phase_inner(
         // phase arm doesn't descend the cursor); resolve this phase's own
         // scope node among its children by name. Ambiguity (same-named
         // sibling phases) falls through to a normal run.
-        let phase_nodes: Vec<crate::scope_tree::ScopeNodeIdx> =
-            ctx.scope_tree.nodes[ctx.current_scope_idx].children.iter()
-                .copied()
-                .filter(|c| matches!(&ctx.scope_tree.nodes[*c].kind,
-                    crate::scope_tree::ScopeKind::Phase { name } if name == phase_name))
-                .collect();
+        let phase_nodes: Vec<crate::scope_tree::ScopeNodeIdx> = ctx.scope_tree.nodes
+            [ctx.current_scope_idx]
+            .children
+            .iter()
+            .copied()
+            .filter(|c| {
+                matches!(&ctx.scope_tree.nodes[*c].kind,
+                    crate::scope_tree::ScopeKind::Phase { name } if name == phase_name)
+            })
+            .collect();
         let mut all_false = phase_nodes.len() == 1;
         let mut gates_checked = 0usize;
-        let op_children: Vec<crate::scope_tree::ScopeNodeIdx> = phase_nodes.first()
+        let op_children: Vec<crate::scope_tree::ScopeNodeIdx> = phase_nodes
+            .first()
             .map(|p| ctx.scope_tree.nodes[*p].children.clone())
             .unwrap_or_default();
         for child in &op_children {
             let node = &ctx.scope_tree.nodes[*child];
-            let crate::scope_tree::ScopeKind::OpTemplate { name } = &node.kind else { continue };
-            let Some(op) = phase_def.ops.iter().find(|o| o.name == *name) else { continue };
-            let Some(cond) = op.condition.as_ref() else { continue };
+            let crate::scope_tree::ScopeKind::OpTemplate { name } = &node.kind else {
+                continue;
+            };
+            let Some(op) = phase_def.ops.iter().find(|o| o.name == *name) else {
+                continue;
+            };
+            let Some(cond) = op.condition.as_ref() else {
+                continue;
+            };
             let cond_name = cond.trim().trim_start_matches('{').trim_end_matches('}');
             let Some(installed) = node.cached_kernel.get() else {
                 all_false = false; // no kernel to consult — don't guess
                 break;
             };
-            let gate_kernel = polydat::kernel::PolydatKernel::for_iteration(
-                installed, parent, &[]);
+            let gate_kernel = polydat::kernel::PolydatKernel::for_iteration(installed, parent, &[]);
             // `for_iteration` returns a fresh kernel; this Arc holds the
             // only reference, so the unwrap is structural. Fall through
             // to a normal run rather than guess if that ever changes.
@@ -3909,9 +4424,11 @@ async fn run_phase_inner(
             all_false = false;
         }
         if all_false {
-            crate::diag!(crate::observer::LogLevel::Debug,
+            crate::diag!(
+                crate::observer::LogLevel::Debug,
                 "phase '{phase_name}' [pruned — every op gate false at entry \
-                 (skipped_phases=prune)]");
+                 (skipped_phases=prune)]"
+            );
             crate::scene_tree::with_global_mut(|t| {
                 t.set_phase_completed_at(scene_node_id, 0.0);
             });
@@ -3935,10 +4452,17 @@ async fn run_phase_inner(
     }
 
     // --- Compile inner kernel via BindingScope ---
-    let (iter_op_builder, iter_ops, runtime_cursor_extents,
-         runtime_cursor_min_ms, runtime_cursor_min_passes,
-         runtime_cursor_min_count, runtime_cursor_delta,
-         runtime_cursor_partition, activation_scope) = if is_iter || has_bindings {
+    let (
+        iter_op_builder,
+        iter_ops,
+        runtime_cursor_extents,
+        runtime_cursor_min_ms,
+        runtime_cursor_min_passes,
+        runtime_cursor_min_count,
+        runtime_cursor_delta,
+        runtime_cursor_partition,
+        activation_scope,
+    ) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
 
         // SRD-16 single read path: every `{name}` placeholder
@@ -3954,10 +4478,12 @@ async fn run_phase_inner(
         // surfaced to the operator.
         let parent_kernel = match ctx.current_parent_kernel.as_ref() {
             Some(k) => k,
-            None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                "phase '{phase_name}': no current_parent_kernel — \
+            None => {
+                return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                    "phase '{phase_name}': no current_parent_kernel — \
                  single-resolution-path requires the populated parent kernel",
-            )),
+                ));
+            }
         };
         // SRD-68 Push 5c-cleanup: NO mutation of the workload
         // model. Op fields stay pristine (the dispenser handles
@@ -3983,12 +4509,15 @@ async fn run_phase_inner(
         // kernel; validating against the workload root would
         // wrongly reject any op-field reference to a phase
         // binding.
-        let validation_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
+        let validation_kernel = ctx
+            .scope_tree
+            .phase_node_by_name(phase_name)
             .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
             .map(|k| k.as_ref())
             .unwrap_or(parent_kernel);
         if let Err(e) = crate::scope::validate_placeholders_via_kernel(&ops, validation_kernel)
-            .map_err(|e| format!("phase '{phase_name}': {e}")) {
+            .map_err(|e| format!("phase '{phase_name}': {e}"))
+        {
             return crate::phase_outcome::Outcome::failed().with_reason(e);
         }
 
@@ -4032,10 +4561,12 @@ async fn run_phase_inner(
         // fires; the legacy `outer_manifest` fallback is gone.
         let parent_kernel = match ctx.current_parent_kernel.as_ref() {
             Some(k) => k,
-            None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                "phase '{phase_name}': no current_parent_kernel — \
+            None => {
+                return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                    "phase '{phase_name}': no current_parent_kernel — \
                  workload root install missed at session start (internal bug)."
-            )),
+                ));
+            }
         };
         // SRD-13f §"Wire-reference classification" — for case-3
         // local-inclusion the synthesizer needs the phase scope
@@ -4043,7 +4574,8 @@ async fn run_phase_inner(
         // was installed; otherwise the immediate runtime parent
         // (current_parent_kernel) is the right resolver. Same
         // lookup pattern as the placeholder validator above.
-        let classifier_kernel: &polydat::kernel::PolydatKernel = ctx.scope_tree
+        let classifier_kernel: &polydat::kernel::PolydatKernel = ctx
+            .scope_tree
             .phase_node_by_name(phase_name)
             .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
             .map(|k| k.as_ref())
@@ -4075,12 +4607,16 @@ async fn run_phase_inner(
         let polydat_context = if iter_var_values.is_empty() {
             format!("phase '{phase_name}'")
         } else {
-            let vars: Vec<String> = iter_var_values.iter()
+            let vars: Vec<String> = iter_var_values
+                .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect();
             format!("phase '{phase_name}' ({})", vars.join(", "))
         };
-        if let Err(e) = scope.validate().map_err(|e| format!("{polydat_context}: {e}")) {
+        if let Err(e) = scope
+            .validate()
+            .map_err(|e| format!("{polydat_context}: {e}"))
+        {
             return crate::phase_outcome::Outcome::failed().with_reason(e);
         }
 
@@ -4096,8 +4632,7 @@ async fn run_phase_inner(
         // `PolydatKernel` ready for outer-scope and iteration-variable
         // extern injection — but only the first call pays the
         // compile cost.
-        let cursor_limit: Option<u64> = ctx.merged_params.get("limit")
-            .and_then(|s| s.parse().ok());
+        let cursor_limit: Option<u64> = ctx.merged_params.get("limit").and_then(|s| s.parse().ok());
         let phase_idx = ctx.scope_tree.phase_node_by_name(phase_name);
         let phase_pragmas = phase_idx
             .map(|idx| ctx.scope_tree.nodes[idx].pragmas.clone())
@@ -4130,7 +4665,9 @@ async fn run_phase_inner(
                     &polydat_context,
                     cursor_limit,
                     &phase_pragmas,
-                ).map_err(|e| format!("{polydat_context}: {e}")) {
+                )
+                .map_err(|e| format!("{polydat_context}: {e}"))
+                {
                     Ok(v) => v,
                     Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
                 };
@@ -4150,7 +4687,9 @@ async fn run_phase_inner(
                 &polydat_context,
                 cursor_limit,
                 &phase_pragmas,
-            ).map_err(|e| format!("{polydat_context}: {e}")) {
+            )
+            .map_err(|e| format!("{polydat_context}: {e}"))
+            {
                 Ok(v) => v,
                 Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
             }
@@ -4162,9 +4701,14 @@ async fn run_phase_inner(
         // parent scope's per-branch kernel via standard GK
         // chain composition. Single call, single source of
         // values — SRD-16 §"Visibility Rules".
-        let mut kernel = parent_kernel.build_subscope(
-            polydat::kernel::subcontext::PolydatMatter::builder().program(phase_program).build().unwrap(),
-        ).expect("program-form subscope is infallible");
+        let mut kernel = parent_kernel
+            .build_subscope(
+                polydat::kernel::subcontext::PolydatMatter::builder()
+                    .program(phase_program)
+                    .build()
+                    .unwrap(),
+            )
+            .expect("program-form subscope is infallible");
 
         // ─── Plan B: Init-Binding Contract (scope-activation) ─────
         //
@@ -4181,8 +4725,12 @@ async fn run_phase_inner(
         // violations at compile time; Plan B catches runtime
         // failures (eval panic via catch_unwind, fatal Value::None
         // returns, missing output_map entry).
-        let const_outputs: Vec<String> = kernel.program().const_outputs()
-            .iter().map(|s| s.to_string()).collect();
+        let const_outputs: Vec<String> = kernel
+            .program()
+            .const_outputs()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         for init_name in &const_outputs {
             // catch_unwind so a panicking eval becomes a clean error,
             // not a fiber-pool poisoning panic. Nodes that do blocking
@@ -4243,10 +4791,16 @@ async fn run_phase_inner(
         // populated. Same panic/None handling as init bindings —
         // a `final` whose runtime eval fails is just as much a
         // contract violation as an `init` that does.
-        let const_outputs: Vec<String> = kernel.program().const_outputs()
-            .iter().map(|s| s.to_string()).collect();
+        let const_outputs: Vec<String> = kernel
+            .program()
+            .const_outputs()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         for final_name in &const_outputs {
-            if kernel.get_constant(final_name).is_some() { continue; }
+            if kernel.get_constant(final_name).is_some() {
+                continue;
+            }
             let pull_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 kernel.pull(final_name).clone()
             }));
@@ -4286,36 +4840,47 @@ async fn run_phase_inner(
         // param.
         if !ctx.phase_param_overrides.is_empty() {
             let chosen = match crate::phase_params::resolve_for_phase(
-                &ctx.phase_param_overrides, phase_name,
-            ).map_err(|e| format!("{polydat_context}: {e}")) {
+                &ctx.phase_param_overrides,
+                phase_name,
+            )
+            .map_err(|e| format!("{polydat_context}: {e}"))
+            {
                 Ok(v) => v,
                 Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
             };
             for (ov, _dialect) in chosen {
                 use polydat::kernel::{Dataflow, WriteError};
-                match kernel.set_wire(
-                    &ov.param,
-                    polydat::ast::Value::Str(ov.value.clone().into()),
-                ) {
+                match kernel.set_wire(&ov.param, polydat::ast::Value::Str(ov.value.clone().into()))
+                {
                     Ok(()) => {
-                        crate::diag!(crate::observer::LogLevel::Info,
+                        crate::diag!(
+                            crate::observer::LogLevel::Info,
                             "phase '{phase_name}': param `{}` overridden to `{}` \
                              (CLI `{}.{}=`)",
-                            ov.param, ov.value, ov.pattern.source(), ov.param);
+                            ov.param,
+                            ov.value,
+                            ov.pattern.source(),
+                            ov.param
+                        );
                     }
                     Err(WriteError::UnknownWire { .. }) => {
                         if ov.pattern.is_exact_literal() {
-                            crate::diag!(crate::observer::LogLevel::Warn,
+                            crate::diag!(
+                                crate::observer::LogLevel::Warn,
                                 "phase '{phase_name}': override `{}.{}=` names a \
                                  param this phase does not consume — no wire \
                                  named `{}` in its scope",
-                                ov.pattern.source(), ov.param, ov.param);
+                                ov.pattern.source(),
+                                ov.param,
+                                ov.param
+                            );
                         }
                     }
                     Err(e) => {
                         return crate::phase_outcome::Outcome::failed().with_reason(format!(
                             "{polydat_context}: phase-scoped override `{}.{}=`: {e}",
-                            ov.pattern.source(), ov.param,
+                            ov.pattern.source(),
+                            ov.param,
                         ));
                     }
                 }
@@ -4352,13 +4917,19 @@ async fn run_phase_inner(
             polydat::iteration::source::CursorKind,
             Option<String>,
         );
-        let cursor_specs: Vec<CursorSpec>
-            = kernel.program()
+        let cursor_specs: Vec<CursorSpec> = kernel
+            .program()
             .cursor_schemas()
             .iter()
-            .map(|s| (s.name.clone(), s.extent_outputs.clone(),
-                      s.extent_limit, s.cursor_kind.clone(),
-                      s.partition_output.clone()))
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.extent_outputs.clone(),
+                    s.extent_limit,
+                    s.cursor_kind.clone(),
+                    s.partition_output.clone(),
+                )
+            })
             .collect();
         for (name, outputs, limit, cursor_kind, partition_output) in cursor_specs {
             if let Some((start_out, end_out)) = outputs {
@@ -4374,17 +4945,15 @@ async fn run_phase_inner(
             // value flowing through Value::Ext.
             if let Some(out) = &partition_output {
                 let value = kernel.pull(out).clone();
-                let cursor_extent = runtime_extents
-                    .get(&name)
-                    .copied()
-                    .unwrap_or_else(|| {
-                        kernel.program()
-                            .cursor_schemas()
-                            .iter()
-                            .find(|s| s.name == name)
-                            .and_then(|s| s.extent)
-                            .unwrap_or(0)
-                    });
+                let cursor_extent = runtime_extents.get(&name).copied().unwrap_or_else(|| {
+                    kernel
+                        .program()
+                        .cursor_schemas()
+                        .iter()
+                        .find(|s| s.name == name)
+                        .and_then(|s| s.extent)
+                        .unwrap_or(0)
+                });
                 // Writes one of the `<source>__cursor*` slots by
                 // name; looking the slots up by name is the
                 // contract from process_cursor.
@@ -4395,17 +4964,14 @@ async fn run_phase_inner(
                     }
                 };
                 use polydat::ast::Value as PValue;
-                let open_extent = !matches!(
-                    cursor_kind, polydat::iteration::source::CursorKind::Range,
-                );
+                let open_extent =
+                    !matches!(cursor_kind, polydat::iteration::source::CursorKind::Range,);
                 match resolve_over(&value, cursor_extent, open_extent) {
                     Ok(Some(partition)) => {
                         // Narrow the source factory's range using
                         // the partition's bounds.
-                        runtime_partition.insert(
-                            name.clone(),
-                            (partition.start_ord, partition.end_ord),
-                        );
+                        runtime_partition
+                            .insert(name.clone(), (partition.start_ord, partition.end_ord));
                         // Write the resolved Partition into the
                         // `<source>__cursor` input slot so downstream
                         // partition-typed nodes (mod_in, cardinality,
@@ -4429,10 +4995,14 @@ async fn run_phase_inner(
                         // Routed through the canonical observer
                         // channel: session.log + stderr + sink.
                         if partition.count > 1 {
-                            crate::diag!(crate::observer::LogLevel::Info,
+                            crate::diag!(
+                                crate::observer::LogLevel::Info,
                                 "phase '{phase_name}': partition {}/{} [{}..{})",
-                                partition.idx + 1, partition.count,
-                                partition.start_ord, partition.end_ord);
+                                partition.idx + 1,
+                                partition.count,
+                                partition.start_ord,
+                                partition.end_ord
+                            );
                         }
                         write_slot("", PValue::from_partition(partition));
                     }
@@ -4459,28 +5029,47 @@ async fn run_phase_inner(
             // extension step.
             match &cursor_kind {
                 Range => {}
-                ExtendingTimed { min_ms_output, delta_output } => {
+                ExtendingTimed {
+                    min_ms_output,
+                    delta_output,
+                } => {
                     runtime_min_ms.insert(name.clone(), kernel.pull(min_ms_output).as_u64());
                     if let Some(d) = delta_output {
                         runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
                     }
                 }
-                ExtendingPasses { min_passes_output, delta_output } => {
-                    runtime_min_passes.insert(name.clone(), kernel.pull(min_passes_output).as_u64());
+                ExtendingPasses {
+                    min_passes_output,
+                    delta_output,
+                } => {
+                    runtime_min_passes
+                        .insert(name.clone(), kernel.pull(min_passes_output).as_u64());
                     if let Some(d) = delta_output {
                         runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
                     }
                 }
-                ExtendingCount { min_count_output, delta_output } => {
+                ExtendingCount {
+                    min_count_output,
+                    delta_output,
+                } => {
                     runtime_min_count.insert(name.clone(), kernel.pull(min_count_output).as_u64());
                     if let Some(d) = delta_output {
                         runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
                     }
                 }
-                ExtendingElapsedAndPasses { min_ms_output, min_passes_output, delta_output }
-                | ExtendingElapsedOrPasses { min_ms_output, min_passes_output, delta_output } => {
+                ExtendingElapsedAndPasses {
+                    min_ms_output,
+                    min_passes_output,
+                    delta_output,
+                }
+                | ExtendingElapsedOrPasses {
+                    min_ms_output,
+                    min_passes_output,
+                    delta_output,
+                } => {
                     runtime_min_ms.insert(name.clone(), kernel.pull(min_ms_output).as_u64());
-                    runtime_min_passes.insert(name.clone(), kernel.pull(min_passes_output).as_u64());
+                    runtime_min_passes
+                        .insert(name.clone(), kernel.pull(min_passes_output).as_u64());
                     if let Some(d) = delta_output {
                         runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
                     }
@@ -4524,20 +5113,35 @@ async fn run_phase_inner(
             }
             Arc::new(b)
         };
-        (op_builder, ops, runtime_extents, runtime_min_ms,
-         runtime_min_passes, runtime_min_count, runtime_delta,
-         runtime_partition, activation_scope)
+        (
+            op_builder,
+            ops,
+            runtime_extents,
+            runtime_min_ms,
+            runtime_min_passes,
+            runtime_min_count,
+            runtime_delta,
+            runtime_partition,
+            activation_scope,
+        )
     } else {
         // Workload-kernel fallback: no per-iteration values to
         // inject. Materialize a fresh subscope of the live
         // parent kernel using the workload program — the only
         // sanctioned construction path. Cells flow forward via
         // the cascade.
-        let parent = ctx.current_parent_kernel.as_ref()
+        let parent = ctx
+            .current_parent_kernel
+            .as_ref()
             .expect("workload-kernel fallback requires an installed parent kernel");
-        let workload_subscope = parent.build_subscope(
-            polydat::kernel::subcontext::PolydatMatter::builder().program(ctx.program.clone()).build().unwrap(),
-        ).expect("program-form subscope is infallible");
+        let workload_subscope = parent
+            .build_subscope(
+                polydat::kernel::subcontext::PolydatMatter::builder()
+                    .program(ctx.program.clone())
+                    .build()
+                    .unwrap(),
+            )
+            .expect("program-form subscope is infallible");
         // Same stop-condition scope hold as the per-iteration branch.
         let activation_scope = Arc::new(workload_subscope.cell_scope_snapshot());
         let mut b = OpBuilder::new(workload_subscope);
@@ -4547,14 +5151,25 @@ async fn run_phase_inner(
                 b = b.with_op_template_programs(map);
             }
         }
-        (Arc::new(b), phase.ops.clone(), HashMap::new(), HashMap::new(),
-         HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(),
-         activation_scope)
+        (
+            Arc::new(b),
+            phase.ops.clone(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            activation_scope,
+        )
     };
 
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);
     if op_sequence.stanza_length() == 0 {
-        crate::diag!(crate::observer::LogLevel::Warn, "warning: phase '{phase_name}' has no ops, skipping");
+        crate::diag!(
+            crate::observer::LogLevel::Warn,
+            "warning: phase '{phase_name}' has no ops, skipping"
+        );
         return crate::phase_outcome::Outcome::skipped();
     }
 
@@ -4562,7 +5177,10 @@ async fn run_phase_inner(
     let stanza_len = op_sequence.stanza_length() as u64;
     let spec = phase.cycles.as_deref().unwrap_or("");
     let phase_cycles = if spec == "==auto" {
-        crate::diag!(crate::observer::LogLevel::Debug, "  cycles: auto ({stanza_len} ops = {stanza_len} cycles)");
+        crate::diag!(
+            crate::observer::LogLevel::Debug,
+            "  cycles: auto ({stanza_len} ops = {stanza_len} cycles)"
+        );
         stanza_len
     } else if spec == "===auto" || spec.is_empty() {
         stanza_len
@@ -4576,13 +5194,16 @@ async fn run_phase_inner(
         // payload is the resolved op count, parsed as either
         // a plain integer or a `{polydat_expr}` const expression.
         let mut expanded = rest.to_string();
-        for (v, val) in &iter_var_values { expanded = expanded.replace(&format!("{{{v}}}"), val); }
+        for (v, val) in &iter_var_values {
+            expanded = expanded.replace(&format!("{{{v}}}"), val);
+        }
         expanded = crate::runner::expand_workload_params(&expanded, &ctx.workload_params);
         crate::runner::parse_count(&expanded)
             .or_else(|| {
                 if expanded.starts_with('{') && expanded.ends_with('}') {
-                    let inner = &expanded[1..expanded.len()-1];
-                    polydat::dsl::compile::eval_const_expr(inner).ok()
+                    let inner = &expanded[1..expanded.len() - 1];
+                    polydat::dsl::compile::eval_const_expr(inner)
+                        .ok()
                         .map(|v| v.as_u64())
                 } else {
                     None
@@ -4592,13 +5213,16 @@ async fn run_phase_inner(
     } else {
         // Try resolving from kernel
         let mut expanded = spec.to_string();
-        for (v, val) in &iter_var_values { expanded = expanded.replace(&format!("{{{v}}}"), val); }
+        for (v, val) in &iter_var_values {
+            expanded = expanded.replace(&format!("{{{v}}}"), val);
+        }
         expanded = crate::runner::expand_workload_params(&expanded, &ctx.workload_params);
         let stanzas = crate::runner::parse_count(&expanded)
             .or_else(|| {
                 if expanded.starts_with('{') && expanded.ends_with('}') {
-                    let inner = &expanded[1..expanded.len()-1];
-                    polydat::dsl::compile::eval_const_expr(inner).ok()
+                    let inner = &expanded[1..expanded.len() - 1];
+                    polydat::dsl::compile::eval_const_expr(inner)
+                        .ok()
                         .map(|v| v.as_u64())
                 } else {
                     None
@@ -4611,10 +5235,14 @@ async fn run_phase_inner(
     // Diagnostic output — value-provenance / wiring view.
     if ctx.diag.show_wiring {
         let note = if is_iter {
-            let pairs: Vec<String> = iter_var_values.iter()
-                .map(|(k, v)| format!("{k}={v}")).collect();
+            let pairs: Vec<String> = iter_var_values
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
             format!(" ({})", pairs.join(", "))
-        } else { String::new() };
+        } else {
+            String::new()
+        };
         crate::describe::print_wiring_analysis(phase_name, &note, &iter_op_builder.program());
     }
     // NOTE: the depth==Phase early-return used to live here, but
@@ -4638,18 +5266,25 @@ async fn run_phase_inner(
     let phase_concurrency = match phase.concurrency.as_ref() {
         Some(s) => {
             let mut exp = crate::runner::expand_workload_params(s, &ctx.workload_params);
-            for (v, val) in &iter_var_values { exp = exp.replace(&format!("{{{v}}}"), val); }
+            for (v, val) in &iter_var_values {
+                exp = exp.replace(&format!("{{{v}}}"), val);
+            }
             let parsed = exp.parse::<usize>().ok().or_else(|| {
                 let bare = exp.trim();
-                iter_var_values.get(bare).cloned()
-                    .or_else(|| ctx.current_parent_kernel.as_ref()
-                        .and_then(|k| k.lookup(bare))
-                        .map(|v| match v {
-                            polydat::ast::Value::U64(n) => n.to_string(),
-                            polydat::ast::Value::F64(f) => (f as u64).to_string(),
-                            polydat::ast::Value::Str(s) => s.to_string(),
-                            other => other.to_display_string(),
-                        }))
+                iter_var_values
+                    .get(bare)
+                    .cloned()
+                    .or_else(|| {
+                        ctx.current_parent_kernel
+                            .as_ref()
+                            .and_then(|k| k.lookup(bare))
+                            .map(|v| match v {
+                                polydat::ast::Value::U64(n) => n.to_string(),
+                                polydat::ast::Value::F64(f) => (f as u64).to_string(),
+                                polydat::ast::Value::Str(s) => s.to_string(),
+                                other => other.to_display_string(),
+                            })
+                    })
                     .or_else(|| ctx.workload_params.get(bare).cloned())
                     .and_then(|resolved| resolved.trim().parse::<usize>().ok())
             });
@@ -4658,10 +5293,13 @@ async fn run_phase_inner(
                 // No `phase 'X':` prefix here — the recording
                 // chokepoint and the runner's final error line each
                 // add phase context; embedding it doubles it.
-                None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                    "concurrency '{exp}' is neither an integer nor a resolvable \
+                None => {
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                        "concurrency '{exp}' is neither an integer nor a resolvable \
                      name (checked iteration variables, the parent scope, and \
-                     workload params)")),
+                     workload params)"
+                    ));
+                }
             }
         }
         None => ctx.concurrency,
@@ -4703,13 +5341,18 @@ async fn run_phase_inner(
     // strata are stable across an entire scope iteration and
     // are visible via the TUI's tree / pre-map plan.
     let activity_name = {
-        let leaf_label = ctx.current_parent_kernel.as_ref()
+        let leaf_label = ctx
+            .current_parent_kernel
+            .as_ref()
             .and_then(|k| k.scope_coordinates().first())
             .filter(|c| !c.is_empty())
-            .map(|c| c.vars.iter()
-                .map(|(k, v)| format!("{k}={}", v.to_display_string()))
-                .collect::<Vec<_>>()
-                .join(", "))
+            .map(|c| {
+                c.vars
+                    .iter()
+                    .map(|(k, v)| format!("{k}={}", v.to_display_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
         if leaf_label.is_empty() {
             phase_name.to_string()
@@ -4730,7 +5373,9 @@ async fn run_phase_inner(
             // compile-time extent — the latter is None when the
             // cursor's `range(...)` bounds depend on wire-bound
             // externs like `vector_count("{dataset}:{profile}")`.
-            let extent = runtime_cursor_extents.get(&schema.name).copied()
+            let extent = runtime_cursor_extents
+                .get(&schema.name)
+                .copied()
                 .or(schema.extent)
                 .unwrap_or(phase_cycles);
             // SRD 71: narrow `[0, extent)` to `[start_ord, end_ord)`
@@ -4754,76 +5399,108 @@ async fn run_phase_inner(
             // Effective extension delta — `runtime_cursor_delta`
             // when the workload supplied an explicit `delta` arg,
             // else the (possibly clamped) base chunk.
-            let delta = runtime_cursor_delta.get(&schema.name).copied()
+            let delta = runtime_cursor_delta
+                .get(&schema.name)
+                .copied()
                 .unwrap_or(chunk);
             // Apply the partition cap to an extending factory.
             let bound = |f: src::ExtendingRangeSourceFactory| {
                 if partitioned { f.bounded(range_end) } else { f }
             };
             match &schema.cursor_kind {
-                src::CursorKind::Range => {
-                    Some(Arc::new(
-                        src::RangeSourceFactory::named(&schema.name, range_start, range_end)
-                    ) as Arc<dyn src::DataSourceFactory>)
-                }
+                src::CursorKind::Range => Some(Arc::new(src::RangeSourceFactory::named(
+                    &schema.name,
+                    range_start,
+                    range_end,
+                ))
+                    as Arc<dyn src::DataSourceFactory>),
                 src::CursorKind::ExtendingTimed { .. } => {
-                    let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
-                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilElapsedPolicy { min_ms, delta },
-                    );
-                    Some(Arc::new(bound(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
-                    )) as Arc<dyn src::DataSourceFactory>)
+                    let min_ms = runtime_cursor_min_ms
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let policy: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilElapsedPolicy { min_ms, delta });
+                    Some(Arc::new(bound(src::ExtendingRangeSourceFactory::new(
+                        &schema.name,
+                        range_start,
+                        chunk,
+                        policy,
+                    ))) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingPasses { .. } => {
-                    let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
-                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilPassesPolicy { min_passes, delta },
-                    );
-                    Some(Arc::new(bound(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
-                    )) as Arc<dyn src::DataSourceFactory>)
+                    let min_passes = runtime_cursor_min_passes
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let policy: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilPassesPolicy { min_passes, delta });
+                    Some(Arc::new(bound(src::ExtendingRangeSourceFactory::new(
+                        &schema.name,
+                        range_start,
+                        chunk,
+                        policy,
+                    ))) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingCount { .. } => {
-                    let min_count = runtime_cursor_min_count.get(&schema.name).copied().unwrap_or(0);
-                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilCountPolicy { min_count, delta },
-                    );
-                    Some(Arc::new(bound(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
-                    )) as Arc<dyn src::DataSourceFactory>)
+                    let min_count = runtime_cursor_min_count
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let policy: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilCountPolicy { min_count, delta });
+                    Some(Arc::new(bound(src::ExtendingRangeSourceFactory::new(
+                        &schema.name,
+                        range_start,
+                        chunk,
+                        policy,
+                    ))) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingElapsedAndPasses { .. } => {
-                    let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
-                    let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
-                    let elapsed: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilElapsedPolicy { min_ms, delta },
-                    );
-                    let passes: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilPassesPolicy { min_passes, delta },
-                    );
-                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::AndPolicy { policies: vec![elapsed, passes] },
-                    );
-                    Some(Arc::new(bound(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
-                    )) as Arc<dyn src::DataSourceFactory>)
+                    let min_ms = runtime_cursor_min_ms
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let min_passes = runtime_cursor_min_passes
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let elapsed: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilElapsedPolicy { min_ms, delta });
+                    let passes: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilPassesPolicy { min_passes, delta });
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(src::AndPolicy {
+                        policies: vec![elapsed, passes],
+                    });
+                    Some(Arc::new(bound(src::ExtendingRangeSourceFactory::new(
+                        &schema.name,
+                        range_start,
+                        chunk,
+                        policy,
+                    ))) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingElapsedOrPasses { .. } => {
-                    let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
-                    let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
-                    let elapsed: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilElapsedPolicy { min_ms, delta },
-                    );
-                    let passes: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::UntilPassesPolicy { min_passes, delta },
-                    );
-                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
-                        src::OrPolicy { policies: vec![elapsed, passes] },
-                    );
-                    Some(Arc::new(bound(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
-                    )) as Arc<dyn src::DataSourceFactory>)
+                    let min_ms = runtime_cursor_min_ms
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let min_passes = runtime_cursor_min_passes
+                        .get(&schema.name)
+                        .copied()
+                        .unwrap_or(0);
+                    let elapsed: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilElapsedPolicy { min_ms, delta });
+                    let passes: Arc<dyn src::ExtensionPolicy> =
+                        Arc::new(src::UntilPassesPolicy { min_passes, delta });
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(src::OrPolicy {
+                        policies: vec![elapsed, passes],
+                    });
+                    Some(Arc::new(bound(src::ExtendingRangeSourceFactory::new(
+                        &schema.name,
+                        range_start,
+                        chunk,
+                        policy,
+                    ))) as Arc<dyn src::DataSourceFactory>)
                 }
             }
         } else {
@@ -4832,10 +5509,12 @@ async fn run_phase_inner(
     };
 
     // Capture progress info before source_factory is moved into config
-    let progress_extent = source_factory.as_ref()
+    let progress_extent = source_factory
+        .as_ref()
         .and_then(|f| f.global_extent())
         .unwrap_or(phase_cycles);
-    let progress_cursor_name = source_factory.as_ref()
+    let progress_cursor_name = source_factory
+        .as_ref()
         .map(|f| f.schema().name.clone())
         .unwrap_or_else(|| "cycles".into());
     let progress_fibers = phase_concurrency;
@@ -4853,7 +5532,10 @@ async fn run_phase_inner(
         factory: &Option<Arc<dyn polydat::iteration::source::DataSourceFactory>>,
         fallback: u64,
     ) -> u64 {
-        factory.as_ref().and_then(|f| f.global_extent()).unwrap_or(fallback)
+        factory
+            .as_ref()
+            .and_then(|f| f.global_extent())
+            .unwrap_or(fallback)
     }
 
     // Row-level cursor progress for a DATA-DRIVEN phase — returns
@@ -4890,17 +5572,20 @@ async fn run_phase_inner(
     // common case for `cursor q = range(0, N)` with `N`
     // divisible by stanza_len.
     let stanza_len_u64 = stanza_len as u64;
-    if stanza_len_u64 > 0 && progress_extent > 0 && !progress_extent.is_multiple_of(stanza_len_u64) {
+    if stanza_len_u64 > 0 && progress_extent > 0 && !progress_extent.is_multiple_of(stanza_len_u64)
+    {
         let remainder = progress_extent % stanza_len_u64;
         let full_stanzas = progress_extent / stanza_len_u64;
-        crate::diag!(crate::observer::LogLevel::Warn,
+        crate::diag!(
+            crate::observer::LogLevel::Warn,
             "phase '{phase_name}': cursor extent ({progress_extent}) is not an \
              even multiple of stanza length ({stanza_len_u64}) — boundary stanza \
              will be {remainder}/{stanza_len_u64} of a full stride after \
              {full_stanzas} clean stanza(s). If the op-sequence assumes \
              complete stanzas (e.g. for relevancy or aggregation evaluation), \
              align by sizing the cursor to a multiple of {stanza_len_u64}, or \
-             by adjusting stanza_concurrency / ops.");
+             by adjusting stanza_concurrency / ops."
+        );
     }
 
     // Now that the source factory and its global extent are
@@ -4921,8 +5606,14 @@ async fn run_phase_inner(
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_running_at(scene_node_id, stanza_len);
     });
-    ctx.observer.phase_starting(scene_node_id, phase_name, &phase_labels,
-        stanza_len, progress_extent, phase_concurrency);
+    ctx.observer.phase_starting(
+        scene_node_id,
+        phase_name,
+        &phase_labels,
+        stanza_len,
+        progress_extent,
+        phase_concurrency,
+    );
 
     // Fire `EventType::PhaseStart` once per phase. No built-in
     // default body — `phase_outcome` already renders the
@@ -4933,7 +5624,9 @@ async fn run_phase_inner(
     // explicitly.
     {
         let display_labels: String = {
-            let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+            let parent_coords: Vec<_> = ctx
+                .current_parent_kernel
+                .as_ref()
                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
                 .unwrap_or_default();
             polydat::kernel::format_scope_coordinate_path(&parent_coords)
@@ -4976,7 +5669,8 @@ async fn run_phase_inner(
         crate::checkpoint::ancestor_chain_hash(&ctx.scope_tree, phase_name),
         crate::checkpoint::config_text_hash(&phase_config_text),
     );
-    let phase_hash_hex: String = phase_hash_bytes.iter()
+    let phase_hash_hex: String = phase_hash_bytes
+        .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     let params_consumed_json: Option<String> = {
@@ -4984,13 +5678,14 @@ async fn run_phase_inner(
         let ancestors_below = phase_idx
             .map(|idx| ctx.scope_tree.ancestor_kernels_split(idx).0)
             .unwrap_or_default();
-        let op_templates: Vec<std::sync::Arc<polydat::kernel::PolydatProgram>> =
-            phase_idx
-                .map(|idx| ctx.scope_tree
+        let op_templates: Vec<std::sync::Arc<polydat::kernel::PolydatProgram>> = phase_idx
+            .map(|idx| {
+                ctx.scope_tree
                     .op_template_programs_for_phase(idx)
                     .into_values()
-                    .collect())
-                .unwrap_or_default();
+                    .collect()
+            })
+            .unwrap_or_default();
         let consumed = crate::checkpoint::params_scope::consumed_params(
             &iter_op_builder.program(),
             &op_templates,
@@ -5002,8 +5697,7 @@ async fn run_phase_inner(
     };
     if let Some(writer) = ctx.checkpoint_writer.clone() {
         let identity = phase_identity_for(phase_name, &phase_labels);
-        writer.update_phase_hash(
-            &identity, phase_hash_bytes, params_consumed_json.clone());
+        writer.update_phase_hash(&identity, phase_hash_bytes, params_consumed_json.clone());
 
         // Wholesale metrics-purge (SRD-44): on resume, before a
         // phase re-runs, delete every sample_value row from the
@@ -5014,21 +5708,27 @@ async fn run_phase_inner(
             ctx.push_label("phase", phase_name);
             let labels_for_purge = ctx.labels();
             ctx.pop_label();
-            let mut guard = ctx.sqlite_reporter.lock()
+            let mut guard = ctx
+                .sqlite_reporter
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(reporter) = guard.as_mut() {
                 let n = reporter.purge_samples_with_labels(&labels_for_purge);
                 if n > 0 {
-                    crate::diag!(crate::observer::LogLevel::Info,
-                        "resume: purged {n} prior sample rows for phase '{phase_name}'");
+                    crate::diag!(
+                        crate::observer::LogLevel::Info,
+                        "resume: purged {n} prior sample rows for phase '{phase_name}'"
+                    );
                 }
             }
         }
 
         writer.phase_started(&identity);
         if let Err(e) = writer.flush() {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "checkpoint flush at phase '{phase_name}' start: {e}");
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "checkpoint flush at phase '{phase_name}' start: {e}"
+            );
         }
     }
 
@@ -5044,35 +5744,42 @@ async fn run_phase_inner(
     // validity requires Completed+Succeeded AND hash equality, so a
     // stale load re-runs); and a phase the `phases=` filter names
     // never skips (selection is intent to run).
-    let explicitly_selected = ctx.phase_filter.as_ref()
+    let explicitly_selected = ctx
+        .phase_filter
+        .as_ref()
         .map(|pat| pat.is_match(phase_name))
         .unwrap_or(false);
-    let is_prereq_class = phase.checkpoint.as_ref()
+    let is_prereq_class = phase
+        .checkpoint
+        .as_ref()
         .map(|c| c.idempotent)
         .unwrap_or(false);
     if let Some(plan) = ctx.refine_plan.as_ref()
         && !explicitly_selected
         && (plan.scope == crate::refine_plan::RefineScope::Changed
-            || (plan.scope == crate::refine_plan::RefineScope::Missing
-                && is_prereq_class))
+            || (plan.scope == crate::refine_plan::RefineScope::Missing && is_prereq_class))
     {
         match plan.unchanged_verdict(
-            phase_name, &phase_labels, &phase_hash_hex,
+            phase_name,
+            &phase_labels,
+            &phase_hash_hex,
             &ctx.workload_params,
         ) {
             Ok(()) => {
-                crate::diag!(crate::observer::LogLevel::Info,
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
                     "refine: skipping phase '{phase_name}' [{phase_labels}] \
-                     (prior completed outcome, hash unchanged)");
+                     (prior completed outcome, hash unchanged)"
+                );
                 crate::scene_tree::with_global_mut(|t| {
                     t.set_phase_running_at(scene_node_id, 0);
                     t.set_phase_completed_at(scene_node_id, 0.0);
                 });
-                ctx.observer.phase_starting(scene_node_id, phase_name, &phase_labels, 0, 0, 0);
-                ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
-                crate::phase_end_triggers::fire_phase_completed(
-                    phase_name, &phase_labels, 0.0,
-                );
+                ctx.observer
+                    .phase_starting(scene_node_id, phase_name, &phase_labels, 0, 0, 0);
+                ctx.observer
+                    .phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
+                crate::phase_end_triggers::fire_phase_completed(phase_name, &phase_labels, 0.0);
                 return crate::phase_outcome::Outcome::skipped();
             }
             // SRD-107 Push 3 — the blocker names WHY the phase
@@ -5081,9 +5788,11 @@ async fn run_phase_inner(
             // is the ordinary new-phase case — quiet.
             Err(crate::refine_plan::SkipBlocker::NoPrior) => {}
             Err(blocker) => {
-                crate::diag!(crate::observer::LogLevel::Info,
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
                     "refine: re-running phase '{phase_name}' \
-                     [{phase_labels}] — {blocker}");
+                     [{phase_labels}] — {blocker}"
+                );
             }
         }
     }
@@ -5103,17 +5812,20 @@ async fn run_phase_inner(
             }
             match crate::timeval::parse_time_ms(&t) {
                 Ok(ms) => {
-                    let guard =
-                        crate::stop_conditions::StopConditionDecl::timeout_guard(ms);
-                    crate::diag!(crate::observer::LogLevel::Info,
+                    let guard = crate::stop_conditions::StopConditionDecl::timeout_guard(ms);
+                    crate::diag!(
+                        crate::observer::LogLevel::Info,
                         "phase '{phase_name}': timeout={t} → stop_when: {} \
-                         (synthesized)", guard.when);
+                         (synthesized)",
+                        guard.when
+                    );
                     Some(guard)
                 }
                 Err(e) => {
-                    return crate::phase_outcome::Outcome::failed().with_reason(
-                        format!("phase '{phase_name}': `timeout: \"{raw}\"` \
-                                 (resolved: \"{t}\"): {e}"));
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                        "phase '{phase_name}': `timeout: \"{raw}\"` \
+                                 (resolved: \"{t}\"): {e}"
+                    ));
                 }
             }
         }
@@ -5136,7 +5848,8 @@ async fn run_phase_inner(
                 Err(_) => {
                     return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "phase '{phase_name}': `rate: \"{raw}\"` (resolved: \
-                         \"{r}\") is not a number of ops/sec"));
+                         \"{r}\") is not a number of ops/sec"
+                    ));
                 }
             }
         }
@@ -5148,7 +5861,10 @@ async fn run_phase_inner(
         concurrency: phase_concurrency,
         rate: phase_rate.or(ctx.rate),
         sequencer: ctx.seq_type,
-        error_spec: phase.errors.clone().unwrap_or_else(|| ctx.error_spec.clone()),
+        error_spec: phase
+            .errors
+            .clone()
+            .unwrap_or_else(|| ctx.error_spec.clone()),
         error_rate_max: phase.error_rate_max.or(ctx.error_rate_max),
         // SRD-83 — the declared stop conditions that distribute to THIS
         // phase, gathered structurally from two sources, never inferred
@@ -5164,56 +5880,76 @@ async fn run_phase_inner(
         // condition in the same list, announced at INFO the way
         // every synthesized layer is (SRD-82 §"AggregateGuard
         // retired as a default"; no hidden conditions).
-        stop_when: phase.error_rate_max.or(ctx.error_rate_max)
+        stop_when: phase
+            .error_rate_max
+            .or(ctx.error_rate_max)
             .map(|max| {
-                let guard =
-                    crate::stop_conditions::StopConditionDecl::error_rate_guard(max);
-                crate::diag!(crate::observer::LogLevel::Info,
+                let guard = crate::stop_conditions::StopConditionDecl::error_rate_guard(max);
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
                     "phase '{phase_name}': error_rate_max={max} → stop_when: {} \
                      (synthesized)",
-                    guard.when);
+                    guard.when
+                );
                 guard
             })
             .into_iter()
             // SRD-83 — the synthesized governance-timeout guard rides
             // the same visible list (computed + logged above).
             .chain(timeout_guard)
-            .chain(phase.stop_when.iter()
-            .filter(|c| c.each.iter().any(|l| matches!(l,
-                nbrs_workload::model::ScopeLevel::SelfScope
-                | nbrs_workload::model::ScopeLevel::Phase)))
-            .chain(ctx.workload_stop_when.iter()
-                .filter(|c| c.each.iter().any(|l| matches!(l,
-                    nbrs_workload::model::ScopeLevel::Phase))))
-            // SRD-83 Part 5 — a phase-level trip defaults to `fail`
-            // (the phase result is suspect once a phase predicate fires).
-            .map(|c| {
-                // SRD-83 — interpolate `{param}` placeholders in the predicate
-                // against workload params (and this phase's iteration vars) so a
-                // breaker threshold can be a modular workload param, e.g.
-                // `error_rate > {error_rate_backstop}`. A stop predicate is a
-                // static config expression; the substituted value compiles as a
-                // literal (stop_when's compiled scope can't resolve a bare
-                // param wire — that's continue_if's scope-walked path).
-                let mut when = crate::runner::expand_workload_params(&c.when, &ctx.workload_params);
-                for (v, val) in &iter_var_values { when = when.replace(&format!("{{{v}}}"), val); }
-                crate::stop_conditions::StopConditionDecl {
-                    when,
-                    effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
-                        c.effect.as_deref(),
-                        crate::phase_outcome::Outcome::failed(),
-                    ),
-                    reason: None,
-                    // SRD-83 follow-up — detection stays at the phase (this
-                    // gather); `at:` (default = innermost of `per:`/`each:`)
-                    // selects where the action lands. No `at:` ⇒ phase.
-                    target: resolve_stop_scope(c.at, &c.each),
-                    // `action: abort` escalates the halt to cancelling
-                    // in-flight ops at the trip site.
-                    cancel_ops: crate::stop_conditions::StopConditionDecl
-                        ::action_cancels_ops(c.effect.as_deref()),
-                }
-            }))
+            .chain(
+                phase
+                    .stop_when
+                    .iter()
+                    .filter(|c| {
+                        c.each.iter().any(|l| {
+                            matches!(
+                                l,
+                                nbrs_workload::model::ScopeLevel::SelfScope
+                                    | nbrs_workload::model::ScopeLevel::Phase
+                            )
+                        })
+                    })
+                    .chain(ctx.workload_stop_when.iter().filter(|c| {
+                        c.each
+                            .iter()
+                            .any(|l| matches!(l, nbrs_workload::model::ScopeLevel::Phase))
+                    }))
+                    // SRD-83 Part 5 — a phase-level trip defaults to `fail`
+                    // (the phase result is suspect once a phase predicate fires).
+                    .map(|c| {
+                        // SRD-83 — interpolate `{param}` placeholders in the predicate
+                        // against workload params (and this phase's iteration vars) so a
+                        // breaker threshold can be a modular workload param, e.g.
+                        // `error_rate > {error_rate_backstop}`. A stop predicate is a
+                        // static config expression; the substituted value compiles as a
+                        // literal (stop_when's compiled scope can't resolve a bare
+                        // param wire — that's continue_if's scope-walked path).
+                        let mut when =
+                            crate::runner::expand_workload_params(&c.when, &ctx.workload_params);
+                        for (v, val) in &iter_var_values {
+                            when = when.replace(&format!("{{{v}}}"), val);
+                        }
+                        crate::stop_conditions::StopConditionDecl {
+                            when,
+                            effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
+                                c.effect.as_deref(),
+                                crate::phase_outcome::Outcome::failed(),
+                            ),
+                            reason: None,
+                            // SRD-83 follow-up — detection stays at the phase (this
+                            // gather); `at:` (default = innermost of `per:`/`each:`)
+                            // selects where the action lands. No `at:` ⇒ phase.
+                            target: resolve_stop_scope(c.at, &c.each),
+                            // `action: abort` escalates the halt to cancelling
+                            // in-flight ops at the trip site.
+                            cancel_ops:
+                                crate::stop_conditions::StopConditionDecl::action_cancels_ops(
+                                    c.effect.as_deref(),
+                                ),
+                        }
+                    }),
+            )
             .collect(),
         // Total-attempts budget inherited by this phase's ops: the phase's
         // own `tries:` wins, else the workload-root `tries` param. `None`
@@ -5230,11 +5966,11 @@ async fn run_phase_inner(
         // see runner.rs. Per-phase activity gets the live
         // suppression flag so a TUI dismissal mid-run resumes
         // status-line emission.
-        suppress_status_line: ctx.observer.live_suppress_flag()
-            .unwrap_or_else(|| {
-                Arc::new(std::sync::atomic::AtomicBool::new(
-                    ctx.observer.suppresses_stderr()))
-            }),
+        suppress_status_line: ctx.observer.live_suppress_flag().unwrap_or_else(|| {
+            Arc::new(std::sync::atomic::AtomicBool::new(
+                ctx.observer.suppresses_stderr(),
+            ))
+        }),
         status_metrics: phase.status_metrics.clone(),
         // Root-first display labels + pre-map seq for the ✓ DONE
         // summary line. `phase_labels` (above, leaf-first) stays
@@ -5243,15 +5979,19 @@ async fn run_phase_inner(
         // the per-phase header format the terminal observer used
         // to emit on phase-start.
         phase_labels: {
-            let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+            let parent_coords: Vec<_> = ctx
+                .current_parent_kernel
+                .as_ref()
                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
                 .unwrap_or_default();
             polydat::kernel::format_scope_coordinate_path(&parent_coords)
         },
-        phase_seq: crate::scene_tree::current()
-            .and_then(|t| t.nodes.get(scene_node_id)
+        phase_seq: crate::scene_tree::current().and_then(|t| {
+            t.nodes
+                .get(scene_node_id)
                 .and_then(|n| n.seq)
-                .map(|s| (s, t.total_phases()))),
+                .map(|s| (s, t.total_phases()))
+        }),
         readouts: ctx.workload_readouts.clone(),
         cli_readout_override: ctx.cli_readout_override.clone(),
         snapshot_writer: Some(ctx.sqlite_reporter.clone()),
@@ -5277,7 +6017,10 @@ async fn run_phase_inner(
     adapter_names.insert(phase_driver.to_string());
     for t in op_sequence.templates() {
         if let Some(a) = t.params.get("adapter").and_then(|v| v.as_str())
-            && a != phase_driver { adapter_names.insert(a.to_string()); }
+            && a != phase_driver
+        {
+            adapter_names.insert(a.to_string());
+        }
     }
     // SRD-35 Push A: every adapter is acquired via the
     // session's resource pool. The legacy
@@ -5346,11 +6089,11 @@ async fn run_phase_inner(
                 phase_name,
                 key,
                 move || async move {
-                    crate::runner::create_adapter(
-                        &aname_for_factory, &merged_params,
-                    ).await
+                    crate::runner::create_adapter(&aname_for_factory, &merged_params).await
                 },
-            ).await {
+            )
+            .await
+            {
                 Ok(v) => v,
                 Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
             }
@@ -5361,13 +6104,16 @@ async fn run_phase_inner(
                 &ctx.resource_pool,
                 &aname_owned,
                 phase_name,
-                &[("__phase", phase_name), ("__phase_seq", phase_seq_label.as_str())],
+                &[
+                    ("__phase", phase_name),
+                    ("__phase_seq", phase_seq_label.as_str()),
+                ],
                 move || async move {
-                    crate::runner::create_adapter(
-                        &aname_for_factory, &merged_params,
-                    ).await
+                    crate::runner::create_adapter(&aname_for_factory, &merged_params).await
                 },
-            ).await {
+            )
+            .await
+            {
                 Ok(v) => v,
                 Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
             }
@@ -5396,9 +6142,10 @@ async fn run_phase_inner(
     ctx.pop_label();
 
     // Create phase component and attach under the execution component.
-    let phase_component = Arc::new(RwLock::new(
-        Component::new(phase_own_labels, HashMap::new()),
-    ));
+    let phase_component = Arc::new(RwLock::new(Component::new(
+        phase_own_labels,
+        HashMap::new(),
+    )));
     component::attach(&ctx.session_component, &phase_component);
 
     // SRD 40: resolve hdr.sigdigs via walk-up from the phase's
@@ -5411,12 +6158,12 @@ async fn run_phase_inner(
     // resolving from the inherited policy. Equal config → inherits the
     // parent (shared); an override derives a value-equality-shared
     // instance. Resolved once here; the activity holds it.
-    let phase_error_policy = ctx.error_policy.resolve_child(Some(
-        crate::error_policy::PolicyConfig::new(
-            config.error_spec.clone(),
-            config.error_rate_max,
-        ),
-    ));
+    let phase_error_policy =
+        ctx.error_policy
+            .resolve_child(Some(crate::error_policy::PolicyConfig::new(
+                config.error_spec.clone(),
+                config.error_rate_max,
+            )));
     // SRD-83 — the phase's ACTIVATION scope view (cell cascade
     // attached); stop-condition predicates bind to it — their true
     // native scope. NOT the canonical `cached_kernel`: that one is
@@ -5430,11 +6177,16 @@ async fn run_phase_inner(
     // the run's effective params (`metrics_detail`), which live on
     // `merged_params` (CLI-overlaid), not the workload-declared-only
     // `workload_params`.
-    let metric_detail =
-        crate::activity::metric_detail_from_params(&ctx.merged_params);
+    let metric_detail = crate::activity::metric_detail_from_params(&ctx.merged_params);
     let mut activity = Activity::with_params_and_sigdigs(
-        config, &labels, op_sequence, ctx.workload_params.clone(), sigdigs,
-        phase_error_policy, phase_kernel, &metric_detail,
+        config,
+        &labels,
+        op_sequence,
+        ctx.workload_params.clone(),
+        sigdigs,
+        phase_error_policy,
+        phase_kernel,
+        &metric_detail,
     );
     // SRD-82 Part 4 — wire this execution's walk-stop flag so in-flight
     // fibers abort cooperatively when the scenario walk halts (a sibling
@@ -5491,10 +6243,9 @@ async fn run_phase_inner(
     // `dryrun=Dispenser` exits happen post-`run_with_adapters`
     // below, so dispenser construction can run first.
     if ctx.diag.depth < crate::runner::ExecDepth::Dispenser {
-        ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
-        crate::phase_end_triggers::fire_phase_completed(
-            phase_name, &phase_labels, 0.0,
-        );
+        ctx.observer
+            .phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
+        crate::phase_end_triggers::fire_phase_completed(phase_name, &phase_labels, 0.0);
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_completed_at(scene_node_id, 0.0);
         });
@@ -5524,8 +6275,7 @@ async fn run_phase_inner(
     // is just snapshot data, so a sink activated mid-phase (Ctrl-T) still
     // finds it — whether to render is the consumer's per-tick decision.
     {
-        let (seq, depth_indent) =
-            crate::readout_context::resolve_phase_coord_by_id(scene_node_id);
+        let (seq, depth_indent) = crate::readout_context::resolve_phase_coord_by_id(scene_node_id);
         // Resolve the on_update render template (workload binding + CLI
         // override + built-in `phase_status` default) into owned bodies the
         // consumer fires with `&self` — the `!Sync` binder never enters the
@@ -5534,9 +6284,7 @@ async fn run_phase_inner(
             let phase_status_default = {
                 let readout = crate::readouts::Registry::lookup("phase_status")
                     .expect("phase_status registered");
-                crate::readouts::BakedBody::from_single(
-                    readout, crate::readouts::Lod::Labeled,
-                )
+                crate::readouts::BakedBody::from_single(readout, crate::readouts::Lod::Labeled)
             };
             match crate::readouts::build_event_binder_with_cli(
                 &activity.config.readouts,
@@ -5546,8 +6294,10 @@ async fn run_phase_inner(
             ) {
                 Ok(mut binder) => binder.take_bodies(crate::lifecycle::EventType::Update),
                 Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "readouts: failed to bind on_update — {e}");
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
+                        "readouts: failed to bind on_update — {e}"
+                    );
                     Vec::new()
                 }
             }
@@ -5614,32 +6364,53 @@ async fn run_phase_inner(
             let phase_labels = labels_for_thread;
             while progress_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                if !progress_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                if !progress_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
 
-                let started = progress_metrics.ops_started.load(std::sync::atomic::Ordering::Relaxed);
-                let finished = progress_metrics.ops_finished.load(std::sync::atomic::Ordering::Relaxed);
+                let started = progress_metrics
+                    .ops_started
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let finished = progress_metrics
+                    .ops_finished
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 let successes = progress_metrics.result_success.count();
                 let errors = progress_metrics.errors_total.get();
                 let elapsed = progress_start.elapsed().as_secs_f64();
-                let ops_per_sec = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
+                let ops_per_sec = if elapsed > 0.0 {
+                    finished as f64 / elapsed
+                } else {
+                    0.0
+                };
 
                 let adapter_counters: Vec<(String, u64, f64)> = progress_metrics
                     .collect_status_counters()
                     .into_iter()
                     .map(|(name, total)| {
-                        let rate = if elapsed > 0.0 { total as f64 / elapsed } else { 0.0 };
+                        let rate = if elapsed > 0.0 {
+                            total as f64 / elapsed
+                        } else {
+                            0.0
+                        };
                         (name, total, rate)
                     })
                     .collect();
 
                 let stanzas = progress_metrics.stanzas_total.get();
-                let find_counter = |want: &str| adapter_counters.iter()
-                    .find(|(n, _, _)| n == want).map(|(_, t, _)| *t);
+                let find_counter = |want: &str| {
+                    adapter_counters
+                        .iter()
+                        .find(|(n, _, _)| n == want)
+                        .map(|(_, t, _)| *t)
+                };
                 // True average batch size when the CQL batch dispensers
                 // publish `_batch_writes`; attempt-based fallback otherwise.
                 let rows_per_batch = crate::readout_context::rows_per_batch(
-                    find_counter("rows_inserted"), find_counter("_batch_writes"), stanzas,
-                ).unwrap_or(0.0);
+                    find_counter("rows_inserted"),
+                    find_counter("_batch_writes"),
+                    stanzas,
+                )
+                .unwrap_or(0.0);
 
                 let relevancy = progress_metrics.collect_relevancy_live();
 
@@ -5696,15 +6467,22 @@ async fn run_phase_inner(
             for (v, val) in &iter_var_values {
                 r = r.replace(&format!("{{{v}}}"), val);
             }
-            r.trim().parse::<u64>().map_err(|_| format!(
-                "phase '{phase_name}': poll `{field}: \"{raw}\"` (resolved: \
-                 \"{r}\") is not a whole number of milliseconds"))
+            r.trim().parse::<u64>().map_err(|_| {
+                format!(
+                    "phase '{phase_name}': poll `{field}: \"{raw}\"` (resolved: \
+                 \"{r}\") is not a whole number of milliseconds"
+                )
+            })
         };
         let resolved = (|| -> Result<(u64, u64, u64), String> {
             Ok((
                 resolve_u64(poll_spec.interval_ms.as_deref(), "interval_ms", 1000)?,
                 resolve_u64(poll_spec.timeout_ms.as_deref(), "timeout_ms", 300_000)?,
-                resolve_u64(poll_spec.max_error_retries.as_deref(), "max_error_retries", 0)?,
+                resolve_u64(
+                    poll_spec.max_error_retries.as_deref(),
+                    "max_error_retries",
+                    0,
+                )?,
             ))
         })();
         let (interval_ms, timeout_ms, max_error_retries) = match resolved {
@@ -5713,15 +6491,20 @@ async fn run_phase_inner(
         };
         let interval = std::time::Duration::from_millis(interval_ms);
         let timeout = std::time::Duration::from_millis(timeout_ms);
-        let phase_kernel = match ctx.scope_tree.phase_node_by_name(phase_name)
-            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned()) {
+        let phase_kernel = match ctx
+            .scope_tree
+            .phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned())
+        {
             Some(k) => k,
-            None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                "phase '{phase_name}': SRD-75 phase-poll requires the phase \
+            None => {
+                return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                    "phase '{phase_name}': SRD-75 phase-poll requires the phase \
                  scope kernel to be installed, but no cached kernel was found. \
                  This is a synthesis bug — every phase with `poll:` should \
                  land via the `Bindings` install spec.",
-            )),
+                ));
+            }
         };
         let started_at = std::time::Instant::now();
         // SRD-75 `on_timeout` — `Error` (default) when
@@ -5758,8 +6541,10 @@ async fn run_phase_inner(
         });
     }
 
-    crate::diag!(crate::observer::LogLevel::Debug,
-        "phase '{phase_name}': activity starting (concurrency={phase_concurrency})");
+    crate::diag!(
+        crate::observer::LogLevel::Debug,
+        "phase '{phase_name}': activity starting (concurrency={phase_concurrency})"
+    );
     // Clone the stop-reason handle BEFORE consuming the activity;
     // populated by the per-cycle stop trigger inside the run if a
     // `stop` error handler fires. Read after the run to surface
@@ -5827,38 +6612,51 @@ async fn run_phase_inner(
                 let pd = phase_done.clone();
                 let act = async {
                     let s = crate::runner::run_activity_simple(
-                        activity, adapters, phase_driver, iter_op_builder,
+                        activity,
+                        adapters,
+                        phase_driver,
+                        iter_op_builder,
                     )
                     .await;
                     pd.store(true, std::sync::atomic::Ordering::Relaxed);
                     s
                 };
                 let servoed = crate::optimize::servo::servo(
-                    servo_spec, stop_flag, reporter, parent, phase_kernel, pc, phase_done,
+                    servo_spec,
+                    stop_flag,
+                    reporter,
+                    parent,
+                    phase_kernel,
+                    pc,
+                    phase_done,
                 );
                 let (stopped, servo_res) = tokio::join!(act, servoed);
                 match servo_res {
                     Ok(()) => servo_completed = true,
-                    Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
-                        "phase '{phase_name}': optimizer servoing error: {e}"),
+                    Err(e) => crate::diag!(
+                        crate::observer::LogLevel::Warn,
+                        "phase '{phase_name}': optimizer servoing error: {e}"
+                    ),
                 }
                 stopped
             }
             _ => {
                 crate::runner::run_activity_simple(
-                    activity, adapters, phase_driver, iter_op_builder,
+                    activity,
+                    adapters,
+                    phase_driver,
+                    iter_op_builder,
                 )
                 .await
             }
         }
     } else {
-        crate::runner::run_activity_simple(
-            activity, adapters, phase_driver, iter_op_builder,
-        )
-        .await
+        crate::runner::run_activity_simple(activity, adapters, phase_driver, iter_op_builder).await
     };
-    crate::diag!(crate::observer::LogLevel::Debug,
-        "phase '{phase_name}': activity returned (stopped={stopped})");
+    crate::diag!(
+        crate::observer::LogLevel::Debug,
+        "phase '{phase_name}': activity returned (stopped={stopped})"
+    );
 
     // A settled phase stopped early with a trustworthy register
     // (Interrupted+Succeeded); a settle timeout (Interrupted+Failed)
@@ -5887,10 +6685,9 @@ async fn run_phase_inner(
     // directly — the post-run summary shows `[ok]` with no
     // duration suffix, matching the dryrun=phase path.
     if ctx.diag.depth < crate::runner::ExecDepth::Cycle {
-        ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
-        crate::phase_end_triggers::fire_phase_completed(
-            phase_name, &phase_labels, 0.0,
-        );
+        ctx.observer
+            .phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
+        crate::phase_end_triggers::fire_phase_completed(phase_name, &phase_labels, 0.0);
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_completed_at(scene_node_id, 0.0);
         });
@@ -5904,51 +6701,71 @@ async fn run_phase_inner(
     // would otherwise arrive empty at the observer's summary-
     // capture step. This guarantees the final frame is never stale.
     if ctx.observer.suppresses_stderr() {
-        let started_total = progress_metrics.ops_started.load(std::sync::atomic::Ordering::Relaxed);
-        let finished_total = progress_metrics.ops_finished.load(std::sync::atomic::Ordering::Relaxed);
+        let started_total = progress_metrics
+            .ops_started
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let finished_total = progress_metrics
+            .ops_finished
+            .load(std::sync::atomic::Ordering::Relaxed);
         let successes = progress_metrics.result_success.count();
         let errors = progress_metrics.errors_total.get();
         let elapsed = progress_start.elapsed().as_secs_f64();
-        let ops_per_sec = if elapsed > 0.0 { finished_total as f64 / elapsed } else { 0.0 };
+        let ops_per_sec = if elapsed > 0.0 {
+            finished_total as f64 / elapsed
+        } else {
+            0.0
+        };
         let adapter_counters: Vec<(String, u64, f64)> = progress_metrics
             .collect_status_counters()
             .into_iter()
             .map(|(name, total)| {
-                let rate = if elapsed > 0.0 { total as f64 / elapsed } else { 0.0 };
+                let rate = if elapsed > 0.0 {
+                    total as f64 / elapsed
+                } else {
+                    0.0
+                };
                 (name, total, rate)
             })
             .collect();
         let stanzas = progress_metrics.stanzas_total.get();
-        let find_counter = |want: &str| adapter_counters.iter()
-            .find(|(n, _, _)| n == want).map(|(_, t, _)| *t);
+        let find_counter = |want: &str| {
+            adapter_counters
+                .iter()
+                .find(|(n, _, _)| n == want)
+                .map(|(_, t, _)| *t)
+        };
         // True average batch size when the CQL batch dispensers publish
         // `_batch_writes`; attempt-based fallback otherwise.
         let rows_per_batch = crate::readout_context::rows_per_batch(
-            find_counter("rows_inserted"), find_counter("_batch_writes"), stanzas,
-        ).unwrap_or(0.0);
+            find_counter("rows_inserted"),
+            find_counter("_batch_writes"),
+            stanzas,
+        )
+        .unwrap_or(0.0);
         let relevancy = progress_metrics.collect_relevancy_live();
         let (rows_consumed, rows_total) = live_rows_of(&progress_source_factory);
-        ctx.observer.phase_progress(&crate::observer::PhaseProgressUpdate {
-            exec_id: crate::execution_context::current_exec_id(),
-            name: phase_name.to_string(),
-            labels: phase_labels.clone(),
-            cursor_name: progress_cursor_name.clone(),
-            cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
-            daemon: phase.daemon,
-            rows_consumed,
-            rows_total,
-            fibers: progress_fibers,
-            ops_started: started_total,
-            ops_finished: finished_total,
-            ops_ok: successes,
-            skips: progress_metrics.skips_total.get(),
-            errors,
-            retries: errors.saturating_sub(finished_total.saturating_sub(successes)),
-            ops_per_sec,
-            adapter_counters,
-            rows_per_batch,
-            relevancy,
-        });
+        ctx.observer
+            .phase_progress(&crate::observer::PhaseProgressUpdate {
+                exec_id: crate::execution_context::current_exec_id(),
+                name: phase_name.to_string(),
+                labels: phase_labels.clone(),
+                cursor_name: progress_cursor_name.clone(),
+                cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
+                daemon: phase.daemon,
+                rows_consumed,
+                rows_total,
+                fibers: progress_fibers,
+                ops_started: started_total,
+                ops_finished: finished_total,
+                ops_ok: successes,
+                skips: progress_metrics.skips_total.get(),
+                errors,
+                retries: errors.saturating_sub(finished_total.saturating_sub(successes)),
+                ops_per_sec,
+                adapter_counters,
+                rows_per_batch,
+                relevancy,
+            });
     }
 
     // SRD-83 Part 5 — a graceful `stop`-effect trip is a CLEAN early
@@ -5978,11 +6795,16 @@ async fn run_phase_inner(
     if (!stopped || graceful_stop) && !phase.metrics.is_empty() {
         let phase_start_epoch_ms = (phase_start_nanos / 1_000_000) as u64;
         if let Err(e) = emit_phase_metrics(
-            &ctx.scope_tree, phase_name, &phase,
-            phase_start_epoch_ms, &phase_component,
+            &ctx.scope_tree,
+            phase_name,
+            &phase,
+            phase_start_epoch_ms,
+            &phase_component,
         ) {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "phase '{phase_name}': phase-metric emission: {e}");
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "phase '{phase_name}': phase-metric emission: {e}"
+            );
         }
     }
 
@@ -6011,8 +6833,7 @@ async fn run_phase_inner(
                 .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned()),
         )
     {
-        ctx.optimize_objective_value =
-            read_objective_at_completion(&parent, &phase_kernel, &obj);
+        ctx.optimize_objective_value = read_objective_at_completion(&parent, &phase_kernel, &obj);
     }
 
     // Lifecycle flush: capture final delta, route through the
@@ -6053,7 +6874,11 @@ async fn run_phase_inner(
         ctx.stop_handle.report_frame(&final_delta);
 
         // Flush validation metrics (recall, precision) as gauges
-        if let Some(mut vframe) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(mut vframe) = validation_frame
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             // Same scope_close partial annotation — vframe is the
             // phase's terminal validation snapshot.
             vframe.mark_partial();
@@ -6100,7 +6925,9 @@ async fn run_phase_inner(
         // came from an early-init path that doesn't populate it
         // (validate_bind_points, missing adapter, etc. — those
         // paths log directly to stderr).
-        let reason = stop_reason.lock().ok()
+        let reason = stop_reason
+            .lock()
+            .ok()
             .and_then(|g| g.clone())
             .unwrap_or_else(|| "stopped by error handler".to_string());
         let detail_msg = format!("stopped by error handler: {reason}");
@@ -6128,16 +6955,19 @@ async fn run_phase_inner(
             + phase_name.chars().count()
             + "' ".chars().count();
         let coords_part = crate::readouts::builtins::phase_outcome::format_coords_block(
-            &phase_labels, color, error_head_consumed,
+            &phase_labels,
+            color,
+            error_head_consumed,
             &format!("{depth_indent}    "),
             /* summarize_changed_only */ true,
         );
-        crate::diag!(crate::observer::LogLevel::Error,
-            "{depth_indent}phase '{bold}{phase_name}{reset}'{coords_part} {red}{detail_msg}{reset} {dim}({phase_duration:.2}s){reset}");
-        ctx.observer.phase_failed(scene_node_id, phase_name, &phase_labels, &detail_msg);
-        crate::phase_end_triggers::fire_phase_failed(
-            phase_name, &phase_labels, &detail_msg,
+        crate::diag!(
+            crate::observer::LogLevel::Error,
+            "{depth_indent}phase '{bold}{phase_name}{reset}'{coords_part} {red}{detail_msg}{reset} {dim}({phase_duration:.2}s){reset}"
         );
+        ctx.observer
+            .phase_failed(scene_node_id, phase_name, &phase_labels, &detail_msg);
+        crate::phase_end_triggers::fire_phase_failed(phase_name, &phase_labels, &detail_msg);
         // SRD-76 — build the structured PhaseOutcome and
         // install it on the scene tree alongside the
         // legacy `set_phase_failed` mirror. The
@@ -6172,13 +7002,12 @@ async fn run_phase_inner(
             errors
         };
         let outcome = crate::phase_outcome::PhaseOutcome::failed(
-            crate::phase_outcome::PhaseIdentity::new(
-                phase_name, phase_labels.as_str(),
-            ),
+            crate::phase_outcome::PhaseIdentity::new(phase_name, phase_labels.as_str()),
             phase_duration,
             errors,
-        ).with_phase_hash(phase_hash_hex.clone())
-         .with_params_consumed(params_consumed_json.clone());
+        )
+        .with_phase_hash(phase_hash_hex.clone())
+        .with_params_consumed(params_consumed_json.clone());
         // SRD-76 Push 3 — persist before installing on the
         // scene tree so a panic during scene-tree
         // mutation still leaves a durable row on disk. The
@@ -6186,12 +7015,11 @@ async fn run_phase_inner(
         // logs at Warn and doesn't propagate (the in-memory
         // scene tree remains the canonical state).
         if let Ok(mut guard) = ctx.sqlite_reporter.lock()
-            && let Some(reporter) = guard.as_mut() {
-                let row = outcome.to_sqlite_row(
-                    &ctx.session_id, ctx.exec_id, phase_start_nanos,
-                );
-                reporter.write_phase_outcome(&row);
-            }
+            && let Some(reporter) = guard.as_mut()
+        {
+            let row = outcome.to_sqlite_row(&ctx.session_id, ctx.exec_id, phase_start_nanos);
+            reporter.write_phase_outcome(&row);
+        }
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_failed_at(scene_node_id, &detail_msg);
             t.set_phase_outcome_at(scene_node_id, outcome);
@@ -6200,8 +7028,10 @@ async fn run_phase_inner(
             let identity = phase_identity_for(phase_name, &phase_labels);
             writer.phase_failed(&identity, &detail_msg);
             if let Err(e) = writer.flush() {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "checkpoint flush after phase '{phase_name}' failed: {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "checkpoint flush after phase '{phase_name}' failed: {e}"
+                );
             }
         }
         // SRD-82 Part 4/6 — fold this failed child into the workload
@@ -6213,8 +7043,9 @@ async fn run_phase_inner(
         // phase returns `Err` below, driving the non-zero exit), so the
         // skipped tail is recorded as a fault, not mistaken for a
         // graceful early stop.
-        if let Some((outcome, reason)) = ctx.workload_shell
-            .record_phase(true, phase_op_count, phase_error_count)
+        if let Some((outcome, reason)) =
+            ctx.workload_shell
+                .record_phase(true, phase_op_count, phase_error_count)
         {
             let cause = if outcome.is_failure() {
                 crate::session_signals::StopCause::Fault
@@ -6222,11 +7053,14 @@ async fn run_phase_inner(
                 crate::session_signals::StopCause::Interrupt
             };
             crate::session_signals::request_shell_stop(cause);
-            crate::diag!(crate::observer::LogLevel::Warn,
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
                 "scenario stop-on-error ({reason}) after phase \
-                 '{phase_name}' — halting remaining walk");
+                 '{phase_name}' — halting remaining walk"
+            );
         }
-        return crate::phase_outcome::Outcome::failed().with_reason(format!("phase '{phase_name}' {detail_msg}"));
+        return crate::phase_outcome::Outcome::failed()
+            .with_reason(format!("phase '{phase_name}' {detail_msg}"));
     }
 
     // Indent the completion line by scope depth so
@@ -6237,13 +7071,12 @@ async fn run_phase_inner(
     // the throughput / ok-rate / errors detail the user needs,
     // while the phase identity and coords are already on the
     // phase-starting row directly above.
-    ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, phase_duration);
+    ctx.observer
+        .phase_completed(scene_node_id, phase_name, &phase_labels, phase_duration);
     // Phase-end trigger fan-out: registered triggers
     // (plot re-render, report rebuild, etc.) run on the
     // worker thread so the executor's loop isn't blocked.
-    crate::phase_end_triggers::fire_phase_completed(
-        phase_name, &phase_labels, phase_duration,
-    );
+    crate::phase_end_triggers::fire_phase_completed(phase_name, &phase_labels, phase_duration);
     // SRD-76 — install the structured success outcome.
     // Drain any residual entries from the phase_errors
     // buffer just in case (a non-stopping retryable
@@ -6255,9 +7088,7 @@ async fn run_phase_inner(
         .map(|mut g| std::mem::take(&mut *g))
         .unwrap_or_default();
     let success_outcome = crate::phase_outcome::PhaseOutcome {
-        phase_id: crate::phase_outcome::PhaseIdentity::new(
-            phase_name, phase_labels.as_str(),
-        ),
+        phase_id: crate::phase_outcome::PhaseIdentity::new(phase_name, phase_labels.as_str()),
         // SRD-83 Part 5 — a graceful `stop`-effect trip records the
         // condition's declared axes: Interrupted (the extent was cut
         // short on purpose) + Succeeded (the partial result stands).
@@ -6279,12 +7110,11 @@ async fn run_phase_inner(
     // best-effort policy as the failure path above; the
     // scene tree is the canonical in-memory state.
     if let Ok(mut guard) = ctx.sqlite_reporter.lock()
-        && let Some(reporter) = guard.as_mut() {
-            let row = success_outcome.to_sqlite_row(
-                &ctx.session_id, ctx.exec_id, phase_start_nanos,
-            );
-            reporter.write_phase_outcome(&row);
-        }
+        && let Some(reporter) = guard.as_mut()
+    {
+        let row = success_outcome.to_sqlite_row(&ctx.session_id, ctx.exec_id, phase_start_nanos);
+        reporter.write_phase_outcome(&row);
+    }
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_completed_at(scene_node_id, phase_duration);
         t.set_phase_outcome_at(scene_node_id, success_outcome);
@@ -6293,8 +7123,10 @@ async fn run_phase_inner(
         let identity = phase_identity_for(phase_name, &phase_labels);
         writer.phase_completed(&identity, phase_duration);
         if let Err(e) = writer.flush() {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "checkpoint flush after phase '{phase_name}' completed: {e}");
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "checkpoint flush after phase '{phase_name}' completed: {e}"
+            );
         }
     }
     // SRD-83 — fold this completed child into the workload shell. A
@@ -6305,8 +7137,9 @@ async fn run_phase_inner(
     // end-of-run unreached-phase check treats the deliberately-skipped
     // tail like a Ctrl-C stop (no "phases were not executed" warning,
     // clean exit) rather than as stranded-by-failure.
-    if let Some((outcome, reason)) = ctx.workload_shell
-        .record_phase(false, phase_op_count, phase_error_count)
+    if let Some((outcome, reason)) =
+        ctx.workload_shell
+            .record_phase(false, phase_op_count, phase_error_count)
     {
         // The ACTUAL aggregate wires that crossed the threshold
         // (`children_done=2/3, …`), so the message says WHY, not just which
@@ -6319,19 +7152,24 @@ async fn run_phase_inner(
             // failure: return Err so the session exits non-zero and the
             // walk halts. The phase's own outcome stays Completed (it
             // did complete); the workload-level breach is what fails.
-            crate::diag!(crate::observer::LogLevel::Error,
+            crate::diag!(
+                crate::observer::LogLevel::Error,
                 "workload stop condition tripped ({reason}) — actual: {actual} \
-                 — after phase '{phase_name}' — failing session");
+                 — after phase '{phase_name}' — failing session"
+            );
             return crate::phase_outcome::Outcome::failed().with_reason(format!(
-                "workload stop condition tripped: {reason} — actual: {actual}"));
+                "workload stop condition tripped: {reason} — actual: {actual}"
+            ));
         }
         // A graceful `stop` effect: nothing failed, halt the walk and
         // flag the deliberately-skipped tail so the unreached-phase
         // check treats it like a clean Ctrl-C stop.
         crate::session_signals::request_graceful_stop();
-        crate::diag!(crate::observer::LogLevel::Warn,
+        crate::diag!(
+            crate::observer::LogLevel::Warn,
             "workload stop condition tripped ({reason}) — actual: {actual} \
-             — after phase '{phase_name}' — halting remaining walk");
+             — after phase '{phase_name}' — halting remaining walk"
+        );
     }
     if graceful_stop {
         // SRD-83 Part 5 — surface the trip's declared graceful outcome
@@ -6386,21 +7224,26 @@ fn emit_phase_metrics(
     let phase_kernel = scope_tree
         .phase_node_by_name(phase_name)
         .and_then(|idx| scope_tree.nodes[idx].cached_kernel.get().cloned())
-        .ok_or_else(|| format!(
-            "phase '{phase_name}' has `metrics:` but no cached phase scope \
+        .ok_or_else(|| {
+            format!(
+                "phase '{phase_name}' has `metrics:` but no cached phase scope \
              kernel was installed — synthesis bug (a phase with metrics \
              classifies as PolydatMatter::Definitions and must install a \
-             kernel via the `Bindings` install spec)"))?;
+             kernel via the `Bindings` install spec)"
+            )
+        })?;
 
     // Fresh subscope for the completion-time pull (own state, shares
     // the parent's cells). Mirrors the per-fiber main-kernel and the
     // do-loop persistent-kernel construction.
-    let mut k = phase_kernel.build_subscope(
-        polydat::kernel::subcontext::PolydatMatter::builder()
-            .program(phase_kernel.program().clone())
-            .build()
-            .expect("program-form matter is infallible"),
-    ).map_err(|e| format!("phase '{phase_name}': metric-pull subscope: {e}"))?;
+    let mut k = phase_kernel
+        .build_subscope(
+            polydat::kernel::subcontext::PolydatMatter::builder()
+                .program(phase_kernel.program().clone())
+                .build()
+                .expect("program-form matter is infallible"),
+        )
+        .map_err(|e| format!("phase '{phase_name}': metric-pull subscope: {e}"))?;
     phase_kernel.propagate_inputs_into(&mut k);
 
     // The synthesized `phase_start` is no longer an extern filled here — it
@@ -6428,20 +7271,24 @@ fn emit_phase_metrics(
         let binding = crate::scope::synthesize_metric_binding_name(name);
         let value = k.pull(&binding).clone();
         let Some(raw) = to_f64(&value) else {
-            crate::diag!(crate::observer::LogLevel::Warn,
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
                 "phase '{phase_name}' metric '{name}': value `{expr}` resolved to \
                  a non-numeric {disc:?}; skipping (metric values must be U64 / F64 / Bool)",
                 expr = spec.value,
-                disc = std::mem::discriminant(&value));
+                disc = std::mem::discriminant(&value)
+            );
             continue;
         };
         let sanitised = match &spec.format {
             Some(f) => match nbrs_workload::metric_format::parse_format_spec(f) {
                 Ok(fs) => fs.apply(raw),
                 Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Warn,
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
                         "phase '{phase_name}' metric '{name}' format '{f}': {e}; \
-                         recording unformatted value");
+                         recording unformatted value"
+                    );
                     raw
                 }
             },
@@ -6462,12 +7309,14 @@ fn emit_phase_metrics(
                 let wire = crate::scope::synthesize_cell_binding_name(name, dim);
                 let v = k.pull(&wire).clone();
                 let Value::Str(text) = &v else {
-                    crate::diag!(crate::observer::LogLevel::Warn,
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
                         "phase '{phase_name}' metric '{name}' cell '{dim}': \
                          coordinate resolved to a non-string {disc:?}; skipping \
                          the metric (dimension values are label values — convert \
                          the expression explicitly)",
-                        disc = std::mem::discriminant(&v));
+                        disc = std::mem::discriminant(&v)
+                    );
                     continue 'metrics;
                 };
                 c = c.with(dim.clone(), text.to_string());
@@ -6498,20 +7347,23 @@ fn emit_phase_metrics(
         let instr_labels = target_labels.with("family", family.clone());
         let instrument: InstrumentRef = match kind {
             MetricKind::Gauge => {
-                let g = std::sync::Arc::new(
-                    nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels));
+                let g = std::sync::Arc::new(nbrs_metrics::instruments::gauge::ValueGauge::new(
+                    instr_labels,
+                ));
                 g.set(value);
                 InstrumentRef::Gauge(g)
             }
             MetricKind::Histogram => {
-                let h = std::sync::Arc::new(
-                    nbrs_metrics::instruments::histogram::Histogram::new(instr_labels));
+                let h = std::sync::Arc::new(nbrs_metrics::instruments::histogram::Histogram::new(
+                    instr_labels,
+                ));
                 h.record(value as u64);
                 InstrumentRef::Histogram(h)
             }
             MetricKind::Counter => {
-                let c = std::sync::Arc::new(
-                    nbrs_metrics::instruments::counter::Counter::new(instr_labels));
+                let c = std::sync::Arc::new(nbrs_metrics::instruments::counter::Counter::new(
+                    instr_labels,
+                ));
                 if value > 0.0 {
                     c.inc_by(value as u64);
                 }
@@ -6519,12 +7371,14 @@ fn emit_phase_metrics(
             }
         };
         let mut g = target.write().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = g.register_instrument_with_unit(
-            family.clone(), spec.unit.clone(), instrument,
-        ) {
-            crate::diag!(crate::observer::LogLevel::Warn,
+        if let Err(e) =
+            g.register_instrument_with_unit(family.clone(), spec.unit.clone(), instrument)
+        {
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
                 "phase '{phase_name}' metric '{name}': instrument registration \
-                 for family '{family}': {e}");
+                 for family '{family}': {e}"
+            );
         }
     }
     Ok(())
@@ -6575,8 +7429,6 @@ fn phase_identity_for(phase_name: &str, phase_labels: &str) -> crate::checkpoint
 // the path here would just be alias chrome; consumers in this crate
 // import it directly from `polydat::kernel`.
 
-
-
 /// SRD 71: decode a cursor's `over` clause result into a
 /// concrete `(start_ord, end_ord)` narrowing range against the
 /// cursor's declared extent.
@@ -6617,8 +7469,8 @@ fn resolve_over(
     extent: u64,
     open_extent: bool,
 ) -> Result<Option<polydat::iteration::cursor_partition::Partition>, String> {
-    use polydat::iteration::cursor_partition::{parse, resolve, Partition};
     use polydat::ast::Value;
+    use polydat::iteration::cursor_partition::{Partition, parse, resolve};
 
     let single_of = |parts: Vec<Partition>| -> Result<Partition, String> {
         match parts.len() {
@@ -6652,7 +7504,7 @@ fn resolve_over(
             return *p;
         }
         let start_ord = ((p.start_pct / 100.0) * extent as f64).round() as u64;
-        let end_ord   = ((p.end_pct   / 100.0) * extent as f64).round() as u64;
+        let end_ord = ((p.end_pct / 100.0) * extent as f64).round() as u64;
         Partition {
             idx: p.idx,
             count: p.count,
@@ -6669,7 +7521,8 @@ fn resolve_over(
          partition spec against — its declared size is just the per-pass \
          base chunk. Resolve the spec against an explicit reference extent \
          first (`for: \"p in partitions(<spec>, <extent>)\"`) and declare \
-         the cursor `over p`".to_string()
+         the cursor `over p`"
+            .to_string()
     };
 
     match value {

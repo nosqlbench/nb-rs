@@ -23,8 +23,16 @@ use crate::observer::{LogLevel, PhaseProgressUpdate, RunObserver};
 /// One phase's terminal record captured by a [`HeadlessObserver`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PhaseRecord {
-    Completed { name: String, labels: String, duration_secs: f64 },
-    Failed { name: String, labels: String, error: String },
+    Completed {
+        name: String,
+        labels: String,
+        duration_secs: f64,
+    },
+    Failed {
+        name: String,
+        labels: String,
+        error: String,
+    },
 }
 
 /// What one execution produced, returned by [`run_executions_concurrent`].
@@ -50,7 +58,10 @@ pub struct HeadlessObserver {
 
 impl HeadlessObserver {
     pub fn new() -> Self {
-        Self { phases: Mutex::new(Vec::new()), logs: Mutex::new(Vec::new()) }
+        Self {
+            phases: Mutex::new(Vec::new()),
+            logs: Mutex::new(Vec::new()),
+        }
     }
 
     fn take(&self) -> (Vec<PhaseRecord>, Vec<String>) {
@@ -67,22 +78,49 @@ impl Default for HeadlessObserver {
 }
 
 impl RunObserver for HeadlessObserver {
-    fn phase_starting(&self, _scene_node_id: crate::scene_tree::SceneNodeId, _name: &str, _labels: &str, _ops: usize, _cycles: u64, _conc: usize) {}
-
-    fn phase_completed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
-        self.phases.lock().unwrap_or_else(|e| e.into_inner()).push(PhaseRecord::Completed {
-            name: name.to_string(),
-            labels: labels.to_string(),
-            duration_secs,
-        });
+    fn phase_starting(
+        &self,
+        _scene_node_id: crate::scene_tree::SceneNodeId,
+        _name: &str,
+        _labels: &str,
+        _ops: usize,
+        _cycles: u64,
+        _conc: usize,
+    ) {
     }
 
-    fn phase_failed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
-        self.phases.lock().unwrap_or_else(|e| e.into_inner()).push(PhaseRecord::Failed {
-            name: name.to_string(),
-            labels: labels.to_string(),
-            error: error.to_string(),
-        });
+    fn phase_completed(
+        &self,
+        _scene_node_id: crate::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        duration_secs: f64,
+    ) {
+        self.phases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(PhaseRecord::Completed {
+                name: name.to_string(),
+                labels: labels.to_string(),
+                duration_secs,
+            });
+    }
+
+    fn phase_failed(
+        &self,
+        _scene_node_id: crate::scene_tree::SceneNodeId,
+        name: &str,
+        labels: &str,
+        error: &str,
+    ) {
+        self.phases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(PhaseRecord::Failed {
+                name: name.to_string(),
+                labels: labels.to_string(),
+                error: error.to_string(),
+            });
     }
 
     fn phase_progress(&self, _update: &PhaseProgressUpdate) {}
@@ -90,7 +128,10 @@ impl RunObserver for HeadlessObserver {
     fn run_finished(&self) {}
 
     fn log(&self, _level: LogLevel, message: &str) {
-        self.logs.lock().unwrap_or_else(|e| e.into_inner()).push(message.to_string());
+        self.logs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(message.to_string());
     }
 }
 
@@ -121,5 +162,12 @@ pub async fn run_workload_headless(args: &[String]) -> (ExecutionOutcome, Result
     )
     .await;
     let (phases, logs) = obs.take();
-    (ExecutionOutcome { exec_id, phases, logs }, result)
+    (
+        ExecutionOutcome {
+            exec_id,
+            phases,
+            logs,
+        },
+        result,
+    )
 }

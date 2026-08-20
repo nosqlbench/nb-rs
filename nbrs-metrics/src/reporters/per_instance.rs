@@ -74,7 +74,9 @@ impl Reporter for PerInstanceReporter {
             let name = family.name();
             for metric in family.metrics() {
                 let labels = metric.labels();
-                let Some(point) = metric.point() else { continue };
+                let Some(point) = metric.point() else {
+                    continue;
+                };
                 let line = render_record(now_ms, name, labels, point.value());
                 let key = instance_filename(name, labels);
                 let path = self.dir.join(format!("{key}.jsonl"));
@@ -123,7 +125,9 @@ fn instance_filename(name: &str, labels: &Labels) -> String {
 /// input becomes `_` so the resulting filename always has a
 /// non-empty token between separators.
 fn sanitize(s: &str) -> String {
-    if s.is_empty() { return "_".to_string(); }
+    if s.is_empty() {
+        return "_".to_string();
+    }
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
@@ -144,7 +148,12 @@ fn sanitize(s: &str) -> String {
 /// `pub(crate)` so the single-file metrics log renders byte-identical records to
 /// the per-instance files: the two differ only in how records are routed to
 /// files, never in their shape, so a consumer can parse either with one reader.
-pub(crate) fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &MetricValue) -> String {
+pub(crate) fn render_record(
+    now_ms: i64,
+    name: &str,
+    labels: &Labels,
+    value: &MetricValue,
+) -> String {
     let mut out = String::with_capacity(128);
     out.push('{');
     write_kv(&mut out, "ts", &now_ms.to_string(), false);
@@ -154,7 +163,9 @@ pub(crate) fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &Me
     out.push_str("\"labels\":{");
     let mut first = true;
     for (k, v) in labels.iter() {
-        if !first { out.push(','); }
+        if !first {
+            out.push(',');
+        }
         first = false;
         write_kv(&mut out, k, v, true);
     }
@@ -187,13 +198,21 @@ pub(crate) fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &Me
             out.push(',');
             write_kv(&mut out, "stddev", &format_f64(r.stdev()), false);
             for (label, q) in &[
-                ("p50", 0.50), ("p75", 0.75), ("p90", 0.90),
-                ("p95", 0.95), ("p98", 0.98), ("p99", 0.99),
+                ("p50", 0.50),
+                ("p75", 0.75),
+                ("p90", 0.90),
+                ("p95", 0.95),
+                ("p98", 0.98),
+                ("p99", 0.99),
                 ("p999", 0.999),
             ] {
                 out.push(',');
-                write_kv(&mut out, label,
-                    &format_f64(r.value_at_quantile(*q) as f64), false);
+                write_kv(
+                    &mut out,
+                    label,
+                    &format_f64(r.value_at_quantile(*q) as f64),
+                    false,
+                );
             }
         }
         MetricValue::BucketedHistogram(h) => {
@@ -202,7 +221,9 @@ pub(crate) fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &Me
             out.push_str(",\"buckets\":[");
             let mut first = true;
             for (bound, count) in &h.buckets {
-                if !first { out.push(','); }
+                if !first {
+                    out.push(',');
+                }
                 first = false;
                 let le = match bound {
                     BucketBound::Finite(v) => format_f64(*v as f64),
@@ -224,9 +245,16 @@ pub(crate) fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &Me
             out.push_str(",\"states\":{");
             let mut first = true;
             for (state, active) in &s.states {
-                if !first { out.push(','); }
+                if !first {
+                    out.push(',');
+                }
                 first = false;
-                write_kv(&mut out, state, if *active { "true" } else { "false" }, false);
+                write_kv(
+                    &mut out,
+                    state,
+                    if *active { "true" } else { "false" },
+                    false,
+                );
             }
             out.push('}');
         }
@@ -267,7 +295,9 @@ fn escape_into(out: &mut String, s: &str) {
 /// values render with `{:?}` so a sensible precision survives
 /// without sticking trailing zeros on whole numbers.
 fn format_f64(v: f64) -> String {
-    if !v.is_finite() { return "null".to_string(); }
+    if !v.is_finite() {
+        return "null".to_string();
+    }
     if v == v.trunc() && v.abs() < 1e16 {
         format!("{}", v as i64)
     } else {

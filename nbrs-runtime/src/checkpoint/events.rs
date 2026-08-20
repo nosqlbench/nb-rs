@@ -63,10 +63,7 @@ pub enum CheckpointData {
     },
 
     /// Mark a declared phase as Running.
-    PhaseStarted {
-        at: String,
-        identity: PhaseIdentity,
-    },
+    PhaseStarted { at: String, identity: PhaseIdentity },
 
     /// Periodic op-count + cursor-state update for a Running
     /// phase. Replaces the in-place mutation of
@@ -180,9 +177,7 @@ impl CheckpointData {
             Self::PhaseProgress { .. } => Some(EventType::Update),
             // Both terminal states fire the phase-end slot
             // (`phase_outcome` / `error_readout` bind there).
-            Self::PhaseCompleted { .. } | Self::PhaseFailed { .. } => {
-                Some(EventType::PhaseEnd)
-            }
+            Self::PhaseCompleted { .. } | Self::PhaseFailed { .. } => Some(EventType::PhaseEnd),
             // Metadata update — binds the program hash, no fire.
             Self::PhaseHash { .. } => None,
             Self::ScopeEnter { .. } => Some(EventType::ScopeStart),

@@ -54,7 +54,9 @@ pub fn parse_overrides(args: &[String]) -> Result<Vec<PhaseParamOverride>, Strin
     for arg in args {
         let unquoted = crate::runner::elide_outer_quotes(arg.as_str());
         let stripped = unquoted.trim_start_matches('-');
-        let Some(eq_pos) = stripped.find('=') else { continue };
+        let Some(eq_pos) = stripped.find('=') else {
+            continue;
+        };
         let key = &stripped[..eq_pos];
         if !key.contains('.') {
             continue;
@@ -66,16 +68,17 @@ pub fn parse_overrides(args: &[String]) -> Result<Vec<PhaseParamOverride>, Strin
             continue;
         }
         let value = crate::runner::elide_outer_quotes(&stripped[eq_pos + 1..]).to_string();
-        let Some((pattern_src, param)) = key.rsplit_once('.') else { continue };
+        let Some((pattern_src, param)) = key.rsplit_once('.') else {
+            continue;
+        };
         if pattern_src.is_empty() || param.is_empty() {
             return Err(format!(
                 "phase-scoped override `{key}=` needs both a phase pattern and a \
                  param name: `<phase-pattern>.<param>=<value>`"
             ));
         }
-        let pattern = PhasePattern::parse(pattern_src).map_err(|e| {
-            format!("phase-scoped override `{key}=`: {e}")
-        })?;
+        let pattern = PhasePattern::parse(pattern_src)
+            .map_err(|e| format!("phase-scoped override `{key}=`: {e}"))?;
         out.push(PhaseParamOverride {
             pattern,
             param: param.to_string(),
@@ -100,7 +103,9 @@ pub fn validate_against_phases<'a>(
                 "phase-scoped override `{}.{}=…` matches no phase \
                  (dialect: {}). Check the pattern against the workload's \
                  phase names.",
-                ov.pattern.source(), ov.param, ov.pattern.dialect().as_str(),
+                ov.pattern.source(),
+                ov.param,
+                ov.pattern.dialect().as_str(),
             ));
         }
     }
@@ -144,17 +149,17 @@ pub fn resolve_for_phase<'a>(
                     // param: ambiguous — the operator must
                     // disambiguate.
                     _ => {
-                        if prev.pattern.source() != ov.pattern.source()
-                            || prev.value != ov.value
-                        {
+                        if prev.pattern.source() != ov.pattern.source() || prev.value != ov.value {
                             return Err(format!(
                                 "ambiguous phase-scoped overrides for param `{}` on \
                                  phase `{phase_name}`: both `{}.{}=` and `{}.{}=` \
                                  match. Disambiguate the patterns (an exact phase \
                                  name beats a glob).",
                                 ov.param,
-                                prev.pattern.source(), prev.param,
-                                ov.pattern.source(), ov.param,
+                                prev.pattern.source(),
+                                prev.param,
+                                ov.pattern.source(),
+                                ov.param,
                             ));
                         }
                     }
@@ -180,7 +185,8 @@ mod tests {
             "cursor=0..50%",
             "phase42.cursor=fib:7",
             "*_query.cursor=0..10%",
-        ])).unwrap();
+        ]))
+        .unwrap();
         assert_eq!(ovs.len(), 2);
         assert_eq!(ovs[0].pattern.source(), "phase42");
         assert_eq!(ovs[0].param, "cursor");
@@ -210,10 +216,8 @@ mod tests {
 
     #[test]
     fn exact_beats_glob_for_same_param() {
-        let ovs = parse_overrides(&args(&[
-            "*_query.cursor=0..10%",
-            "ann_query.cursor=fib:7",
-        ])).unwrap();
+        let ovs =
+            parse_overrides(&args(&["*_query.cursor=0..10%", "ann_query.cursor=fib:7"])).unwrap();
         let chosen = resolve_for_phase(&ovs, "ann_query").unwrap();
         assert_eq!(chosen.len(), 1);
         assert_eq!(chosen[0].0.value, "fib:7");
@@ -225,20 +229,15 @@ mod tests {
 
     #[test]
     fn two_globs_matching_same_phase_is_ambiguous() {
-        let ovs = parse_overrides(&args(&[
-            "ann_*.cursor=0..10%",
-            "*_query.cursor=0..20%",
-        ])).unwrap();
+        let ovs =
+            parse_overrides(&args(&["ann_*.cursor=0..10%", "*_query.cursor=0..20%"])).unwrap();
         let err = resolve_for_phase(&ovs, "ann_query").unwrap_err();
         assert!(err.contains("ambiguous"), "diagnostic: {err}");
     }
 
     #[test]
     fn distinct_params_resolve_independently() {
-        let ovs = parse_overrides(&args(&[
-            "ann_query.cursor=fib:7",
-            "ann_query.k=100",
-        ])).unwrap();
+        let ovs = parse_overrides(&args(&["ann_query.cursor=fib:7", "ann_query.k=100"])).unwrap();
         let mut chosen = resolve_for_phase(&ovs, "ann_query").unwrap();
         chosen.sort_by_key(|(ov, _)| ov.param.clone());
         assert_eq!(chosen.len(), 2);

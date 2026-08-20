@@ -39,7 +39,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// Merge `inputs` into a single temp db. Returns the path of
 /// the temp db. The temp file persists for the process lifetime
@@ -83,12 +83,15 @@ pub fn merge_dbs(inputs: &[PathBuf]) -> Result<PathBuf, String> {
             .unwrap_or_default(),
     ));
     // Step 1: byte-copy the first input.
-    std::fs::copy(&inputs[0], &temp_path)
-        .map_err(|e| format!("copy '{}' → '{}': {e}",
-            inputs[0].display(), temp_path.display()))?;
+    std::fs::copy(&inputs[0], &temp_path).map_err(|e| {
+        format!(
+            "copy '{}' → '{}': {e}",
+            inputs[0].display(),
+            temp_path.display()
+        )
+    })?;
 
-    let conn = Connection::open(&temp_path)
-        .map_err(|e| format!("open merged db: {e}"))?;
+    let conn = Connection::open(&temp_path).map_err(|e| format!("open merged db: {e}"))?;
 
     // The merged db is a disposable temp file — it is read once by the renderer
     // and never recovered after a crash — so durability buys nothing here while
@@ -99,13 +102,11 @@ pub fn merge_dbs(inputs: &[PathBuf]) -> Result<PathBuf, String> {
     // Step 2: strip session labels from the seed db's
     // metric_instance.spec. Done in-place so subsequent
     // inserts with stripped specs collide.
-    strip_session_labels_in_place(&conn)
-        .map_err(|e| format!("strip session labels: {e}"))?;
+    strip_session_labels_in_place(&conn).map_err(|e| format!("strip session labels: {e}"))?;
 
     // Steps 3a–e: merge each remaining input.
     for src_path in &inputs[1..] {
-        merge_one(&conn, src_path)
-            .map_err(|e| format!("merge '{}': {e}", src_path.display()))?;
+        merge_one(&conn, src_path).map_err(|e| format!("merge '{}': {e}", src_path.display()))?;
     }
 
     Ok(temp_path)
@@ -145,12 +146,20 @@ fn strip_session_labels_in_place(conn: &Connection) -> rusqlite::Result<()> {
 /// commas wouldn't fool the splitter — but in practice session
 /// values are session-id strings without internal commas.
 pub fn strip_session_label(spec: &str) -> String {
-    let Some(open) = spec.find('{') else { return spec.to_string(); };
-    let Some(close) = spec.rfind('}') else { return spec.to_string(); };
-    if close <= open + 1 { return spec.to_string(); }
+    let Some(open) = spec.find('{') else {
+        return spec.to_string();
+    };
+    let Some(close) = spec.rfind('}') else {
+        return spec.to_string();
+    };
+    if close <= open + 1 {
+        return spec.to_string();
+    }
     let body = &spec[open + 1..close];
     let parts: Vec<&str> = body.split(',').collect();
-    let kept: Vec<&str> = parts.iter().copied()
+    let kept: Vec<&str> = parts
+        .iter()
+        .copied()
         .filter(|p| {
             let p = p.trim_start();
             !p.starts_with("session=")
@@ -164,8 +173,10 @@ pub fn strip_session_label(spec: &str) -> String {
 }
 
 fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
-    merged.execute("ATTACH DATABASE ? AS src",
-        params![src_path.to_string_lossy().as_ref()])?;
+    merged.execute(
+        "ATTACH DATABASE ? AS src",
+        params![src_path.to_string_lossy().as_ref()],
+    )?;
     // Every insert below runs in ONE transaction. The `sample_value` copy is one
     // statement per sample row, so autocommit made it one durable write per
     // sample — the reason a two-db merge read as a hang rather than a wait.
@@ -194,15 +205,17 @@ fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
     let mut select = merged.prepare(
         "SELECT mi.id, mi.spec, mf.name, mf.type \
          FROM src.metric_instance mi \
-         JOIN src.metric_family mf ON mi.family_id = mf.id"
+         JOIN src.metric_family mf ON mi.family_id = mf.id",
     )?;
     let src_rows: Vec<(i64, String, String, String)> = select
-        .query_map([], |r| Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-        )))?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     drop(select);
@@ -211,14 +224,13 @@ fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
         "INSERT OR IGNORE INTO main.metric_instance (family_id, spec) \
          VALUES (\
            (SELECT id FROM main.metric_family WHERE name = ?1 AND type = ?2), \
-           ?3)"
+           ?3)",
     )?;
-    let mut find_merged_id = merged.prepare(
-        "SELECT id FROM main.metric_instance WHERE spec = ?1"
-    )?;
+    let mut find_merged_id =
+        merged.prepare("SELECT id FROM main.metric_instance WHERE spec = ?1")?;
     let mut copy_labels = merged.prepare(
         "INSERT OR IGNORE INTO main.instance_label (instance_id, key, value) \
-         SELECT ?1, key, value FROM src.instance_label WHERE instance_id = ?2"
+         SELECT ?1, key, value FROM src.instance_label WHERE instance_id = ?2",
     )?;
 
     let mut remap: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
@@ -237,18 +249,20 @@ fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
     let mut select_sv = merged.prepare(
         "SELECT instance_id, timestamp_ms, interval_ms, count, sum, min, max, mean, \
                 stddev, p50, p75, p90, p95, p98, p99, p999 \
-         FROM src.sample_value"
+         FROM src.sample_value",
     )?;
     let mut insert_sv = merged.prepare(
         "INSERT INTO main.sample_value \
          (instance_id, timestamp_ms, interval_ms, count, sum, min, max, mean, \
           stddev, p50, p75, p90, p95, p98, p99, p999) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )?;
     let mut sv_iter = select_sv.query([])?;
     while let Some(r) = sv_iter.next()? {
         let src_id: i64 = r.get(0)?;
-        let Some(&new_id) = remap.get(&src_id) else { continue; };
+        let Some(&new_id) = remap.get(&src_id) else {
+            continue;
+        };
         insert_sv.execute(params![
             new_id,
             r.get::<_, i64>(1)?,
@@ -302,13 +316,15 @@ mod tests {
     #[test]
     fn merges_two_populated_dbs() {
         use nbrs_metrics::labels::Labels;
-        use nbrs_metrics::snapshot::MetricSet;
         use nbrs_metrics::reporters::sqlite::SqliteReporter;
         use nbrs_metrics::scheduler::Reporter;
+        use nbrs_metrics::snapshot::MetricSet;
         use std::time::{Duration, Instant};
 
         let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!("nbrs-merge-test-{n:x}"));
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -334,22 +350,34 @@ mod tests {
         let merged = merge_dbs(&paths).expect("merge should succeed");
         let conn = Connection::open(&merged).unwrap();
 
-        let instances: i64 = conn.query_row(
-            "SELECT count(*) FROM metric_instance WHERE spec LIKE 'recall_mean%'",
-            [], |r| r.get(0)).unwrap();
-        assert_eq!(instances, 1,
-            "the two sessions' identical label set must collapse to one instance");
+        let instances: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM metric_instance WHERE spec LIKE 'recall_mean%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            instances, 1,
+            "the two sessions' identical label set must collapse to one instance"
+        );
 
-        let samples: i64 = conn.query_row(
-            "SELECT count(*) FROM sample_value", [], |r| r.get(0)).unwrap();
+        let samples: i64 = conn
+            .query_row("SELECT count(*) FROM sample_value", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(samples, 2, "both sessions' samples must survive the merge");
 
         let specs: Vec<String> = conn
-            .prepare("SELECT spec FROM metric_instance").unwrap()
-            .query_map([], |r| r.get(0)).unwrap()
-            .filter_map(|r| r.ok()).collect();
-        assert!(specs.iter().all(|s| !s.contains("session=")),
-            "session labels must be stripped on both sides: {specs:?}");
+            .prepare("SELECT spec FROM metric_instance")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            specs.iter().all(|s| !s.contains("session=")),
+            "session labels must be stripped on both sides: {specs:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&merged);

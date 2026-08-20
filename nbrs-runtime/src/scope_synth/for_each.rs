@@ -33,9 +33,9 @@
 use std::collections::HashSet;
 
 use polydat::iteration::comprehension::pre_evaluate_clause;
-use polydat::kernel::{PolydatKernel, ManifestEntry};
+use polydat::kernel::{ManifestEntry, PolydatKernel};
 
-use super::cascade::{cascade_parent_into_source, CascadeInputs, CascadeOutputs};
+use super::cascade::{CascadeInputs, CascadeOutputs, cascade_parent_into_source};
 use super::helpers::{collect_leaf_placeholders, scan_one};
 
 /// Synthesize and compile a Polydat Kernel for a for-each scope.
@@ -89,8 +89,7 @@ pub fn build_for_each_scope_kernel(
     // `probes` holds the first probe-value per iter-var (used
     // for cross-clause substitution); `all_referenced` accumulates
     // every placeholder discovered along the way.
-    let mut probes: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut probes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut all_referenced: HashSet<String> = collect_leaf_placeholders(&spec_exprs);
     for (idx, var) in iter_vars.iter().enumerate() {
         if emitted.contains(var) {

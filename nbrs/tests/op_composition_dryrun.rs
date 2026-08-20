@@ -48,8 +48,7 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-dryrun-{tag}-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-dryrun-{tag}-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
         Self { parent }
     }
@@ -97,14 +96,14 @@ fn run(args: &[&str], tag: &str) -> (String, String, bool) {
 /// non-trivial signal to negate.
 #[test]
 fn baseline_inner_adapter_fires_and_writes_stdout() {
-    let (stdout, stderr, ok) = run(
-        &["op=test {{cycle}}", "cycles=3"],
-        "baseline-fires",
-    );
+    let (stdout, stderr, ok) = run(&["op=test {{cycle}}", "cycles=3"], "baseline-fires");
     assert!(ok, "nbrs run failed: stderr={stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines, vec!["test 0", "test 1", "test 2"],
-        "baseline must produce 3 stdout lines; got: {stdout:?}");
+    assert_eq!(
+        lines,
+        vec!["test 0", "test 1", "test 2"],
+        "baseline must produce 3 stdout lines; got: {stdout:?}"
+    );
 }
 
 /// Load-bearing: `dryrun=cycle` MUST short-circuit before the
@@ -124,10 +123,12 @@ fn dryrun_cycle_short_circuits_inner_adapter() {
     // executes; under dryrun=cycle it MUST NOT fire at all. Any
     // `test <n>` line means DRYRUN failed to short-circuit.
     for line in stdout.lines() {
-        assert!(!line.starts_with("test "),
+        assert!(
+            !line.starts_with("test "),
             "inner adapter fired in dryrun=cycle (saw `{line}`); \
              DRYRUN wrapper failed to short-circuit. \
-             Full stdout: {stdout:?}");
+             Full stdout: {stdout:?}"
+        );
     }
 }
 
@@ -148,9 +149,11 @@ fn dryrun_dispenser_builds_dispensers_without_running_cycles() {
     assert!(ok, "nbrs run failed in dryrun=dispenser: stderr={stderr}");
     // No per-cycle output — cycles never ran.
     for line in stdout.lines() {
-        assert!(!line.starts_with("test "),
+        assert!(
+            !line.starts_with("test "),
             "dryrun=dispenser MUST NOT fire any cycle; \
-             saw stdout line `{line}`. Full stdout: {stdout:?}");
+             saw stdout line `{line}`. Full stdout: {stdout:?}"
+        );
     }
     // The construction-confirmation log line from
     // `Activity::run_with_adapters`'s
@@ -203,7 +206,9 @@ fn dryrun_phase_does_not_build_dispensers() {
 #[test]
 fn dryrun_cycle_skips_failing_verify_clause() {
     let dir = SessionDir::new("dryrun-skips-verify");
-    let workload = write_workload(&dir.parent, r#"
+    let workload = write_workload(
+        &dir.parent,
+        r#"
 phases:
   always_fail:
     cycles: 1
@@ -215,13 +220,15 @@ phases:
           - field: nonexistent_field_that_should_fail
             eq: "expected_value"
         strict: true
-"#);
+"#,
+    );
 
     let output = nbrs()
         .args(["run"])
         .arg(format!("workload={}", workload.display()))
         .arg("dryrun=cycle")
-        .arg("--session-path").arg(dir.session_path())
+        .arg("--session-path")
+        .arg(dir.session_path())
         .output()
         .expect("nbrs run");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -232,9 +239,11 @@ phases:
     // `validation_failed` error in the output signals the
     // composition is wrong.
     let combined = format!("{stdout}\n{stderr}");
-    assert!(!combined.contains("validation_failed"),
+    assert!(
+        !combined.contains("validation_failed"),
         "validate wrapper fired in dryrun=cycle — DRYRUN failed \
-         to short-circuit. Combined output:\n{combined}");
+         to short-circuit. Combined output:\n{combined}"
+    );
 }
 
 // =====================================================
@@ -255,7 +264,9 @@ phases:
 #[test]
 fn dryrun_cycle_with_memo_coexists_no_constraint_error() {
     let dir = SessionDir::new("dryrun-memo");
-    let workload = write_workload(&dir.parent, r#"
+    let workload = write_workload(
+        &dir.parent,
+        r#"
 phases:
   with_memo:
     cycles: 1
@@ -266,26 +277,32 @@ phases:
         memo:
           before: "starting memoized_op"
           after:  "finished memoized_op"
-"#);
+"#,
+    );
 
     let output = nbrs()
         .args(["run"])
         .arg(format!("workload={}", workload.display()))
         .arg("dryrun=cycle")
-        .arg("--session-path").arg(dir.session_path())
+        .arg("--session-path")
+        .arg(dir.session_path())
         .output()
         .expect("nbrs run");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = format!("{stdout}\n{stderr}");
 
-    assert!(output.status.success(),
-        "nbrs failed with memo+dryrun: combined:\n{combined}");
+    assert!(
+        output.status.success(),
+        "nbrs failed with memo+dryrun: combined:\n{combined}"
+    );
     // The specific error the ordering bug produced; if any
     // future regression places dryrun inside memo this assert
     // catches it.
-    assert!(!combined.contains("was placed outside `dryrun`"),
+    assert!(
+        !combined.contains("was placed outside `dryrun`"),
         "wrapper resolver rejected memo+dryrun composition — \
          the default-order tiebreaker likely lost `memo`'s \
-         entry. Combined output:\n{combined}");
+         entry. Combined output:\n{combined}"
+    );
 }

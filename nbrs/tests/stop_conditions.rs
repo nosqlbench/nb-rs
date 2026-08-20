@@ -45,8 +45,10 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs-stopcond-{tag}-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "nbrs-stopcond-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).expect("create sandbox");
         Self { dir }
     }
@@ -81,8 +83,7 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
     // surface, so in-run diagnostics (e.g. the graceful "workload stop
     // condition tripped" line) land in session.log and are suppressed
     // from the console; failure-path reasons still print post-run.
-    let session_log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
     evidence.push_str(&session_log);
@@ -120,22 +121,27 @@ fn phase_timeout_is_out_of_range_not_generic_failure() {
         .arg(&session);
     let out = cmd.output().expect("run nbrs");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let session_log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
     evidence.push_str(&session_log);
 
-    assert!(!out.status.success(),
-        "a governance timeout is a failed run (non-zero exit); evidence:\n{evidence}");
+    assert!(
+        !out.status.success(),
+        "a governance timeout is a failed run (non-zero exit); evidence:\n{evidence}"
+    );
     let ticks = count_lines(&stdout, "TIMEOUT_TICK");
-    assert!(ticks > 0 && ticks < 400,
-        "expected an early time-based cut, got {ticks} ops\nevidence:\n{evidence}");
-    assert!(evidence.contains("timeout=150ms") && evidence.contains("synthesized"),
-        "the desugared guard must be announced; evidence:\n{evidence}");
+    assert!(
+        ticks > 0 && ticks < 400,
+        "expected an early time-based cut, got {ticks} ops\nevidence:\n{evidence}"
+    );
+    assert!(
+        evidence.contains("timeout=150ms") && evidence.contains("synthesized"),
+        "the desugared guard must be announced; evidence:\n{evidence}"
+    );
 
-    let conn = rusqlite::Connection::open(session.join("metrics.db"))
-        .expect("open session metrics.db");
+    let conn =
+        rusqlite::Connection::open(session.join("metrics.db")).expect("open session metrics.db");
     let (status, reason_class): (String, Option<String>) = conn
         .query_row(
             "SELECT status, reason_class FROM phase_outcomes \
@@ -144,10 +150,15 @@ fn phase_timeout_is_out_of_range_not_generic_failure() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("phase_timeout_trip outcome row");
-    assert_eq!(status, "failed",
-        "a governance timeout fails the phase (Interrupted+Failed)");
-    assert_eq!(reason_class.as_deref(), Some("timeout"),
-        "the OUT-OF-RANGE disposition must be class-distinguishable");
+    assert_eq!(
+        status, "failed",
+        "a governance timeout fails the phase (Interrupted+Failed)"
+    );
+    assert_eq!(
+        reason_class.as_deref(),
+        Some("timeout"),
+        "the OUT-OF-RANGE disposition must be class-distinguishable"
+    );
 }
 
 // ─── Phase shell — graceful `effect: stop` (SRD-83 Part 5) ────────
@@ -175,36 +186,49 @@ fn phase_graceful_stop_exits_zero_and_keeps_metrics() {
         .arg(&session);
     let out = cmd.output().expect("run nbrs");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let session_log = std::fs::read_to_string(session.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session.join("session.log")).unwrap_or_default();
     let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
     evidence.push('\n');
     evidence.push_str(&session_log);
 
-    assert!(out.status.success(),
-        "a graceful `effect: stop` trip must exit zero; evidence:\n{evidence}");
+    assert!(
+        out.status.success(),
+        "a graceful `effect: stop` trip must exit zero; evidence:\n{evidence}"
+    );
     let ticks = count_lines(&stdout, "GRACEFUL_TICK");
-    assert!(ticks > 25,
-        "expected the phase to pass cycles_total=25 before stopping, got {ticks}");
-    assert!(ticks < 300,
-        "expected an early stop, not ~600 ops; got {ticks}\nevidence:\n{evidence}");
-    assert!(evidence.contains("stopping phase"),
-        "the graceful trip must log its 'stopping phase' line; evidence:\n{evidence}");
-    assert!(!evidence.contains("failing phase"),
-        "a graceful trip must not take the failure path; evidence:\n{evidence}");
+    assert!(
+        ticks > 25,
+        "expected the phase to pass cycles_total=25 before stopping, got {ticks}"
+    );
+    assert!(
+        ticks < 300,
+        "expected an early stop, not ~600 ops; got {ticks}\nevidence:\n{evidence}"
+    );
+    assert!(
+        evidence.contains("stopping phase"),
+        "the graceful trip must log its 'stopping phase' line; evidence:\n{evidence}"
+    );
+    assert!(
+        !evidence.contains("failing phase"),
+        "a graceful trip must not take the failure path; evidence:\n{evidence}"
+    );
 
     // Checkpoint: recorded as completed, never as failed.
     let checkpoint = std::fs::read_to_string(session.join("checkpoint.jsonl"))
         .expect("session checkpoint.jsonl");
-    assert!(checkpoint.contains("phase_completed"),
-        "checkpoint must record phase_completed; got:\n{checkpoint}");
-    assert!(!checkpoint.contains("phase_failed"),
-        "checkpoint must not record phase_failed; got:\n{checkpoint}");
+    assert!(
+        checkpoint.contains("phase_completed"),
+        "checkpoint must record phase_completed; got:\n{checkpoint}"
+    );
+    assert!(
+        !checkpoint.contains("phase_failed"),
+        "checkpoint must not record phase_failed; got:\n{checkpoint}"
+    );
 
     // Persisted outcome row: the SRD-83 Part 5 axes — Interrupted +
     // Succeeded — serialize as the stable label `interrupted`.
-    let conn = rusqlite::Connection::open(session.join("metrics.db"))
-        .expect("open session metrics.db");
+    let conn =
+        rusqlite::Connection::open(session.join("metrics.db")).expect("open session metrics.db");
     let status: String = conn
         .query_row(
             "SELECT status FROM phase_outcomes WHERE phase_name = 'phase_graceful_trip'",
@@ -212,8 +236,10 @@ fn phase_graceful_stop_exits_zero_and_keeps_metrics() {
             |r| r.get(0),
         )
         .expect("phase_graceful_trip outcome row");
-    assert_eq!(status, "interrupted",
-        "a graceful stop must record Interrupted+Succeeded (label `interrupted`)");
+    assert_eq!(
+        status, "interrupted",
+        "a graceful stop must record Interrupted+Succeeded (label `interrupted`)"
+    );
 
     // Phase `metrics:` emission survived the graceful stop.
     let families: i64 = conn
@@ -223,8 +249,10 @@ fn phase_graceful_stop_exits_zero_and_keeps_metrics() {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    assert!(families > 0,
-        "the phase metric `graceful_phase_ms` must be emitted on a graceful stop");
+    assert!(
+        families > 0,
+        "the phase metric `graceful_phase_ms` must be emitted on a graceful stop"
+    );
 }
 
 // ─── Phase shell ──────────────────────────────────────────────────
@@ -235,17 +263,30 @@ fn phase_graceful_stop_exits_zero_and_keeps_metrics() {
 #[test]
 fn phase_cycles_total_trips_and_fails() {
     let (stdout, stderr, ok) = run_scenario("phase_cycles_total");
-    assert!(!ok, "a tripped phase stop condition must fail the run; stderr:\n{stderr}");
+    assert!(
+        !ok,
+        "a tripped phase stop condition must fail the run; stderr:\n{stderr}"
+    );
     let ticks = count_lines(&stdout, "OP_TICK");
     // Crossed the threshold (> 25 ⇒ at least 26 ops ran) but stopped
     // far short of the 600-cycle ceiling. The loose upper bound
     // absorbs drain-loop timing slop without flaking.
-    assert!(ticks > 25, "expected the phase to pass cycles_total=25 before stopping, got {ticks}");
-    assert!(ticks < 300, "expected an early stop, not ~600 ops; got {ticks}\nstderr:\n{stderr}");
-    assert!(stderr.contains("stop condition tripped"),
-        "expected the stop-condition reason on stderr:\n{stderr}");
-    assert!(stderr.contains("cycles_total > 25"),
-        "expected the tripping predicate in the reason:\n{stderr}");
+    assert!(
+        ticks > 25,
+        "expected the phase to pass cycles_total=25 before stopping, got {ticks}"
+    );
+    assert!(
+        ticks < 300,
+        "expected an early stop, not ~600 ops; got {ticks}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("stop condition tripped"),
+        "expected the stop-condition reason on stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cycles_total > 25"),
+        "expected the tripping predicate in the reason:\n{stderr}"
+    );
 }
 
 /// `elapsed_ms > 150` trips on the phase wall clock, not an op count —
@@ -254,14 +295,27 @@ fn phase_cycles_total_trips_and_fails() {
 #[test]
 fn phase_elapsed_ms_trips_on_wall_clock() {
     let (stdout, stderr, ok) = run_scenario("phase_elapsed_ms");
-    assert!(!ok, "a tripped phase stop condition must fail the run; stderr:\n{stderr}");
+    assert!(
+        !ok,
+        "a tripped phase stop condition must fail the run; stderr:\n{stderr}"
+    );
     let ticks = count_lines(&stdout, "TIME_TICK");
-    assert!(ticks > 0, "the phase should have run some ops before the 150ms stop");
-    assert!(ticks < 400, "expected an early time-based stop, got {ticks} ops\nstderr:\n{stderr}");
-    assert!(stderr.contains("stop condition tripped"),
-        "expected the stop-condition reason on stderr:\n{stderr}");
-    assert!(stderr.contains("elapsed_ms > 150"),
-        "expected the tripping predicate in the reason:\n{stderr}");
+    assert!(
+        ticks > 0,
+        "the phase should have run some ops before the 150ms stop"
+    );
+    assert!(
+        ticks < 400,
+        "expected an early time-based stop, got {ticks} ops\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("stop condition tripped"),
+        "expected the stop-condition reason on stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("elapsed_ms > 150"),
+        "expected the tripping predicate in the reason:\n{stderr}"
+    );
 }
 
 // ─── Workload shell ───────────────────────────────────────────────
@@ -272,15 +326,31 @@ fn phase_elapsed_ms_trips_on_wall_clock() {
 #[test]
 fn workload_children_done_halts_remaining_walk() {
     let (stdout, stderr, ok) = run_scenario("workload_children");
-    assert!(ok, "a graceful workload-shell stop should exit zero; stderr:\n{stderr}");
-    assert_eq!(count_lines(&stdout, "STEP_A"), 2,
-        "step_a should run fully; stdout:\n{stdout}");
-    assert_eq!(count_lines(&stdout, "STEP_B"), 2,
-        "step_b should run fully; stdout:\n{stdout}");
-    assert_eq!(count_lines(&stdout, "STEP_C"), 0,
-        "step_c must be skipped once children_done reaches 2; stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(stderr.contains("workload stop condition tripped"),
-        "expected the workload-shell stop log:\n{stderr}");
-    assert!(stderr.contains("children_done >= 2"),
-        "expected the tripping predicate in the reason:\n{stderr}");
+    assert!(
+        ok,
+        "a graceful workload-shell stop should exit zero; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        count_lines(&stdout, "STEP_A"),
+        2,
+        "step_a should run fully; stdout:\n{stdout}"
+    );
+    assert_eq!(
+        count_lines(&stdout, "STEP_B"),
+        2,
+        "step_b should run fully; stdout:\n{stdout}"
+    );
+    assert_eq!(
+        count_lines(&stdout, "STEP_C"),
+        0,
+        "step_c must be skipped once children_done reaches 2; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("workload stop condition tripped"),
+        "expected the workload-shell stop log:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("children_done >= 2"),
+        "expected the tripping predicate in the reason:\n{stderr}"
+    );
 }

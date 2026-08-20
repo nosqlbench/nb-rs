@@ -40,8 +40,6 @@ pub mod testmodels;
 #[cfg(feature = "runtime")]
 pub mod bridge;
 
-pub use optimizer::{
-    AxisImpact, Budget, Objective, Observation, Optimizer, Report, StopReason,
-};
-pub use registry::{by_name, registered_names, OptimizerParams};
+pub use optimizer::{AxisImpact, Budget, Objective, Observation, Optimizer, Report, StopReason};
+pub use registry::{OptimizerParams, by_name, registered_names};
 pub use space::{Axis, AxisKind, Changeover, SearchSpace};

@@ -146,10 +146,10 @@ pub enum DirectiveTarget {
 pub struct KindMask(pub u8);
 
 impl KindMask {
-    pub const PLOT:    KindMask = KindMask(1 << 0);
-    pub const TABLE:   KindMask = KindMask(1 << 1);
-    pub const TEXT:    KindMask = KindMask(1 << 2);
-    pub const FILE:    KindMask = KindMask(1 << 3);
+    pub const PLOT: KindMask = KindMask(1 << 0);
+    pub const TABLE: KindMask = KindMask(1 << 1);
+    pub const TEXT: KindMask = KindMask(1 << 2);
+    pub const FILE: KindMask = KindMask(1 << 3);
     pub const DETAILS: KindMask = KindMask(1 << 4);
 
     /// `Plot ∪ Table` — the figure kinds.
@@ -168,10 +168,10 @@ impl KindMask {
 
 const fn kind_bit(kind: Kind) -> u8 {
     match kind {
-        Kind::Plot    => 1 << 0,
-        Kind::Table   => 1 << 1,
-        Kind::Text    => 1 << 2,
-        Kind::File    => 1 << 3,
+        Kind::Plot => 1 << 0,
+        Kind::Table => 1 << 1,
+        Kind::Text => 1 << 2,
+        Kind::File => 1 << 3,
         Kind::Details => 1 << 4,
     }
 }
@@ -182,9 +182,7 @@ const fn kind_bit(kind: Kind) -> u8 {
 
 /// Aggregation function names accepted by `--agg` /
 /// `agg=<fn>`.
-pub const AGG_FNS: &[&str] = &[
-    "mean", "min", "max", "p50", "p99", "sum", "count",
-];
+pub const AGG_FNS: &[&str] = &["mean", "min", "max", "p50", "p99", "sum", "count"];
 
 /// Palette names. Numeric indices (`0`..`7`) are also
 /// accepted by the parser; completion only offers the
@@ -202,9 +200,7 @@ pub const PALETTE_NAMES: &[&str] = &[
 ];
 
 /// Line-dash styles.
-pub const LINE_STYLES: &[&str] = &[
-    "solid", "dashed", "dotted", "dashdot", "none",
-];
+pub const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted", "dashdot", "none"];
 
 /// Marker shapes. `auto` cycles a distinct shape per series
 /// (literature-style); the rest are explicit shapes.
@@ -261,7 +257,6 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         value: ValueProvider::Text,
         repeatable: false,
     },
-
     // ── Style / cosmetics ────────────────────────────────
     Directive {
         cli_flag: "--palette",
@@ -344,7 +339,6 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         value: ValueProvider::Number,
         repeatable: false,
     },
-
     // ── Data shape (body directives) ─────────────────────
     Directive {
         cli_flag: "--metric",
@@ -391,7 +385,6 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         value: ValueProvider::Closed(AGG_FNS),
         repeatable: false,
     },
-
     // ── Axis labels / scales (plot only) ─────────────────
     Directive {
         cli_flag: "--xlabel",
@@ -429,7 +422,6 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         value: ValueProvider::Closed(AXIS_SCALES),
         repeatable: false,
     },
-
     // ── Per-series style override (repeatable) ───────────
     //
     // `style <key>=<value>:<directives>` overrides scalar
@@ -458,7 +450,9 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
 /// emit order. Filters [`ALL_DIRECTIVES`] by
 /// [`Directive::applies_to`].
 pub fn directives_for(kind: Kind) -> impl Iterator<Item = &'static Directive> {
-    ALL_DIRECTIVES.iter().filter(move |d| d.applies_to.contains(kind))
+    ALL_DIRECTIVES
+        .iter()
+        .filter(move |d| d.applies_to.contains(kind))
 }
 
 /// Look up the directive for a given CLI flag (without
@@ -467,7 +461,9 @@ pub fn directive_by_cli_flag(flag: &str) -> Option<&'static Directive> {
     ALL_DIRECTIVES.iter().find(|d| {
         // Accept both `--foo` and `foo` for ergonomics.
         d.cli_flag == flag
-            || d.cli_flag.strip_prefix("--").is_some_and(|stripped| stripped == flag)
+            || d.cli_flag
+                .strip_prefix("--")
+                .is_some_and(|stripped| stripped == flag)
     })
 }
 
@@ -492,8 +488,11 @@ mod tests {
     fn every_directive_has_a_unique_cli_flag() {
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for d in ALL_DIRECTIVES {
-            assert!(seen.insert(d.cli_flag),
-                "duplicate cli_flag '{}'", d.cli_flag);
+            assert!(
+                seen.insert(d.cli_flag),
+                "duplicate cli_flag '{}'",
+                d.cli_flag
+            );
         }
     }
 
@@ -501,23 +500,28 @@ mod tests {
     fn every_directive_has_a_unique_yaml_keyword() {
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for d in ALL_DIRECTIVES {
-            assert!(seen.insert(d.yaml_directive),
-                "duplicate yaml_directive '{}'", d.yaml_directive);
+            assert!(
+                seen.insert(d.yaml_directive),
+                "duplicate yaml_directive '{}'",
+                d.yaml_directive
+            );
         }
     }
 
     #[test]
     fn every_cli_flag_starts_with_double_dash() {
         for d in ALL_DIRECTIVES {
-            assert!(d.cli_flag.starts_with("--"),
-                "cli_flag '{}' missing -- prefix", d.cli_flag);
+            assert!(
+                d.cli_flag.starts_with("--"),
+                "cli_flag '{}' missing -- prefix",
+                d.cli_flag
+            );
         }
     }
 
     #[test]
     fn directives_for_plot_includes_axis_directives() {
-        let plot: Vec<&str> = directives_for(Kind::Plot)
-            .map(|d| d.cli_flag).collect();
+        let plot: Vec<&str> = directives_for(Kind::Plot).map(|d| d.cli_flag).collect();
         assert!(plot.contains(&"--xlabel"));
         assert!(plot.contains(&"--ylabel"));
         assert!(plot.contains(&"--x-scale"));
@@ -528,8 +532,7 @@ mod tests {
 
     #[test]
     fn directives_for_table_excludes_axis_and_marker_directives() {
-        let table: Vec<&str> = directives_for(Kind::Table)
-            .map(|d| d.cli_flag).collect();
+        let table: Vec<&str> = directives_for(Kind::Table).map(|d| d.cli_flag).collect();
         assert!(!table.contains(&"--xlabel"));
         assert!(!table.contains(&"--ylabel"));
         assert!(!table.contains(&"--x-scale"));
@@ -545,19 +548,19 @@ mod tests {
         // over / by / where / agg / metric apply to both
         // plot and table — the data-shape group.
         for kind in [Kind::Plot, Kind::Table] {
-            let flags: Vec<&str> = directives_for(kind)
-                .map(|d| d.cli_flag).collect();
+            let flags: Vec<&str> = directives_for(kind).map(|d| d.cli_flag).collect();
             for required in ["--over", "--by", "--where", "--agg", "--metric"] {
-                assert!(flags.contains(&required),
-                    "{kind:?} missing data-shape flag {required}");
+                assert!(
+                    flags.contains(&required),
+                    "{kind:?} missing data-shape flag {required}"
+                );
             }
         }
     }
 
     #[test]
     fn directives_for_text_excludes_figure_directives() {
-        let text: Vec<&str> = directives_for(Kind::Text)
-            .map(|d| d.cli_flag).collect();
+        let text: Vec<&str> = directives_for(Kind::Text).map(|d| d.cli_flag).collect();
         assert!(!text.contains(&"--over"));
         assert!(!text.contains(&"--metric"));
         assert!(!text.contains(&"--agg"));
@@ -612,8 +615,7 @@ mod tests {
         assert!(style.repeatable, "--style must be repeatable");
         for d in ALL_DIRECTIVES {
             if d.cli_flag != "--style" {
-                assert!(!d.repeatable,
-                    "{} should not be repeatable", d.cli_flag);
+                assert!(!d.repeatable, "{} should not be repeatable", d.cli_flag);
             }
         }
     }

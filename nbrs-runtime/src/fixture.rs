@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use polydat::kernel::{PolydatKernel, PolydatProgram, PolydatState};
 use polydat::ast::Value;
+use polydat::kernel::{PolydatKernel, PolydatProgram, PolydatState};
 
 /// What the kernel reports a registered name resolves to.
 ///
@@ -34,14 +34,14 @@ use polydat::ast::Value;
 #[derive(Debug, Clone)]
 enum PlanEntry {
     Output { name: String, output_idx: usize },
-    Input  { name: String, input_idx: usize },
+    Input { name: String, input_idx: usize },
 }
 
 impl PlanEntry {
     fn name(&self) -> &str {
         match self {
             PlanEntry::Output { name, .. } => name,
-            PlanEntry::Input  { name, .. } => name,
+            PlanEntry::Input { name, .. } => name,
         }
     }
 }
@@ -62,7 +62,7 @@ impl PlanEntry {
 pub struct ScopeFixture {
     program: Arc<PolydatProgram>,
     handles: HashMap<String, PullHandle>,
-    plan:    Vec<PlanEntry>,
+    plan: Vec<PlanEntry>,
 }
 
 impl ScopeFixture {
@@ -74,7 +74,7 @@ impl ScopeFixture {
         Self {
             program,
             handles: HashMap::new(),
-            plan:    Vec::new(),
+            plan: Vec::new(),
         }
     }
 
@@ -107,15 +107,22 @@ impl ScopeFixture {
             // Output: prefer the output index over (node_idx, port_idx)
             // because state.pull_by_index resolves the pair internally
             // and matches OutputAccessor's existing pattern.
-            let output_idx = self.program.output_index(name)
-                .ok_or_else(|| format!(
+            let output_idx = self.program.output_index(name).ok_or_else(|| {
+                format!(
                     "fixture: name '{name}' resolved to output node {node_idx} \
                      but had no entry in the output_list — this is a kernel \
                      consistency bug, please report",
-                ))?;
-            PlanEntry::Output { name: name.to_string(), output_idx }
+                )
+            })?;
+            PlanEntry::Output {
+                name: name.to_string(),
+                output_idx,
+            }
         } else if let Some(input_idx) = self.program.find_input(name) {
-            PlanEntry::Input { name: name.to_string(), input_idx }
+            PlanEntry::Input {
+                name: name.to_string(),
+                input_idx,
+            }
         } else {
             return Err(format!(
                 "fixture: name '{name}' is not known to the program — neither \
@@ -125,7 +132,7 @@ impl ScopeFixture {
                  binding that doesn't exist. Available outputs: [{outs}]; \
                  inputs: [{ins}].",
                 outs = self.program.output_names().join(", "),
-                ins  = self.program.input_names().join(", "),
+                ins = self.program.input_names().join(", "),
             ));
         };
         let handle = PullHandle(self.plan.len());
@@ -138,7 +145,10 @@ impl ScopeFixture {
     /// `Arc<PolydatProgram>` clone, so cycle-time `resolve` only needs
     /// the per-fiber state.
     pub fn seal(self) -> PullPlan {
-        PullPlan { program: self.program, entries: self.plan }
+        PullPlan {
+            program: self.program,
+            entries: self.plan,
+        }
     }
 }
 
@@ -182,11 +192,7 @@ impl PullPlan {
     ///
     /// The check is an `Arc` pointer comparison per op per cycle — cheaper than
     /// the first index it protects.
-    pub(crate) fn check_program_match(
-        &self,
-        program: &Arc<PolydatProgram>,
-        template_idx: usize,
-    ) {
+    pub(crate) fn check_program_match(&self, program: &Arc<PolydatProgram>, template_idx: usize) {
         if Arc::ptr_eq(&self.program, program) {
             return;
         }
@@ -239,9 +245,7 @@ impl PullPlan {
                 PlanEntry::Output { output_idx, .. } => {
                     state.pull_by_index(&self.program, *output_idx).clone()
                 }
-                PlanEntry::Input { input_idx, .. } => {
-                    state.read_input_value(*input_idx)
-                }
+                PlanEntry::Input { input_idx, .. } => state.read_input_value(*input_idx),
             };
             values.push(v);
         }
@@ -320,13 +324,13 @@ pub trait OpConsumer: Sized {
 /// §"`ExecCtx` — cycle-time bundle").
 pub struct ExecCtx<'a> {
     pub fields: &'a crate::adapter::ResolvedFields,
-    pub pulls:  &'a ResolvedPulls,
+    pub pulls: &'a ResolvedPulls,
     /// Narrow read surface for op-template name resolution against
     /// the dispenser's bound Polydat context (SRD-68 invariants I-1 + I-2).
     /// During the SRD-68 migration this defaults to a no-op
     /// `NullWireSource` for legacy call sites; adapters that own a
     /// kernel construct via [`Self::with_wires`].
-    pub wires:  &'a dyn crate::wires::WireSource,
+    pub wires: &'a dyn crate::wires::WireSource,
     /// Number of consecutive wire ordinals this invocation should
     /// cover — the ACTUAL length of the cursor sub-run the executor
     /// reserved for this op (`base .. actual_end`). Equals the op's
@@ -345,11 +349,13 @@ impl<'a> ExecCtx<'a> {
     /// haven't migrated to SRD-68's dispenser-owned-kernel model
     /// yet. Adapters that own a kernel handle should call
     /// [`Self::with_wires`] instead.
-    pub fn new(
-        fields: &'a crate::adapter::ResolvedFields,
-        pulls:  &'a ResolvedPulls,
-    ) -> Self {
-        Self { fields, pulls, wires: &crate::wires::NULL_WIRES, run_len: 1 }
+    pub fn new(fields: &'a crate::adapter::ResolvedFields, pulls: &'a ResolvedPulls) -> Self {
+        Self {
+            fields,
+            pulls,
+            wires: &crate::wires::NULL_WIRES,
+            run_len: 1,
+        }
     }
 
     /// Construct an `ExecCtx` with an explicit `WireSource` — the
@@ -359,10 +365,15 @@ impl<'a> ExecCtx<'a> {
     /// internals.
     pub fn with_wires(
         fields: &'a crate::adapter::ResolvedFields,
-        pulls:  &'a ResolvedPulls,
-        wires:  &'a dyn crate::wires::WireSource,
+        pulls: &'a ResolvedPulls,
+        wires: &'a dyn crate::wires::WireSource,
     ) -> Self {
-        Self { fields, pulls, wires, run_len: 1 }
+        Self {
+            fields,
+            pulls,
+            wires,
+            run_len: 1,
+        }
     }
 }
 
@@ -376,7 +387,8 @@ mod tests {
             "input cycle: u64\n\
              folded := 42\n\
              cyc_dep := hash(cycle)\n",
-        ).expect("compile_polydat")
+        )
+        .expect("compile_polydat")
     }
 
     #[test]
@@ -404,7 +416,8 @@ mod tests {
         let kernel = k();
         let mut fx = ScopeFixture::new(kernel.program().clone());
         // 'cycle' is the coordinate input, not an output.
-        fx.register_pull("cycle").expect("cycle input should resolve");
+        fx.register_pull("cycle")
+            .expect("cycle input should resolve");
         let plan = fx.seal();
         assert_eq!(plan.names(), vec!["cycle"]);
     }
@@ -414,8 +427,14 @@ mod tests {
         let kernel = k();
         let mut fx = ScopeFixture::new(kernel.program().clone());
         let err = fx.register_pull("nonexistent").unwrap_err();
-        assert!(err.contains("nonexistent"), "error should name the missing binding: {err}");
-        assert!(err.contains("Available outputs"), "error should list available outputs: {err}");
+        assert!(
+            err.contains("nonexistent"),
+            "error should name the missing binding: {err}"
+        );
+        assert!(
+            err.contains("Available outputs"),
+            "error should list available outputs: {err}"
+        );
     }
 
     #[test]
@@ -426,7 +445,11 @@ mod tests {
         let h2 = fx.register_pull("folded").unwrap();
         assert_eq!(h1, h2, "same name should yield same handle");
         let plan = fx.seal();
-        assert_eq!(plan.len(), 1, "duplicate registrations should not grow the plan");
+        assert_eq!(
+            plan.len(),
+            1,
+            "duplicate registrations should not grow the plan"
+        );
     }
 
     #[test]
@@ -434,7 +457,7 @@ mod tests {
         let kernel = k();
         let mut fx = ScopeFixture::new(kernel.program().clone());
         let h_folded = fx.register_pull("folded").unwrap();
-        let h_cyc    = fx.register_pull("cyc_dep").unwrap();
+        let h_cyc = fx.register_pull("cyc_dep").unwrap();
         assert_ne!(h_folded, h_cyc);
         let plan = fx.seal();
         assert_eq!(plan.len(), 2);

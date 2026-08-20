@@ -28,19 +28,39 @@ pub struct ErrorDetail {
 
 impl ErrorDetail {
     pub fn ok() -> Self {
-        Self { name: "OK".into(), retry: Retry::Unset, result_code: 0, should_stop: false }
+        Self {
+            name: "OK".into(),
+            retry: Retry::Unset,
+            result_code: 0,
+            should_stop: false,
+        }
     }
 
     pub fn non_retryable(name: impl Into<String>) -> Self {
-        Self { name: name.into(), retry: Retry::DoNotRetry, result_code: 127, should_stop: false }
+        Self {
+            name: name.into(),
+            retry: Retry::DoNotRetry,
+            result_code: 127,
+            should_stop: false,
+        }
     }
 
     pub fn retryable(name: impl Into<String>) -> Self {
-        Self { name: name.into(), retry: Retry::DoRetry, result_code: 127, should_stop: false }
+        Self {
+            name: name.into(),
+            retry: Retry::DoRetry,
+            result_code: 127,
+            should_stop: false,
+        }
     }
 
     pub fn unknown(name: impl Into<String>) -> Self {
-        Self { name: name.into(), retry: Retry::Unset, result_code: 127, should_stop: false }
+        Self {
+            name: name.into(),
+            retry: Retry::Unset,
+            result_code: 127,
+            should_stop: false,
+        }
     }
 
     pub fn is_retryable(&self) -> bool {

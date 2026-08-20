@@ -22,9 +22,9 @@
 
 use polydat::ast::Value;
 use scylla::cluster::metadata::{ColumnType, NativeType};
+use scylla::serialize::SerializationError;
 use scylla::serialize::value::SerializeValue;
 use scylla::serialize::writers::{CellWriter, WrittenCellProof};
-use scylla::serialize::SerializationError;
 use scylla::value::CqlValue;
 
 /// Wire-side cell value. Either a [`CqlValue`] (built once for
@@ -66,27 +66,19 @@ pub(super) fn build_row<'v>(
     }
     let mut row: Vec<NbrsCell<'v>> = Vec::with_capacity(specs.len());
     for (idx, (spec, value)) in specs.iter().zip(values.iter()).enumerate() {
-        row.push(value_to_cell(spec.typ(), value)
-            .map_err(|e| format!("position {idx}: {e}"))?);
+        row.push(value_to_cell(spec.typ(), value).map_err(|e| format!("position {idx}: {e}"))?);
     }
     Ok(row)
 }
 
 /// Map one [`Value`] to an [`NbrsCell`], preferring the borrowed
 /// slice path for typed-vector columns.
-fn value_to_cell<'v>(
-    col_type: &ColumnType<'_>,
-    value: &'v Value,
-) -> Result<NbrsCell<'v>, String> {
+fn value_to_cell<'v>(col_type: &ColumnType<'_>, value: &'v Value) -> Result<NbrsCell<'v>, String> {
     use ColumnType as CT;
     match col_type {
         CT::Vector { typ: inner, .. } => match (inner.as_ref(), value) {
-            (CT::Native(NativeType::Float), Value::VecF32(arc)) => {
-                Ok(NbrsCell::F32Slice(arc))
-            }
-            (CT::Native(NativeType::Int), Value::VecI32(arc)) => {
-                Ok(NbrsCell::I32Slice(arc))
-            }
+            (CT::Native(NativeType::Float), Value::VecF32(arc)) => Ok(NbrsCell::F32Slice(arc)),
+            (CT::Native(NativeType::Int), Value::VecI32(arc)) => Ok(NbrsCell::I32Slice(arc)),
             // Fallback: build a CqlValue::Vector from non-typed
             // input shapes (Bytes, Str). Kept for migration and
             // for workloads that compute vectors via expression
@@ -114,7 +106,9 @@ fn native_to_cql(native: &NativeType, value: &Value) -> Result<CqlValue, String>
         NT::SmallInt => Ok(CqlValue::SmallInt(value.as_u64() as i16)),
         NT::Int => Ok(CqlValue::Int(value.as_u64() as i32)),
         NT::BigInt => Ok(CqlValue::BigInt(value.as_u64() as i64)),
-        NT::Counter => Ok(CqlValue::Counter(scylla::value::Counter(value.as_u64() as i64))),
+        NT::Counter => Ok(CqlValue::Counter(scylla::value::Counter(
+            value.as_u64() as i64
+        ))),
         NT::Float => Ok(CqlValue::Float(value.as_f64() as f32)),
         NT::Double => Ok(CqlValue::Double(value.as_f64())),
         NT::Boolean => Ok(CqlValue::Boolean(value.as_u64() != 0)),
@@ -158,15 +152,18 @@ fn vector_float_from_value(value: &Value) -> Result<CqlValue, String> {
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()
         }
-        Value::Str(s) => parse_float_array(s).ok_or_else(|| format!(
-            "vector<float, _>: cannot parse '{s}' as a float array"
-        ))?,
+        Value::Str(s) => parse_float_array(s)
+            .ok_or_else(|| format!("vector<float, _>: cannot parse '{s}' as a float array"))?,
         Value::VecF32(_) => unreachable!("VecF32 handled in value_to_cell"),
-        other => return Err(format!(
-            "vector<float, _>: expected VecF32 (preferred), Bytes, or Str, got {other:?}"
-        )),
+        other => {
+            return Err(format!(
+                "vector<float, _>: expected VecF32 (preferred), Bytes, or Str, got {other:?}"
+            ));
+        }
     };
-    Ok(CqlValue::Vector(floats.into_iter().map(CqlValue::Float).collect()))
+    Ok(CqlValue::Vector(
+        floats.into_iter().map(CqlValue::Float).collect(),
+    ))
 }
 
 fn parse_float_array(s: &str) -> Option<Vec<f32>> {

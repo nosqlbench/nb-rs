@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
@@ -63,7 +63,9 @@ pub struct RevAllocator {
 }
 
 impl RevAllocator {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn next(&self) -> u64 {
         self.counter.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
@@ -178,7 +180,10 @@ impl fmt::Display for SetError {
                 Ok(())
             }
             Self::FinalViolation { scope } => {
-                write!(f, "control is declared final at scope '{scope}'; runtime writes are rejected")
+                write!(
+                    f,
+                    "control is declared final at scope '{scope}'; runtime writes are rejected"
+                )
             }
         }
     }
@@ -202,10 +207,7 @@ pub trait ControlApplier<T>: Send + Sync + 'static
 where
     T: Clone + Send + Sync + 'static,
 {
-    fn apply(
-        &self,
-        value: T,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+    fn apply(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 }
 
 /// Convenience wrapper for synchronous appliers. Most appliers
@@ -227,7 +229,10 @@ where
     F: Fn(T) -> Result<(), String> + Send + Sync + 'static,
 {
     pub fn new(f: F) -> Self {
-        Self { f, _marker: std::marker::PhantomData }
+        Self {
+            f,
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -236,10 +241,7 @@ where
     T: Clone + Send + Sync + 'static,
     F: Fn(T) -> Result<(), String> + Send + Sync + 'static,
 {
-    fn apply(
-        &self,
-        value: T,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+    fn apply(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         let out = (self.f)(value);
         Box::pin(async move { out })
     }
@@ -259,7 +261,9 @@ pub struct Control<T: Clone + Send + Sync + 'static> {
 
 impl<T: Clone + Send + Sync + 'static> Clone for Control<T> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -307,18 +311,24 @@ struct GaugeReification<T> {
 impl<T: Clone + Send + Sync + 'static> Control<T> {
     /// Name of this control within its owning component's
     /// registry.
-    pub fn name(&self) -> &str { &self.inner.name }
+    pub fn name(&self) -> &str {
+        &self.inner.name
+    }
 
     /// Borrow the current committed value.
     pub fn get(&self) -> Versioned<T> {
-        self.inner.committed.read()
+        self.inner
+            .committed
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
     /// Convenience shortcut for `self.get().value` when the
     /// caller doesn't need the metadata.
-    pub fn value(&self) -> T { self.get().value }
+    pub fn value(&self) -> T {
+        self.get().value
+    }
 
     /// Register an applier. Every subsequent [`Self::set`] call
     /// will include this applier in its fanout. There is no
@@ -330,7 +340,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
         A: ControlApplier<T>,
     {
         let arc: Arc<dyn ControlApplier<T>> = Arc::new(applier);
-        let mut g = self.inner.appliers.lock()
+        let mut g = self
+            .inner
+            .appliers
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         g.push(arc);
         g.len() - 1
@@ -338,7 +351,9 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
 
     /// Number of currently-registered appliers.
     pub fn applier_count(&self) -> usize {
-        self.inner.appliers.lock()
+        self.inner
+            .appliers
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len()
     }
@@ -363,9 +378,12 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
         //    validation error that happens to also reject the
         //    value.
         if let Some(ref scope) = self.inner.final_at_scope
-            && origin != ControlOrigin::Launch {
-                return Err(SetError::FinalViolation { scope: scope.clone() });
-            }
+            && origin != ControlOrigin::Launch
+        {
+            return Err(SetError::FinalViolation {
+                scope: scope.clone(),
+            });
+        }
 
         // 1. Validation runs before any applier is called.
         if let Some(validator) = self.inner.validator.get() {
@@ -376,7 +394,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
         //    per-control timeout. A missing apply (timeout) is
         //    treated as a failure just like an explicit Err.
         let appliers: Vec<Arc<dyn ControlApplier<T>>> = {
-            let g = self.inner.appliers.lock()
+            let g = self
+                .inner
+                .appliers
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             g.clone()
         };
@@ -389,7 +410,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
                 let fut = applier.apply(v);
                 match tokio::time::timeout(timeout, fut).await {
                     Ok(Ok(())) => Ok(idx),
-                    Ok(Err(msg)) => Err(ApplyFailure { applier_index: idx, message: msg }),
+                    Ok(Err(msg)) => Err(ApplyFailure {
+                        applier_index: idx,
+                        message: msg,
+                    }),
                     Err(_) => Err(ApplyFailure {
                         applier_index: idx,
                         message: format!("apply timed out after {:?}", timeout),
@@ -399,9 +423,7 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
         });
 
         let results = join_all(futures).await;
-        let failures: Vec<ApplyFailure> = results.into_iter()
-            .filter_map(|r| r.err())
-            .collect();
+        let failures: Vec<ApplyFailure> = results.into_iter().filter_map(|r| r.err()).collect();
 
         if !failures.is_empty() {
             return Err(SetError::ApplyFailed(failures));
@@ -415,7 +437,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
             updated_at: Instant::now(),
             origin,
         };
-        *self.inner.committed.write()
+        *self
+            .inner
+            .committed
+            .write()
             .unwrap_or_else(|e| e.into_inner()) = versioned;
         // 4. Publish the new value to the reified gauge (if any).
         //    This lands after commit so a reader that samples the
@@ -450,7 +475,9 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
     /// `true` if the control was declared `final` via
     /// [`ControlBuilder::final_at_scope`]. Final controls
     /// reject every non-Launch write.
-    pub fn is_final(&self) -> bool { self.inner.final_at_scope.is_some() }
+    pub fn is_final(&self) -> bool {
+        self.inner.final_at_scope.is_some()
+    }
 
     /// Name of the scope at which the control was declared
     /// `final`, if any. `None` for non-final controls.
@@ -459,13 +486,16 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
     }
 
     /// Declared branch scope of this control.
-    pub fn branch_scope(&self) -> BranchScope { self.inner.branch_scope }
+    pub fn branch_scope(&self) -> BranchScope {
+        self.inner.branch_scope
+    }
 
     fn publish_gauge(&self, value: &T) {
         if let Some(ref g) = self.inner.gauge
-            && let Some(f) = (g.to_f64)(value) {
-                g.gauge.set(f);
-            }
+            && let Some(f) = (g.to_f64)(value)
+        {
+            g.gauge.set(f);
+        }
     }
 }
 
@@ -611,9 +641,7 @@ impl<T: Clone + Send + Sync + 'static> ControlBuilder<T> {
         // ValueGauge with the initial value (skipping when the
         // conversion returns None).
         let gauge = self.reify.map(|to_f64| {
-            let gauge = Arc::new(ValueGauge::new(
-                Labels::of("control", &self.name),
-            ));
+            let gauge = Arc::new(ValueGauge::new(Labels::of("control", &self.name)));
             if let Some(f) = to_f64(&self.initial) {
                 gauge.set(f);
             }
@@ -689,31 +717,53 @@ impl<T> ErasedControl for Control<T>
 where
     T: Clone + Send + Sync + fmt::Debug + 'static,
 {
-    fn name(&self) -> &str { Control::name(self) }
+    fn name(&self) -> &str {
+        Control::name(self)
+    }
 
-    fn rev(&self) -> u64 { self.get().rev }
+    fn rev(&self) -> u64 {
+        self.get().rev
+    }
 
-    fn origin(&self) -> ControlOrigin { self.get().origin }
+    fn origin(&self) -> ControlOrigin {
+        self.get().origin
+    }
 
-    fn applier_count(&self) -> usize { Control::applier_count(self) }
+    fn applier_count(&self) -> usize {
+        Control::applier_count(self)
+    }
 
-    fn value_string(&self) -> String { format!("{:?}", self.get().value) }
+    fn value_string(&self) -> String {
+        format!("{:?}", self.get().value)
+    }
 
-    fn value_type_name(&self) -> &'static str { std::any::type_name::<T>() }
+    fn value_type_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
 
-    fn gauge_f64(&self) -> Option<f64> { Control::gauge_f64(self) }
+    fn gauge_f64(&self) -> Option<f64> {
+        Control::gauge_f64(self)
+    }
 
-    fn has_reified_gauge(&self) -> bool { self.inner.gauge.is_some() }
+    fn has_reified_gauge(&self) -> bool {
+        self.inner.gauge.is_some()
+    }
 
-    fn is_final(&self) -> bool { Control::is_final(self) }
+    fn is_final(&self) -> bool {
+        Control::is_final(self)
+    }
 
     fn final_scope(&self) -> Option<String> {
         Control::final_scope(self).map(|s| s.to_string())
     }
 
-    fn branch_scope(&self) -> BranchScope { Control::branch_scope(self) }
+    fn branch_scope(&self) -> BranchScope {
+        Control::branch_scope(self)
+    }
 
-    fn accepts_f64_writes(&self) -> bool { self.inner.from_f64.is_some() }
+    fn accepts_f64_writes(&self) -> bool {
+        self.inner.from_f64.is_some()
+    }
 
     fn set_f64(
         &self,
@@ -757,7 +807,9 @@ pub struct ControlRegistry {
 }
 
 impl ControlRegistry {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Register a control. Panics if a control by the same name
     /// already exists on this component — declaration is
@@ -770,10 +822,8 @@ impl ControlRegistry {
         let erased: Arc<dyn ErasedControl> = Arc::new(control.clone());
         let typed: Arc<dyn std::any::Any + Send + Sync> = Arc::new(control);
 
-        let mut entries = self.entries.write()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut erased_map = self.erased.write()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        let mut erased_map = self.erased.write().unwrap_or_else(|e| e.into_inner());
         assert!(
             !entries.contains_key(&name),
             "ControlRegistry: duplicate control declaration for '{name}'",
@@ -789,8 +839,7 @@ impl ControlRegistry {
     where
         T: Clone + Send + Sync + 'static,
     {
-        let entries = self.entries.read()
-            .unwrap_or_else(|e| e.into_inner());
+        let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
         let any = entries.get(name)?.clone();
         drop(entries);
         any.downcast::<Control<T>>().ok().map(|arc| (*arc).clone())
@@ -799,7 +848,8 @@ impl ControlRegistry {
     /// Erased access — returns the control's metadata without
     /// needing to know `T`. Used by discovery / enumeration.
     pub fn get_erased(&self, name: &str) -> Option<Arc<dyn ErasedControl>> {
-        self.erased.read()
+        self.erased
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(name)
             .cloned()
@@ -808,7 +858,8 @@ impl ControlRegistry {
     /// Enumerate every declared control on this component.
     /// Order is unspecified.
     pub fn list(&self) -> Vec<Arc<dyn ErasedControl>> {
-        self.erased.read()
+        self.erased
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .cloned()
@@ -816,12 +867,12 @@ impl ControlRegistry {
     }
 
     pub fn len(&self) -> usize {
-        self.entries.read()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.entries.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Produce a `MetricSet` with two families per declared
     /// control:
@@ -934,9 +985,13 @@ mod tests {
     async fn validator_rejects_bad_values() {
         let c: Control<u32> = ControlBuilder::new("concurrency", 4)
             .validator(|v| {
-                if *v == 0 { Err("must be > 0".into()) }
-                else if *v > 10_000 { Err("too large".into()) }
-                else { Ok(()) }
+                if *v == 0 {
+                    Err("must be > 0".into())
+                } else if *v > 10_000 {
+                    Err("too large".into())
+                } else {
+                    Ok(())
+                }
             })
             .build();
 
@@ -970,8 +1025,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_appliers_all_see_same_value_on_success() {
         let c = build_u32("c", 0);
-        let counts: Vec<Arc<AtomicU32>> = (0..5)
-            .map(|_| Arc::new(AtomicU32::new(0))).collect();
+        let counts: Vec<Arc<AtomicU32>> = (0..5).map(|_| Arc::new(AtomicU32::new(0))).collect();
         for counter in &counts {
             let c2 = counter.clone();
             c.register_applier(SyncApplier::new(move |v: u32| {
@@ -1035,9 +1089,10 @@ mod tests {
 
         struct SlowApplier;
         impl ControlApplier<u32> for SlowApplier {
-            fn apply(&self, _v: u32)
-                -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>
-            {
+            fn apply(
+                &self,
+                _v: u32,
+            ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
                 Box::pin(async {
                     tokio::time::sleep(Duration::from_secs(10)).await;
                     Ok(())
@@ -1051,7 +1106,8 @@ mod tests {
                 assert_eq!(failures.len(), 1);
                 assert!(
                     failures[0].message.contains("timed out"),
-                    "message = {}", failures[0].message,
+                    "message = {}",
+                    failures[0].message,
                 );
             }
             other => panic!("expected timeout as ApplyFailed, got {other:?}"),
@@ -1203,11 +1259,11 @@ mod tests {
         // projection for every variant — `to_f64` returning None
         // skips the sample rather than forcing a sentinel.
         #[derive(Clone, Debug, PartialEq)]
-        enum Mode { Off, On(u32) }
-        let c: Control<Mode> = ControlBuilder::new(
-            "explain",
-            Mode::Off,
-        )
+        enum Mode {
+            Off,
+            On(u32),
+        }
+        let c: Control<Mode> = ControlBuilder::new("explain", Mode::Off)
             .reify_as_gauge(|m| match m {
                 Mode::Off => None,
                 Mode::On(n) => Some(*n as f64),
@@ -1228,15 +1284,14 @@ mod tests {
                 .reify_as_gauge(|v| Some(*v as f64))
                 .build(),
         );
-        reg.declare(
-            ControlBuilder::new("non_reified", 99u32).build(),
-        );
+        reg.declare(ControlBuilder::new("non_reified", 99u32).build());
         let base = crate::labels::Labels::of("phase", "rampup");
         let now = std::time::Instant::now();
         let snap = reg.snapshot_gauges(&base, now);
 
         // Numeric gauge for the reified control.
-        let family = snap.family("control_concurrency")
+        let family = snap
+            .family("control_concurrency")
             .expect("reified control should produce a numeric gauge family");
         let metric = family.metrics().next().unwrap();
         assert_eq!(metric.labels().get("phase"), Some("rampup"));
@@ -1262,9 +1317,7 @@ mod tests {
                 .build(),
         );
         reg.declare(ControlBuilder::new("enabled", true).build());
-        reg.declare(ControlBuilder::new(
-            "errors_policy", "retry".to_string(),
-        ).build());
+        reg.declare(ControlBuilder::new("errors_policy", "retry".to_string()).build());
 
         let base = crate::labels::Labels::of("phase", "bulk");
         let now = std::time::Instant::now();
@@ -1272,7 +1325,8 @@ mod tests {
 
         // Numeric control: both families.
         assert!(snap.family("control_concurrency").is_some());
-        let info = snap.family("control_info_concurrency")
+        let info = snap
+            .family("control_info_concurrency")
             .expect("info family should accompany the numeric gauge");
         let m = info.metrics().next().unwrap();
         assert_eq!(m.labels().get("value"), Some("4"));
@@ -1280,7 +1334,8 @@ mod tests {
 
         // Bool control: info family only, carrying "true".
         assert!(snap.family("control_enabled").is_none());
-        let info = snap.family("control_info_enabled")
+        let info = snap
+            .family("control_info_enabled")
             .expect("bool control should emit info family");
         let m = info.metrics().next().unwrap();
         assert_eq!(m.labels().get("value"), Some("true"));
@@ -1289,7 +1344,8 @@ mod tests {
         // operator-facing tooling is expected to strip those if
         // needed. What matters is the label survives and the
         // dimension exists.
-        let info = snap.family("control_info_errors_policy")
+        let info = snap
+            .family("control_info_errors_policy")
             .expect("string control should emit info family");
         let m = info.metrics().next().unwrap();
         assert_eq!(m.labels().get("value"), Some("\"retry\""));
@@ -1300,12 +1356,17 @@ mod tests {
         // Exercise the Clone bound with an owned Vec<String>
         // so the fanout/commit path genuinely clones the value.
         #[derive(Clone, Debug, PartialEq, Eq)]
-        struct Targets { hosts: Vec<String> }
+        struct Targets {
+            hosts: Vec<String>,
+        }
 
         let c: Control<Targets> = ControlBuilder::new(
             "targets",
-            Targets { hosts: vec!["a".into()] },
-        ).build();
+            Targets {
+                hosts: vec!["a".into()],
+            },
+        )
+        .build();
 
         let seen: Arc<Mutex<Option<Targets>>> = Arc::new(Mutex::new(None));
         let seen_c = seen.clone();
@@ -1314,7 +1375,9 @@ mod tests {
             Ok(())
         }));
 
-        let new_val = Targets { hosts: vec!["a".into(), "b".into()] };
+        let new_val = Targets {
+            hosts: vec!["a".into(), "b".into()],
+        };
         c.set(new_val.clone(), ControlOrigin::Test).await.unwrap();
         assert_eq!(c.value(), new_val);
         assert_eq!(*seen.lock().unwrap(), Some(new_val));
@@ -1331,11 +1394,7 @@ mod tests {
         assert_eq!(c.final_scope(), Some("ddl_phase"));
 
         // Runtime origins (Test, Tui, Cli, ...) all reject.
-        for origin in [
-            ControlOrigin::Test,
-            ControlOrigin::Tui,
-            ControlOrigin::Cli,
-        ] {
+        for origin in [ControlOrigin::Test, ControlOrigin::Tui, ControlOrigin::Cli] {
             match c.set(42, origin.clone()).await {
                 Err(SetError::FinalViolation { scope }) => {
                     assert_eq!(scope, "ddl_phase");
@@ -1370,7 +1429,13 @@ mod tests {
         // see the real reason the write was rejected.
         let c: Control<u32> = ControlBuilder::new("concurrency", 1u32)
             .final_at_scope("ddl_phase")
-            .validator(|v| if *v == 99 { Err("no 99s".into()) } else { Ok(()) })
+            .validator(|v| {
+                if *v == 99 {
+                    Err("no 99s".into())
+                } else {
+                    Ok(())
+                }
+            })
             .build();
         match c.set(99, ControlOrigin::Test).await {
             Err(SetError::FinalViolation { scope }) => {

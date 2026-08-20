@@ -12,8 +12,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::scope_synth::{
+    collect_leaf_placeholders, value_to_param_string, workload_param_type_name,
+};
 use nbrs_workload::model::{BindingsDef, ParsedOp};
-use crate::scope_synth::{collect_leaf_placeholders, value_to_param_string, workload_param_type_name};
 use polydat::kernel::interp::collect_string_interp_refs;
 
 /// Where a binding was declared — its provenance in the scope chain.
@@ -172,22 +174,23 @@ impl BindingScope {
             // These are Polydat statements that the compiler handles directly.
             // Pass them through as bindings so they survive emission.
             if (trimmed.starts_with("cursor ") || trimmed.starts_with("init "))
-                && let Some(eq_pos) = trimmed.find('=') {
-                    // Check it's `=` not `:=`
-                    let before_eq = &trimmed[..eq_pos];
-                    if !before_eq.ends_with(':') {
-                        // cursor/init with bare `=` — pass through as-is
-                        let lhs = before_eq.trim();
-                        let (modifier, name) = parse_modifier_and_name(lhs);
-                        self.bindings.push(ScopedBinding {
-                            name: name.to_string(),
-                            line: trimmed.to_string(),
-                            origin: origin.clone(),
-                            modifier,
-                        });
-                        continue;
-                    }
+                && let Some(eq_pos) = trimmed.find('=')
+            {
+                // Check it's `=` not `:=`
+                let before_eq = &trimmed[..eq_pos];
+                if !before_eq.ends_with(':') {
+                    // cursor/init with bare `=` — pass through as-is
+                    let lhs = before_eq.trim();
+                    let (modifier, name) = parse_modifier_and_name(lhs);
+                    self.bindings.push(ScopedBinding {
+                        name: name.to_string(),
+                        line: trimmed.to_string(),
+                        origin: origin.clone(),
+                        modifier,
+                    });
+                    continue;
                 }
+            }
 
             if let Some(pos) = trimmed.find(":=") {
                 let lhs = trimmed[..pos].trim();
@@ -388,8 +391,12 @@ impl BindingScope {
 
                     // Op overriding Inherited/Phase/IterationVar with a
                     // DIFFERENT definition: real shadow, error.
-                    (BindingOrigin::Inherited | BindingOrigin::Phase | BindingOrigin::IterationVar,
-                     BindingOrigin::Op(op_name)) => {
+                    (
+                        BindingOrigin::Inherited
+                        | BindingOrigin::Phase
+                        | BindingOrigin::IterationVar,
+                        BindingOrigin::Op(op_name),
+                    ) => {
                         if prior.line != binding.line {
                             return Err(format!(
                                 "op '{}' binding '{}' shadows a name from {} origin \
@@ -397,8 +404,7 @@ impl BindingScope {
                                  scope: {}\n  op:    {}\n\
                                  Ops augment the scope DAG but cannot override it. \
                                  Use a separate phase for different bindings.",
-                                op_name, binding.name, prior.origin,
-                                prior.line, binding.line
+                                op_name, binding.name, prior.origin, prior.line, binding.line
                             ));
                         }
                         // Same definition from inheritance — dedup at emit
@@ -421,8 +427,14 @@ impl BindingScope {
                     // variables are injected before inherited bindings
                     // in the emission order, so Polydat sees them first.
                     // This is intentional — for_each vars override params.
-                    (BindingOrigin::IterationVar, BindingOrigin::Inherited | BindingOrigin::Phase) |
-                    (BindingOrigin::Inherited | BindingOrigin::Phase, BindingOrigin::IterationVar) => {
+                    (
+                        BindingOrigin::IterationVar,
+                        BindingOrigin::Inherited | BindingOrigin::Phase,
+                    )
+                    | (
+                        BindingOrigin::Inherited | BindingOrigin::Phase,
+                        BindingOrigin::IterationVar,
+                    ) => {
                         // Allowed: iteration vars intentionally override inherited names
                     }
 
@@ -449,8 +461,10 @@ impl BindingScope {
                             return Err(format!(
                                 "binding '{}' conflicts: {} origin ({}) vs {} origin ({})",
                                 binding.name,
-                                prior.origin, prior.line,
-                                binding.origin, binding.line
+                                prior.origin,
+                                prior.line,
+                                binding.origin,
+                                binding.line
                             ));
                         }
                     }
@@ -462,7 +476,9 @@ impl BindingScope {
 
         // Check final shadowing: no binding can redefine a name that
         // appears as Final in the extern list or prior bindings.
-        let final_names: HashSet<String> = self.bindings.iter()
+        let final_names: HashSet<String> = self
+            .bindings
+            .iter()
             .filter(|b| b.modifier == ScopeModifier::Final)
             .map(|b| b.name.clone())
             .collect();
@@ -614,7 +630,10 @@ fn logical_lines(source: &str) -> Vec<String> {
             continue;
         }
         match ch {
-            '"' => { in_str = true; buf.push(ch); }
+            '"' => {
+                in_str = true;
+                buf.push(ch);
+            }
             '#' => {
                 // `#`-to-EOL comment — stop tracking bracket
                 // depth and string state inside it so a stray
@@ -628,9 +647,14 @@ fn logical_lines(source: &str) -> Vec<String> {
                 in_line_comment = true;
                 buf.push(ch);
             }
-            '(' | '[' | '{' => { depth += 1; buf.push(ch); }
+            '(' | '[' | '{' => {
+                depth += 1;
+                buf.push(ch);
+            }
             ')' | ']' | '}' => {
-                if depth > 0 { depth -= 1; }
+                if depth > 0 {
+                    depth -= 1;
+                }
                 buf.push(ch);
             }
             '\n' => {
@@ -702,9 +726,7 @@ fn format_input_decl_line(names: &[String]) -> String {
         [] => String::new(),
         [single] => format!("input {single}: u64\n"),
         many => {
-            let typed: Vec<String> = many.iter()
-                .map(|n| format!("{n}: u64"))
-                .collect();
+            let typed: Vec<String> = many.iter().map(|n| format!("{n}: u64")).collect();
             format!("input ({})\n", typed.join(", "))
         }
     }
@@ -745,13 +767,15 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
         } else if let Some(r) = rest.strip_prefix("init ") {
             rest = r.trim();
             tag = ScopeModifier::Init;
-            break;  // init is a kind-keyword; no modifiers come after it.
+            break; // init is a kind-keyword; no modifiers come after it.
         } else if let Some(r) = rest.strip_prefix("cursor ") {
             rest = r.trim();
             tag = ScopeModifier::Cursor;
             break;
         }
-        if rest == prev { break; }
+        if rest == prev {
+            break;
+        }
     }
     (tag, rest)
 }
@@ -775,7 +799,6 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 // Callers in this crate go directly to that entry point; this
 // module retains only the do-loop synthesizer below, since
 // do_while / do_until aren't comprehensions.
-
 
 /// Build the per-scope Polydat Kernel for a `do_while` / `do_until`
 /// node (SRD 18b). Same composition contract as for_each
@@ -1017,7 +1040,9 @@ pub fn synthesize_phase_scope_bindings(
         for (name, spec) in entries {
             let binding = synthesize_metric_binding_name(name);
             source.push_str(&format!(
-                "volatile {binding} := {expr}\n", expr = spec.value));
+                "volatile {binding} := {expr}\n",
+                expr = spec.value
+            ));
             // See the op-template path: a coordinate is compiled matter, not a
             // runtime string. `volatile` for the same reason the value is —
             // a coordinate read from a capture or a clock must not be folded
@@ -1039,7 +1064,11 @@ pub fn synthesize_phase_scope_bindings(
         // deterministic expression; the settle-vs-one-shot routing keys off
         // program-wide reader-node presence, not this flag, so a deterministic
         // inline objective still takes the one-shot path.
-        let objective = &phase.optimize.as_ref().expect("has_objective_expr").objective;
+        let objective = &phase
+            .optimize
+            .as_ref()
+            .expect("has_objective_expr")
+            .objective;
         source.push_str(&format!(
             "# SRD-86 inline objective — synthesized.\n\
              volatile {OBJECTIVE_WIRE} := {objective}\n",
@@ -1152,8 +1181,13 @@ pub fn build_phase_scope_kernel(
         ..Default::default()
     };
 
-    if std::env::var("NBRS_DEBUG_SCOPE_SYNTH").map(|v| v == "1").unwrap_or(false) {
-        eprintln!("=== SCOPE SYNTH [{context}] inherited={inherited_names:?} ===\n{source}\n=== END ===");
+    if std::env::var("NBRS_DEBUG_SCOPE_SYNTH")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "=== SCOPE SYNTH [{context}] inherited={inherited_names:?} ===\n{source}\n=== END ==="
+        );
     }
     let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
@@ -1162,7 +1196,8 @@ pub fn build_phase_scope_kernel(
         .options(compile_options)
         .build()
         .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
-    let mut kernel = parent_kernel.build_subscope(matter)
+    let mut kernel = parent_kernel
+        .build_subscope(matter)
         .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
     parent_kernel.propagate_inputs_into(&mut kernel);
     Ok(kernel)
@@ -1280,7 +1315,9 @@ pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
     let mut suppress_next_ident = false;
     while let Some(c) = chars.next() {
         if in_line_comment {
-            if c == '\n' { in_line_comment = false; }
+            if c == '\n' {
+                in_line_comment = false;
+            }
             continue;
         }
         if in_block_comment {
@@ -1291,25 +1328,48 @@ pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
             continue;
         }
         if in_string {
-            if c == '\\' { chars.next(); continue; }
-            if c == '"' { in_string = false; }
+            if c == '\\' {
+                chars.next();
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
             continue;
         }
-        if c == '"' { in_string = true; continue; }
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
         // `#` to end-of-line — YAML-style hash comment, matching the
         // Polydat lexer (`dsl/lexer.rs` "Skip hash comments"). Without
         // this, comment words inside a `bindings: |` block leak in as
         // phantom wire references.
-        if c == '#' { in_line_comment = true; continue; }
+        if c == '#' {
+            in_line_comment = true;
+            continue;
+        }
         if c == '/' {
-            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
-            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
+            if chars.peek() == Some(&'/') {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
         }
         if c.is_alphanumeric() || c == '_' {
             current.push(c);
         } else if !current.is_empty() {
             // Token boundary — is `current` an ident?
-            let is_ident = !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
+            let is_ident = !current
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(true)
                 && !KEYWORDS.contains(&current.as_str());
             if is_ident && !suppress_next_ident {
                 out.insert(current.clone());
@@ -1325,7 +1385,11 @@ pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
         }
     }
     if !current.is_empty()
-        && !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
+        && !current
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(true)
         && !KEYWORDS.contains(&current.as_str())
         && !suppress_next_ident
     {
@@ -1345,12 +1409,21 @@ pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
         // Skip blanks + line comments. `#` (YAML-style) and `//` are
         // both Polydat line-comment forms (`dsl/lexer.rs`); neither
         // declares a binding.
-        if line.is_empty() || line.starts_with("//") || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+            continue;
+        }
         // Drop modifier prefixes (`final const x := …`,
         // `shared y := …`) so the LHS ident is always the
         // last word before `:=` or `=`.
-        let prefixes = ["shared const ", "const ", "init ",
-                        "shared ", "final ", "volatile ", "extern "];
+        let prefixes = [
+            "shared const ",
+            "const ",
+            "init ",
+            "shared ",
+            "final ",
+            "volatile ",
+            "extern ",
+        ];
         let mut rest = line;
         loop {
             let mut stripped = false;
@@ -1361,20 +1434,20 @@ pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
                     break;
                 }
             }
-            if !stripped { break; }
+            if !stripped {
+                break;
+            }
         }
         // Find `:=` or `=` (but not `==`).
-        let assign_idx = rest.find(":=")
-            .or_else(|| rest.find('=').filter(|&i| {
-                rest.as_bytes().get(i + 1) != Some(&b'=')
-            }));
+        let assign_idx = rest.find(":=").or_else(|| {
+            rest.find('=')
+                .filter(|&i| rest.as_bytes().get(i + 1) != Some(&b'='))
+        });
         let Some(idx) = assign_idx else { continue };
         let lhs = rest[..idx].trim();
         // `extern name: type` — the lhs is "name: type"; strip the type.
         let name = lhs.split(':').next().unwrap_or(lhs).trim();
-        if !name.is_empty()
-            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-        {
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
             out.insert(name.to_string());
         }
     }
@@ -1422,8 +1495,10 @@ pub fn build_op_template_scope_kernel(
 ) -> Result<polydat::kernel::PolydatKernel, String> {
     use nbrs_workload::model::BindingsDef;
 
-    let manifest_by_name: HashMap<&str, &crate::runner::ManifestEntry> =
-        parent_manifest.iter().map(|e| (e.name.as_str(), e)).collect();
+    let manifest_by_name: HashMap<&str, &crate::runner::ManifestEntry> = parent_manifest
+        .iter()
+        .map(|e| (e.name.as_str(), e))
+        .collect();
 
     let mut source = String::new();
     let mut emitted: HashSet<String> = HashSet::new();
@@ -1460,10 +1535,12 @@ pub fn build_op_template_scope_kernel(
     // explicitly — without it the op-template kernel has no
     // input slot for cycle and the runtime's per-cycle
     // `set_inputs` writes go nowhere.
-    let body_has_inputs_decl = body_text.lines()
+    let body_has_inputs_decl = body_text
+        .lines()
         .any(|line| line.trim_start().starts_with("input "));
     if !body_has_inputs_decl {
-        let parent_coord_names: Vec<String> = parent_kernel.program()
+        let parent_coord_names: Vec<String> = parent_kernel
+            .program()
             .input_names()
             .into_iter()
             .take(parent_kernel.program().coord_count())
@@ -1487,7 +1564,8 @@ pub fn build_op_template_scope_kernel(
             if polydat::ast::PortType::from_keyword(kw).is_none() {
                 return Err(format!(
                     "{context}: interface results wire '{rname}' declares \
-                     unknown type '{kw}'"));
+                     unknown type '{kw}'"
+                ));
             }
             if !emitted.contains(rname) {
                 source.push_str(&format!("extern {rname}: {kw}\n"));
@@ -1507,16 +1585,16 @@ pub fn build_op_template_scope_kernel(
     for value in op.op.values() {
         if let Some(s) = value.as_str() {
             for n in nbrs_workload::bindpoints::referenced_bindings(s) {
-                if !body_locally_declared.contains(&n)
-                    && !referenced.iter().any(|r| r == &n)
-                {
+                if !body_locally_declared.contains(&n) && !referenced.iter().any(|r| r == &n) {
                     referenced.push(n);
                 }
             }
         }
     }
     for ident in &body_idents {
-        if body_locally_declared.contains(ident) { continue; }
+        if body_locally_declared.contains(ident) {
+            continue;
+        }
         if !referenced.iter().any(|r| r == ident) {
             referenced.push(ident.clone());
         }
@@ -1531,15 +1609,16 @@ pub fn build_op_template_scope_kernel(
     let mut interp_refs: HashSet<String> = HashSet::new();
     collect_string_interp_refs(&body_text, &mut interp_refs);
     for ident in interp_refs {
-        if body_locally_declared.contains(&ident) { continue; }
+        if body_locally_declared.contains(&ident) {
+            continue;
+        }
         if !referenced.iter().any(|r| r == &ident) {
             referenced.push(ident);
         }
     }
     if let Some(ref s) = op.condition {
         let n = s.trim().trim_start_matches('{').trim_end_matches('}');
-        if !n.is_empty() && !body_locally_declared.contains(n)
-            && !referenced.iter().any(|r| r == n)
+        if !n.is_empty() && !body_locally_declared.contains(n) && !referenced.iter().any(|r| r == n)
         {
             referenced.push(n.to_string());
         }
@@ -1556,8 +1635,7 @@ pub fn build_op_template_scope_kernel(
     // later phase gating on the cell reads its initializer forever.
     for cap in &op.captures {
         let n = cap.as_name.as_str();
-        if !n.is_empty() && !body_locally_declared.contains(n)
-            && !referenced.iter().any(|r| r == n)
+        if !n.is_empty() && !body_locally_declared.contains(n) && !referenced.iter().any(|r| r == n)
         {
             referenced.push(n.to_string());
         }
@@ -1565,7 +1643,8 @@ pub fn build_op_template_scope_kernel(
     if let Some(ref delay_spec) = op.delay {
         for raw in delay_spec.names() {
             let n = raw.trim().trim_start_matches('{').trim_end_matches('}');
-            if !n.is_empty() && !body_locally_declared.contains(n)
+            if !n.is_empty()
+                && !body_locally_declared.contains(n)
                 && !referenced.iter().any(|r| r == n)
             {
                 referenced.push(n.to_string());
@@ -1574,9 +1653,9 @@ pub fn build_op_template_scope_kernel(
     }
     for spec in op.metrics.values() {
         let trimmed = spec.value.trim();
-        let bare = !trimmed.is_empty()
-            && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
-        if bare && !body_locally_declared.contains(trimmed)
+        let bare = !trimmed.is_empty() && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+        if bare
+            && !body_locally_declared.contains(trimmed)
             && !referenced.iter().any(|r| r == trimmed)
         {
             referenced.push(trimmed.to_string());
@@ -1593,21 +1672,36 @@ pub fn build_op_template_scope_kernel(
     // pass through.
     if let Some(rel) = op.params.get("relevancy").and_then(|v| v.as_object()) {
         for key in &["actual", "expected", "k", "r"] {
-            let Some(val) = rel.get(*key).and_then(|v| v.as_str()) else { continue };
-            let trimmed = val.trim().trim_start_matches('{').trim_end_matches('}').trim();
-            if trimmed.is_empty() { continue; }
+            let Some(val) = rel.get(*key).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let trimmed = val
+                .trim()
+                .trim_start_matches('{')
+                .trim_end_matches('}')
+                .trim();
+            if trimmed.is_empty() {
+                continue;
+            }
             // Skip numeric literals — `k: 10` is a constant, not a
             // wire ref.
-            if trimmed.parse::<i64>().is_ok() { continue; }
+            if trimmed.parse::<i64>().is_ok() {
+                continue;
+            }
             // Bare-identifier check matches the validator's
             // `is_bare_ident` rule.
-            let bare = trimmed.chars().next()
+            let bare = trimmed
+                .chars()
+                .next()
                 .map(|c| c.is_ascii_alphabetic() || c == '_')
                 .unwrap_or(false)
-                && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-            if !bare { continue; }
-            if !body_locally_declared.contains(trimmed)
-                && !referenced.iter().any(|r| r == trimmed)
+                && trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !bare {
+                continue;
+            }
+            if !body_locally_declared.contains(trimmed) && !referenced.iter().any(|r| r == trimmed)
             {
                 referenced.push(trimmed.to_string());
             }
@@ -1628,24 +1722,18 @@ pub fn build_op_template_scope_kernel(
     // extract via `scan_locally_declared_idents`. Map-shape
     // fragments give the name directly.
     if let Some(rb) = op.result.as_ref() {
-        rb.walk_fragments(|frag| {
-            match frag {
-                nbrs_workload::model::ResultFragment::Source(s) => {
-                    for n in scan_locally_declared_idents(s) {
-                        if !body_locally_declared.contains(&n)
-                            && !referenced.iter().any(|r| r == &n)
-                        {
-                            referenced.push(n);
-                        }
-                    }
-                }
-                nbrs_workload::model::ResultFragment::Named { name, .. } => {
-                    let n = name.to_string();
-                    if !body_locally_declared.contains(&n)
-                        && !referenced.iter().any(|r| r == &n)
-                    {
+        rb.walk_fragments(|frag| match frag {
+            nbrs_workload::model::ResultFragment::Source(s) => {
+                for n in scan_locally_declared_idents(s) {
+                    if !body_locally_declared.contains(&n) && !referenced.iter().any(|r| r == &n) {
                         referenced.push(n);
                     }
+                }
+            }
+            nbrs_workload::model::ResultFragment::Named { name, .. } => {
+                let n = name.to_string();
+                if !body_locally_declared.contains(&n) && !referenced.iter().any(|r| r == &n) {
+                    referenced.push(n);
                 }
             }
         });
@@ -1668,8 +1756,12 @@ pub fn build_op_template_scope_kernel(
     // op-template kernel narrow and makes the contract check
     // above crisp.
     for name in &referenced {
-        if emitted.contains(name) { continue; }
-        if body_locally_declared.contains(name) { continue; }
+        if emitted.contains(name) {
+            continue;
+        }
+        if body_locally_declared.contains(name) {
+            continue;
+        }
         // Names that are *Coordinate* inputs in the parent (the
         // implicit `cycle` and friends) must stay Coordinate in
         // the inner kernel too, so `set_inputs` propagates them
@@ -1677,7 +1769,9 @@ pub fn build_op_template_scope_kernel(
         // IterationExtern classification and break propagation —
         // skip the explicit emit and let the inner kernel's auto-
         // extern path re-classify as Coordinate.
-        let is_parent_coord = parent_kernel.program().find_input(name)
+        let is_parent_coord = parent_kernel
+            .program()
+            .find_input(name)
             .and_then(|idx| parent_kernel.program().input_kind(idx))
             .is_some_and(|k| matches!(k, polydat::kernel::InputKind::Coordinate));
         if is_parent_coord {
@@ -1711,7 +1805,12 @@ pub fn build_op_template_scope_kernel(
             // rerank_mode, "pinned"), …)` folded against the
             // wrong rerank_mode value.
             crate::scope_synth::emit_workload_param_chain_aware(
-                name, value, parent_kernel, &mut source, &mut emitted, None,
+                name,
+                value,
+                parent_kernel,
+                &mut source,
+                &mut emitted,
+                None,
             );
         } else if let Some(entry) = manifest_by_name.get(name.as_str()) {
             let type_name = entry.port_type.to_keyword();
@@ -1731,13 +1830,17 @@ pub fn build_op_template_scope_kernel(
             // IterationExtern and break that propagation.
             let kind = parent_kernel.program().input_kind(parent_idx);
             if !matches!(kind, Some(polydat::kernel::InputKind::Coordinate)) {
-                let port_type = parent_kernel.program().input_port_type(name)
-                    .ok_or_else(|| format!(
-                        "scope synthesis: parent input '{name}' has no \
+                let port_type = parent_kernel
+                    .program()
+                    .input_port_type(name)
+                    .ok_or_else(|| {
+                        format!(
+                            "scope synthesis: parent input '{name}' has no \
                          declared PortType (find_input returned index {parent_idx} \
                          but input_port_type returned None — kernel program shape \
                          broken)"
-                    ))
+                        )
+                    })
                     .expect("input index just resolved must have a port type");
                 let type_name = port_type.to_keyword();
                 source.push_str(&format!("extern {name}: {type_name}\n"));
@@ -1766,7 +1869,12 @@ pub fn build_op_template_scope_kernel(
         // the shadow and break SRD-21's single-resolution-
         // surface invariant.
         crate::scope_synth::emit_workload_param_chain_aware(
-            name, value, parent_kernel, &mut source, &mut emitted, None,
+            name,
+            value,
+            parent_kernel,
+            &mut source,
+            &mut emitted,
+            None,
         );
     }
     if body_text.trim().is_empty() {
@@ -1833,7 +1941,9 @@ pub fn build_op_template_scope_kernel(
     // reads the same `__metric_<name>` form at cycle time —
     // `synthesize_metric_binding_name` is the single source of
     // truth for the naming convention.
-    let mut result_source: String = op.result.as_ref()
+    let mut result_source: String = op
+        .result
+        .as_ref()
         .map(collect_result_bindings_source)
         .unwrap_or_default();
     if !op.metrics.is_empty() {
@@ -1880,10 +1990,15 @@ pub fn build_op_template_scope_kernel(
     }
     let result_source: Option<String> = Some(result_source).filter(|s| !s.trim().is_empty());
 
-    if std::env::var("NBRS_DEBUG_SCOPE_SYNTH").map(|v| v == "1").unwrap_or(false) {
-        eprintln!("=== OP SYNTH [{context}] inherited={inherited_names:?} parent_has_xval_input={:?} parent_manifest_has_xval={} ===\n{source}\n=== END ===",
+    if std::env::var("NBRS_DEBUG_SCOPE_SYNTH")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "=== OP SYNTH [{context}] inherited={inherited_names:?} parent_has_xval_input={:?} parent_manifest_has_xval={} ===\n{source}\n=== END ===",
             parent_kernel.program().find_input("xval"),
-            manifest_by_name.contains_key("xval"));
+            manifest_by_name.contains_key("xval")
+        );
     }
     let mut matter_builder = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
@@ -1929,7 +2044,8 @@ fn verify_op_interface(
     context: &str,
 ) -> Result<(), String> {
     let type_of = |name: &str| -> Option<polydat::ast::PortType> {
-        program.input_port_type(name)
+        program
+            .input_port_type(name)
             .or_else(|| program.output_port_type(name))
     };
     // Yields: PRESENCE is the binder's load-time check (a capture
@@ -1939,11 +2055,11 @@ fn verify_op_interface(
     // materialize (declared cast, binding reference), its type
     // must match the interface.
     for (name, declared) in &iface.yields {
-        let Some(expected) = polydat::ast::PortType::from_keyword(declared)
-        else {
+        let Some(expected) = polydat::ast::PortType::from_keyword(declared) else {
             return Err(format!(
                 "{context}: interface yield '{name}' declares unknown \
-                 type '{declared}'"));
+                 type '{declared}'"
+            ));
         };
         if let Some(actual) = type_of(name)
             && actual != expected
@@ -1951,15 +2067,16 @@ fn verify_op_interface(
             return Err(format!(
                 "{context}: interface yield '{name}' declares type \
                  {declared}, but the compiled op template carries \
-                 {actual:?}"));
+                 {actual:?}"
+            ));
         }
     }
     for (name, declared) in &iface.needs {
-        let Some(expected) = polydat::ast::PortType::from_keyword(declared)
-        else {
+        let Some(expected) = polydat::ast::PortType::from_keyword(declared) else {
             return Err(format!(
                 "{context}: interface need '{name}' declares unknown \
-                 type '{declared}'"));
+                 type '{declared}'"
+            ));
         };
         if let Some(actual) = type_of(name)
             && actual != expected
@@ -1967,7 +2084,8 @@ fn verify_op_interface(
             return Err(format!(
                 "{context}: interface need '{name}' declares type \
                  {declared}, but the compiled op template carries \
-                 {actual:?}"));
+                 {actual:?}"
+            ));
         }
     }
     // Results (SRD-109 Part 3): the projection wire's slot is
@@ -1977,11 +2095,11 @@ fn verify_op_interface(
     // a mismatch means something else (a binding, a cast) claimed
     // the name at a different type.
     for (name, declared) in &iface.results {
-        let Some(expected) = polydat::ast::PortType::from_keyword(declared)
-        else {
+        let Some(expected) = polydat::ast::PortType::from_keyword(declared) else {
             return Err(format!(
                 "{context}: interface results wire '{name}' declares \
-                 unknown type '{declared}'"));
+                 unknown type '{declared}'"
+            ));
         };
         if let Some(actual) = type_of(name)
             && actual != expected
@@ -1989,7 +2107,8 @@ fn verify_op_interface(
             return Err(format!(
                 "{context}: interface results wire '{name}' declares \
                  type {declared}, but the compiled op template carries \
-                 {actual:?}"));
+                 {actual:?}"
+            ));
         }
     }
     Ok(())
@@ -2056,7 +2175,9 @@ pub const OBJECTIVE_WIRE: &str = "__objective";
 pub fn objective_is_bare_wire(objective: &str) -> bool {
     let s = objective.trim();
     !s.is_empty()
-        && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -2112,7 +2233,6 @@ fn collect_result_bindings_source(spec: &nbrs_workload::model::ResultSpec) -> St
     out
 }
 
-
 // reason: cohesive scope builder — each argument is a distinct compile input
 // (ops, iteration vars, outer manifest, workload params, …); grouping them
 // into a struct would only relocate the same fields without adding clarity.
@@ -2146,7 +2266,9 @@ pub fn build_scope(
     for op in ops {
         if let BindingsDef::PolydatSource(src) = &op.bindings {
             let src = src.trim();
-            if src.is_empty() { continue; }
+            if src.is_empty() {
+                continue;
+            }
 
             match &base_source {
                 None => {
@@ -2166,18 +2288,24 @@ pub fn build_scope(
                         // (function calls broken over several physical
                         // lines) stay intact instead of being split at
                         // the paren and ingested piecewise.
-                        let base_logical: Vec<String> = logical_lines(base).into_iter()
+                        let base_logical: Vec<String> = logical_lines(base)
+                            .into_iter()
                             .map(|l| l.trim().to_string())
                             .filter(|l| !l.is_empty())
                             .collect();
                         for line in logical_lines(src) {
                             let trimmed = line.trim();
-                            if trimmed.is_empty() { continue; }
+                            if trimmed.is_empty() {
+                                continue;
+                            }
                             if base_logical.iter().any(|b| b == trimmed) {
                                 // This line is inherited — already ingested from base
                             } else {
                                 // This line is op-specific
-                                scope.ingest_polydat_source(trimmed, BindingOrigin::Op(op.name.clone()));
+                                scope.ingest_polydat_source(
+                                    trimmed,
+                                    BindingOrigin::Op(op.name.clone()),
+                                );
                             }
                         }
                     }
@@ -2226,8 +2354,10 @@ pub fn build_scope(
             }
         }
         if let Some(ref cond) = op.condition {
-            let bare = cond.trim()
-                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+            let bare = cond
+                .trim()
+                .strip_prefix('{')
+                .and_then(|s| s.strip_suffix('}'))
                 .unwrap_or(cond.trim());
             referenced.insert(bare.to_string());
         }
@@ -2238,8 +2368,10 @@ pub fn build_scope(
         // passes provision them.
         if let Some(ref delay_spec) = op.delay {
             for raw in delay_spec.names() {
-                let bare = raw.trim()
-                    .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                let bare = raw
+                    .trim()
+                    .strip_prefix('{')
+                    .and_then(|s| s.strip_suffix('}'))
                     .unwrap_or(raw.trim());
                 referenced.insert(bare.to_string());
             }
@@ -2280,9 +2412,7 @@ pub fn build_scope(
         // wire (e.g. `parse_count_param` on relevancy `k:`)
         // would panic with "unknown output variate".
         let mut param_refs: Vec<String> = Vec::new();
-        crate::bindings::collect_param_bindings_into(
-            &op.params, &[], &mut param_refs,
-        );
+        crate::bindings::collect_param_bindings_into(&op.params, &[], &mut param_refs);
         for name in param_refs {
             referenced.insert(name);
         }
@@ -2335,9 +2465,7 @@ pub fn build_scope(
             let coord_count = parent_prog.coord_count();
             if coord_count > 0 {
                 let input_names = parent_prog.input_names();
-                let coords: Vec<String> = input_names.into_iter()
-                    .take(coord_count)
-                    .collect();
+                let coords: Vec<String> = input_names.into_iter().take(coord_count).collect();
                 scope.coordinates = Some(format_input_decl_line(&coords).trim_end().to_string());
             }
         }
@@ -2368,7 +2496,8 @@ pub fn build_scope(
             if already_satisfied.contains(name) {
                 continue;
             }
-            let manifest_modifier = outer_manifest.iter()
+            let manifest_modifier = outer_manifest
+                .iter()
                 .find(|e| e.name == name)
                 .map(|e| e.modifier);
             let is_workload_param = workload_params.contains_key(name);
@@ -2420,12 +2549,14 @@ pub fn build_scope(
                     // below so each activation re-pulls the value
                     // through the chain via
                     // `materialize_wiring_from_outer` Step 3.
-                    let statically_known = parent_kernel_ref.program()
+                    let statically_known = parent_kernel_ref
+                        .program()
                         .output_index(name)
                         .map(|out_idx| {
-                            let (node_idx, _) = parent_kernel_ref.program()
-                                .resolve_output_by_index(out_idx);
-                            parent_kernel_ref.program()
+                            let (node_idx, _) =
+                                parent_kernel_ref.program().resolve_output_by_index(out_idx);
+                            parent_kernel_ref
+                                .program()
                                 .input_provenance_for(node_idx)
                                 .is_none_or(|p| p.is_zero())
                         })
@@ -2455,11 +2586,12 @@ pub fn build_scope(
             // shadowing.
             if is_workload_param
                 && let Some(value) = parent_kernel_ref.lookup(name)
-                    && let Some(natural) = value_to_param_string(&value) {
-                        scope.add_param_binding(name, &natural);
-                        already_satisfied.insert(name.to_string());
-                        continue;
-                    }
+                && let Some(natural) = value_to_param_string(&value)
+            {
+                scope.add_param_binding(name, &natural);
+                already_satisfied.insert(name.to_string());
+                continue;
+            }
             // Pull the inclusion chain. If the name isn't in the
             // parent's AST (or it's a final/shared binding in
             // the AST), the chain is empty — the auto-extern
@@ -2531,37 +2663,41 @@ pub fn build_scope(
         let mut satisfied: HashSet<String> = HashSet::new();
         satisfied.extend(defined_now);
         satisfied.extend(extern_now);
-        for var in iteration_vars.keys() { satisfied.insert(var.clone()); }
-        for name in workload_params.keys() { satisfied.insert(name.clone()); }
-        for entry in outer_manifest { satisfied.insert(entry.name.clone()); }
+        for var in iteration_vars.keys() {
+            satisfied.insert(var.clone());
+        }
+        for name in workload_params.keys() {
+            satisfied.insert(name.clone());
+        }
+        for entry in outer_manifest {
+            satisfied.insert(entry.name.clone());
+        }
         // Coord names from this scope's `input ...: u64` line.
         if let Some(coords_line) = &scope.coordinates
-            && let Some(rhs) = coords_line.split(":=").nth(1) {
-                let inner = rhs.trim()
-                    .trim_start_matches('(')
-                    .trim_end_matches(')');
-                for n in inner.split(',') {
-                    let n = n.trim();
-                    if !n.is_empty() {
-                        satisfied.insert(n.to_string());
-                    }
+            && let Some(rhs) = coords_line.split(":=").nth(1)
+        {
+            let inner = rhs.trim().trim_start_matches('(').trim_end_matches(')');
+            for n in inner.split(',') {
+                let n = n.trim();
+                if !n.is_empty() {
+                    satisfied.insert(n.to_string());
                 }
             }
+        }
         // `referenced` is built from a textual scan that catches
         // both wire refs and bare identifiers — including GK
         // function names like `mod`, `hash`, `range` that
         // appear in binding RHS as call heads. Filter those out
         // via the registry lookup; only true wire references
         // should surface as unresolved.
-        let mut unresolved: Vec<&String> = referenced.iter()
+        let mut unresolved: Vec<&String> = referenced
+            .iter()
             .filter(|n| !satisfied.contains(n.as_str()))
             // Dotted names follow the field-access wire
             // convention (`q.cursor.idx` reads the wire
             // `q__cursor__idx`) — check the flattened spelling
             // the same way kernel lookup does.
-            .filter(|n| {
-                !n.contains('.') || !satisfied.contains(n.replace('.', "__").as_str())
-            })
+            .filter(|n| !n.contains('.') || !satisfied.contains(n.replace('.', "__").as_str()))
             .filter(|n| !n.starts_with("__"))
             .filter(|n| polydat::dsl::registry::lookup(n).is_none())
             .collect();
@@ -2637,12 +2773,14 @@ pub fn build_scope(
     // Also check phase config values for param refs
     for phase in phases.values() {
         if let Some(ref c) = phase.cycles
-            && c.starts_with('{') && c.ends_with('}') {
-                let name = &c[1..c.len()-1];
-                if workload_params.contains_key(name) && !scope.defined_names().contains(name) {
-                    scope.add_param_binding(name, &workload_params[name]);
-                }
+            && c.starts_with('{')
+            && c.ends_with('}')
+        {
+            let name = &c[1..c.len() - 1];
+            if workload_params.contains_key(name) && !scope.defined_names().contains(name) {
+                scope.add_param_binding(name, &workload_params[name]);
             }
+        }
     }
 
     // --- Step 5: Inline expression extraction ---
@@ -2655,11 +2793,12 @@ pub fn build_scope(
     let mut collect = |s: &str| {
         for bp in nbrs_workload::bindpoints::extract_bind_points(s) {
             if let nbrs_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp
-                && !expr_to_name.contains_key(expr) {
-                    let name = format!("__expr_{inline_idx}");
-                    inline_idx += 1;
-                    expr_to_name.insert(expr.clone(), name);
-                }
+                && !expr_to_name.contains_key(expr)
+            {
+                let name = format!("__expr_{inline_idx}");
+                inline_idx += 1;
+                expr_to_name.insert(expr.clone(), name);
+            }
         }
     };
     for op in ops {
@@ -2671,9 +2810,13 @@ pub fn build_scope(
         // Inline expressions in `if:` and `delay:` count too —
         // those get hoisted out of `op.op` by the parser into
         // dedicated fields on `ParsedOp`.
-        if let Some(s) = &op.condition { collect(s); }
+        if let Some(s) = &op.condition {
+            collect(s);
+        }
         if let Some(spec) = &op.delay {
-            for name in spec.names() { collect(name); }
+            for name in spec.names() {
+                collect(name);
+            }
         }
     }
     for (expr, name) in &expr_to_name {
@@ -2716,9 +2859,10 @@ pub fn build_scope(
                     match bp {
                         nbrs_workload::bindpoints::BindPoint::InlineDefinition(expr) => {
                             if let Some(name) = expr_to_name.get(&expr)
-                                && !exclude.contains(name) {
-                                    scope.add_required_output(name);
-                                }
+                                && !exclude.contains(name)
+                            {
+                                scope.add_required_output(name);
+                            }
                         }
                         nbrs_workload::bindpoints::BindPoint::Reference { name, .. } => {
                             if !exclude.contains(&name) {
@@ -2734,9 +2878,13 @@ pub fn build_scope(
                 scope.add_required_output(trimmed);
             }
         };
-        if let Some(ref cond) = op.condition { collect_required(cond); }
+        if let Some(ref cond) = op.condition {
+            collect_required(cond);
+        }
         if let Some(ref delay_spec) = op.delay {
-            for name in delay_spec.names() { collect_required(name); }
+            for name in delay_spec.names() {
+                collect_required(name);
+            }
         }
         // SRD-40b §6: synthetic-metric `value:` references must
         // survive DCE so the dispenser's Polydat pull plan can resolve
@@ -2746,8 +2894,8 @@ pub fn build_scope(
         // bare-name case we mark the wire required.
         for spec in op.metrics.values() {
             let trimmed = spec.value.trim();
-            let bare = !trimmed.is_empty()
-                && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+            let bare =
+                !trimmed.is_empty() && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
             if bare && !exclude.contains(&trimmed.to_string()) {
                 scope.add_required_output(trimmed);
             }
@@ -2770,19 +2918,25 @@ pub fn build_scope(
         // (the SRD-66 §"Compilation lifecycle" closure-binding
         // rule). This branch intentionally does nothing for now.
         let _ = op.result.as_ref();
-        crate::bindings::collect_param_bindings_into(&op.params, exclude, &mut scope.required_outputs);
+        crate::bindings::collect_param_bindings_into(
+            &op.params,
+            exclude,
+            &mut scope.required_outputs,
+        );
     }
 
     // Config refs (from cycles={expr})
     if let Some(cycles_spec) = phase_cycles
-        && cycles_spec.starts_with('{') && cycles_spec.ends_with('}') {
-            let mut inner = cycles_spec[1..cycles_spec.len()-1].to_string();
-            for (v, val) in iteration_vars {
-                inner = inner.replace(&format!("{{{v}}}"), val);
-            }
-            inner = crate::runner::expand_workload_params(&inner, workload_params);
-            scope.add_config_ref(&inner);
+        && cycles_spec.starts_with('{')
+        && cycles_spec.ends_with('}')
+    {
+        let mut inner = cycles_spec[1..cycles_spec.len() - 1].to_string();
+        for (v, val) in iteration_vars {
+            inner = inner.replace(&format!("{{{v}}}"), val);
         }
+        inner = crate::runner::expand_workload_params(&inner, workload_params);
+        scope.add_config_ref(&inner);
+    }
 
     Ok(scope)
 }
@@ -2830,7 +2984,9 @@ pub fn validate_placeholders_via_kernel(
         let prog = kernel.program();
         let mut names: Vec<String> = prog.output_names().iter().map(|s| s.to_string()).collect();
         for n in prog.input_names() {
-            if !names.contains(&n) { names.push(n); }
+            if !names.contains(&n) {
+                names.push(n);
+            }
         }
         names.sort();
         names
@@ -2846,7 +3002,11 @@ pub fn validate_placeholders_via_kernel(
             // and runs once per field at workload-load time.
             let mut throwaway = value.clone();
             resolve_placeholders_in_json(
-                &mut throwaway, kernel, &per_cycle_names, &path, &mut errors,
+                &mut throwaway,
+                kernel,
+                &per_cycle_names,
+                &path,
+                &mut errors,
             );
         }
         for (key, value) in op.params.iter() {
@@ -2856,7 +3016,11 @@ pub fn validate_placeholders_via_kernel(
             let path = format!("op '{op_name}' param '{key}'");
             let mut throwaway = value.clone();
             resolve_placeholders_in_json(
-                &mut throwaway, kernel, &per_cycle_names, &path, &mut errors,
+                &mut throwaway,
+                kernel,
+                &per_cycle_names,
+                &path,
+                &mut errors,
             );
         }
     }
@@ -2865,9 +3029,8 @@ pub fn validate_placeholders_via_kernel(
         return Ok(());
     }
     let in_scope_str = in_scope().join(", ");
-    let mut out = String::from(
-        "placeholder resolution failed (single read path: Polydat Kernel lookup):\n"
-    );
+    let mut out =
+        String::from("placeholder resolution failed (single read path: Polydat Kernel lookup):\n");
     for e in &errors {
         out.push_str("  - ");
         out.push_str(e);
@@ -2907,7 +3070,9 @@ pub fn resolve_placeholders_in_op_params(
         let prog = kernel.program();
         let mut names: Vec<String> = prog.output_names().iter().map(|s| s.to_string()).collect();
         for n in prog.input_names() {
-            if !names.contains(&n) { names.push(n); }
+            if !names.contains(&n) {
+                names.push(n);
+            }
         }
         names.sort();
         names
@@ -2924,17 +3089,13 @@ pub fn resolve_placeholders_in_op_params(
             continue;
         }
         let path = format!("op '{op_name}' param '{key}'");
-        resolve_placeholders_in_json(
-            value, kernel, &per_cycle_names, &path, &mut errors,
-        );
+        resolve_placeholders_in_json(value, kernel, &per_cycle_names, &path, &mut errors);
     }
     if errors.is_empty() {
         return Ok(());
     }
     let in_scope_str = in_scope().join(", ");
-    let mut out = String::from(
-        "param-placeholder resolution failed:\n"
-    );
+    let mut out = String::from("param-placeholder resolution failed:\n");
     for e in &errors {
         out.push_str("  - ");
         out.push_str(e);
@@ -2974,7 +3135,9 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
         if let BindingsDef::PolydatSource(src) = &op.bindings {
             for line in logical_lines(src) {
                 let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
                 // `input` declarations declare per-cycle wire names
                 // by definition — the runtime sets them per
                 // iteration. Both surface forms are handled:
@@ -3001,7 +3164,8 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
                     }
                     continue;
                 }
-                let lhs_end = trimmed.find(":=")
+                let lhs_end = trimmed
+                    .find(":=")
                     .or_else(|| trimmed.find('='))
                     .unwrap_or(trimmed.len());
                 let mut lhs = &trimmed[..lhs_end];
@@ -3012,14 +3176,25 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
                 // appear here too.
                 loop {
                     let mut matched = false;
-                    for prefix in ["cursor ", "init ", "extern ", "const ", "final ", "shared ", "volatile ", "private "] {
+                    for prefix in [
+                        "cursor ",
+                        "init ",
+                        "extern ",
+                        "const ",
+                        "final ",
+                        "shared ",
+                        "volatile ",
+                        "private ",
+                    ] {
                         if let Some(stripped) = lhs.strip_prefix(prefix) {
                             lhs = stripped.trim();
                             matched = true;
                             break;
                         }
                     }
-                    if !matched { break; }
+                    if !matched {
+                        break;
+                    }
                 }
                 let lhs = lhs.trim();
                 // Destructured tuple LHS: (a, b, c) := ...
@@ -3059,8 +3234,12 @@ fn is_bare_ident(s: &str) -> bool {
 /// (`"hello"`) so the param-binding classifier can pass it
 /// through without re-quoting.
 fn is_polydat_quoted_string(s: &str) -> bool {
-    if s.len() < 2 { return false; }
-    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    if s.len() < 2 {
+        return false;
+    }
+    if !s.starts_with('"') || !s.ends_with('"') {
+        return false;
+    }
     // Walk the inner span; reject if we find an unescaped `"`
     // before the final character (which would mean the outer
     // quotes don't actually pair).
@@ -3072,7 +3251,9 @@ fn is_polydat_quoted_string(s: &str) -> bool {
             i += 2;
             continue;
         }
-        if bytes[i] == b'"' { return false; }
+        if bytes[i] == b'"' {
+            return false;
+        }
         i += 1;
     }
     true
@@ -3085,15 +3266,23 @@ fn is_polydat_quoted_string(s: &str) -> bool {
 /// distinguishes "this is already polydat array syntax" from
 /// "this is a raw string that happens to contain brackets".
 fn is_polydat_array_literal(s: &str) -> bool {
-    if !s.starts_with('[') || !s.ends_with(']') { return false; }
+    if !s.starts_with('[') || !s.ends_with(']') {
+        return false;
+    }
     let mut depth: i32 = 0;
     let mut in_string = false;
     let mut escape = false;
     for c in s.chars() {
-        if escape { escape = false; continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
         if in_string {
-            if c == '\\' { escape = true; }
-            else if c == '"' { in_string = false; }
+            if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
             continue;
         }
         match c {
@@ -3101,7 +3290,9 @@ fn is_polydat_array_literal(s: &str) -> bool {
             '[' => depth += 1,
             ']' => {
                 depth -= 1;
-                if depth < 0 { return false; }
+                if depth < 0 {
+                    return false;
+                }
             }
             _ => {}
         }
@@ -3122,10 +3313,24 @@ mod polydat_param_classifier_tests {
         let src = "# Forwarding bindings: allow-list = bindings + params\n\
                    pct := mul(active, 2)  # trailing comment with words\n";
         let idents = scan_idents_in_polydat_source(src);
-        assert!(idents.contains("active"), "real ident must be found: {idents:?}");
-        for word in ["Forwarding", "bindings", "allow", "list", "params", "trailing", "comment", "words"] {
-            assert!(!idents.contains(word),
-                "comment word '{word}' must not be scanned as a wire ref: {idents:?}");
+        assert!(
+            idents.contains("active"),
+            "real ident must be found: {idents:?}"
+        );
+        for word in [
+            "Forwarding",
+            "bindings",
+            "allow",
+            "list",
+            "params",
+            "trailing",
+            "comment",
+            "words",
+        ] {
+            assert!(
+                !idents.contains(word),
+                "comment word '{word}' must not be scanned as a wire ref: {idents:?}"
+            );
         }
     }
 
@@ -3138,11 +3343,19 @@ mod polydat_param_classifier_tests {
         // seg_mib_mean binding).
         let src = "seg_mib_mean := if segments > 0 { total / max(segments, 1) } else { 0 }\n";
         let idents = scan_idents_in_polydat_source(src);
-        assert!(idents.contains("segments"), "real wire must still be found: {idents:?}");
-        assert!(idents.contains("total"), "real wire must still be found: {idents:?}");
+        assert!(
+            idents.contains("segments"),
+            "real wire must still be found: {idents:?}"
+        );
+        assert!(
+            idents.contains("total"),
+            "real wire must still be found: {idents:?}"
+        );
         for kw in ["if", "else"] {
-            assert!(!idents.contains(kw),
-                "conditional keyword '{kw}' must not scan as a wire ref: {idents:?}");
+            assert!(
+                !idents.contains(kw),
+                "conditional keyword '{kw}' must not scan as a wire ref: {idents:?}"
+            );
         }
     }
 
@@ -3153,7 +3366,10 @@ mod polydat_param_classifier_tests {
         let decls = scan_locally_declared_idents(src);
         assert!(decls.contains("sstables"));
         // `# total = ...` has an `=`; it must not be parsed as a decl.
-        assert!(!decls.contains("total"), "comment LHS must not declare: {decls:?}");
+        assert!(
+            !decls.contains("total"),
+            "comment LHS must not declare: {decls:?}"
+        );
     }
 
     #[test]
@@ -3194,8 +3410,10 @@ mod polydat_param_classifier_tests {
     fn polydat_array_literal_balances_brackets() {
         assert!(is_polydat_array_literal("[1, 2, 3]"));
         assert!(is_polydat_array_literal("[]"));
-        assert!(is_polydat_array_literal("[[1, 2], [3, 4]]"),
-            "nested arrays balance");
+        assert!(
+            is_polydat_array_literal("[[1, 2], [3, 4]]"),
+            "nested arrays balance"
+        );
         assert!(is_polydat_array_literal("[\"a\", \"b\"]"));
         // Strings containing `]` don't break the count.
         assert!(is_polydat_array_literal("[\"a]b\", \"c\"]"));
@@ -3227,9 +3445,7 @@ fn resolve_placeholders_in_json(
 ) {
     match value {
         serde_json::Value::String(s) => {
-            match resolve_placeholders_in_string(
-                s, kernel, per_cycle_names, field_path,
-            ) {
+            match resolve_placeholders_in_string(s, kernel, per_cycle_names, field_path) {
                 Ok(out) => *value = serde_json::Value::String(out),
                 Err(es) => errors.extend(es),
             }
@@ -3272,9 +3488,7 @@ fn resolve_placeholders_in_string(
     let mut i = 0;
     while i < n {
         // `\{` and `\}` are escapes — passthrough one char.
-        if bytes[i] == b'\\' && i + 1 < n
-            && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}')
-        {
+        if bytes[i] == b'\\' && i + 1 < n && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
             out.push(bytes[i] as char);
             out.push(bytes[i + 1] as char);
             i += 2;
@@ -3396,9 +3610,7 @@ fn resolve_placeholders_in_string(
 ///
 /// Returns the expression-to-name map for the caller to know what
 /// was rewritten.
-pub fn rewrite_inline_exprs(
-    ops: &mut [ParsedOp],
-) -> HashMap<String, String> {
+pub fn rewrite_inline_exprs(ops: &mut [ParsedOp]) -> HashMap<String, String> {
     // SRD-13d: each op template is its own Polydat scope. Inline
     // `{{<expr>}}` rewrites are Polydat matter that belongs to the
     // op-template scope, not to the shared phase scope. So each
@@ -3423,9 +3635,7 @@ pub fn rewrite_inline_exprs(
     let mut inline_idx = 0usize;
     let mut per_op_expr_to_name: Vec<HashMap<String, String>> =
         (0..ops.len()).map(|_| HashMap::new()).collect();
-    let collect_from = |s: &str,
-                        idx: &mut usize,
-                        op_map: &mut HashMap<String, String>| {
+    let collect_from = |s: &str, idx: &mut usize, op_map: &mut HashMap<String, String>| {
         for bp in nbrs_workload::bindpoints::extract_bind_points(s) {
             if let nbrs_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
                 op_map.entry(expr.clone()).or_insert_with(|| {
@@ -3456,7 +3666,8 @@ pub fn rewrite_inline_exprs(
     // `expr_to_name` return value flattens the per-op maps.
     // Names are unique across ops because the inline_idx
     // counter is global, so the union is collision-free.
-    let expr_to_name: HashMap<String, String> = per_op_expr_to_name.iter()
+    let expr_to_name: HashMap<String, String> = per_op_expr_to_name
+        .iter()
         .flat_map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())))
         .collect();
 
@@ -3484,7 +3695,9 @@ pub fn rewrite_inline_exprs(
     use nbrs_workload::model::BindingsDef;
     for (op_index, op) in ops.iter_mut().enumerate() {
         let op_map = &per_op_expr_to_name[op_index];
-        if op_map.is_empty() { continue; }
+        if op_map.is_empty() {
+            continue;
+        }
 
         // Build synth lines for this op, deterministically
         // ordered by synth name.
@@ -3511,9 +3724,7 @@ pub fn rewrite_inline_exprs(
                     for (k, v) in map.iter() {
                         existing.push_str(&format!("{k} := {v}\n"));
                     }
-                    op.bindings = BindingsDef::PolydatSource(format!(
-                        "{existing}{synth_lines}"
-                    ));
+                    op.bindings = BindingsDef::PolydatSource(format!("{existing}{synth_lines}"));
                 }
             }
         }
@@ -3522,22 +3733,10 @@ pub fn rewrite_inline_exprs(
         let rewrite = |s: &str| -> String {
             let mut rewritten = s.to_string();
             for (expr, name) in op_map {
-                rewritten = rewritten.replace(
-                    &format!("{{{{{expr}}}}}"),
-                    &format!("{{{name}}}"),
-                );
-                rewritten = rewritten.replace(
-                    &format!("{{:={expr}:=}}"),
-                    &format!("{{{name}}}"),
-                );
-                rewritten = rewritten.replace(
-                    &format!("{{:={expr}}}"),
-                    &format!("{{{name}}}"),
-                );
-                rewritten = rewritten.replace(
-                    &format!("{{{expr}}}"),
-                    &format!("{{{name}}}"),
-                );
+                rewritten = rewritten.replace(&format!("{{{{{expr}}}}}"), &format!("{{{name}}}"));
+                rewritten = rewritten.replace(&format!("{{:={expr}:=}}"), &format!("{{{name}}}"));
+                rewritten = rewritten.replace(&format!("{{:={expr}}}"), &format!("{{{name}}}"));
+                rewritten = rewritten.replace(&format!("{{{expr}}}"), &format!("{{{name}}}"));
             }
             rewritten
         };
@@ -3631,7 +3830,10 @@ mod tests {
         bare.optimize.as_mut().unwrap().objective = "score".to_string();
         let bare_out = synthesize_phase_scope_bindings(&bare).expect("synthesis ok");
         if let BindingsDef::PolydatSource(s) = bare_out {
-            assert!(!s.contains("__objective"), "bare objective must not synthesize:\n{s}");
+            assert!(
+                !s.contains("__objective"),
+                "bare objective must not synthesize:\n{s}"
+            );
         }
     }
 
@@ -3651,12 +3853,16 @@ mod tests {
             None,
             &[],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
         // 'profiles' should appear exactly once
         let count = emitted.matches("profiles :=").count();
-        assert_eq!(count, 1, "expected exactly 1 'profiles :=' in emitted scope, got {count}:\n{emitted}");
+        assert_eq!(
+            count, 1,
+            "expected exactly 1 'profiles :=' in emitted scope, got {count}:\n{emitted}"
+        );
     }
 
     #[test]
@@ -3678,7 +3884,8 @@ mod tests {
             None,
             &[],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
         // Iteration variables now declare as `extern <name>:
@@ -3686,10 +3893,14 @@ mod tests {
         // without recompiling (SRD 18b §"Iteration variables as
         // scope outputs"). Type is inferred from the value;
         // "vec_default" doesn't parse numerically → String.
-        assert!(emitted.contains("extern table: String"),
-            "expected extern table declaration in:\n{emitted}");
-        assert!(emitted.contains("profiles :="),
-            "expected profiles in:\n{emitted}");
+        assert!(
+            emitted.contains("extern table: String"),
+            "expected extern table declaration in:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("profiles :="),
+            "expected profiles in:\n{emitted}"
+        );
     }
 
     #[test]
@@ -3709,7 +3920,8 @@ mod tests {
             None,
             &[],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
         assert!(emitted.contains("foo := hash(cycle)"), "missing foo");
@@ -3733,11 +3945,15 @@ mod tests {
             None,
             &[],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let result = scope.validate();
         assert!(result.is_err(), "expected shadow error");
         let err = result.unwrap_err();
-        assert!(err.contains("shadows"), "expected 'shadows' in error: {err}");
+        assert!(
+            err.contains("shadows"),
+            "expected 'shadows' in error: {err}"
+        );
         assert!(err.contains("op_b"), "expected op name in error: {err}");
     }
 
@@ -3749,7 +3965,11 @@ mod tests {
         // The init injection used to make them differ, causing false shadow.
         let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
-            make_polydat_op("drop_metadata_index", "DROP INDEX {table}_meta_idx", bindings),
+            make_polydat_op(
+                "drop_metadata_index",
+                "DROP INDEX {table}_meta_idx",
+                bindings,
+            ),
             make_polydat_op("drop_vector_index", "DROP INDEX {table}_idx", bindings),
             make_polydat_op("drop_table", "DROP TABLE {table}", bindings),
         ];
@@ -3767,14 +3987,18 @@ mod tests {
             None,
             &[],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         // This was the bug: validate() used to fail with false shadow error
         scope.validate().unwrap();
         let emitted = scope.emit();
         // Iter vars now declare as extern (SRD 18b). The original
         // bug — false-shadow detection — is unchanged regardless
         // of how the iter var materialises.
-        assert!(emitted.contains("extern table: String"), "missing extern table in:\n{emitted}");
+        assert!(
+            emitted.contains("extern table: String"),
+            "missing extern table in:\n{emitted}"
+        );
         assert!(emitted.contains("profiles :="), "missing profiles");
         // profiles should appear exactly once
         let count = emitted.matches("profiles :=").count();
@@ -3793,7 +4017,8 @@ mod tests {
              const dim := 128\n\
              shared budget := 100\n\
              load := add(cycle, 1)\n",
-        ).expect("compile parent")
+        )
+        .expect("compile parent")
     }
 
     fn op_with_body(name: &str, body: &str) -> ParsedOp {
@@ -3808,18 +4033,28 @@ mod tests {
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         let op = op_with_body("step_op", "step := add(cycle, 1)\n");
         let result = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false, polydat::kernel::KernelOptLevel::Release, "test",
+            Vec::new(),
+            None,
+            false,
+            polydat::kernel::KernelOptLevel::Release,
+            "test",
         );
-        assert!(result.is_ok(),
+        assert!(
+            result.is_ok(),
             "cycle is a parent input — should be accepted. err: {:?}",
-            result.err());
+            result.err()
+        );
     }
 
     /// Localises the metric-wiring defect: when an op-template kernel is
@@ -3834,24 +4069,41 @@ mod tests {
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         let mut op = op_with_body("m_op", "measured := add(cycle, 1)\n");
-        op.metrics.insert("bytes_out".to_string(), MetricSpec {
-            value: "measured".into(),
-            family: None, kind: None, unit: None, format: None,
-            cell: Default::default(),
-        });
+        op.metrics.insert(
+            "bytes_out".to_string(),
+            MetricSpec {
+                value: "measured".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         let kernel = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false, polydat::kernel::KernelOptLevel::Release, "test",
-        ).expect("op-template kernel builds");
+            Vec::new(),
+            None,
+            false,
+            polydat::kernel::KernelOptLevel::Release,
+            "test",
+        )
+        .expect("op-template kernel builds");
         let outs = kernel.program().output_names();
-        assert!(outs.contains(&"__metric_bytes_out"),
+        assert!(
+            outs.contains(&"__metric_bytes_out"),
             "the synthesised metric binding must be an output of the \
-             op-template kernel; outputs: {outs:?}");
+             op-template kernel; outputs: {outs:?}"
+        );
     }
 
     #[test]
@@ -3860,20 +4112,30 @@ mod tests {
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         // `dim` is a `final` (folded) output — snapshot is final,
         // per-cycle changes are impossible by construction.
         let op = op_with_body("calc_op", "scaled := mul(dim, 2)\n");
         let result = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false, polydat::kernel::KernelOptLevel::Release, "test",
+            Vec::new(),
+            None,
+            false,
+            polydat::kernel::KernelOptLevel::Release,
+            "test",
         );
-        assert!(result.is_ok(),
+        assert!(
+            result.is_ok(),
             "final/folded output should be accepted. err: {:?}",
-            result.err());
+            result.err()
+        );
     }
 
     #[test]
@@ -3882,19 +4144,29 @@ mod tests {
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         // `budget` is `shared` — SharedCell carries live updates.
         let op = op_with_body("budget_op", "remaining := add(budget, 1)\n");
         let result = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false, polydat::kernel::KernelOptLevel::Release, "test",
+            Vec::new(),
+            None,
+            false,
+            polydat::kernel::KernelOptLevel::Release,
+            "test",
         );
-        assert!(result.is_ok(),
+        assert!(
+            result.is_ok(),
             "shared output should be accepted. err: {:?}",
-            result.err());
+            result.err()
+        );
     }
 
     #[test]
@@ -3911,24 +4183,36 @@ mod tests {
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
-        let op = op_with_body("forecast_op",
-            "forecast := mul(load, 2)\n");
+        let op = op_with_body("forecast_op", "forecast := mul(load, 2)\n");
         let kernel = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false, polydat::kernel::KernelOptLevel::Release, "test",
-        ).expect("op-template kernel synth should accept dynamic parent ref");
+            Vec::new(),
+            None,
+            false,
+            polydat::kernel::KernelOptLevel::Release,
+            "test",
+        )
+        .expect("op-template kernel synth should accept dynamic parent ref");
         // The op-template kernel carries `load` as an extern
         // input — the construction-time wiring set up the slot;
         // per-cycle refresh keeps it current with outer.
-        assert!(kernel.program().find_input("load").is_some(),
-            "extern load slot should land on op-template kernel");
+        assert!(
+            kernel.program().find_input("load").is_some(),
+            "extern load slot should land on op-template kernel"
+        );
         // And `forecast`, the op-local binding, is an output.
-        assert!(kernel.program().output_names().contains(&"forecast"),
-            "op-local binding should be an output");
+        assert!(
+            kernel.program().output_names().contains(&"forecast"),
+            "op-local binding should be an output"
+        );
     }
 
     #[test]
@@ -3951,13 +4235,21 @@ extern optimize_for: String
 extern table: String
 "#;
         let parent = polydat::dsl::compile::compile_polydat_with_libs(
-            parent_src, None, vec![], &[], false, "parent",
-        ).expect("parent compile");
+            parent_src,
+            None,
+            vec![],
+            &[],
+            false,
+            "parent",
+        )
+        .expect("parent compile");
         let manifest: Vec<crate::runner::ManifestEntry> =
             polydat::kernel::extract_manifest(parent.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let body = "const prebuffered := dataset_prebuffer(\"{dataset}:{profile}\")\n\
@@ -3971,29 +4263,52 @@ extern table: String
             overscan := if(optimize_for == \"LATENCY\", latency_factor, recall_factor)\n";
         let mut op = op_with_body("select_ann", body);
         // Mirror op fields the YAML carries.
-        op.op.insert("prepared".into(), serde_json::json!(
-            "SELECT key,value FROM {keyspace}.{table} \
+        op.op.insert(
+            "prepared".into(),
+            serde_json::json!(
+                "SELECT key,value FROM {keyspace}.{table} \
              WHERE metadata = {predicate} \
              ORDER BY value ANN OF {query_vector} LIMIT {limit}"
-        ));
-        op.metrics.insert("overscan".into(), MetricSpec {
-            value: "overscan".into(),
-            family: None, kind: None, unit: None, format: None, cell: Default::default(),});
+            ),
+        );
+        op.metrics.insert(
+            "overscan".into(),
+            MetricSpec {
+                value: "overscan".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         let mut workload_params = HashMap::new();
         workload_params.insert("dataset".into(), "sift1m".into());
         workload_params.insert("profile".into(), "label_00".into());
         workload_params.insert("keyspace".into(), "baselines".into());
         let kernel = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
-            &workload_params, vec![], None, false,
+            &op,
+            &manifest,
+            &parent,
+            &workload_params,
+            vec![],
+            None,
+            false,
             polydat::kernel::KernelOptLevel::Release,
             "pvs_query.select_ann",
-        ).expect("op-template kernel synth");
-        let outs: Vec<String> = kernel.program().output_names()
-            .iter().map(|s| s.to_string()).collect();
+        )
+        .expect("op-template kernel synth");
+        let outs: Vec<String> = kernel
+            .program()
+            .output_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         for required in &["overscan", "latency_factor", "recall_factor"] {
-            assert!(outs.iter().any(|o| o == required),
-                "op-template kernel missing '{required}'; outputs: {outs:?}");
+            assert!(
+                outs.iter().any(|o| o == required),
+                "op-template kernel missing '{required}'; outputs: {outs:?}"
+            );
         }
         // Workload params must be folded in as `final` constants
         // (not externs) so `init prebuffered =
@@ -4037,13 +4352,21 @@ extern profile: String
 extern keyspace: String
 "#;
         let parent = polydat::dsl::compile::compile_polydat_with_libs(
-            parent_src, None, vec![], &[], false, "parent",
-        ).expect("parent compile");
+            parent_src,
+            None,
+            vec![],
+            &[],
+            false,
+            "parent",
+        )
+        .expect("parent compile");
         let manifest: Vec<crate::runner::ManifestEntry> =
             polydat::kernel::extract_manifest(parent.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let body = "const prebuffered := dataset_prebuffer(\"dummy:default\")\n\
@@ -4057,18 +4380,35 @@ extern keyspace: String
             overscan := if(optimize_for == \"LATENCY\", latency_factor, recall_factor)\n";
         let op = op_with_body("select_ann", body);
         let kernel = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false,
+            Vec::new(),
+            None,
+            false,
             polydat::kernel::KernelOptLevel::Release,
             "pvs_query.select_ann",
-        ).expect("op-template kernel synth");
-        let outs: Vec<String> = kernel.program().output_names()
-            .iter().map(|s| s.to_string()).collect();
-        for required in &["query_vector", "predicate", "ground_truth",
-                          "latency_factor", "recall_factor", "overscan"] {
-            assert!(outs.iter().any(|o| o == required),
-                "op-template kernel missing '{required}'; outputs: {outs:?}");
+        )
+        .expect("op-template kernel synth");
+        let outs: Vec<String> = kernel
+            .program()
+            .output_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for required in &[
+            "query_vector",
+            "predicate",
+            "ground_truth",
+            "latency_factor",
+            "recall_factor",
+            "overscan",
+        ] {
+            assert!(
+                outs.iter().any(|o| o == required),
+                "op-template kernel missing '{required}'; outputs: {outs:?}"
+            );
         }
     }
 
@@ -4084,18 +4424,23 @@ extern keyspace: String
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         let mut op = ParsedOp::simple("read", "noop");
         op.bindings = BindingsDef::PolydatSource("".into());
-        op.params.insert("relevancy".into(), serde_json::json!({
-            "actual": "rows",
-            "expected": "ground_truth",
-            "k": "k_value",
-            "r": "limit_value",
-            "functions": ["recall"],
-        }));
+        op.params.insert(
+            "relevancy".into(),
+            serde_json::json!({
+                "actual": "rows",
+                "expected": "ground_truth",
+                "k": "k_value",
+                "r": "limit_value",
+                "functions": ["recall"],
+            }),
+        );
         // Parent has `cycle` as the coord input. The relevancy
         // wire names (rows, ground_truth, k_value, limit_value)
         // aren't on the parent; the synthesiser should still add
@@ -4119,31 +4464,40 @@ extern keyspace: String
             const ground_truth := \"1,2,3\"\n\
             const k_value := 5\n\
             const limit_value := 100\n";
-        let real_parent = polydat::dsl::compile::compile_polydat(kernel_src)
-            .expect("parent compile");
+        let real_parent =
+            polydat::dsl::compile::compile_polydat(kernel_src).expect("parent compile");
         let real_manifest = polydat::kernel::extract_manifest(real_parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         let kernel = build_op_template_scope_kernel(
-            &op, &real_manifest, &real_parent,
+            &op,
+            &real_manifest,
+            &real_parent,
             &HashMap::new(),
-            Vec::new(), None, false,
+            Vec::new(),
+            None,
+            false,
             polydat::kernel::KernelOptLevel::Release,
             "relevancy-cascade-test",
-        ).expect("op-template kernel synth");
+        )
+        .expect("op-template kernel synth");
 
         // Each bare-name relevancy wire should resolve through the
         // op-template kernel's lookup — the same path validation.rs
         // takes at wrap-time via canonical_kernel().lookup(name).
         for name in &["rows", "ground_truth", "k_value", "limit_value"] {
-            assert!(kernel.lookup(name).is_some(),
+            assert!(
+                kernel.lookup(name).is_some(),
                 "relevancy wire '{name}' should be visible on the \
                  op-template kernel (cascaded extern); kernel had \
                  outputs: {outs:?}",
-                outs = kernel.program().output_names());
+                outs = kernel.program().output_names()
+            );
         }
     }
 
@@ -4164,7 +4518,9 @@ extern keyspace: String
         let manifest = polydat::kernel::extract_manifest(parent.program())
             .into_iter()
             .map(|e| crate::runner::ManifestEntry {
-                name: e.name, port_type: e.port_type, modifier: e.modifier,
+                name: e.name,
+                port_type: e.port_type,
+                modifier: e.modifier,
             })
             .collect::<Vec<_>>();
         let mut op = ParsedOp::simple("read", "noop");
@@ -4176,27 +4532,38 @@ extern keyspace: String
                 family: None,
                 kind: Some(nbrs_workload::model::MetricKind::Gauge),
                 unit: None,
-                format: None, cell: Default::default(),},
+                format: None,
+                cell: Default::default(),
+            },
         );
         let kernel = build_op_template_scope_kernel(
-            &op, &manifest, &parent,
+            &op,
+            &manifest,
+            &parent,
             &HashMap::new(),
-            Vec::new(), None, false,
+            Vec::new(),
+            None,
+            false,
             polydat::kernel::KernelOptLevel::Release,
             "metric-walker-test",
-        ).expect("op-template kernel synth");
+        )
+        .expect("op-template kernel synth");
         let inputs = kernel.program().input_names();
-        assert!(inputs.iter().any(|i| i == "count"),
+        assert!(
+            inputs.iter().any(|i| i == "count"),
             "metric `value: count` should force the `count` magic-extern \
              input slot to be allocated under Release opt level; \
-             inputs were: {inputs:?}");
+             inputs were: {inputs:?}"
+        );
         // And the synthesised binding shows up as an output the
         // MetricsDispenser will read at cycle time.
         let outs = kernel.program().output_names();
         let synth = synthesize_metric_binding_name("rows_per_op");
-        assert!(outs.iter().any(|o| o == &synth),
+        assert!(
+            outs.iter().any(|o| o == &synth),
             "synthesised `{synth}` binding should be a kernel output; \
-             outputs were: {outs:?}");
+             outputs were: {outs:?}"
+        );
     }
 
     #[test]
@@ -4205,14 +4572,16 @@ extern keyspace: String
         // upstream and a Str, the synthesizer emits
         // `const name := "value"` in the child's source rather
         // than auto-externing it.
-        let parent = polydat::dsl::compile_polydat(
-            "input cycle: u64\nconst dataset := \"sift1m\"\n"
-        ).expect("compile parent");
+        let parent =
+            polydat::dsl::compile_polydat("input cycle: u64\nconst dataset := \"sift1m\"\n")
+                .expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             polydat::kernel::extract_manifest(parent.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let ops = vec![make_polydat_op("step", "x={dataset}", "input cycle: u64")];
@@ -4225,7 +4594,8 @@ extern keyspace: String
             None,
             &[],
             Some(&parent),
-        ).expect("build_scope");
+        )
+        .expect("build_scope");
         let emitted = scope.emit();
         assert!(
             emitted.contains("const dataset := \"sift1m\""),
@@ -4239,14 +4609,15 @@ extern keyspace: String
 
     #[test]
     fn promoted_final_emits_inline_literal_for_u64() {
-        let parent = polydat::dsl::compile_polydat(
-            "input cycle: u64\nconst count := 42\n"
-        ).expect("compile parent");
+        let parent = polydat::dsl::compile_polydat("input cycle: u64\nconst count := 42\n")
+            .expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             polydat::kernel::extract_manifest(parent.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let ops = vec![make_polydat_op("step", "n={count}", "input cycle: u64")];
@@ -4259,7 +4630,8 @@ extern keyspace: String
             None,
             &[],
             Some(&parent),
-        ).expect("build_scope");
+        )
+        .expect("build_scope");
         let emitted = scope.emit();
         assert!(
             emitted.contains("const count := 42"),
@@ -4273,14 +4645,16 @@ extern keyspace: String
         // `{tirp}` instead of the declared `trip`) is rejected
         // at the synthesizer level with a structured error,
         // not via a downstream Polydat compiler error.
-        let parent = polydat::dsl::compile_polydat(
-            "input cycle: u64\nconst dataset := \"sift1m\"\n"
-        ).expect("compile parent");
+        let parent =
+            polydat::dsl::compile_polydat("input cycle: u64\nconst dataset := \"sift1m\"\n")
+                .expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             polydat::kernel::extract_manifest(parent.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let ops = vec![make_polydat_op("step", "x={tirp}", "input cycle: u64")];
@@ -4298,8 +4672,14 @@ extern keyspace: String
             Err(e) => e,
         };
         assert!(err.contains("unresolved wire"), "wrong error: {err}");
-        assert!(err.contains("tirp"), "error should mention the typoed name: {err}");
-        assert!(err.contains("Visible names"), "error should list visible names: {err}");
+        assert!(
+            err.contains("tirp"),
+            "error should mention the typoed name: {err}"
+        );
+        assert!(
+            err.contains("Visible names"),
+            "error should list visible names: {err}"
+        );
     }
 
     #[test]
@@ -4332,17 +4712,25 @@ extern keyspace: String
                                            shared has_b := false\n";
         scope.ingest_polydat_source(src_with_apostrophe_comment, BindingOrigin::Inherited);
         let defined = scope.defined_names();
-        assert!(defined.contains("has_a"),
+        assert!(
+            defined.contains("has_a"),
             "comment with apostrophe must NOT consume subsequent bindings; \
-             expected has_a in defined names, got {defined:?}");
-        assert!(defined.contains("has_b"),
-            "expected has_b in defined names, got {defined:?}");
+             expected has_a in defined names, got {defined:?}"
+        );
+        assert!(
+            defined.contains("has_b"),
+            "expected has_b in defined names, got {defined:?}"
+        );
 
         let emitted = scope.emit();
-        assert!(emitted.contains("shared has_a := true"),
-            "scope.emit() must include the shared bindings; got:\n{emitted}");
-        assert!(emitted.contains("shared has_b := false"),
-            "scope.emit() must include the shared bindings; got:\n{emitted}");
+        assert!(
+            emitted.contains("shared has_a := true"),
+            "scope.emit() must include the shared bindings; got:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("shared has_b := false"),
+            "scope.emit() must include the shared bindings; got:\n{emitted}"
+        );
     }
 
     #[test]
@@ -4393,11 +4781,12 @@ extern keyspace: String
             poll: None,
             ..Default::default()
         };
-        let out = synthesize_phase_scope_bindings(&phase)
-            .expect("no-poll synthesis is a no-op");
+        let out = synthesize_phase_scope_bindings(&phase).expect("no-poll synthesis is a no-op");
         match out {
-            BindingsDef::PolydatSource(s) => assert_eq!(s, "k := 5\n",
-                "no-poll should return the original bindings unchanged"),
+            BindingsDef::PolydatSource(s) => assert_eq!(
+                s, "k := 5\n",
+                "no-poll should return the original bindings unchanged"
+            ),
             other => panic!("expected PolydatSource, got {other:?}"),
         }
     }
@@ -4412,14 +4801,23 @@ extern keyspace: String
         let mut metrics = std::collections::HashMap::new();
         let mut cell = std::collections::BTreeMap::new();
         cell.insert("tier".to_string(), "tier_name".to_string());
-        metrics.insert("bytes_out".to_string(), MetricSpec {
-            value: "history_bytes_out".into(),
-            family: None, kind: None, unit: None, format: None, cell,
-        });
+        metrics.insert(
+            "bytes_out".to_string(),
+            MetricSpec {
+                value: "history_bytes_out".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell,
+            },
+        );
         let phase = WorkloadPhase {
             bindings: BindingsDef::PolydatSource(
                 "extern tier_name: str = \"\"\n\
-                 extern history_bytes_out: u64 = 0\n".into()),
+                 extern history_bytes_out: u64 = 0\n"
+                    .into(),
+            ),
             metrics,
             poll: None,
             ..Default::default()
@@ -4429,10 +4827,14 @@ extern keyspace: String
             BindingsDef::PolydatSource(s) => s,
             other => panic!("expected PolydatSource, got {other:?}"),
         };
-        assert!(src.contains("volatile __cell_bytes_out__tier := tier_name"),
-            "coordinate must be emitted as a volatile binding; got:\n{src}");
-        assert!(src.contains("volatile __metric_bytes_out := history_bytes_out"),
-            "the value binding must still be emitted; got:\n{src}");
+        assert!(
+            src.contains("volatile __cell_bytes_out__tier := tier_name"),
+            "coordinate must be emitted as a volatile binding; got:\n{src}"
+        );
+        assert!(
+            src.contains("volatile __metric_bytes_out := history_bytes_out"),
+            "the value binding must still be emitted; got:\n{src}"
+        );
     }
 
     /// Per (metric, dimension), not per dimension: two metrics placing into
@@ -4440,10 +4842,14 @@ extern keyspace: String
     /// and silently let one placement win.
     #[test]
     fn two_metrics_in_one_dimension_get_distinct_coordinate_wires() {
-        assert_eq!(synthesize_cell_binding_name("bytes_out", "tier"),
-                   "__cell_bytes_out__tier");
-        assert_ne!(synthesize_cell_binding_name("bytes_out", "tier"),
-                   synthesize_cell_binding_name("bytes_in", "tier"));
+        assert_eq!(
+            synthesize_cell_binding_name("bytes_out", "tier"),
+            "__cell_bytes_out__tier"
+        );
+        assert_ne!(
+            synthesize_cell_binding_name("bytes_out", "tier"),
+            synthesize_cell_binding_name("bytes_in", "tier")
+        );
     }
 
     /// A phase with a `metrics:` block (and no poll) synthesises a
@@ -4458,17 +4864,24 @@ extern keyspace: String
     fn synthesize_phase_scope_bindings_emits_metric_bindings() {
         use nbrs_workload::model::{BindingsDef, MetricSpec, WorkloadPhase};
         let mut metrics = std::collections::HashMap::new();
-        metrics.insert("time_to_index".to_string(), MetricSpec {
-            value: "current_epoch_millis() - phase_start".into(),
-            family: None, kind: None, unit: None, format: None, cell: Default::default(),});
+        metrics.insert(
+            "time_to_index".to_string(),
+            MetricSpec {
+                value: "current_epoch_millis() - phase_start".into(),
+                family: None,
+                kind: None,
+                unit: None,
+                format: None,
+                cell: Default::default(),
+            },
+        );
         let phase = WorkloadPhase {
             bindings: BindingsDef::default(),
             metrics,
             poll: None,
             ..Default::default()
         };
-        let out = synthesize_phase_scope_bindings(&phase)
-            .expect("metrics synthesis");
+        let out = synthesize_phase_scope_bindings(&phase).expect("metrics synthesis");
         let src = match out {
             BindingsDef::PolydatSource(s) => s,
             other => panic!("expected PolydatSource, got {other:?}"),
@@ -4477,20 +4890,30 @@ extern keyspace: String
         // was filled only at the completion-time pull, so anything reading it
         // while the phase ran (an op) got the 0 default and computed against
         // the epoch.
-        assert!(src.contains("volatile phase_start := phase_start_millis()"),
-            "must bind phase_start to the phase-scoped clock; got:\n{src}");
-        assert!(!src.contains("extern phase_start"),
-            "the fill-me-in extern must be gone; got:\n{src}");
-        assert!(src.contains(
-            "volatile __metric_time_to_index := current_epoch_millis() - phase_start"),
-            "must emit the volatile metric binding; got:\n{src}");
+        assert!(
+            src.contains("volatile phase_start := phase_start_millis()"),
+            "must bind phase_start to the phase-scoped clock; got:\n{src}"
+        );
+        assert!(
+            !src.contains("extern phase_start"),
+            "the fill-me-in extern must be gone; got:\n{src}"
+        );
+        assert!(
+            src.contains("volatile __metric_time_to_index := current_epoch_millis() - phase_start"),
+            "must emit the volatile metric binding; got:\n{src}"
+        );
         // The emitted source must compile as a phase kernel body, with
         // `__metric_time_to_index` surfacing as an output.
         let kernel = polydat::dsl::compile_polydat(&src)
             .unwrap_or_else(|e| panic!("compile failed:\n{src}\nerror: {e}"));
-        assert!(kernel.program().output_names().contains(&"__metric_time_to_index"),
+        assert!(
+            kernel
+                .program()
+                .output_names()
+                .contains(&"__metric_time_to_index"),
             "metric binding must be a kernel output; outputs: {:?}",
-            kernel.program().output_names());
+            kernel.program().output_names()
+        );
     }
 
     /// SRD-75 Push 2: when a phase has `poll:` and ops with
@@ -4536,28 +4959,41 @@ extern keyspace: String
             }),
             ..Default::default()
         };
-        let out = synthesize_phase_scope_bindings(&phase)
-            .expect("poll synthesis should succeed");
+        let out = synthesize_phase_scope_bindings(&phase).expect("poll synthesis should succeed");
         let src = match out {
             BindingsDef::PolydatSource(s) => s,
             other => panic!("expected PolydatSource, got {other:?}"),
         };
-        assert!(src.contains("shared sstables := 0"),
-            "missing shared declaration for sstables; source:\n{src}");
-        assert!(src.contains("shared active_for_cf := 0"),
-            "missing shared declaration for active_for_cf; source:\n{src}");
-        assert!(src.contains("dummy := 1"),
-            "original phase bindings should appear verbatim; source:\n{src}");
-        assert!(src.contains("__poll_until := sstables == 1 && active_for_cf == 0"),
-            "missing __poll_until predicate binding; source:\n{src}");
+        assert!(
+            src.contains("shared sstables := 0"),
+            "missing shared declaration for sstables; source:\n{src}"
+        );
+        assert!(
+            src.contains("shared active_for_cf := 0"),
+            "missing shared declaration for active_for_cf; source:\n{src}"
+        );
+        assert!(
+            src.contains("dummy := 1"),
+            "original phase bindings should appear verbatim; source:\n{src}"
+        );
+        assert!(
+            src.contains("__poll_until := sstables == 1 && active_for_cf == 0"),
+            "missing __poll_until predicate binding; source:\n{src}"
+        );
         // Order matters: captures first (so the predicate's
         // RHS references resolve through the local shared
         // declarations before the dynamic binding evaluates).
-        let shared_pos = src.find("shared sstables").expect("shared sstables present");
+        let shared_pos = src
+            .find("shared sstables")
+            .expect("shared sstables present");
         let until_binding = crate::wrappers::condition::UNTIL_BINDING;
-        let until_pos = src.find(until_binding).expect("poll predicate binding present");
-        assert!(shared_pos < until_pos,
-            "shared captures must precede __poll_until in the synthesized source");
+        let until_pos = src
+            .find(until_binding)
+            .expect("poll predicate binding present");
+        assert!(
+            shared_pos < until_pos,
+            "shared captures must precede __poll_until in the synthesized source"
+        );
     }
 
     /// SRD-75 Push 2: a capture name that collides with an
@@ -4590,10 +5026,12 @@ extern keyspace: String
             }),
             ..Default::default()
         };
-        let err = synthesize_phase_scope_bindings(&phase)
-            .expect_err("colliding capture name must error");
-        assert!(err.contains("sstables") && err.contains("collision"),
-            "expected error to name 'sstables' and 'collision'; got: {err}");
+        let err =
+            synthesize_phase_scope_bindings(&phase).expect_err("colliding capture name must error");
+        assert!(
+            err.contains("sstables") && err.contains("collision"),
+            "expected error to name 'sstables' and 'collision'; got: {err}"
+        );
     }
 
     #[test]
@@ -4610,19 +5048,27 @@ extern keyspace: String
             &[],
             &polydat::dsl::compile_polydat("\n").unwrap(),
             &HashMap::new(),
-            Vec::new(), None, false, "test_for_each", None,
-        ).expect("for-each scope synthesis");
+            Vec::new(),
+            None,
+            false,
+            "test_for_each",
+            None,
+        )
+        .expect("for-each scope synthesis");
 
-        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
-            "n := mod_in(cycle, p)\n".to_string()
-        );
+        let phase_bindings =
+            nbrs_workload::model::BindingsDef::PolydatSource("n := mod_in(cycle, p)\n".to_string());
         let phase_kernel = build_phase_scope_kernel(
             &phase_bindings,
-            &[], &parent_kernel,
+            &[],
+            &parent_kernel,
             &HashMap::new(),
-            Vec::new(), None, false,
+            Vec::new(),
+            None,
+            false,
             "test_phase",
-        ).expect("phase kernel build with mod_in(cycle, p) binding");
+        )
+        .expect("phase kernel build with mod_in(cycle, p) binding");
 
         // Sanity: phase has p as Ext-typed input slot.
         assert_eq!(
@@ -4631,8 +5077,10 @@ extern keyspace: String
             "phase kernel's `p` must be Ext-typed",
         );
         // Sanity: phase has `n` as an output (the mod_in result).
-        assert!(phase_kernel.program().output_names().contains(&"n"),
-            "phase kernel should expose `n` as an output");
+        assert!(
+            phase_kernel.program().output_names().contains(&"n"),
+            "phase kernel should expose `n` as an output"
+        );
     }
 
     #[test]
@@ -4653,8 +5101,13 @@ extern keyspace: String
             // cascades names it actually references.
             &polydat::dsl::compile_polydat("\n").unwrap(),
             &HashMap::new(),
-            Vec::new(), None, false, "test_for_each", None,
-        ).expect("for-each scope synthesis");
+            Vec::new(),
+            None,
+            false,
+            "test_for_each",
+            None,
+        )
+        .expect("for-each scope synthesis");
 
         // Sanity: the for-each scope's iter-var p is Ext-typed.
         assert_eq!(
@@ -4666,20 +5119,27 @@ extern keyspace: String
         // Now build a phase under it that references `p` in a
         // cursor's `over` clause.
         let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
-            "cursor row = range(0, 1000) over p\n".to_string()
+            "cursor row = range(0, 1000) over p\n".to_string(),
         );
         let phase_kernel = build_phase_scope_kernel(
             &phase_bindings,
-            &[], &parent_kernel,
+            &[],
+            &parent_kernel,
             &HashMap::new(),
-            Vec::new(), None, false,
+            Vec::new(),
+            None,
+            false,
             "test_phase",
-        ).expect("phase kernel build");
+        )
+        .expect("phase kernel build");
 
         // The phase kernel must see `p` as Ext-typed.
         let port_type = phase_kernel.program().input_port_type("p");
-        assert_eq!(port_type, Some(polydat::ast::PortType::Ext),
-            "phase kernel's `p` slot must be Ext (preserved through cascade), got {port_type:?}");
+        assert_eq!(
+            port_type,
+            Some(polydat::ast::PortType::Ext),
+            "phase kernel's `p` slot must be Ext (preserved through cascade), got {port_type:?}"
+        );
     }
 
     #[test]
@@ -4710,43 +5170,56 @@ extern keyspace: String
         // (e.g. pick) see the runtime variant and reject it.
         let parent = polydat::dsl::compile_polydat(
             "input cycle: u64\nshared has_sai_column_indexes := false\n\
-             shared has_indexes := false\n"
-        ).expect("parent compile");
+             shared has_indexes := false\n",
+        )
+        .expect("parent compile");
         // The phase has its own bindings block (the await_index shape).
         let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "target_index_table := pick(has_sai_column_indexes, has_indexes, \
-             \"a\", \"b\")\n".to_string()
+             \"a\", \"b\")\n"
+                .to_string(),
         );
         let phase_kernel = build_phase_scope_kernel(
             &phase_bindings,
-            &[],  // outer_manifest (would be populated in real runner, but builder doesn't strictly need it)
+            &[], // outer_manifest (would be populated in real runner, but builder doesn't strictly need it)
             &parent,
             &HashMap::new(),
             Vec::new(),
             None,
             false,
             "test_phase",
-        ).expect("phase kernel build");
+        )
+        .expect("phase kernel build");
 
         // The phase kernel must have has_X as an input slot.
         let idx_sai = phase_kernel.program().find_input("has_sai_column_indexes");
-        assert!(idx_sai.is_some(),
-            "phase kernel must have `has_sai_column_indexes` input slot");
+        assert!(
+            idx_sai.is_some(),
+            "phase kernel must have `has_sai_column_indexes` input slot"
+        );
         let idx = idx_sai.unwrap();
 
         // Type must be Bool (per SRD-13c §"Shared Mutable" step 1
         // + SRD-66 §"Reading from a downstream phase").
-        let port_type = phase_kernel.program().input_port_type("has_sai_column_indexes");
-        assert_eq!(port_type, Some(polydat::ast::PortType::Bool),
-            "phase kernel's has_sai_column_indexes slot must be Bool, got {port_type:?}");
+        let port_type = phase_kernel
+            .program()
+            .input_port_type("has_sai_column_indexes");
+        assert_eq!(
+            port_type,
+            Some(polydat::ast::PortType::Bool),
+            "phase kernel's has_sai_column_indexes slot must be Bool, got {port_type:?}"
+        );
 
         // Kind must NOT be Coordinate — cascaded names are IterationExtern
         // (or ExternalWrite), not Coordinate. Coordinate would put the slot
         // in the set_inputs(&[u64]) propagation, breaking the cell-bound
         // contract per SRD-13c §"Shared Mutable" step 3.
         let kind = phase_kernel.program().input_kind(idx);
-        assert_ne!(kind, Some(polydat::kernel::InputKind::Coordinate),
-            "phase kernel's has_sai_column_indexes slot must NOT be Coordinate; got {kind:?}");
+        assert_ne!(
+            kind,
+            Some(polydat::kernel::InputKind::Coordinate),
+            "phase kernel's has_sai_column_indexes slot must NOT be Coordinate; got {kind:?}"
+        );
     }
 
     #[test]
@@ -4773,8 +5246,9 @@ extern keyspace: String
         let root = polydat::dsl::compile_polydat(
             "shared has_a := true\n\
              shared has_b := false\n\
-             selector := mod(cycle, 1)\n"
-        ).expect("workload root compile");
+             selector := mod(cycle, 1)\n",
+        )
+        .expect("workload root compile");
 
         // ── for_each scope ──
         let for_each = crate::scope_synth::build_for_each_scope_kernel(
@@ -4787,11 +5261,12 @@ extern keyspace: String
             false,
             "test_for_each",
             None,
-        ).expect("for_each synth");
+        )
+        .expect("for_each synth");
 
         // ── phase scope kernel (cached_kernel) ──
         let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
-            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
+            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string(),
         );
         let phase_scope = build_phase_scope_kernel(
             &phase_bindings,
@@ -4802,7 +5277,8 @@ extern keyspace: String
             None,
             false,
             "test_phase",
-        ).expect("phase scope synth");
+        )
+        .expect("phase scope synth");
 
         // ── executor's build_scope call ──
         let op = ParsedOp::simple("report", "consume chosen={chosen}");
@@ -4811,7 +5287,9 @@ extern keyspace: String
             extract_manifest(phase_scope.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let scope = build_scope(
@@ -4823,7 +5301,8 @@ extern keyspace: String
             None,
             &[],
             Some(&phase_scope),
-        ).expect("executor build_scope");
+        )
+        .expect("executor build_scope");
 
         // ── inspect what build_scope emits ──
         let emitted = scope.emit();
@@ -4840,29 +5319,38 @@ extern keyspace: String
             false,
             "test",
             None,
-        ).unwrap_or_else(|e| panic!("compile failed: {e}\nemitted source:\n{emitted}\nrequired: {required:?}"));
+        )
+        .unwrap_or_else(|e| {
+            panic!("compile failed: {e}\nemitted source:\n{emitted}\nrequired: {required:?}")
+        });
 
         // The executor's kernel must have has_a as Bool (or absent
         // entirely if not referenced). It MUST NOT be Coordinate U64.
         if let Some(idx) = executor_kernel.program().find_input("has_a") {
             let typ = executor_kernel.program().input_port_type("has_a");
-            assert_eq!(typ, Some(polydat::ast::PortType::Bool),
+            assert_eq!(
+                typ,
+                Some(polydat::ast::PortType::Bool),
                 "executor kernel's has_a slot must be Bool;\n\
                  got {typ:?}\n\
                  emitted source:\n{emitted}\n\
                  input names: {:?}\n\
                  coord_count: {}",
                 executor_kernel.program().input_names(),
-                executor_kernel.program().coord_count());
+                executor_kernel.program().coord_count()
+            );
             let kind = executor_kernel.program().input_kind(idx);
-            assert_ne!(kind, Some(polydat::kernel::InputKind::Coordinate),
+            assert_ne!(
+                kind,
+                Some(polydat::kernel::InputKind::Coordinate),
                 "executor kernel's has_a slot must NOT be Coordinate;\n\
                  got {kind:?}\n\
                  emitted source:\n{emitted}\n\
                  input names: {:?}\n\
                  coord_count: {}",
                 executor_kernel.program().input_names(),
-                executor_kernel.program().coord_count());
+                executor_kernel.program().coord_count()
+            );
         }
     }
 
@@ -4895,8 +5383,7 @@ extern keyspace: String
         for k in sorted {
             params_source.push_str(&format!("const {k} := \"{}\"\n", workload_params[k]));
         }
-        let params_kernel = polydat::dsl::compile_polydat(&params_source)
-            .expect("params compile");
+        let params_kernel = polydat::dsl::compile_polydat(&params_source).expect("params compile");
 
         // Step 2: workload-root kernel.
         let mut scope = build_scope(
@@ -4908,7 +5395,8 @@ extern keyspace: String
             None,
             &[],
             None,
-        ).expect("workload root build_scope");
+        )
+        .expect("workload root build_scope");
         // KEY: the binding RHS uses string interpolation against
         // workload params. This is what triggers the chain
         // corruption — without it, the test passes; with it, the
@@ -4932,12 +5420,16 @@ extern keyspace: String
             })
             .build()
             .expect("root matter");
-        let root = params_kernel.build_subscope(root_matter).expect("root build");
+        let root = params_kernel
+            .build_subscope(root_matter)
+            .expect("root build");
 
         // Sanity: has_a SHARED at root.
         let shared = root.program().shared_outputs();
-        assert!(shared.contains(&"has_a"),
-            "root should have has_a as SHARED output; got {shared:?}");
+        assert!(
+            shared.contains(&"has_a"),
+            "root should have has_a as SHARED output; got {shared:?}"
+        );
 
         // Step 3: outer for_each scope.
         let outer_fe = crate::scope_synth::build_for_each_scope_kernel(
@@ -4950,7 +5442,8 @@ extern keyspace: String
             false,
             "test_outer_fe",
             None,
-        ).expect("outer for_each synth");
+        )
+        .expect("outer for_each synth");
 
         // Step 4: inner for_each scope (dependent multi-iter).
         let inner_fe = crate::scope_synth::build_for_each_scope_kernel(
@@ -4966,11 +5459,12 @@ extern keyspace: String
             false,
             "test_inner_fe",
             None,
-        ).expect("inner for_each synth");
+        )
+        .expect("inner for_each synth");
 
         // Step 5: phase scope kernel for consume.
         let phase_bindings = BindingsDef::PolydatSource(
-            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
+            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string(),
         );
         let phase_scope = build_phase_scope_kernel(
             &phase_bindings,
@@ -4981,7 +5475,8 @@ extern keyspace: String
             None,
             false,
             "test_consume_phase",
-        ).expect("consume phase synth");
+        )
+        .expect("consume phase synth");
 
         // Step 6: executor's build_scope on the consume phase.
         let op = ParsedOp::simple("report", "spc/consume chosen={chosen}");
@@ -4990,7 +5485,9 @@ extern keyspace: String
             extract_manifest(phase_scope.program())
                 .into_iter()
                 .map(|e| crate::runner::ManifestEntry {
-                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                    name: e.name,
+                    port_type: e.port_type,
+                    modifier: e.modifier,
                 })
                 .collect();
         let exec_scope = build_scope(
@@ -5002,7 +5499,8 @@ extern keyspace: String
             None,
             &[],
             Some(&phase_scope),
-        ).expect("executor build_scope");
+        )
+        .expect("executor build_scope");
 
         let exec_source = exec_scope.emit();
         let exec_kernel = polydat::dsl::compile_polydat_with_libs_and_limit(
@@ -5013,28 +5511,34 @@ extern keyspace: String
             false,
             "test_executor",
             None,
-        ).unwrap_or_else(|e| panic!(
-            "exec compile failed: {e}\nexec source:\n{exec_source}"));
+        )
+        .unwrap_or_else(|e| panic!("exec compile failed: {e}\nexec source:\n{exec_source}"));
 
         // The final kernel — what the dryrun=wiring dumps — must
         // have has_a as Bool/non-Coordinate.
         if let Some(idx) = exec_kernel.program().find_input("has_a") {
             let typ = exec_kernel.program().input_port_type("has_a");
-            assert_eq!(typ, Some(polydat::ast::PortType::Bool),
+            assert_eq!(
+                typ,
+                Some(polydat::ast::PortType::Bool),
                 "FINAL kernel has_a must be Bool, got {typ:?}\n\
                  exec source:\n{exec_source}\n\
                  exec input_names: {:?}\n\
                  exec coord_count: {}",
                 exec_kernel.program().input_names(),
-                exec_kernel.program().coord_count());
+                exec_kernel.program().coord_count()
+            );
             let kind = exec_kernel.program().input_kind(idx);
-            assert_ne!(kind, Some(polydat::kernel::InputKind::Coordinate),
+            assert_ne!(
+                kind,
+                Some(polydat::kernel::InputKind::Coordinate),
                 "FINAL kernel has_a must NOT be Coordinate, got {kind:?}\n\
                  exec source:\n{exec_source}\n\
                  exec input_names: {:?}\n\
                  exec coord_count: {}",
                 exec_kernel.program().input_names(),
-                exec_kernel.program().coord_count());
+                exec_kernel.program().coord_count()
+            );
         }
     }
 
@@ -5075,8 +5579,7 @@ extern keyspace: String
             let v = &workload_params[k];
             params_source.push_str(&format!("const {k} := \"{v}\"\n"));
         }
-        let params_kernel = polydat::dsl::compile_polydat(&params_source)
-            .expect("params compile");
+        let params_kernel = polydat::dsl::compile_polydat(&params_source).expect("params compile");
 
         // The workload's `bindings:` block. The trigger.
         let workload_level_polydat = "selector := mod(cycle, 1)\n\
@@ -5093,7 +5596,8 @@ extern keyspace: String
             None,
             &[],
             None,
-        ).expect("build_scope");
+        )
+        .expect("build_scope");
         scope.ingest_polydat_source(workload_level_polydat, BindingOrigin::Inherited);
 
         // The actual workload-root compile goes through
@@ -5114,49 +5618,64 @@ extern keyspace: String
             .options(opts)
             .build()
             .expect("matter build");
-        let root = params_kernel.build_subscope(matter).expect("workload root build");
+        let root = params_kernel
+            .build_subscope(matter)
+            .expect("workload root build");
 
         // The workload-root program must have has_a:
         //   - present as an input slot,
         //   - typed Bool (SRD-13c §"Shared Mutable" step 1),
         //   - kind ExternalWrite (NOT Coordinate),
         //   - marked SHARED in output_modifier (so seed_shared_cells fires).
-        let has_a_idx = root.program().find_input("has_a")
-            .unwrap_or_else(|| panic!(
+        let has_a_idx = root.program().find_input("has_a").unwrap_or_else(|| {
+            panic!(
                 "workload root missing has_a input;\n\
                  emitted scope source:\n{source}\n\
                  input names: {:?}",
-                 root.program().input_names()));
+                root.program().input_names()
+            )
+        });
 
         let typ = root.program().input_port_type("has_a");
-        assert_eq!(typ, Some(polydat::ast::PortType::Bool),
+        assert_eq!(
+            typ,
+            Some(polydat::ast::PortType::Bool),
             "workload root has_a must be Bool;\n\
              got {typ:?}\n\
              emitted source:\n{source}\n\
              input names: {:?}\n\
              coord_count: {}",
             root.program().input_names(),
-            root.program().coord_count());
+            root.program().coord_count()
+        );
 
         let kind = root.program().input_kind(has_a_idx);
-        assert_ne!(kind, Some(polydat::kernel::InputKind::Coordinate),
+        assert_ne!(
+            kind,
+            Some(polydat::kernel::InputKind::Coordinate),
             "workload root has_a must NOT be Coordinate;\n\
              got {kind:?}\n\
              emitted source:\n{source}\n\
              input names: {:?}\n\
              coord_count: {}",
             root.program().input_names(),
-            root.program().coord_count());
+            root.program().coord_count()
+        );
 
         let modifier = root.program().output_modifier("has_a");
-        assert_eq!(modifier, polydat::dsl::ast::BindingModifier::SHARED,
+        assert_eq!(
+            modifier,
+            polydat::dsl::ast::BindingModifier::SHARED,
             "workload root has_a output must have SHARED modifier;\n\
-             got {modifier:?}");
+             got {modifier:?}"
+        );
 
         let shared = root.program().shared_outputs();
-        assert!(shared.contains(&"has_a"),
+        assert!(
+            shared.contains(&"has_a"),
             "workload root must have has_a in shared_outputs (so seed_shared_cells creates a cell);\n\
-             got shared_outputs={shared:?}");
+             got shared_outputs={shared:?}"
+        );
     }
 
     #[test]
@@ -5187,19 +5706,28 @@ extern keyspace: String
         let root = polydat::dsl::compile_polydat(
             "shared has_a := true\n\
              shared has_b := false\n\
-             selector := mod(cycle, 1)\n"
-        ).expect("workload root compile");
+             selector := mod(cycle, 1)\n",
+        )
+        .expect("workload root compile");
 
         // Workload-root contract: has_a is Bool ExternalWrite slot
         // (SRD-13c §"Shared Mutable" step 1).
-        let root_has_a_idx = root.program().find_input("has_a")
+        let root_has_a_idx = root
+            .program()
+            .find_input("has_a")
             .expect("workload root has_a slot");
         let root_has_a_type = root.program().input_port_type("has_a");
-        assert_eq!(root_has_a_type, Some(polydat::ast::PortType::Bool),
-            "workload root has_a must be Bool");
+        assert_eq!(
+            root_has_a_type,
+            Some(polydat::ast::PortType::Bool),
+            "workload root has_a must be Bool"
+        );
         let root_has_a_kind = root.program().input_kind(root_has_a_idx);
-        assert_ne!(root_has_a_kind, Some(polydat::kernel::InputKind::Coordinate),
-            "workload root has_a must NOT be Coordinate; got {root_has_a_kind:?}");
+        assert_ne!(
+            root_has_a_kind,
+            Some(polydat::kernel::InputKind::Coordinate),
+            "workload root has_a must NOT be Coordinate; got {root_has_a_kind:?}"
+        );
 
         // Step 2: for_each scope.
         let for_each = crate::scope_synth::build_for_each_scope_kernel(
@@ -5212,20 +5740,29 @@ extern keyspace: String
             false,
             "test_for_each",
             None,
-        ).expect("for_each synth");
+        )
+        .expect("for_each synth");
 
-        let fe_has_a_idx = for_each.program().find_input("has_a")
+        let fe_has_a_idx = for_each
+            .program()
+            .find_input("has_a")
             .expect("for_each has_a slot");
         let fe_has_a_type = for_each.program().input_port_type("has_a");
-        assert_eq!(fe_has_a_type, Some(polydat::ast::PortType::Bool),
-            "for_each has_a must be Bool, got {fe_has_a_type:?}");
+        assert_eq!(
+            fe_has_a_type,
+            Some(polydat::ast::PortType::Bool),
+            "for_each has_a must be Bool, got {fe_has_a_type:?}"
+        );
         let fe_has_a_kind = for_each.program().input_kind(fe_has_a_idx);
-        assert_ne!(fe_has_a_kind, Some(polydat::kernel::InputKind::Coordinate),
-            "for_each has_a must NOT be Coordinate; got {fe_has_a_kind:?}");
+        assert_ne!(
+            fe_has_a_kind,
+            Some(polydat::kernel::InputKind::Coordinate),
+            "for_each has_a must NOT be Coordinate; got {fe_has_a_kind:?}"
+        );
 
         // Step 3: phase scope with its own bindings via pick.
         let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
-            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
+            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string(),
         );
         let phase = build_phase_scope_kernel(
             &phase_bindings,
@@ -5236,22 +5773,31 @@ extern keyspace: String
             None,
             false,
             "test_phase",
-        ).expect("phase scope synth");
+        )
+        .expect("phase scope synth");
 
-        let phase_has_a_idx = phase.program().find_input("has_a")
+        let phase_has_a_idx = phase
+            .program()
+            .find_input("has_a")
             .expect("phase has_a slot");
         let phase_has_a_type = phase.program().input_port_type("has_a");
-        assert_eq!(phase_has_a_type, Some(polydat::ast::PortType::Bool),
+        assert_eq!(
+            phase_has_a_type,
+            Some(polydat::ast::PortType::Bool),
             "phase has_a must be Bool; got {phase_has_a_type:?}\n\
              phase input names: {:?}",
-            phase.program().input_names());
+            phase.program().input_names()
+        );
         let phase_has_a_kind = phase.program().input_kind(phase_has_a_idx);
-        assert_ne!(phase_has_a_kind, Some(polydat::kernel::InputKind::Coordinate),
+        assert_ne!(
+            phase_has_a_kind,
+            Some(polydat::kernel::InputKind::Coordinate),
             "phase has_a must NOT be Coordinate; got {phase_has_a_kind:?}\n\
              phase input names: {:?}\n\
              coord_count: {}",
             phase.program().input_names(),
-            phase.program().coord_count());
+            phase.program().coord_count()
+        );
     }
 
     #[test]
@@ -5268,8 +5814,9 @@ extern keyspace: String
         use polydat::kernel::extract_manifest;
         let root = polydat::dsl::compile_polydat(
             "input cycle: u64\nshared has_sai_column_indexes := false\n\
-             shared has_indexes := false\n"
-        ).expect("root compile");
+             shared has_indexes := false\n",
+        )
+        .expect("root compile");
 
         // for_each scope synthesised via the comprehension
         // synthesizer (the path runner.rs uses for ForComprehension
@@ -5279,29 +5826,41 @@ extern keyspace: String
             &[("dummy_var".to_string(), "1,2".to_string())],
             &extract_manifest(root.program()),
             &root,
-            &HashMap::new(),  // workload_params
-            Vec::new(),       // polydat_lib_paths
-            None,             // workload_dir
-            false,            // strict
+            &HashMap::new(), // workload_params
+            Vec::new(),      // polydat_lib_paths
+            None,            // workload_dir
+            false,           // strict
             "test_for_each",
-            None,             // phase_bindings
-        ).expect("for_each kernel synth");
+            None, // phase_bindings
+        )
+        .expect("for_each kernel synth");
 
         // for_each's program must carry has_X as a Bool slot too.
-        let fe_type = for_each_kernel.program().input_port_type("has_sai_column_indexes");
-        assert_eq!(fe_type, Some(polydat::ast::PortType::Bool),
-            "for_each scope's has_sai_column_indexes must be Bool, got {fe_type:?}");
-        let fe_idx = for_each_kernel.program().find_input("has_sai_column_indexes")
+        let fe_type = for_each_kernel
+            .program()
+            .input_port_type("has_sai_column_indexes");
+        assert_eq!(
+            fe_type,
+            Some(polydat::ast::PortType::Bool),
+            "for_each scope's has_sai_column_indexes must be Bool, got {fe_type:?}"
+        );
+        let fe_idx = for_each_kernel
+            .program()
+            .find_input("has_sai_column_indexes")
             .expect("for_each has has_sai_column_indexes input");
         let fe_kind = for_each_kernel.program().input_kind(fe_idx);
-        assert_ne!(fe_kind, Some(polydat::kernel::InputKind::Coordinate),
-            "for_each scope's has_sai_column_indexes must NOT be Coordinate; got {fe_kind:?}");
+        assert_ne!(
+            fe_kind,
+            Some(polydat::kernel::InputKind::Coordinate),
+            "for_each scope's has_sai_column_indexes must NOT be Coordinate; got {fe_kind:?}"
+        );
 
         // Now build await_index's phase scope under for_each
         // (the real scope-tree shape).
         let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "target_index_table := pick(has_sai_column_indexes, has_indexes, \
-             \"a\", \"b\")\n".to_string()
+             \"a\", \"b\")\n"
+                .to_string(),
         );
         let phase_kernel = build_phase_scope_kernel(
             &phase_bindings,
@@ -5312,16 +5871,26 @@ extern keyspace: String
             None,
             false,
             "test_await_index",
-        ).expect("phase kernel synth");
+        )
+        .expect("phase kernel synth");
 
-        let phase_type = phase_kernel.program().input_port_type("has_sai_column_indexes");
-        assert_eq!(phase_type, Some(polydat::ast::PortType::Bool),
-            "phase scope's has_sai_column_indexes must be Bool, got {phase_type:?}");
-        let phase_idx = phase_kernel.program().find_input("has_sai_column_indexes")
+        let phase_type = phase_kernel
+            .program()
+            .input_port_type("has_sai_column_indexes");
+        assert_eq!(
+            phase_type,
+            Some(polydat::ast::PortType::Bool),
+            "phase scope's has_sai_column_indexes must be Bool, got {phase_type:?}"
+        );
+        let phase_idx = phase_kernel
+            .program()
+            .find_input("has_sai_column_indexes")
             .expect("phase has has_sai_column_indexes input");
         let phase_kind = phase_kernel.program().input_kind(phase_idx);
-        assert_ne!(phase_kind, Some(polydat::kernel::InputKind::Coordinate),
-            "phase scope's has_sai_column_indexes must NOT be Coordinate; got {phase_kind:?}");
+        assert_ne!(
+            phase_kind,
+            Some(polydat::kernel::InputKind::Coordinate),
+            "phase scope's has_sai_column_indexes must NOT be Coordinate; got {phase_kind:?}"
+        );
     }
-
 }

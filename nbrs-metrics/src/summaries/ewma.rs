@@ -74,7 +74,10 @@ impl Ewma {
         assert!(secs > 0.0, "Ewma half-life must be > 0");
         Self {
             half_life_secs: secs,
-            state: Mutex::new(EwmaState { current: None, last: None }),
+            state: Mutex::new(EwmaState {
+                current: None,
+                last: None,
+            }),
         }
     }
 
@@ -87,8 +90,7 @@ impl Ewma {
     /// the estimate to the sample value directly; subsequent calls
     /// blend the new value in with a time-decayed weight.
     pub fn record(&self, value: f64, now: Instant) {
-        let mut g = self.state.lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match (g.current, g.last) {
             (None, _) | (_, None) => {
                 g.current = Some(value);
@@ -119,9 +121,7 @@ impl Ewma {
     /// sample has been recorded — callers should treat that as
     /// "no data yet" rather than a zero reading.
     pub fn peek(&self) -> Option<f64> {
-        self.state.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .current
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).current
     }
 }
 

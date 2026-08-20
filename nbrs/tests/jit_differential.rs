@@ -61,10 +61,11 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-jit-diff-{label}-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-jit-diff-{label}-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
-        Self { path: parent.join("session") }
+        Self {
+            path: parent.join("session"),
+        }
     }
     fn parent(&self) -> &Path {
         self.path.parent().unwrap()

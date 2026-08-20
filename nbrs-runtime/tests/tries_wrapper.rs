@@ -12,10 +12,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use nbrs_metrics::labels::Labels;
 use nbrs_runtime::activity::{Activity, ActivityConfig};
 use nbrs_runtime::adapter::{AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult};
 use nbrs_runtime::opseq::{OpSequence, SequencerType};
-use nbrs_metrics::labels::Labels;
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::identity::Identity;
 
@@ -28,17 +28,22 @@ struct FailThenSucceedAdapter {
 }
 
 impl DriverAdapter for FailThenSucceedAdapter {
-    fn name(&self) -> &str { "flaky" }
+    fn name(&self) -> &str {
+        "flaky"
+    }
 
     fn map_op<'a>(
         &'a self,
         _template: &'a nbrs_workload::model::ParsedOp,
         _parent: Arc<polydat::kernel::PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+    > {
         let fail_first = self.fail_first;
         let seen = self.seen.clone();
-        Box::pin(async move { Ok(Box::new(FlakyDispenser { fail_first, seen }) as Box<dyn OpDispenser>) })
+        Box::pin(async move {
+            Ok(Box::new(FlakyDispenser { fail_first, seen }) as Box<dyn OpDispenser>)
+        })
     }
 }
 
@@ -52,8 +57,9 @@ impl OpDispenser for FlakyDispenser {
         &'a self,
         _cycle: u64,
         _ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let n = self.seen.fetch_add(1, Ordering::SeqCst);
         let fail = n < self.fail_first;
         Box::pin(async move {
@@ -64,7 +70,10 @@ impl OpDispenser for FlakyDispenser {
                     retryable: true,
                 }))
             } else {
-                Ok(OpResult { body: None, skipped: false })
+                Ok(OpResult {
+                    body: None,
+                    skipped: false,
+                })
             }
         })
     }
@@ -92,7 +101,10 @@ async fn retries_move_attempt_to_result_boundary() {
     // the single op takes 3 attempts (2 retried + 1 success) to produce 1
     // result.
     let seen = Arc::new(AtomicU32::new(0));
-    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter { fail_first: 2, seen });
+    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter {
+        fail_first: 2,
+        seen,
+    });
 
     let config = ActivityConfig {
         name: "retry".into(),
@@ -107,13 +119,24 @@ async fn retries_move_attempt_to_result_boundary() {
     let activity = Activity::new(config, &Labels::of("session", "test"), one_op());
     let metrics = activity.shared_metrics();
     activity
-        .run_with_driver(adapter, Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())))
+        .run_with_driver(
+            adapter,
+            Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
         .await;
 
     // 3 attempts for 1 op; the op resolved successfully (1 result_success).
-    assert_eq!(metrics.attempt_total.get(), 3, "2 retries + 1 success = 3 attempts");
+    assert_eq!(
+        metrics.attempt_total.get(),
+        3,
+        "2 retries + 1 success = 3 attempts"
+    );
     assert_eq!(metrics.result_total.get(), 1, "one op → one result");
-    assert_eq!(metrics.result_success.count(), 1, "the op ultimately succeeded");
+    assert_eq!(
+        metrics.result_success.count(),
+        1,
+        "the op ultimately succeeded"
+    );
     assert_eq!(metrics.result_failure.count(), 0, "no terminal failure");
     // attempt_total exceeds result_total by exactly the retried count.
     assert_eq!(
@@ -130,7 +153,10 @@ async fn no_tries_in_scope_is_single_attempt() {
     // failure. The single-attempt tallies come from the outermost
     // error-handler wrapper (`records_attempts`).
     let seen = Arc::new(AtomicU32::new(0));
-    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter { fail_first: 5, seen });
+    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter {
+        fail_first: 5,
+        seen,
+    });
 
     let config = ActivityConfig {
         name: "no_retry".into(),
@@ -143,12 +169,23 @@ async fn no_tries_in_scope_is_single_attempt() {
     let activity = Activity::new(config, &Labels::of("session", "test"), one_op());
     let metrics = activity.shared_metrics();
     activity
-        .run_with_driver(adapter, Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())))
+        .run_with_driver(
+            adapter,
+            Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
         .await;
 
-    assert_eq!(metrics.attempt_total.get(), 1, "no tries in scope → single attempt");
+    assert_eq!(
+        metrics.attempt_total.get(),
+        1,
+        "no tries in scope → single attempt"
+    );
     assert_eq!(metrics.result_total.get(), 1, "one op → one result");
-    assert_eq!(metrics.result_failure.count(), 1, "the op failed terminally");
+    assert_eq!(
+        metrics.result_failure.count(),
+        1,
+        "the op failed terminally"
+    );
     assert_eq!(metrics.result_success.count(), 0, "no success");
 }
 
@@ -160,7 +197,10 @@ async fn errors_retry_verb_injects_tries_budget() {
     // succeeds; without the verb (the test above) the same op fails on its
     // first attempt.
     let seen = Arc::new(AtomicU32::new(0));
-    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter { fail_first: 2, seen });
+    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter {
+        fail_first: 2,
+        seen,
+    });
 
     let config = ActivityConfig {
         name: "verb_injects".into(),
@@ -173,12 +213,22 @@ async fn errors_retry_verb_injects_tries_budget() {
     let activity = Activity::new(config, &Labels::of("session", "test"), one_op());
     let metrics = activity.shared_metrics();
     activity
-        .run_with_driver(adapter, Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())))
+        .run_with_driver(
+            adapter,
+            Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
         .await;
 
-    assert_eq!(metrics.attempt_total.get(), 3,
-        "retry(2) verb → 3 total tries injected");
-    assert_eq!(metrics.result_success.count(), 1, "the op ultimately succeeded");
+    assert_eq!(
+        metrics.attempt_total.get(),
+        3,
+        "retry(2) verb → 3 total tries injected"
+    );
+    assert_eq!(
+        metrics.result_success.count(),
+        1,
+        "the op ultimately succeeded"
+    );
     assert_eq!(metrics.result_failure.count(), 0, "no terminal failure");
 }
 
@@ -188,7 +238,10 @@ async fn explicit_tries_beats_retry_verb_budget() {
     // WINS over the policy's retry-verb budget. tries: 1 = explicit
     // single-attempt even though the policy says retry(5).
     let seen = Arc::new(AtomicU32::new(0));
-    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter { fail_first: 5, seen });
+    let adapter: Arc<dyn DriverAdapter> = Arc::new(FailThenSucceedAdapter {
+        fail_first: 5,
+        seen,
+    });
 
     let config = ActivityConfig {
         name: "tries_wins".into(),
@@ -201,10 +254,20 @@ async fn explicit_tries_beats_retry_verb_budget() {
     let activity = Activity::new(config, &Labels::of("session", "test"), one_op());
     let metrics = activity.shared_metrics();
     activity
-        .run_with_driver(adapter, Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())))
+        .run_with_driver(
+            adapter,
+            Arc::new(nbrs_runtime::synthesis::OpBuilder::new(test_kernel())),
+        )
         .await;
 
-    assert_eq!(metrics.attempt_total.get(), 1,
-        "explicit tries: 1 must beat the policy's retry(5)");
-    assert_eq!(metrics.result_failure.count(), 1, "single attempt failed terminally");
+    assert_eq!(
+        metrics.attempt_total.get(),
+        1,
+        "explicit tries: 1 must beat the policy's retry(5)"
+    );
+    assert_eq!(
+        metrics.result_failure.count(),
+        1,
+        "single attempt failed terminally"
+    );
 }

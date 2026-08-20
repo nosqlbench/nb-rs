@@ -38,8 +38,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct PhaseStatus;
 
 impl Readout for PhaseStatus {
-    fn name(&self) -> &'static str { "phase_status" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+    fn name(&self) -> &'static str {
+        "phase_status"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Phase]
+    }
 
     fn render(
         &self,
@@ -50,11 +54,11 @@ impl Readout for PhaseStatus {
         out: &mut dyn ReadoutBuf,
     ) -> usize {
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact(ctx, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled(ctx, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded(ctx, out),
-            (Lod::Compact,  ContentMode::Explanation) => render_compact_explanation(ctx, out),
-            (Lod::Labeled,  ContentMode::Explanation) => render_labeled_explanation(ctx, out),
+            (Lod::Compact, ContentMode::Value) => render_compact(ctx, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled(ctx, out),
+            (Lod::Expanded, ContentMode::Value) => render_expanded(ctx, out),
+            (Lod::Compact, ContentMode::Explanation) => render_compact_explanation(ctx, out),
+            (Lod::Labeled, ContentMode::Explanation) => render_labeled_explanation(ctx, out),
             (Lod::Expanded, ContentMode::Explanation) => render_expanded_explanation(ctx, out),
         }
     }
@@ -63,10 +67,7 @@ impl Readout for PhaseStatus {
 /// Compact LOD explanation overlay. Same shape as
 /// `render_compact` (`{spinner} {pct}% {rate}`); each
 /// token replaced with a meaning descriptor.
-fn render_compact_explanation(
-    _ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_compact_explanation(_ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let s = "spin progress% rate/s";
     let _ = out.write_str(s);
     s.len()
@@ -75,10 +76,7 @@ fn render_compact_explanation(
 /// Labeled LOD explanation overlay. Same shape as the
 /// labeled value form — spinner + bar + name + counters
 /// + ETA.
-fn render_labeled_explanation(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled_explanation(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let coords = if ctx.subject_labels().is_empty() {
         ""
     } else {
@@ -99,10 +97,7 @@ progress% throughput ok:result-ok% att:attempt-ok% e:errors r:retries c:concurre
 /// Expanded LOD explanation overlay. Multi-line block,
 /// same shape as `render_expanded` — one descriptor per
 /// row.
-fn render_expanded_explanation(
-    _ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_expanded_explanation(_ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let s = "\
 spin [phase-name]\n  \
 progress:   progress% (bar)  ETA remaining\n  \
@@ -131,10 +126,7 @@ fn meter_slot(_ctx: &dyn ReadoutContext, frac: Option<f64>) -> String {
     }
 }
 
-fn render_labeled(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     // Palette per docs/guide/color_style.md:
     //   spinner → cyan (motion cue)
     //   activity name → bold + INFO (sky/blue)
@@ -143,25 +135,25 @@ fn render_labeled(
     //   e:N r:N → WARN (yellow) when >0, MUTED when 0
     //   memo header → EMPHASIS (bold yellow) — sits above
     let color = ctx.use_color();
-    let cyan   = if color { "\x1b[36m"   } else { "" };
-    let dim    = if color { "\x1b[2m"    } else { "" };
-    let bold   = if color { "\x1b[1m"    } else { "" };
-    let blue   = if color { "\x1b[34m"   } else { "" };
-    let yellow = if color { "\x1b[33m"   } else { "" };
-    let reset  = if color { "\x1b[0m"    } else { "" };
+    let cyan = if color { "\x1b[36m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let yellow = if color { "\x1b[33m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let total_extent = ctx.cycles_total();
-    let started      = ctx.ops_started();
-    let finished     = ctx.ops_finished();
-    let ops_completed= ctx.cycles_completed();
-    let successes    = ctx.ops_ok();
-    let skips        = ctx.skips();
-    let errors       = ctx.errors();
-    let retries      = ctx.retries();
-    let attempt_ok   = ctx.attempt_ok();
+    let started = ctx.ops_started();
+    let finished = ctx.ops_finished();
+    let ops_completed = ctx.cycles_completed();
+    let successes = ctx.ops_ok();
+    let skips = ctx.skips();
+    let errors = ctx.errors();
+    let retries = ctx.retries();
+    let attempt_ok = ctx.attempt_ok();
     let attempt_failed = ctx.attempt_failed();
-    let elapsed      = ctx.elapsed_secs();
-    let concurrency  = ctx.concurrency();
+    let elapsed = ctx.elapsed_secs();
+    let concurrency = ctx.concurrency();
 
     // "Not yet ready" guard: when a phase has just started
     // and hasn't dispatched its first op, the full counter
@@ -240,7 +232,11 @@ fn render_labeled(
     } else {
         100.0
     };
-    let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
+    let rate: f64 = if elapsed > 0.0 {
+        finished as f64 / elapsed
+    } else {
+        0.0
+    };
     let rate_str = format_rate(rate);
     let skips_chip: String = if skips > 0 {
         format!(" {dim}skip:{skips}{reset}")
@@ -283,17 +279,20 @@ fn render_labeled(
     // estimate (`elapsed + remaining`), so the operator reads the
     // full expected wall time without adding the margin's elapsed
     // to the countdown in their head.
-    let eta_chip = |secs: f64| format!(
-        " {dim}(~{} left of ~{}){reset}",
-        format_eta(secs), format_eta(elapsed + secs));
+    let eta_chip = |secs: f64| {
+        format!(
+            " {dim}(~{} left of ~{}){reset}",
+            format_eta(secs),
+            format_eta(elapsed + secs)
+        )
+    };
     let eta = match ctx.eta_secs() {
         Some(secs) => eta_chip(secs),
         // Cursor phases (`rows_total > 0`) never take this arm: the
         // extent is row-denominated while `rate`/`finished` are
         // op-denominated (one op strides N rows), so the quotient
         // would overstate the ETA by the stride factor.
-        None if !ctx.open_ended() && ctx.rows_total() == 0
-            && total_extent > 0 && rate > 0.0 => {
+        None if !ctx.open_ended() && ctx.rows_total() == 0 && total_extent > 0 && rate > 0.0 => {
             let remaining = total_extent.saturating_sub(finished) as f64;
             eta_chip(remaining / rate)
         }
@@ -312,13 +311,17 @@ fn render_labeled(
     // when something abnormal (errors/retries > 0), dim when
     // clean. ok% gets the same treatment so a 100% / 99%
     // distinction reads at a glance.
-    let err_tone   = if errors > 0 || retries > 0 { yellow } else { dim };
-    let ok_tone    = if ok_pct >= 100.0 { dim } else { yellow };
+    let err_tone = if errors > 0 || retries > 0 {
+        yellow
+    } else {
+        dim
+    };
+    let ok_tone = if ok_pct >= 100.0 { dim } else { yellow };
     // Attempt-success chip tone mirrors ok%: dim (quiet) when
     // every attempt lands, yellow (warn) the moment attempts
     // are being burned on retries. Kept adjacent to `ok:` so
     // the result-vs-attempt divergence reads at a glance.
-    let att_tone   = if att_pct >= 100.0 { dim } else { yellow };
+    let att_tone = if att_pct >= 100.0 { dim } else { yellow };
 
     // Memo row (if any): operator-visible state string published
     // by the `memo:` wrapper, in EMPHASIS color. SRD-92: blocks
@@ -366,8 +369,15 @@ fn render_labeled(
         }
     } else if rows_total > 0 {
         let rows_consumed = ctx.rows_consumed();
-        let rows_rate = if elapsed > 0.0 { rows_consumed as f64 / elapsed } else { 0.0 };
-        format!(" {dim}rows:{rows_consumed}/{rows_total} {}{reset}", format_rate(rows_rate))
+        let rows_rate = if elapsed > 0.0 {
+            rows_consumed as f64 / elapsed
+        } else {
+            0.0
+        };
+        format!(
+            " {dim}rows:{rows_consumed}/{rows_total} {}{reset}",
+            format_rate(rows_rate)
+        )
     } else if total_extent > 0 {
         format!(" {dim}cycles:{ops_completed}/{total_extent}{reset}")
     } else if ops_completed > 0 {
@@ -396,13 +406,14 @@ fn render_labeled(
         Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
         None => 0,
     };
-    let head_consumed: usize = depth_indent.chars().count()
-        + bar_visible
-        + seq_visible
-        + activity_name.chars().count();
+    let head_consumed: usize =
+        depth_indent.chars().count() + bar_visible + seq_visible + activity_name.chars().count();
     let continuation_indent = format!("{depth_indent}    ");
     let coords_part = super::phase_outcome::format_coords_block(
-        labels, color, head_consumed, &continuation_indent,
+        labels,
+        color,
+        head_consumed,
+        &continuation_indent,
         /* summarize_changed_only */ false,
     );
     // Third row — the KEY-METRICS line. The domain metrics an operator
@@ -443,27 +454,24 @@ fn render_labeled(
 /// expanded automatically). SRD-63 §3.3 monotonicity:
 /// every field present at Labeled is present here too;
 /// new fields are the explicit per-aggregate breakdowns.
-fn render_expanded(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let cyan  = if color { "\x1b[36m" } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let cyan = if color { "\x1b[36m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     let total_extent = ctx.cycles_total();
-    let _started     = ctx.ops_started();
-    let finished     = ctx.ops_finished();
-    let ops_completed= ctx.cycles_completed();
-    let successes    = ctx.ops_ok();
-    let skips        = ctx.skips();
-    let errors       = ctx.errors();
-    let retries      = ctx.retries();
-    let attempt_ok   = ctx.attempt_ok();
+    let _started = ctx.ops_started();
+    let finished = ctx.ops_finished();
+    let ops_completed = ctx.cycles_completed();
+    let successes = ctx.ops_ok();
+    let skips = ctx.skips();
+    let errors = ctx.errors();
+    let retries = ctx.retries();
+    let attempt_ok = ctx.attempt_ok();
     let attempt_failed = ctx.attempt_failed();
-    let elapsed      = ctx.elapsed_secs();
-    let concurrency  = ctx.concurrency();
+    let elapsed = ctx.elapsed_secs();
+    let concurrency = ctx.concurrency();
 
     // See `render_labeled` — pct must use completed cycles so
     // dispatched-but-not-yet-returned ops don't pin the bar
@@ -483,16 +491,28 @@ fn render_expanded(
     let result_total = ops_completed.saturating_sub(skips).max(successes);
     let ok_pct: f64 = if result_total > 0 {
         successes as f64 * 100.0 / result_total as f64
-    } else { 100.0 };
+    } else {
+        100.0
+    };
     // Attempt success rate over resolved attempts — see
     // `render_labeled`.
     let attempt_resolved = attempt_ok + attempt_failed;
     let att_pct: f64 = if attempt_resolved > 0 {
         attempt_ok as f64 * 100.0 / attempt_resolved as f64
-    } else { 100.0 };
-    let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
+    } else {
+        100.0
+    };
+    let rate: f64 = if elapsed > 0.0 {
+        finished as f64 / elapsed
+    } else {
+        0.0
+    };
     let rate_str = format_rate(rate);
-    let bar = if total_extent > 0 { braille_bar(pct, 20) } else { String::new() };
+    let bar = if total_extent > 0 {
+        braille_bar(pct, 20)
+    } else {
+        String::new()
+    };
     // Push 9f: prefer `ctx.eta_secs()`; fall back to the
     // inline derivation when the context doesn't supply one.
     let eta = match ctx.eta_secs() {
@@ -539,19 +559,20 @@ fn render_expanded(
 /// SRD-63 §3.3's monotonicity invariant this is a strict
 /// subset of `Labeled`. Used by the TUI tree row at the
 /// default LOD setting (see Push 5).
-fn render_compact(
-    ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
-    let finished     = ctx.ops_finished();
-    let elapsed      = ctx.elapsed_secs();
+fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
+    let finished = ctx.ops_finished();
+    let elapsed = ctx.elapsed_secs();
     // Pct from completed cycles — see `render_labeled`; a
     // derived-progress override (measured completion) wins.
     // Single fraction source (override → rows → cycles); `None` for
     // open-ended subjects, whose meter slot renders latency instead.
     let frac = ctx.progress_fraction();
     let _pct: f64 = frac.map(|f| f * 100.0).unwrap_or(0.0);
-    let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
+    let rate: f64 = if elapsed > 0.0 {
+        finished as f64 / elapsed
+    } else {
+        0.0
+    };
     let mut tmp = String::with_capacity(32);
     let _ = write!(
         &mut tmp,
@@ -600,43 +621,99 @@ mod tests {
     }
 
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { &self.phase_name }
-        fn activity_name(&self) -> &str {
-            if self.activity_name.is_empty() { &self.phase_name }
-            else { &self.activity_name }
+        fn subject_name(&self) -> &str {
+            &self.phase_name
         }
-        fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
-        fn subject_labels(&self) -> &str { "" }
-        fn cycles_completed(&self) -> u64 { self.cycles_completed }
-        fn cycles_total(&self) -> u64 { self.cycles_total }
-        fn ops_started(&self) -> u64 { self.ops_started }
-        fn ops_finished(&self) -> u64 { self.ops_finished }
-        fn ops_ok(&self) -> u64 { self.ops_ok }
-        fn skips(&self) -> u64 { self.skips }
-        fn errors(&self) -> u64 { self.errors }
-        fn retries(&self) -> u64 { self.retries }
-        fn attempt_ok(&self) -> u64 { self.attempt_ok }
-        fn attempt_failed(&self) -> u64 { self.attempt_failed }
-        fn concurrency(&self) -> usize { self.concurrency }
-        fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-        fn consumed(&self) -> u64 { self.consumed }
-        fn rows_consumed(&self) -> u64 { self.rows_consumed }
-        fn rows_total(&self) -> u64 { self.rows_total }
-        fn status_metric_chips(&self) -> String { self.chips.clone() }
-        fn adapter_counters_text(&self) -> String { self.adapter.clone() }
-        fn batch_info_text(&self) -> String { self.batch.clone() }
-        fn depth_indent(&self) -> &str { &self.depth_indent }
-        fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> EventType { EventType::Update }
-        fn refresh_tick(&self) -> u64 { self.refresh_tick }
+        fn activity_name(&self) -> &str {
+            if self.activity_name.is_empty() {
+                &self.phase_name
+            } else {
+                &self.activity_name
+            }
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            self.phase_seq
+        }
+        fn subject_labels(&self) -> &str {
+            ""
+        }
+        fn cycles_completed(&self) -> u64 {
+            self.cycles_completed
+        }
+        fn cycles_total(&self) -> u64 {
+            self.cycles_total
+        }
+        fn ops_started(&self) -> u64 {
+            self.ops_started
+        }
+        fn ops_finished(&self) -> u64 {
+            self.ops_finished
+        }
+        fn ops_ok(&self) -> u64 {
+            self.ops_ok
+        }
+        fn skips(&self) -> u64 {
+            self.skips
+        }
+        fn errors(&self) -> u64 {
+            self.errors
+        }
+        fn retries(&self) -> u64 {
+            self.retries
+        }
+        fn attempt_ok(&self) -> u64 {
+            self.attempt_ok
+        }
+        fn attempt_failed(&self) -> u64 {
+            self.attempt_failed
+        }
+        fn concurrency(&self) -> usize {
+            self.concurrency
+        }
+        fn elapsed_secs(&self) -> f64 {
+            self.elapsed_secs
+        }
+        fn consumed(&self) -> u64 {
+            self.consumed
+        }
+        fn rows_consumed(&self) -> u64 {
+            self.rows_consumed
+        }
+        fn rows_total(&self) -> u64 {
+            self.rows_total
+        }
+        fn status_metric_chips(&self) -> String {
+            self.chips.clone()
+        }
+        fn adapter_counters_text(&self) -> String {
+            self.adapter.clone()
+        }
+        fn batch_info_text(&self) -> String {
+            self.batch.clone()
+        }
+        fn depth_indent(&self) -> &str {
+            &self.depth_indent
+        }
+        fn use_color(&self) -> bool {
+            self.use_color
+        }
+        fn event(&self) -> EventType {
+            EventType::Update
+        }
+        fn refresh_tick(&self) -> u64 {
+            self.refresh_tick
+        }
     }
 
     fn render(ctx: &TestCtx, lod: Lod) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseStatus.render(
-            ctx, lod, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            ctx,
+            lod,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -668,21 +745,31 @@ mod tests {
         // row-2 margin replacement so the readout body is
         // just `<name> <coord> <pct>%` on row 1 and
         // `<rate> ok:.. e:.. r:.. c:.. cycles:..` on row 2.
-        assert!(!out.contains("⠋"),
-            "spinner MUST NOT appear in phase_status body: {out}");
+        assert!(
+            !out.contains("⠋"),
+            "spinner MUST NOT appear in phase_status body: {out}"
+        );
         // Two-line layout: head ends with " 50%\n",
         // tail begins with the indented counters.
-        assert!(out.contains(" 50%\n"),
-            "two-line break after pct missing: {out:?}");
-        assert!(out.contains("50/s ok:100% att:100% e:0 r:0 c:1"),
-            "labeled body wrong: {out:?}");
+        assert!(
+            out.contains(" 50%\n"),
+            "two-line break after pct missing: {out:?}"
+        );
+        assert!(
+            out.contains("50/s ok:100% att:100% e:0 r:0 c:1"),
+            "labeled body wrong: {out:?}"
+        );
         // Time chip is ETA-ONLY (single-placement rule: elapsed is
         // the margin leaf slot's datum). remaining=cycles_total/rate
         // = 50/50 = 1s.
-        assert!(out.contains("(~1s left of ~2s)"),
-            "ETA chip missing for finite-rate phase: {out:?}");
-        assert!(!out.contains("(1s/1s)"),
-            "elapsed must not be re-emitted in the body: {out:?}");
+        assert!(
+            out.contains("(~1s left of ~2s)"),
+            "ETA chip missing for finite-rate phase: {out:?}"
+        );
+        assert!(
+            !out.contains("(1s/1s)"),
+            "elapsed must not be re-emitted in the body: {out:?}"
+        );
     }
 
     #[test]
@@ -710,14 +797,20 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("rows:700/1000"),
-            "cursor phase must show row-denominated progress: {out:?}");
+        assert!(
+            out.contains("rows:700/1000"),
+            "cursor phase must show row-denominated progress: {out:?}"
+        );
         // rows/s = consumed/elapsed = 700/1.0, format_rate → "700/s".
-        assert!(out.contains("rows:700/1000 700/s"),
-            "cursor phase must show a rows/s rate beside the fraction: {out:?}");
+        assert!(
+            out.contains("rows:700/1000 700/s"),
+            "cursor phase must show a rows/s rate beside the fraction: {out:?}"
+        );
         // The op-denominated cycles chip must be GONE for cursor phases.
-        assert!(!out.contains("cycles:"),
-            "cursor phase must NOT emit the cycles: chip: {out:?}");
+        assert!(
+            !out.contains("cycles:"),
+            "cursor phase must NOT emit the cycles: chip: {out:?}"
+        );
     }
 
     #[test]
@@ -743,10 +836,14 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("cycles:50/100"),
-            "non-cursor phase must keep the cycles: chip: {out:?}");
-        assert!(!out.contains("rows:"),
-            "non-cursor phase must NOT emit a rows: chip: {out:?}");
+        assert!(
+            out.contains("cycles:50/100"),
+            "non-cursor phase must keep the cycles: chip: {out:?}"
+        );
+        assert!(
+            !out.contains("rows:"),
+            "non-cursor phase must NOT emit a rows: chip: {out:?}"
+        );
     }
 
     #[test]
@@ -769,10 +866,14 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("ok:100%"),
-            "a skip (0 errors) must not drag ok% below 100%: {out:?}");
-        assert!(!out.contains("ok:67%"),
-            "ok% wrongly counts the skip in its denominator: {out:?}");
+        assert!(
+            out.contains("ok:100%"),
+            "a skip (0 errors) must not drag ok% below 100%: {out:?}"
+        );
+        assert!(
+            !out.contains("ok:67%"),
+            "ok% wrongly counts the skip in its denominator: {out:?}"
+        );
     }
 
     #[test]
@@ -801,14 +902,18 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("ok:100% att:67%"),
-            "attempt success rate must sit beside ok%, diverging under retry: {out:?}");
+        assert!(
+            out.contains("ok:100% att:67%"),
+            "attempt success rate must sit beside ok%, diverging under retry: {out:?}"
+        );
         // Same divergence must show at the Expanded LOD
         // (monotonicity — the field can't vanish when detail
         // grows).
         let expanded = render(&ctx, Lod::Expanded);
-        assert!(expanded.contains("att:67%"),
-            "expanded throughput row missing attempt rate: {expanded:?}");
+        assert!(
+            expanded.contains("att:67%"),
+            "expanded throughput row missing attempt rate: {expanded:?}"
+        );
     }
 
     #[test]
@@ -820,44 +925,94 @@ mod tests {
         // nothing extra (the other tests guard that path).
         struct MemoCtx;
         impl ReadoutContext for MemoCtx {
-            fn subject_name(&self) -> &str { "x" }
-            fn activity_name(&self) -> &str { "x" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { None }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 1 }
-            fn cycles_total(&self) -> u64 { 1 }
-            fn ops_started(&self) -> u64 { 1 }
-            fn ops_finished(&self) -> u64 { 1 }
-            fn ops_ok(&self) -> u64 { 1 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 1.0 }
-            fn consumed(&self) -> u64 { 1 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { false }
-            fn event(&self) -> EventType { EventType::Update }
-            fn refresh_tick(&self) -> u64 { 0 }
-            fn phase_memo(&self) -> &str { "compacting tableX" }
+            fn subject_name(&self) -> &str {
+                "x"
+            }
+            fn activity_name(&self) -> &str {
+                "x"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                None
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                1
+            }
+            fn cycles_total(&self) -> u64 {
+                1
+            }
+            fn ops_started(&self) -> u64 {
+                1
+            }
+            fn ops_finished(&self) -> u64 {
+                1
+            }
+            fn ops_ok(&self) -> u64 {
+                1
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                1.0
+            }
+            fn consumed(&self) -> u64 {
+                1
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                false
+            }
+            fn event(&self) -> EventType {
+                EventType::Update
+            }
+            fn refresh_tick(&self) -> u64 {
+                0
+            }
+            fn phase_memo(&self) -> &str {
+                "compacting tableX"
+            }
         }
         let ctx = MemoCtx;
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseStatus.render(
-            &ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         // SRD-92: blocks compose HEADER-FIRST — the memo is a
         // detail row directly under the header, not a banner above.
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("x") && lines[0].contains("100%"),
-            "header row must lead the output, got: {s:?}");
-        assert_eq!(lines[1].trim_start(), "[[ compacting tableX ]]",
-            "memo must be the first detail row under the header: {s:?}");
+        assert!(
+            lines[0].contains("x") && lines[0].contains("100%"),
+            "header row must lead the output, got: {s:?}"
+        );
+        assert_eq!(
+            lines[1].trim_start(),
+            "[[ compacting tableX ]]",
+            "memo must be the first detail row under the header: {s:?}"
+        );
         // Counters row still present below the memo.
-        assert!(lines[2].contains("ok:"),
-            "regular counters row missing: {s:?}");
+        assert!(
+            lines[2].contains("ok:"),
+            "regular counters row missing: {s:?}"
+        );
     }
 
     #[test]
@@ -880,8 +1035,10 @@ mod tests {
         // No extent and no override → no ETA is computable, and
         // elapsed belongs to the margin — so the body carries NO
         // time chip at all (single-placement rule).
-        assert!(!out.contains(" left)") && !out.contains("(0s") && !out.contains("(1s"),
-            "no time chip expected when ETA is not computable: {out}");
+        assert!(
+            !out.contains(" left)") && !out.contains("(0s") && !out.contains("(1s"),
+            "no time chip expected when ETA is not computable: {out}"
+        );
     }
 
     #[test]
@@ -905,17 +1062,23 @@ mod tests {
         };
         let out = render(&ctx, Lod::Labeled);
         // Ordering preserved: adapter → batch → chips.
-        assert!(out.contains("rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
-            "adapter / batch / chips ordering wrong: {out}");
+        assert!(
+            out.contains("rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
+            "adapter / batch / chips ordering wrong: {out}"
+        );
         // …but on their OWN indented line below the counters row, not packed
         // onto it (which overran the width and wrapped on a busy phase).
-        assert!(out.contains("\n    rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
-            "key metrics should sit on a dedicated indented line: {out:?}");
+        assert!(
+            out.contains("\n    rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
+            "key metrics should sit on a dedicated indented line: {out:?}"
+        );
         // The counters row (e:/r:/c:) stays a separate line ABOVE the key row.
         let counters_line_idx = out.find("c:4").expect("counters row present");
         let key_line_idx = out.find("rows/s=12.5K").expect("key row present");
-        assert!(counters_line_idx < key_line_idx,
-            "counters row must precede the key-metrics row: {out:?}");
+        assert!(
+            counters_line_idx < key_line_idx,
+            "counters row must precede the key-metrics row: {out:?}"
+        );
     }
 
     #[test]
@@ -937,8 +1100,11 @@ mod tests {
         };
         let out = render(&ctx, Lod::Labeled);
         // Exactly two lines: header + counters (one embedded '\n').
-        assert_eq!(out.matches('\n').count(), 1,
-            "plain phase must stay two lines (no empty key row): {out:?}");
+        assert_eq!(
+            out.matches('\n').count(),
+            1,
+            "plain phase must stay two lines (no empty key row): {out:?}"
+        );
     }
 
     #[test]
@@ -956,8 +1122,7 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Compact);
-        assert!(out.starts_with("⠋"),
-            "compact missing spinner: {out}");
+        assert!(out.starts_with("⠋"), "compact missing spinner: {out}");
         assert_eq!(out, "⠋ 50% 5/s");
     }
 
@@ -977,11 +1142,15 @@ mod tests {
             ..Default::default()
         };
         let labeled = render(&ctx, Lod::Labeled);
-        assert!(labeled.contains(" 0%\n"),
-            "in-flight op should read 0%, not 100%: {labeled:?}");
+        assert!(
+            labeled.contains(" 0%\n"),
+            "in-flight op should read 0%, not 100%: {labeled:?}"
+        );
         let compact = render(&ctx, Lod::Compact);
-        assert!(compact.contains(" 0% "),
-            "compact in-flight should also read 0%: {compact:?}");
+        assert!(
+            compact.contains(" 0% "),
+            "compact in-flight should also read 0%: {compact:?}"
+        );
     }
 
     #[test]
@@ -1001,12 +1170,17 @@ mod tests {
             let mut s = String::new();
             let mut buf = StringBuf::new(&mut s);
             let n = PhaseStatus.render(
-                &ctx, lod, ContentMode::Explanation,
-                &ReadoutOptions::new(), &mut buf,
+                &ctx,
+                lod,
+                ContentMode::Explanation,
+                &ReadoutOptions::new(),
+                &mut buf,
             );
             assert!(n > 0, "{lod:?}/Explanation should render");
-            assert!(s.contains("progress"),
-                "{lod:?}/Explanation missing 'progress' descriptor: {s}");
+            assert!(
+                s.contains("progress"),
+                "{lod:?}/Explanation missing 'progress' descriptor: {s}"
+            );
         }
     }
 
@@ -1032,12 +1206,30 @@ mod tests {
         // Expanded renders multi-line: progress, throughput,
         // counters at minimum. Adapter / metrics tails when
         // present.
-        assert!(out.contains("progress:"),    "expanded missing 'progress:': {out}");
-        assert!(out.contains("throughput:"),  "expanded missing 'throughput:': {out}");
-        assert!(out.contains("counters:"),    "expanded missing 'counters:': {out}");
-        assert!(out.contains("adapter:"),     "expanded missing 'adapter:' tail: {out}");
-        assert!(out.contains("metrics:"),     "expanded missing 'metrics:' tail: {out}");
-        assert!(out.lines().count() >= 5,     "expanded should be multi-line: {out}");
+        assert!(
+            out.contains("progress:"),
+            "expanded missing 'progress:': {out}"
+        );
+        assert!(
+            out.contains("throughput:"),
+            "expanded missing 'throughput:': {out}"
+        );
+        assert!(
+            out.contains("counters:"),
+            "expanded missing 'counters:': {out}"
+        );
+        assert!(
+            out.contains("adapter:"),
+            "expanded missing 'adapter:' tail: {out}"
+        );
+        assert!(
+            out.contains("metrics:"),
+            "expanded missing 'metrics:' tail: {out}"
+        );
+        assert!(
+            out.lines().count() >= 5,
+            "expanded should be multi-line: {out}"
+        );
     }
 
     #[test]

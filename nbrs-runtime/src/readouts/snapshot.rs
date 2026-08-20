@@ -42,17 +42,14 @@
 /// locking and matching by hand — the helper hides the
 /// three-layer unwrap and treats lock-poisoning /
 /// writer-absent as silent no-ops (best-effort).
-pub type SnapshotWriter = std::sync::Arc<
-    std::sync::Mutex<
-        Option<nbrs_metrics::reporters::sqlite::SqliteReporter>,
-    >,
->;
+pub type SnapshotWriter =
+    std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>;
 
 /// LOD → string serialised for the storage column.
 pub fn lod_str(lod: super::Lod) -> &'static str {
     match lod {
-        super::Lod::Compact  => "compact",
-        super::Lod::Labeled  => "labeled",
+        super::Lod::Compact => "compact",
+        super::Lod::Labeled => "labeled",
         super::Lod::Expanded => "expanded",
     }
 }
@@ -80,7 +77,9 @@ pub fn capture(
     lod: &str,
     rendered: &str,
 ) {
-    let Some(writer) = writer else { return; };
+    let Some(writer) = writer else {
+        return;
+    };
     let plain = strip_ansi(rendered);
     let now_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -97,8 +96,15 @@ pub fn capture(
     };
     if let Some(reporter) = guard.as_mut() {
         reporter.upsert_readout_snapshot(
-            slot, exec_id, subject_kind, subject_id, readout_name, lod,
-            now_nanos, body_ansi, &plain,
+            slot,
+            exec_id,
+            subject_kind,
+            subject_id,
+            readout_name,
+            lod,
+            now_nanos,
+            body_ansi,
+            &plain,
         );
     }
 }
@@ -125,7 +131,9 @@ pub fn strip_ansi(s: &str) -> String {
             // want to drop the whole escape from the
             // visible stream.
             for (_, ch) in chars.by_ref() {
-                if ch.is_ascii_alphabetic() { break; }
+                if ch.is_ascii_alphabetic() {
+                    break;
+                }
             }
             continue;
         }
@@ -164,9 +172,6 @@ mod tests {
         // character but not an SGR escape. Snapshot store
         // captures the rendered body, not the carriage
         // return preamble.
-        assert_eq!(
-            strip_ansi("\x1b[Khello"),
-            "hello",
-        );
+        assert_eq!(strip_ansi("\x1b[Khello"), "hello",);
     }
 }

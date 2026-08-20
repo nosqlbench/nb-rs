@@ -19,16 +19,16 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use nbrs_metrics::labels::Labels;
 use nbrs_runtime::adapter::{
     ExecCtx, ExecutionError, OpDispenser, OpResult, ResolvedFields, ResultBody,
 };
 use nbrs_runtime::fixture::{PullPlan, ResolvedPulls, ScopeFixture};
 use nbrs_runtime::validation::ValidatingDispenser;
 use nbrs_runtime::wires::CycleWires;
-use nbrs_metrics::labels::Labels;
+use polydat::ast::Value;
 use polydat::dsl::compile::compile_polydat;
 use polydat::kernel::PolydatProgram;
-use polydat::ast::Value;
 
 /// Result body shaped like `CqlResultBody.to_json()` — a JSON array of
 /// row objects, each with a `"key"` column holding the decimal-text
@@ -42,24 +42,34 @@ struct RowsBody {
 impl ResultBody for RowsBody {
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(
-            self.rows.iter()
-                .map(|row| serde_json::Value::Object(
-                    row.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                ))
-                .collect()
+            self.rows
+                .iter()
+                .map(|row| {
+                    serde_json::Value::Object(
+                        row.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    )
+                })
+                .collect(),
         )
     }
-    fn as_any(&self) -> &dyn Any { self }
-    fn element_count(&self) -> u64 { self.rows.len() as u64 }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn element_count(&self) -> u64 {
+        self.rows.len() as u64
+    }
 }
 
 /// Build a result body with `keys` as string-valued `key` columns.
 fn rows_body(keys: &[i64]) -> Box<dyn ResultBody> {
-    let rows = keys.iter().map(|k| {
-        let mut row = HashMap::new();
-        row.insert("key".into(), serde_json::Value::String(k.to_string()));
-        row
-    }).collect();
+    let rows = keys
+        .iter()
+        .map(|k| {
+            let mut row = HashMap::new();
+            row.insert("key".into(), serde_json::Value::String(k.to_string()));
+            row
+        })
+        .collect();
     Box::new(RowsBody { rows })
 }
 
@@ -73,7 +83,9 @@ impl OpDispenser for FixedBodyDispenser {
         &'a self,
         _cycle: u64,
         _ctx: &'a ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let body = rows_body(&self.keys);
         Box::pin(async move {
             Ok(OpResult {
@@ -93,7 +105,8 @@ fn make_gt_program() -> Arc<PolydatProgram> {
     let kernel = compile_polydat(
         "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
-    ).expect("compile_polydat extern declaration");
+    )
+    .expect("compile_polydat extern declaration");
     kernel.into_program()
 }
 
@@ -103,18 +116,26 @@ fn make_template_with_relevancy(k: u64) -> nbrs_workload::model::ParsedOp {
         "select_ann",
         "SELECT key FROM t ORDER BY value ANN OF :v LIMIT :k",
     );
-    template.params.insert("relevancy".into(), serde_json::json!({
-        "actual": "key",
-        "expected": "{ground_truth}",
-        "k": k,
-        "functions": ["recall"],
-    }));
+    template.params.insert(
+        "relevancy".into(),
+        serde_json::json!({
+            "actual": "key",
+            "expected": "{ground_truth}",
+            "k": k,
+            "functions": ["recall"],
+        }),
+    );
     template
 }
 
 /// Snapshot the mean of a named relevancy stat.
-fn snapshot_mean(vm: &Arc<nbrs_runtime::validation::ValidationMetrics>, name: &str) -> (usize, f64) {
-    let stats = vm.relevancy_stats.get(name)
+fn snapshot_mean(
+    vm: &Arc<nbrs_runtime::validation::ValidationMetrics>,
+    name: &str,
+) -> (usize, f64) {
+    let stats = vm
+        .relevancy_stats
+        .get(name)
         .unwrap_or_else(|| panic!("missing relevancy stat '{name}'"));
     let snap = stats.snapshot();
     (snap.len(), snap.mean())
@@ -135,9 +156,9 @@ fn wrap_with_relevancy(
 ) {
     let mut fx = ScopeFixture::new(program.clone());
     let labels = Labels::of("session", "test");
-    let (validated, vm) = ValidatingDispenser::wrap(
-        inner, template, &labels, Some(program.as_ref()), &mut fx,
-    ).expect("wrap should succeed");
+    let (validated, vm) =
+        ValidatingDispenser::wrap(inner, template, &labels, Some(program.as_ref()), &mut fx)
+            .expect("wrap should succeed");
     let plan = fx.seal();
     let vm = vm.expect("relevancy declared — metrics should be created");
     (validated, vm, plan)
@@ -152,7 +173,9 @@ fn pulls_with_gt_string(
     gt_csv: &str,
 ) -> ResolvedPulls {
     let mut state = program.create_state();
-    let idx = program.find_input("ground_truth").expect("ground_truth input");
+    let idx = program
+        .find_input("ground_truth")
+        .expect("ground_truth input");
     state.set_input(idx, Value::Str(gt_csv.into()));
     plan.resolve(&mut state)
 }
@@ -166,9 +189,13 @@ fn kernel_with_gt_string(gt_csv: &str) -> polydat::kernel::PolydatKernel {
     let mut k = compile_polydat(
         "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
-    ).expect("compile_polydat extern declaration");
+    )
+    .expect("compile_polydat extern declaration");
     k.set_inputs(&[0]);
-    let idx = k.program().find_input("ground_truth").expect("ground_truth input");
+    let idx = k
+        .program()
+        .find_input("ground_truth")
+        .expect("ground_truth input");
     k.state().set_input(idx, Value::Str(gt_csv.into()));
     k
 }
@@ -180,23 +207,36 @@ async fn perfect_recall_when_keys_match_ground_truth() {
 
     let program = make_gt_program();
     let template = make_template_with_relevancy(10);
-    let inner: Arc<dyn OpDispenser> = Arc::new(FixedBodyDispenser { keys: returned_keys });
+    let inner: Arc<dyn OpDispenser> = Arc::new(FixedBodyDispenser {
+        keys: returned_keys,
+    });
     let (validated, vm, plan) = wrap_with_relevancy(inner, &program, &template);
 
-    let gt_string = format!("[{}]",
-        ground_truth.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+    let gt_string = format!(
+        "[{}]",
+        ground_truth
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     let pulls = pulls_with_gt_string(&program, &plan, &gt_string);
     let fields = ResolvedFields::new(Vec::new(), Vec::new());
     let mut kernel = kernel_with_gt_string(&gt_string);
     let cw = CycleWires::new(&mut kernel);
     let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
-    validated.execute(0, &ctx).await.expect("validation should not error");
+    validated
+        .execute(0, &ctx)
+        .await
+        .expect("validation should not error");
 
     let (count, mean) = snapshot_mean(&vm, "recall");
     assert_eq!(count, 1, "one recall score should be recorded");
-    assert!((mean - 1.0).abs() < 1e-9,
-        "perfect-recall scenario should produce recall=1.0, got {mean}");
+    assert!(
+        (mean - 1.0).abs() < 1e-9,
+        "perfect-recall scenario should produce recall=1.0, got {mean}"
+    );
 }
 
 #[tokio::test]
@@ -206,18 +246,29 @@ async fn zero_recall_when_returned_keys_do_not_match() {
 
     let program = make_gt_program();
     let template = make_template_with_relevancy(10);
-    let inner: Arc<dyn OpDispenser> = Arc::new(FixedBodyDispenser { keys: returned_keys });
+    let inner: Arc<dyn OpDispenser> = Arc::new(FixedBodyDispenser {
+        keys: returned_keys,
+    });
     let (validated, vm, plan) = wrap_with_relevancy(inner, &program, &template);
 
-    let gt_string = format!("[{}]",
-        ground_truth.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+    let gt_string = format!(
+        "[{}]",
+        ground_truth
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     let pulls = pulls_with_gt_string(&program, &plan, &gt_string);
     let fields = ResolvedFields::new(Vec::new(), Vec::new());
     let mut kernel = kernel_with_gt_string(&gt_string);
     let cw = CycleWires::new(&mut kernel);
     let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
-    validated.execute(0, &ctx).await.expect("validation should not error");
+    validated
+        .execute(0, &ctx)
+        .await
+        .expect("validation should not error");
 
     let (count, mean) = snapshot_mean(&vm, "recall");
     assert_eq!(count, 1);
@@ -234,7 +285,9 @@ impl OpDispenser for MultiBodyDispenser {
         &'a self,
         cycle: u64,
         _ctx: &'a ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let keys = self.per_cycle_keys[cycle as usize].clone();
         Box::pin(async move {
             Ok(OpResult {
@@ -262,8 +315,10 @@ async fn averaged_recall_across_three_cycles() {
     });
     let (validated, vm, plan) = wrap_with_relevancy(multi, &program, &template);
 
-    let gt_string = format!("[{}]",
-        gt.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+    let gt_string = format!(
+        "[{}]",
+        gt.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+    );
     for cycle in 0u64..3 {
         let pulls = pulls_with_gt_string(&program, &plan, &gt_string);
         let fields = ResolvedFields::new(Vec::new(), Vec::new());
@@ -275,8 +330,10 @@ async fn averaged_recall_across_three_cycles() {
 
     let (count, mean) = snapshot_mean(&vm, "recall");
     assert_eq!(count, 3, "three recall scores should be recorded");
-    assert!((mean - 0.5).abs() < 1e-9,
-        "average of (1.0, 0.5, 0.0) should be 0.5, got {mean}");
+    assert!(
+        (mean - 0.5).abs() < 1e-9,
+        "average of (1.0, 0.5, 0.0) should be 0.5, got {mean}"
+    );
 }
 
 #[tokio::test]
@@ -294,15 +351,22 @@ async fn zero_recall_when_column_name_does_not_match() {
     impl ResultBody for WrongColumnBody {
         fn to_json(&self) -> serde_json::Value {
             serde_json::Value::Array(
-                self.values.iter().map(|v| {
-                    let mut row = serde_json::Map::new();
-                    row.insert("?".into(), serde_json::Value::String(v.to_string()));
-                    serde_json::Value::Object(row)
-                }).collect()
+                self.values
+                    .iter()
+                    .map(|v| {
+                        let mut row = serde_json::Map::new();
+                        row.insert("?".into(), serde_json::Value::String(v.to_string()));
+                        serde_json::Value::Object(row)
+                    })
+                    .collect(),
             )
         }
-        fn as_any(&self) -> &dyn Any { self }
-        fn element_count(&self) -> u64 { self.values.len() as u64 }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn element_count(&self) -> u64 {
+            self.values.len() as u64
+        }
     }
     struct WrongColumnDispenser;
     impl OpDispenser for WrongColumnDispenser {
@@ -310,10 +374,14 @@ async fn zero_recall_when_column_name_does_not_match() {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 Ok(OpResult {
-                    body: Some(Box::new(WrongColumnBody { values: vec![1, 2, 3, 4] })),
+                    body: Some(Box::new(WrongColumnBody {
+                        values: vec![1, 2, 3, 4],
+                    })),
                     skipped: false,
                 })
             })
@@ -334,8 +402,10 @@ async fn zero_recall_when_column_name_does_not_match() {
     validated.execute(0, &ctx).await.expect("ok");
 
     let (_, mean) = snapshot_mean(&vm, "recall");
-    assert_eq!(mean, 0.0,
-        "mismatched column name must produce recall=0 (reproduces the bug)");
+    assert_eq!(
+        mean, 0.0,
+        "mismatched column name must produce recall=0 (reproduces the bug)"
+    );
 }
 
 #[tokio::test]
@@ -348,7 +418,9 @@ async fn zero_recall_when_body_is_empty() {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 Ok(OpResult {
                     body: None,

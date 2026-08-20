@@ -50,7 +50,8 @@ fn slow_stdout_workload() -> (TempDir, PathBuf) {
     rate: 10
     raw: "tick={cycle}"
 "#,
-    ).expect("write workload yaml");
+    )
+    .expect("write workload yaml");
     (dir, yaml_path)
 }
 
@@ -69,7 +70,8 @@ fn paced_silent_workload() -> (TempDir, PathBuf) {
     raw: "tick={cycle}"
     rate: "5/s"
 "#,
-    ).expect("write paced workload yaml");
+    )
+    .expect("write paced workload yaml");
     (dir, yaml_path)
 }
 
@@ -90,7 +92,9 @@ impl TempDir {
         std::fs::create_dir_all(&path).expect("create tempdir");
         Self { path }
     }
-    fn path(&self) -> &std::path::Path { &self.path }
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 impl Drop for TempDir {
@@ -110,7 +114,8 @@ impl Drop for TempDir {
 /// under the project root (see the project's test-isolation
 /// memory).
 fn build_config(workload: &Path, extra: &[&str]) -> Config {
-    let sessions = workload.parent()
+    let sessions = workload
+        .parent()
         .expect("workload path has a parent tempdir")
         .join("sessions");
     let mut command: Vec<OsString> = Vec::new();
@@ -135,11 +140,7 @@ fn build_config(workload: &Path, extra: &[&str]) -> Config {
 /// Step the terminal until a substring shows up on screen, or
 /// kill the child and panic at the deadline (shared drive loop —
 /// see `pty_support`).
-async fn assert_screen_contains(
-    stepper: &mut SteppableTerminal,
-    needle: &str,
-    timeout: Duration,
-) {
+async fn assert_screen_contains(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
     pty_support::wait_for(stepper, needle, timeout).await;
 }
 
@@ -152,7 +153,8 @@ async fn assert_screen_contains(
 async fn terminal_mode_renders_log_lines() {
     let (_dir, yaml) = slow_stdout_workload();
     let config = build_config(&yaml, &["cycles=20"]);
-    let mut stepper = SteppableTerminal::start(config).await
+    let mut stepper = SteppableTerminal::start(config)
+        .await
         .expect("start steppable terminal");
 
     // The canonical "rendering works" tell: the runner's
@@ -183,7 +185,8 @@ async fn terminal_mode_renders_log_lines() {
 async fn ctrl_t_toggles_into_tui_and_back() {
     let (_dir, yaml) = paced_silent_workload();
     let config = build_config(&yaml, &["cycles=300", "filename=/dev/null"]);
-    let mut stepper = SteppableTerminal::start(config).await
+    let mut stepper = SteppableTerminal::start(config)
+        .await
         .expect("start steppable terminal");
 
     // Terminal mode renders the running phase as the live status
@@ -195,13 +198,17 @@ async fn ctrl_t_toggles_into_tui_and_back() {
     // supervisor swaps in the TuiSink (alt-screen). The TUI draws
     // bordered panels with box-drawing the line-mode sink never
     // emits — `┌` (a panel corner) is a clean alt-screen tell.
-    stepper.send_input(Input::Characters("\x14".into())).expect("send Ctrl-T");
+    stepper
+        .send_input(Input::Characters("\x14".into()))
+        .expect("send Ctrl-T");
     assert_screen_contains(&mut stepper, "┌", Duration::from_secs(8)).await;
 
     // Ctrl-T back: the App sets `yielded_to_terminal`, the
     // supervisor brings the LogOnlySink back up, and the live
     // status block re-derives from the snapshot — `ok:` returns.
-    stepper.send_input(Input::Characters("\x14".into())).expect("send Ctrl-T (back)");
+    stepper
+        .send_input(Input::Characters("\x14".into()))
+        .expect("send Ctrl-T (back)");
     assert_screen_contains(&mut stepper, "ok:", Duration::from_secs(8)).await;
 
     let _ = stepper.kill();

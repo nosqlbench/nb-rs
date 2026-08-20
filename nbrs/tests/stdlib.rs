@@ -29,7 +29,9 @@ use std::process::Command;
 
 const WORKLOAD: &str = "examples/workloads/expressions/stdlib_coverage.yaml";
 
-struct SessionDir { path: PathBuf }
+struct SessionDir {
+    path: PathBuf,
+}
 
 impl SessionDir {
     fn new() -> Self {
@@ -38,16 +40,21 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-stdlib-coverage-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-stdlib-coverage-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
-        Self { path: parent.join("session") }
+        Self {
+            path: parent.join("session"),
+        }
     }
-    fn parent(&self) -> &Path { self.path.parent().unwrap() }
+    fn parent(&self) -> &Path {
+        self.path.parent().unwrap()
+    }
 }
 
 impl Drop for SessionDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(self.parent()); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.parent());
+    }
 }
 
 fn run_scenario(scenario: &str) -> (String, String, bool) {
@@ -56,7 +63,8 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     cmd.current_dir(workspace_root)
         .arg("run")
-        .arg("--session-path").arg(&session.path)
+        .arg("--session-path")
+        .arg(&session.path)
         .arg(format!("workload={WORKLOAD}"))
         .arg(format!("scenario={scenario}"));
     let out = cmd.output().expect("run nbrs");
@@ -68,7 +76,8 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
 /// First line matching the given prefix, or panic with full
 /// stdout context.
 fn first_line(stdout: &str, prefix: &str) -> String {
-    stdout.lines()
+    stdout
+        .lines()
         .find(|l| l.starts_with(prefix))
         .map(|l| l.to_string())
         .unwrap_or_else(|| panic!("no line with prefix `{prefix}` in:\n{stdout}"))
@@ -87,8 +96,10 @@ fn stdlib_arithmetic_u64() {
     // `Value::F64::to_display_string`).
     let (stdout, stderr, ok) = run_scenario("arithmetic_u64");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/arith_u64 "),
-        "lib/arith_u64 sum=13 diff=7 prod=30 quot=3 rem=1 pow=100.0");
+    assert_eq!(
+        first_line(&stdout, "lib/arith_u64 "),
+        "lib/arith_u64 sum=13 diff=7 prod=30 quot=3 rem=1 pow=100.0"
+    );
 }
 
 #[test]
@@ -98,8 +109,10 @@ fn stdlib_arithmetic_f64() {
     // explicit `.0` suffix per `Value::F64::to_display_string`.
     let (stdout, stderr, ok) = run_scenario("arithmetic_f64");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/arith_f64 "),
-        "lib/arith_f64 sum=10.0 diff=6.0 prod=16.0 quot=4.0 power=8.0");
+    assert_eq!(
+        first_line(&stdout, "lib/arith_f64 "),
+        "lib/arith_f64 sum=10.0 diff=6.0 prod=16.0 quot=4.0 power=8.0"
+    );
 }
 
 #[test]
@@ -108,8 +121,10 @@ fn stdlib_arithmetic_named_nodes() {
     // computes identically.
     let (stdout, stderr, ok) = run_scenario("arithmetic_named_nodes");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/arith_named "),
-        "lib/arith_named sum=13 prod=30 quot=3 rem=1");
+    assert_eq!(
+        first_line(&stdout, "lib/arith_named "),
+        "lib/arith_named sum=13 prod=30 quot=3 rem=1"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -123,8 +138,10 @@ fn stdlib_bitwise_ops() {
     //   shl 4 = 0xF00 = 3840, shr 4 = 0x0F = 15.
     let (stdout, stderr, ok) = run_scenario("bitwise_ops");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/bitwise "),
-        "lib/bitwise and=0 or=255 xor=255 shl=3840 shr=15");
+    assert_eq!(
+        first_line(&stdout, "lib/bitwise "),
+        "lib/bitwise and=0 or=255 xor=255 shl=3840 shr=15"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -138,8 +155,10 @@ fn stdlib_comparison_ops() {
     // → 0|1 by the interpolator, not "true"/"false").
     let (stdout, stderr, ok) = run_scenario("comparison_ops");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/cmp "),
-        "lib/cmp eq=0 ne=1 lt=0 gt=1 lte=0 gte=1");
+    assert_eq!(
+        first_line(&stdout, "lib/cmp "),
+        "lib/cmp eq=0 ne=1 lt=0 gt=1 lte=0 gte=1"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -154,8 +173,10 @@ fn stdlib_conversion_to_f64_to_u64() {
     // strips it back to bare `42`.
     let (stdout, stderr, ok) = run_scenario("conversion_to_f64_to_u64");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/convert "),
-        "lib/convert as_f64=42.0 back_u64=42");
+    assert_eq!(
+        first_line(&stdout, "lib/convert "),
+        "lib/convert as_f64=42.0 back_u64=42"
+    );
 }
 
 #[test]
@@ -164,8 +185,10 @@ fn stdlib_format_u64_bases() {
     // the base prefix for non-decimal bases (`0x`, `0b`).
     let (stdout, stderr, ok) = run_scenario("format_u64_bases");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/format "),
-        "lib/format dec=255 hex=0xff bin=0b11111111");
+    assert_eq!(
+        first_line(&stdout, "lib/format "),
+        "lib/format dec=255 hex=0xff bin=0b11111111"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -178,8 +201,10 @@ fn stdlib_hash_chain() {
     // Bools render as 0/1 in interpolated stdout.
     let (stdout, stderr, ok) = run_scenario("hash_chain");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/hash "),
-        "lib/hash eq=1 same=0 diff=1");
+    assert_eq!(
+        first_line(&stdout, "lib/hash "),
+        "lib/hash eq=1 same=0 diff=1"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -190,8 +215,10 @@ fn stdlib_hash_chain() {
 fn stdlib_string_interpolation() {
     let (stdout, stderr, ok) = run_scenario("string_interpolation");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/strinterp "),
-        "lib/strinterp greeting=hello, alice! stringified=alice = 42");
+    assert_eq!(
+        first_line(&stdout, "lib/strinterp "),
+        "lib/strinterp greeting=hello, alice! stringified=alice = 42"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -205,8 +232,10 @@ fn stdlib_encoding_hex() {
     let (stdout, stderr, ok) = run_scenario("encoding_hex");
     assert!(ok, "scenario failed: {stderr}");
     let line = first_line(&stdout, "lib/hex ");
-    assert!(line.contains("h=efbeadde00000000"),
-        "hex form unexpected: {line}");
+    assert!(
+        line.contains("h=efbeadde00000000"),
+        "hex form unexpected: {line}"
+    );
     // Round-trip equality — h and h2 must match.
     let h = line.split("h=").nth(1).unwrap().split(' ').next().unwrap();
     let h2 = line.split("roundtrip_equal=").nth(1).unwrap();
@@ -220,7 +249,7 @@ fn stdlib_encoding_base64() {
     let (stdout, stderr, ok) = run_scenario("encoding_base64");
     assert!(ok, "scenario failed: {stderr}");
     let line = first_line(&stdout, "lib/base64 ");
-    let e  = line.split("e=").nth(1).unwrap().split(' ').next().unwrap();
+    let e = line.split("e=").nth(1).unwrap().split(' ').next().unwrap();
     let e2 = line.split("roundtrip_equal=").nth(1).unwrap();
     assert_eq!(e, e2, "base64 round-trip mismatch: {line}");
 }
@@ -231,9 +260,14 @@ fn stdlib_encoding_url() {
     let (stdout, stderr, ok) = run_scenario("encoding_url");
     assert!(ok, "scenario failed: {stderr}");
     let line = first_line(&stdout, "lib/urlenc ");
-    assert!(line.contains("dec=hello world & friends"),
-        "url round-trip didn't restore original: {line}");
-    assert!(line.contains("%20"), "url encoding didn't escape spaces: {line}");
+    assert!(
+        line.contains("dec=hello world & friends"),
+        "url round-trip didn't restore original: {line}"
+    );
+    assert!(
+        line.contains("%20"),
+        "url encoding didn't escape spaces: {line}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -246,8 +280,10 @@ fn stdlib_digest_sha256() {
     let (stdout, stderr, ok) = run_scenario("digest_sha256");
     assert!(ok, "scenario failed: {stderr}");
     let line = first_line(&stdout, "lib/sha256 ");
-    assert_eq!(line,
-        "lib/sha256 hex=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc");
+    assert_eq!(
+        line,
+        "lib/sha256 hex=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+    );
 }
 
 #[test]
@@ -268,16 +304,20 @@ fn stdlib_probability_unit_interval() {
     // unit_interval is in [0.0, 1.0). Bools render as 0/1.
     let (stdout, stderr, ok) = run_scenario("probability_unit_interval");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/unit_interval "),
-        "lib/unit_interval in_unit=1 non_neg=1");
+    assert_eq!(
+        first_line(&stdout, "lib/unit_interval "),
+        "lib/unit_interval in_unit=1 non_neg=1"
+    );
 }
 
 #[test]
 fn stdlib_distribution_uniform() {
     let (stdout, stderr, ok) = run_scenario("distribution_uniform");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/dist_uniform "),
-        "lib/dist_uniform ge_lo=1 lt_hi=1");
+    assert_eq!(
+        first_line(&stdout, "lib/dist_uniform "),
+        "lib/dist_uniform ge_lo=1 lt_hi=1"
+    );
 }
 
 #[test]
@@ -285,8 +325,10 @@ fn stdlib_fair_coin_flip() {
     // fair_coin yields 0 or 1; `heads | tails` is always true (1).
     let (stdout, stderr, ok) = run_scenario("fair_coin_flip");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/fair_coin "),
-        "lib/fair_coin one_of_two=1");
+    assert_eq!(
+        first_line(&stdout, "lib/fair_coin "),
+        "lib/fair_coin one_of_two=1"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -297,16 +339,20 @@ fn stdlib_fair_coin_flip() {
 fn stdlib_weighted_strings() {
     let (stdout, stderr, ok) = run_scenario("weighted_strings_pick");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/weighted_strings "),
-        "lib/weighted_strings is_known=1");
+    assert_eq!(
+        first_line(&stdout, "lib/weighted_strings "),
+        "lib/weighted_strings is_known=1"
+    );
 }
 
 #[test]
 fn stdlib_weighted_u64() {
     let (stdout, stderr, ok) = run_scenario("weighted_u64_pick");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/weighted_u64 "),
-        "lib/weighted_u64 is_known=1");
+    assert_eq!(
+        first_line(&stdout, "lib/weighted_u64 "),
+        "lib/weighted_u64 is_known=1"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -319,8 +365,7 @@ fn stdlib_pick_select_blend() {
     // blend(10, 20, 0.5) → 15 (50/50 mix of two u64 wires).
     let (stdout, stderr, ok) = run_scenario("pick_select_blend");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/pick "),
-        "lib/pick sel=100 bl=15");
+    assert_eq!(first_line(&stdout, "lib/pick "), "lib/pick sel=100 bl=15");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -349,8 +394,7 @@ fn stdlib_lerp_and_clamp() {
 fn stdlib_noise_perlin_2d() {
     let (stdout, stderr, ok) = run_scenario("noise_perlin_2d");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/perlin "),
-        "lib/perlin in_range=1");
+    assert_eq!(first_line(&stdout, "lib/perlin "), "lib/perlin in_range=1");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -362,8 +406,10 @@ fn stdlib_date_components() {
     // Epoch 0 = 1970-01-01T00:00:00.000 UTC.
     let (stdout, stderr, ok) = run_scenario("date_components");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/date "),
-        "lib/date y=1970 mo=1 d=1 h=0 mi=0 s=0 ms=0");
+    assert_eq!(
+        first_line(&stdout, "lib/date "),
+        "lib/date y=1970 mo=1 d=1 h=0 mi=0 s=0 ms=0"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -375,8 +421,7 @@ fn stdlib_json_round_trip() {
     // to_json(42) → JSON number 42; json_to_str renders to "42".
     let (stdout, stderr, ok) = run_scenario("json_round_trip");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(first_line(&stdout, "lib/json "),
-        "lib/json s=42");
+    assert_eq!(first_line(&stdout, "lib/json "), "lib/json s=42");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -390,6 +435,8 @@ fn stdlib_regex_match_and_replace() {
     let (stdout, stderr, ok) = run_scenario("regex_match_and_replace");
     assert!(ok, "scenario failed: {stderr}");
     let line = first_line(&stdout, "lib/regex ");
-    assert!(line.contains("replaced=abc###def"),
-        "regex_replace did not produce abc###def: {line}");
+    assert!(
+        line.contains("replaced=abc###def"),
+        "regex_replace did not produce abc###def: {line}"
+    );
 }

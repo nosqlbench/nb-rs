@@ -22,7 +22,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperRegistry, WrapperSubject};
 
 /// Resolved wrapper composition for one op template.
@@ -42,9 +41,7 @@ pub struct WrapperPlan {
 
 impl WrapperPlan {
     /// Iterate the stack innermost-to-outermost.
-    pub fn iter_innermost_first(
-        &self,
-    ) -> impl Iterator<Item = &'static WrapperRegistration> + '_ {
+    pub fn iter_innermost_first(&self) -> impl Iterator<Item = &'static WrapperRegistration> + '_ {
         self.stack.iter().copied()
     }
 
@@ -63,10 +60,16 @@ pub enum WrapperActivation {
     /// Triggered directly by an owned field on the op
     /// template (e.g. `validate` because `verify:` was
     /// declared).
-    OwnedField { wrapper: WrapperName, field: &'static str },
+    OwnedField {
+        wrapper: WrapperName,
+        field: &'static str,
+    },
     /// Pulled in transitively by another wrapper's
     /// `requires_inner`.
-    TransitiveFrom { wrapper: WrapperName, requested_by: WrapperName },
+    TransitiveFrom {
+        wrapper: WrapperName,
+        requested_by: WrapperName,
+    },
     /// Always-on wrapper (e.g. `traverse`, `result`).
     AlwaysOn { wrapper: WrapperName },
 }
@@ -89,7 +92,10 @@ pub enum ResolveError {
     /// `forbids_outer` violation — wrapper `inner` declared
     /// `outer` must not wrap it, but the resolved order
     /// placed `outer` outside `inner`.
-    ForbiddenOuter { inner: WrapperName, outer: WrapperName },
+    ForbiddenOuter {
+        inner: WrapperName,
+        outer: WrapperName,
+    },
     /// `mutually_exclusive_with` violation — both triggered
     /// for the same op.
     MutuallyExclusive {
@@ -106,11 +112,17 @@ pub enum ResolveError {
     /// Override referenced an unknown wrapper name. Carries
     /// the closest registered name as a typo suggestion when
     /// available.
-    UnknownWrapper { name: String, suggestion: Option<&'static str> },
+    UnknownWrapper {
+        name: String,
+        suggestion: Option<&'static str>,
+    },
     /// `requires_inner` pointed at a wrapper that doesn't
     /// exist in the registry. Almost always a registry-author
     /// bug.
-    DanglingRequiresInner { from: WrapperName, missing: WrapperName },
+    DanglingRequiresInner {
+        from: WrapperName,
+        missing: WrapperName,
+    },
     /// SRD-32a Push 3 — an explicit `wrappers: { order: [...] }`
     /// override is not a permutation of the wrappers triggered
     /// on the op. Either a triggered wrapper is missing from
@@ -140,7 +152,9 @@ impl std::fmt::Display for ResolveError {
             Self::ConstraintCycle { cycle } => {
                 write!(f, "wrapper requires_inner cycle: ")?;
                 for (i, n) in cycle.iter().enumerate() {
-                    if i > 0 { f.write_str(" → ")?; }
+                    if i > 0 {
+                        f.write_str(" → ")?;
+                    }
                     write!(f, "{n}")?;
                 }
                 Ok(())
@@ -158,16 +172,20 @@ impl std::fmt::Display for ResolveError {
             ),
             Self::OverridePermutationMismatch { missing, extra } => {
                 if let Some(m) = missing {
-                    write!(f,
+                    write!(
+                        f,
                         "wrapper override is missing triggered wrapper `{m}` — \
                          every wrapper that fires on this op must appear in \
-                         `wrappers: {{ order: [...] }}`")
+                         `wrappers: {{ order: [...] }}`"
+                    )
                 } else if let Some(e) = extra {
-                    write!(f,
+                    write!(
+                        f,
                         "wrapper override names `{e}`, but its trigger \
                          condition is not satisfied for this op — remove it \
                          from `wrappers: {{ order: [...] }}` or add the \
-                         trigger field that activates it")
+                         trigger field that activates it"
+                    )
                 } else {
                     write!(f, "wrapper override permutation mismatch")
                 }
@@ -191,14 +209,7 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // panic catch. Hand-placed in the cascade (before the plan loop); this
     // slot keeps the PLAN's order aligned with the runtime truth when an
     // op's `tries:` field puts it in the plan.
-    "tries",
-    "traverse",
-    "delay",
-    "validate",
-    "poll",
-    "if",
-    "result",
-    "metrics",
+    "tries", "traverse", "delay", "validate", "poll", "if", "result", "metrics",
     // `memo` must appear before `dryrun` here so the topo-
     // sort tiebreak places it INSIDE dryrun. Wrappers absent
     // from this list get `order_index = usize::MAX` and
@@ -290,7 +301,9 @@ impl WrapperResolver {
         // graph: every requires_inner must be satisfied by
         // position, and no forbids_outer must be violated.
         validate_order_against_registry(&order, registry)?;
-        Ok(Self { default_order: order })
+        Ok(Self {
+            default_order: order,
+        })
     }
 
     /// Resolve the wrapper plan for one op template.
@@ -306,7 +319,10 @@ impl WrapperResolver {
         for reg in registry.iter() {
             if reg.applies_at(subject.level()) && (reg.triggers)(subject) {
                 let activation = first_owned_field(reg, subject)
-                    .map(|f| WrapperActivation::OwnedField { wrapper: reg.name, field: f })
+                    .map(|f| WrapperActivation::OwnedField {
+                        wrapper: reg.name,
+                        field: f,
+                    })
                     .unwrap_or(WrapperActivation::AlwaysOn { wrapper: reg.name });
                 activations.insert(reg.name, activation);
             }
@@ -315,11 +331,17 @@ impl WrapperResolver {
         // Pass 2 — transitive closure on requires_inner.
         let mut frontier: Vec<WrapperName> = activations.keys().copied().collect();
         while let Some(w) = frontier.pop() {
-            let reg = registry.get(w).expect("triggered wrapper must be registered");
+            let reg = registry
+                .get(w)
+                .expect("triggered wrapper must be registered");
             for &needed in reg.requires_inner {
-                let needed_reg = registry.get(needed).ok_or(
-                    ResolveError::DanglingRequiresInner { from: w, missing: needed },
-                )?;
+                let needed_reg =
+                    registry
+                        .get(needed)
+                        .ok_or(ResolveError::DanglingRequiresInner {
+                            from: w,
+                            missing: needed,
+                        })?;
                 let _ = needed_reg;
                 if let std::collections::hash_map::Entry::Vacant(e) = activations.entry(needed) {
                     e.insert(WrapperActivation::TransitiveFrom {
@@ -412,18 +434,26 @@ impl WrapperResolver {
         for reg in registry.iter() {
             if reg.applies_at(subject.level()) && (reg.triggers)(subject) {
                 let activation = first_owned_field(reg, subject)
-                    .map(|f| WrapperActivation::OwnedField { wrapper: reg.name, field: f })
+                    .map(|f| WrapperActivation::OwnedField {
+                        wrapper: reg.name,
+                        field: f,
+                    })
                     .unwrap_or(WrapperActivation::AlwaysOn { wrapper: reg.name });
                 activations.insert(reg.name, activation);
             }
         }
         let mut frontier: Vec<WrapperName> = activations.keys().copied().collect();
         while let Some(w) = frontier.pop() {
-            let reg = registry.get(w).expect("triggered wrapper must be registered");
+            let reg = registry
+                .get(w)
+                .expect("triggered wrapper must be registered");
             for &needed in reg.requires_inner {
-                let _ = registry.get(needed).ok_or(
-                    ResolveError::DanglingRequiresInner { from: w, missing: needed },
-                )?;
+                let _ = registry
+                    .get(needed)
+                    .ok_or(ResolveError::DanglingRequiresInner {
+                        from: w,
+                        missing: needed,
+                    })?;
                 if let std::collections::hash_map::Entry::Vacant(e) = activations.entry(needed) {
                     e.insert(WrapperActivation::TransitiveFrom {
                         wrapper: needed,
@@ -452,8 +482,10 @@ impl WrapperResolver {
 
         // Permutation rules: every triggered wrapper must
         // appear; no wrapper appears that isn't triggered.
-        let triggered: std::collections::HashSet<WrapperName> = activations.keys().copied().collect();
-        let in_override: std::collections::HashSet<WrapperName> = override_names.iter().copied().collect();
+        let triggered: std::collections::HashSet<WrapperName> =
+            activations.keys().copied().collect();
+        let in_override: std::collections::HashSet<WrapperName> =
+            override_names.iter().copied().collect();
         for w in &triggered {
             if !in_override.contains(w) {
                 return Err(ResolveError::OverridePermutationMismatch {
@@ -478,7 +510,8 @@ impl WrapperResolver {
             for &peer in reg.mutually_exclusive_with {
                 if let Some(peer_act) = activations.get(&peer) {
                     return Err(ResolveError::MutuallyExclusive {
-                        a: w, b: peer,
+                        a: w,
+                        b: peer,
                         a_reason: w_act.clone(),
                         b_reason: peer_act.clone(),
                     });
@@ -495,7 +528,8 @@ impl WrapperResolver {
         // the inner appear earlier; each forbids_outer pair
         // must have the listed wrapper appear earlier or
         // not at all.
-        let pos: HashMap<WrapperName, usize> = override_names.iter()
+        let pos: HashMap<WrapperName, usize> = override_names
+            .iter()
             .enumerate()
             .map(|(i, &n)| (n, i))
             .collect();
@@ -506,7 +540,8 @@ impl WrapperResolver {
                     && inner >= me
                 {
                     return Err(ResolveError::ForbiddenOuter {
-                        inner: needed, outer: name,
+                        inner: needed,
+                        outer: name,
                     });
                 }
             }
@@ -515,16 +550,19 @@ impl WrapperResolver {
                     && forb > me
                 {
                     return Err(ResolveError::ForbiddenOuter {
-                        inner: name, outer: forbidden,
+                        inner: name,
+                        outer: forbidden,
                     });
                 }
             }
         }
 
-        let stack: Vec<&'static WrapperRegistration> = override_names.iter()
+        let stack: Vec<&'static WrapperRegistration> = override_names
+            .iter()
             .map(|n| registry.get(*n).unwrap())
             .collect();
-        let provenance: Vec<WrapperActivation> = stack.iter()
+        let provenance: Vec<WrapperActivation> = stack
+            .iter()
             .map(|reg| activations.get(&reg.name).cloned().unwrap())
             .collect();
         Ok(WrapperPlan { stack, provenance })
@@ -552,12 +590,14 @@ fn detect_cycle(
     registry: &WrapperRegistry,
 ) -> Option<Vec<WrapperName>> {
     #[derive(Copy, Clone, PartialEq)]
-    enum Color { White, Grey, Black }
+    enum Color {
+        White,
+        Grey,
+        Black,
+    }
 
-    let mut color: HashMap<WrapperName, Color> = activations
-        .keys()
-        .map(|&n| (n, Color::White))
-        .collect();
+    let mut color: HashMap<WrapperName, Color> =
+        activations.keys().map(|&n| (n, Color::White)).collect();
     let mut stack: Vec<WrapperName> = Vec::new();
 
     fn dfs(
@@ -571,7 +611,9 @@ fn detect_cycle(
         stack.push(node);
         let reg = registry.get(node).unwrap();
         for &needed in reg.requires_inner {
-            if !activations.contains_key(&needed) { continue; }
+            if !activations.contains_key(&needed) {
+                continue;
+            }
             match color.get(&needed).copied().unwrap_or(Color::White) {
                 Color::Grey => {
                     // cycle — slice from `needed` to top of stack
@@ -596,9 +638,10 @@ fn detect_cycle(
     let nodes: Vec<WrapperName> = activations.keys().copied().collect();
     for n in nodes {
         if color.get(&n).copied() == Some(Color::White)
-            && let Some(c) = dfs(n, &mut color, &mut stack, registry, activations) {
-                return Some(c);
-            }
+            && let Some(c) = dfs(n, &mut color, &mut stack, registry, activations)
+        {
+            return Some(c);
+        }
     }
     None
 }
@@ -623,7 +666,9 @@ fn topo_sort(
     let mut inner_count: HashMap<WrapperName, usize> = HashMap::new();
     for &w in activations.keys() {
         let reg = registry.get(w).unwrap();
-        let count = reg.requires_inner.iter()
+        let count = reg
+            .requires_inner
+            .iter()
             .filter(|n| activations.contains_key(*n))
             .count();
         inner_count.insert(w, count);
@@ -655,12 +700,15 @@ fn topo_sort(
     let mut emitted = HashSet::new();
     let mut out: Vec<&'static WrapperRegistration> = Vec::with_capacity(activations.len());
     while emitted.len() < activations.len() {
-        let mut eligible: Vec<WrapperName> = activations.keys()
+        let mut eligible: Vec<WrapperName> = activations
+            .keys()
             .copied()
             .filter(|w| !emitted.contains(w) && inner_count[w] == 0)
             .collect();
         eligible.sort_by(|a, b| tiebreak(a, b));
-        let next = eligible.first().copied()
+        let next = eligible
+            .first()
+            .copied()
             .expect("cycle detection should have caught a graph with no eligible node");
         emitted.insert(next);
         out.push(registry.get(next).unwrap());
@@ -683,14 +731,12 @@ fn validate_order_against_registry(
     order: &[WrapperName],
     registry: &WrapperRegistry,
 ) -> Result<(), ResolveError> {
-    let pos: HashMap<WrapperName, usize> = order
-        .iter()
-        .enumerate()
-        .map(|(i, &n)| (n, i))
-        .collect();
+    let pos: HashMap<WrapperName, usize> = order.iter().enumerate().map(|(i, &n)| (n, i)).collect();
 
     for &name in order {
-        let reg = registry.get(name).expect("name was looked up by from_names");
+        let reg = registry
+            .get(name)
+            .expect("name was looked up by from_names");
 
         // requires_inner: every named inner must appear
         // earlier (lower index) in the order — but only

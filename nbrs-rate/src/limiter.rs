@@ -127,7 +127,9 @@ impl RateLimiter {
         // forget() the permit so tokens are permanently consumed (not
         // returned on drop). The refill task is the only source of new
         // permits.
-        let permit = self.state.active_pool
+        let permit = self
+            .state
+            .active_pool
             .acquire_many(permits)
             .await
             .expect("semaphore closed unexpectedly");
@@ -139,8 +141,13 @@ impl RateLimiter {
     /// Current wait time in nanoseconds (backlog converted to nanos).
     pub fn wait_time_nanos(&self) -> u64 {
         let ticks = self.state.waiting_pool.load(Ordering::Relaxed);
-        if ticks <= 0 { return 0; }
-        let unit = self.state.refill_cfg.read()
+        if ticks <= 0 {
+            return 0;
+        }
+        let unit = self
+            .state
+            .refill_cfg
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .unit;
         unit.ticks_to_nanos(ticks as u32)
@@ -153,14 +160,18 @@ impl RateLimiter {
 
     /// Current ops/sec target.
     pub fn rate(&self) -> f64 {
-        self.state.spec.read()
+        self.state
+            .spec
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .ops_per_sec
     }
 
     /// Current full spec snapshot.
     pub fn spec(&self) -> RateSpec {
-        self.state.spec.read()
+        self.state
+            .spec
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
@@ -183,13 +194,12 @@ impl RateLimiter {
     /// control to reject bad values before this method is called.
     pub fn reconfigure(&self, spec: RateSpec) -> Result<(), String> {
         if spec.ops_per_sec <= 0.0 {
-            return Err(format!(
-                "rate must be > 0, got {}", spec.ops_per_sec,
-            ));
+            return Err(format!("rate must be > 0, got {}", spec.ops_per_sec,));
         }
         if spec.burst_ratio < 1.0 {
             return Err(format!(
-                "burst_ratio must be >= 1.0, got {}", spec.burst_ratio,
+                "burst_ratio must be >= 1.0, got {}",
+                spec.burst_ratio,
             ));
         }
         let new_ticks_per_op = spec.ticks_per_op();
@@ -201,11 +211,15 @@ impl RateLimiter {
         // cache. Writers are serialized by `reconfigure` being the
         // only one that writes these fields, so ordering between
         // the three is loose.
-        *self.state.refill_cfg.write()
+        *self
+            .state
+            .refill_cfg
+            .write()
             .unwrap_or_else(|e| e.into_inner()) = new_cfg;
-        self.state.ticks_per_op.store(new_ticks_per_op, Ordering::Relaxed);
-        *self.state.spec.write()
-            .unwrap_or_else(|e| e.into_inner()) = spec;
+        self.state
+            .ticks_per_op
+            .store(new_ticks_per_op, Ordering::Relaxed);
+        *self.state.spec.write().unwrap_or_else(|e| e.into_inner()) = spec;
         Ok(())
     }
 
@@ -241,17 +255,20 @@ fn refill(state: &SharedState) {
     let last = state.last_refill_nanos.swap(now_nanos, Ordering::Relaxed);
     let elapsed_nanos = now_nanos.saturating_sub(last);
 
-    if elapsed_nanos == 0 { return; }
+    if elapsed_nanos == 0 {
+        return;
+    }
 
     // Snapshot the current refill config. A concurrent
     // reconfigure only flips the lock between ticks, so reading
     // once at the top keeps this cycle internally consistent.
-    let cfg = *state.refill_cfg.read()
-        .unwrap_or_else(|e| e.into_inner());
+    let cfg = *state.refill_cfg.read().unwrap_or_else(|e| e.into_inner());
 
     // Convert elapsed time to ticks
     let new_ticks = cfg.unit.nanos_to_ticks(elapsed_nanos);
-    if new_ticks == 0 { return; }
+    if new_ticks == 0 {
+        return;
+    }
 
     // Current available permits in the semaphore
     let available = state.active_pool.available_permits() as u32;
@@ -266,7 +283,9 @@ fn refill(state: &SharedState) {
     // Step 2: Overflow goes to waiting pool
     let overflow = new_ticks.saturating_sub(to_active);
     if overflow > 0 {
-        state.waiting_pool.fetch_add(overflow as i64, Ordering::Relaxed);
+        state
+            .waiting_pool
+            .fetch_add(overflow as i64, Ordering::Relaxed);
     }
 
     // Step 3: Burst recovery — move tokens from waiting → active
@@ -279,7 +298,9 @@ fn refill(state: &SharedState) {
         .min(state.waiting_pool.load(Ordering::Relaxed).max(0) as u32);
 
     if burst_from_waiting > 0 {
-        state.waiting_pool.fetch_sub(burst_from_waiting as i64, Ordering::Relaxed);
+        state
+            .waiting_pool
+            .fetch_sub(burst_from_waiting as i64, Ordering::Relaxed);
         state.active_pool.add_permits(burst_from_waiting as usize);
     }
 }
@@ -332,9 +353,11 @@ mod tests {
         assert_eq!(count, 20);
         // Should have taken at least 100ms (rate limited)
         // Being generous with timing tolerance for CI
-        assert!(elapsed.as_millis() >= 50,
+        assert!(
+            elapsed.as_millis() >= 50,
             "expected rate limiting, took {}ms for 20 ops at 100/s",
-            elapsed.as_millis());
+            elapsed.as_millis()
+        );
     }
 
     #[tokio::test]
@@ -352,8 +375,11 @@ mod tests {
         limiter.stop().await;
 
         // 100 ops at 1M/s should be nearly instant
-        assert!(elapsed.as_millis() < 500,
-            "high rate should be fast, took {}ms", elapsed.as_millis());
+        assert!(
+            elapsed.as_millis() < 500,
+            "high rate should be fast, took {}ms",
+            elapsed.as_millis()
+        );
     }
 
     #[tokio::test]
@@ -402,7 +428,10 @@ mod tests {
     #[tokio::test]
     async fn reconfigure_rejects_nonpositive_rate() {
         let limiter = RateLimiter::start(RateSpec::new(1_000.0));
-        let bad = RateSpec { ops_per_sec: 0.0, ..RateSpec::new(1_000.0) };
+        let bad = RateSpec {
+            ops_per_sec: 0.0,
+            ..RateSpec::new(1_000.0)
+        };
         assert!(limiter.reconfigure(bad).is_err());
         assert_eq!(limiter.rate(), 1_000.0);
         limiter.stop().await;
@@ -411,7 +440,10 @@ mod tests {
     #[tokio::test]
     async fn reconfigure_rejects_subunit_burst_ratio() {
         let limiter = RateLimiter::start(RateSpec::new(1_000.0));
-        let bad = RateSpec { burst_ratio: 0.5, ..RateSpec::new(1_000.0) };
+        let bad = RateSpec {
+            burst_ratio: 0.5,
+            ..RateSpec::new(1_000.0)
+        };
         assert!(limiter.reconfigure(bad).is_err());
         limiter.stop().await;
     }
@@ -424,17 +456,23 @@ mod tests {
         let limiter = RateLimiter::start(RateSpec::new(10_000.0));
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        for _ in 0..5 { limiter.acquire().await; }
+        for _ in 0..5 {
+            limiter.acquire().await;
+        }
         let blocks_before = limiter.total_blocks();
         assert!(blocks_before >= 5);
 
         limiter.reconfigure(RateSpec::new(50_000.0)).unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        for _ in 0..5 { limiter.acquire().await; }
+        for _ in 0..5 {
+            limiter.acquire().await;
+        }
         let blocks_after = limiter.total_blocks();
-        assert!(blocks_after >= blocks_before + 5,
-            "acquire counter should continue across reconfigure");
+        assert!(
+            blocks_after >= blocks_before + 5,
+            "acquire counter should continue across reconfigure"
+        );
 
         limiter.stop().await;
     }
@@ -447,14 +485,18 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         let t0 = Instant::now();
-        for _ in 0..8 { limiter.acquire().await; }
+        for _ in 0..8 {
+            limiter.acquire().await;
+        }
         let slow = t0.elapsed();
 
         limiter.reconfigure(RateSpec::new(100_000.0)).unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         let t1 = Instant::now();
-        for _ in 0..8 { limiter.acquire().await; }
+        for _ in 0..8 {
+            limiter.acquire().await;
+        }
         let fast = t1.elapsed();
 
         assert!(

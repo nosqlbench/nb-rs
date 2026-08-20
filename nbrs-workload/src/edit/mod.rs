@@ -47,9 +47,9 @@
 //! rotated. That's the contract; relaxing it for tests
 //! would mean the tests don't validate the contract.
 
-pub mod lock;
 pub mod backup;
 pub mod locate;
+pub mod lock;
 pub mod splice;
 
 use std::io;
@@ -79,10 +79,7 @@ pub struct EditCtx<'a> {
 ///   change;
 /// - post-mutate parse failure → backups rolled back, no
 ///   on-disk change, error explains parse failure.
-pub fn with_workload<F>(
-    workload_path: &Path,
-    mutate: F,
-) -> io::Result<()>
+pub fn with_workload<F>(workload_path: &Path, mutate: F) -> io::Result<()>
 where
     F: FnOnce(EditCtx<'_>) -> Result<String, String>,
 {
@@ -90,20 +87,21 @@ where
     let _guard = lock::acquire(workload_path)?;
 
     // 2. Read.
-    let source = std::fs::read_to_string(workload_path)
-        .map_err(|e| io::Error::new(
-            e.kind(),
-            format!("read '{}': {e}", workload_path.display()),
-        ))?;
+    let source = std::fs::read_to_string(workload_path).map_err(|e| {
+        io::Error::new(e.kind(), format!("read '{}': {e}", workload_path.display()))
+    })?;
 
     // 3-5. Mutate via closure.
     let new_source = mutate(EditCtx {
         source: &source,
         workload_path,
-    }).map_err(|e| io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("workload edit '{}': {e}", workload_path.display()),
-    ))?;
+    })
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("workload edit '{}': {e}", workload_path.display()),
+        )
+    })?;
 
     // 6. Roundtrip-parse: ensure the new content still
     //    parses through `parse_workload`. We can't do this
@@ -116,13 +114,12 @@ where
     //    `parse_workload` succeed; the deeper check is
     //    deferred to Phase D where the caller has the
     //    full workload context.
-    let _: serde_yaml::Value = serde_yaml::from_str(&new_source)
-        .map_err(|e| io::Error::new(
+    let _: serde_yaml::Value = serde_yaml::from_str(&new_source).map_err(|e| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "post-edit YAML failed to parse: {e}\n\n--- new content ---\n{new_source}",
-            ),
-        ))?;
+            format!("post-edit YAML failed to parse: {e}\n\n--- new content ---\n{new_source}",),
+        )
+    })?;
 
     // 7. Backup rotate.
     let paths = backup::rotate(workload_path)?;
@@ -175,15 +172,14 @@ impl Anchor {
     pub fn report_path(&self) -> Vec<String> {
         match self {
             Anchor::Root => vec!["report".to_string()],
-            Anchor::Scenario(s) => vec![
-                "scenarios".to_string(), s.clone(), "report".to_string(),
-            ],
-            Anchor::Phase(p) => vec![
-                "phases".to_string(), p.clone(), "report".to_string(),
-            ],
+            Anchor::Scenario(s) => vec!["scenarios".to_string(), s.clone(), "report".to_string()],
+            Anchor::Phase(p) => vec!["phases".to_string(), p.clone(), "report".to_string()],
             Anchor::Op { phase, op } => vec![
-                "phases".to_string(), phase.clone(),
-                "ops".to_string(), op.clone(), "report".to_string(),
+                "phases".to_string(),
+                phase.clone(),
+                "ops".to_string(),
+                op.clone(),
+                "report".to_string(),
             ],
         }
     }
@@ -274,11 +270,10 @@ fn apply_add(
     // group key under it, or append into an existing
     // group) or a missing key (we have to materialise the
     // intermediate keys all the way down).
-    insert_new_item_at_anchor(source, anchor, group, item)
-        .map(|new_source| AddResult {
-            new_source,
-            outcome: AddOutcome::Inserted,
-        })
+    insert_new_item_at_anchor(source, anchor, group, item).map(|new_source| AddResult {
+        new_source,
+        outcome: AddOutcome::Inserted,
+    })
 }
 
 /// Stub — full implementation lands in Phase D once the
@@ -292,10 +287,7 @@ struct ExistingItemLocation {
 /// Look for `name` anywhere in the workload's report
 /// blocks. Today this only checks the root `report:` block;
 /// scenario / phase / op blocks land in Phase D.
-fn find_existing_item(
-    source: &str,
-    name: &str,
-) -> Result<Option<ExistingItemLocation>, String> {
+fn find_existing_item(source: &str, name: &str) -> Result<Option<ExistingItemLocation>, String> {
     // Use the existing parser to read the workload, then
     // walk every report's items looking for `name`.
     let v: serde_json::Value = match serde_yaml::from_str::<serde_json::Value>(source) {
@@ -304,11 +296,12 @@ fn find_existing_item(
     };
     if let Some(report) = v.get("report")
         && let Ok(parsed) = crate::report::parse_report(report)
-            && parsed.report.find(name).is_some() {
-                return Ok(Some(ExistingItemLocation {
-                    label: "root".to_string(),
-                }));
-            }
+        && parsed.report.find(name).is_some()
+    {
+        return Ok(Some(ExistingItemLocation {
+            label: "root".to_string(),
+        }));
+    }
     // TODO Phase D: walk scenarios / phases / ops.
     Ok(None)
 }
@@ -326,12 +319,16 @@ fn replace_existing_item(
     // body.
     let v: serde_json::Value = serde_yaml::from_str::<serde_json::Value>(source)
         .map_err(|e| format!("workload yaml parse: {e}"))?;
-    let report_value = v.get("report")
+    let report_value = v
+        .get("report")
         .ok_or_else(|| format!("no `report:` block to find item '{name}'"))?;
-    let parsed = crate::report::parse_report(report_value)
-        .map_err(|e| format!("report parse: {e}"))?;
+    let parsed =
+        crate::report::parse_report(report_value).map_err(|e| format!("report parse: {e}"))?;
 
-    let group = parsed.report.groups.iter()
+    let group = parsed
+        .report
+        .groups
+        .iter()
         .find(|g| g.items.iter().any(|i| i.name == name))
         .ok_or_else(|| format!("item '{name}' not found in any report group"))?;
 
@@ -372,17 +369,15 @@ fn replace_existing_item(
 /// Wrap `body` as a YAML block scalar in `|` style,
 /// matching the indentation of the original value at
 /// `range` so the splice respects the surrounding shape.
-fn format_as_block_scalar(
-    body: &str,
-    source: &str,
-    range: &std::ops::Range<usize>,
-) -> String {
+fn format_as_block_scalar(body: &str, source: &str, range: &std::ops::Range<usize>) -> String {
     // Find the column of the first non-whitespace char at
     // the start of the original value's first line — that's
     // the indent the block-scalar continuation must match
     // (or exceed) to be valid YAML.
     let line_start = source[..range.start]
-        .rfind('\n').map(|i| i + 1).unwrap_or(0);
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let pre_value = &source[line_start..range.start];
     // The value started after the `key:` token + at least
     // one space. The block-scalar continuation indent must
@@ -407,7 +402,9 @@ fn format_as_block_scalar(
     // an extra blank line — the caller's range already
     // ends one byte before the newline (per
     // [`locate::value_byte_range`]).
-    if out.ends_with('\n') { out.pop(); }
+    if out.ends_with('\n') {
+        out.pop();
+    }
     out
 }
 
@@ -419,8 +416,7 @@ fn insert_new_item_at_anchor(
 ) -> Result<String, String> {
     let tree = locate::parse(source)?;
     let report_path: Vec<String> = anchor.report_path();
-    let report_path_refs: Vec<&str> = report_path.iter()
-        .map(String::as_str).collect();
+    let report_path_refs: Vec<&str> = report_path.iter().map(String::as_str).collect();
 
     // Try locating the report block first.
     let located = locate::locate_path(&tree, source, &report_path_refs)?;
@@ -448,17 +444,25 @@ fn insert_new_item_at_anchor(
                     let block_scalar = format_as_block_scalar(&new_body, source, &range);
                     Ok(splice::replace_range(source, range, &block_scalar))
                 }
-                locate::Located::Missing { insert_at, indent, .. } => {
+                locate::Located::Missing {
+                    insert_at, indent, ..
+                } => {
                     // Report exists, group doesn't — insert
                     // a new group key under report.
                     let pad = " ".repeat(indent);
                     let block = format_new_group(group, item, indent);
                     let inserted = format!("{pad}{block}");
-                    Ok(splice::insert_at(source, insert_at, &ensure_leading_newline(source, insert_at, &inserted)))
+                    Ok(splice::insert_at(
+                        source,
+                        insert_at,
+                        &ensure_leading_newline(source, insert_at, &inserted),
+                    ))
                 }
             }
         }
-        locate::Located::Missing { insert_at, indent, .. } => {
+        locate::Located::Missing {
+            insert_at, indent, ..
+        } => {
             // No `report:` (or intermediate) yet. For now
             // only handle the root case; nested anchors land
             // in Phase D where the dispatcher knows the
@@ -466,11 +470,16 @@ fn insert_new_item_at_anchor(
             match anchor {
                 Anchor::Root => {
                     let block = format_new_report_block(group, item, indent);
-                    Ok(splice::insert_at(source, insert_at, &ensure_leading_newline(source, insert_at, &block)))
+                    Ok(splice::insert_at(
+                        source,
+                        insert_at,
+                        &ensure_leading_newline(source, insert_at, &block),
+                    ))
                 }
                 _ => Err(format!(
                     "anchor {} not yet supported by Phase B (Phase D will materialise \
-                     intermediate scope keys)", anchor.label(),
+                     intermediate scope keys)",
+                    anchor.label(),
                 )),
             }
         }
@@ -483,21 +492,26 @@ fn insert_new_item_at_anchor(
 fn strip_block_scalar_indent(body: &str) -> String {
     // Find the minimum indent across non-empty lines.
     let lines: Vec<&str> = body.split('\n').collect();
-    let min_indent = lines.iter()
+    let min_indent = lines
+        .iter()
         .filter(|l| !l.trim().is_empty())
         .map(|l| l.len() - l.trim_start_matches(' ').len())
         .min()
         .unwrap_or(0);
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate() {
-        if i > 0 { out.push('\n'); }
+        if i > 0 {
+            out.push('\n');
+        }
         if line.len() >= min_indent {
             out.push_str(&line[min_indent..]);
         } else {
             out.push_str(line);
         }
     }
-    if !out.ends_with('\n') { out.push('\n'); }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
     out
 }
 
@@ -549,10 +563,7 @@ fn ensure_leading_newline(source: &str, offset: usize, content: &str) -> String 
 // Public wrappers used by the CLI dispatch (Phase D).
 // ---------------------------------------------------------------------------
 
-pub fn replace_item(
-    workload_path: &Path,
-    item: &ReportItem,
-) -> io::Result<()> {
+pub fn replace_item(workload_path: &Path, item: &ReportItem) -> io::Result<()> {
     with_workload(workload_path, |ctx| {
         replace_existing_item(ctx.source, &item.name, item)
     })
@@ -583,11 +594,14 @@ pub fn rename_item(
     with_workload(workload_path, |ctx| {
         let v: serde_json::Value = serde_yaml::from_str::<serde_json::Value>(ctx.source)
             .map_err(|e| format!("yaml parse: {e}"))?;
-        let report_value = v.get("report")
+        let report_value = v
+            .get("report")
             .ok_or_else(|| format!("no `report:` block; cannot rename '{old_name}'"))?;
-        let parsed = crate::report::parse_report(report_value)
-            .map_err(|e| format!("report parse: {e}"))?;
-        let existing = parsed.report.find(old_name)
+        let parsed =
+            crate::report::parse_report(report_value).map_err(|e| format!("report parse: {e}"))?;
+        let existing = parsed
+            .report
+            .find(old_name)
             .ok_or_else(|| format!("item '{old_name}' not found"))?;
         if old_name == new_name {
             return Err(format!(
@@ -627,18 +641,24 @@ pub fn rename_item(
 fn remove_existing_item(source: &str, name: &str) -> Result<String, String> {
     let v: serde_json::Value = serde_yaml::from_str::<serde_json::Value>(source)
         .map_err(|e| format!("workload yaml parse: {e}"))?;
-    let report_value = v.get("report")
+    let report_value = v
+        .get("report")
         .ok_or_else(|| format!("no `report:` block; cannot remove '{name}'"))?;
-    let parsed = crate::report::parse_report(report_value)
-        .map_err(|e| format!("report parse: {e}"))?;
+    let parsed =
+        crate::report::parse_report(report_value).map_err(|e| format!("report parse: {e}"))?;
 
-    let group = parsed.report.groups.iter()
+    let group = parsed
+        .report
+        .groups
+        .iter()
         .find(|g| g.items.iter().any(|i| i.name == name))
         .ok_or_else(|| format!("item '{name}' not found in any report group"))?;
 
     let mut new_group_body = String::new();
     for it in &group.items {
-        if it.name == name { continue; }
+        if it.name == name {
+            continue;
+        }
         new_group_body.push_str(&it.to_yaml_directive_string());
     }
 
@@ -673,9 +693,7 @@ mod tests {
     use crate::report::Kind;
 
     fn fresh_workload(label: &str, content: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "nbrs-edit-{label}-{}", std::process::id(),
-        ));
+        let p = std::env::temp_dir().join(format!("nbrs-edit-{label}-{}", std::process::id(),));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         let path = p.join("w.yaml");
@@ -685,12 +703,15 @@ mod tests {
 
     #[test]
     fn add_item_inserts_new_report_block_when_none_exists() {
-        let path = fresh_workload("add_root_no_report", concat!(
-            "phases:\n",
-            "  setup:\n",
-            "    ops:\n",
-            "      step: noop\n",
-        ));
+        let path = fresh_workload(
+            "add_root_no_report",
+            concat!(
+                "phases:\n",
+                "  setup:\n",
+                "    ops:\n",
+                "      step: noop\n",
+            ),
+        );
         let item = ReportItem {
             kind: Kind::Plot,
             name: "demo".to_string(),
@@ -698,11 +719,13 @@ mod tests {
             body: "over cycle\nmetric=throughput".to_string(),
             ..Default::default()
         };
-        let outcome = add_item(&path, &Anchor::Root, "cli_added", &item, false)
-            .expect("add");
+        let outcome = add_item(&path, &Anchor::Root, "cli_added", &item, false).expect("add");
         assert_eq!(outcome, AddOutcome::Inserted);
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("report:"), "should have inserted report:\n{content}");
+        assert!(
+            content.contains("report:"),
+            "should have inserted report:\n{content}"
+        );
         assert!(content.contains("cli_added"));
         assert!(content.contains("plot demo"));
         // Pre-existing content untouched.
@@ -712,24 +735,26 @@ mod tests {
 
     #[test]
     fn add_item_appends_to_existing_group_in_existing_report() {
-        let path = fresh_workload("add_to_existing", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot first\n",
-            "      over cycle\n",
-            "phases:\n",
-            "  setup:\n",
-            "    ops:\n",
-            "      step: noop\n",
-        ));
+        let path = fresh_workload(
+            "add_to_existing",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot first\n",
+                "      over cycle\n",
+                "phases:\n",
+                "  setup:\n",
+                "    ops:\n",
+                "      step: noop\n",
+            ),
+        );
         let item = ReportItem {
             kind: Kind::Plot,
             name: "second".to_string(),
             body: "over cycle".to_string(),
             ..Default::default()
         };
-        let outcome = add_item(&path, &Anchor::Root, "cli_added", &item, false)
-            .expect("add");
+        let outcome = add_item(&path, &Anchor::Root, "cli_added", &item, false).expect("add");
         assert_eq!(outcome, AddOutcome::Inserted);
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("plot first"));
@@ -739,22 +764,23 @@ mod tests {
 
     #[test]
     fn add_item_collision_errors_without_replace() {
-        let path = fresh_workload("add_collision", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot demo\n",
-            "      over cycle\n",
-        ));
+        let path = fresh_workload(
+            "add_collision",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot demo\n",
+                "      over cycle\n",
+            ),
+        );
         let item = ReportItem {
             kind: Kind::Plot,
             name: "demo".to_string(),
             body: "over cycle".to_string(),
             ..Default::default()
         };
-        let err = add_item(&path, &Anchor::Root, "cli_added", &item, false)
-            .unwrap_err();
-        assert!(err.to_string().contains("already defined"),
-            "got: {err}");
+        let err = add_item(&path, &Anchor::Root, "cli_added", &item, false).unwrap_err();
+        assert!(err.to_string().contains("already defined"), "got: {err}");
         // Workload byte-identical (no rotate, no commit).
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("plot demo"));
@@ -764,13 +790,16 @@ mod tests {
 
     #[test]
     fn add_item_replace_overwrites_in_place() {
-        let path = fresh_workload("replace_inplace", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot demo\n",
-            "      over cycle\n",
-            "      label \"v1\"\n",
-        ));
+        let path = fresh_workload(
+            "replace_inplace",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot demo\n",
+                "      over cycle\n",
+                "      label \"v1\"\n",
+            ),
+        );
         let item = ReportItem {
             kind: Kind::Plot,
             name: "demo".to_string(),
@@ -778,13 +807,14 @@ mod tests {
             body: "over cycle".to_string(),
             ..Default::default()
         };
-        let outcome = add_item(&path, &Anchor::Root, "cli_added", &item, true)
-            .expect("replace");
+        let outcome = add_item(&path, &Anchor::Root, "cli_added", &item, true).expect("replace");
         assert_eq!(outcome, AddOutcome::Replaced);
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("v2"));
-        assert!(!content.contains("v1"),
-            "old label should be gone, got:\n{content}");
+        assert!(
+            !content.contains("v1"),
+            "old label should be gone, got:\n{content}"
+        );
 
         // Backup pair: .bak holds pre-replace content.
         let bak = path.with_extension("yaml.bak");
@@ -795,106 +825,135 @@ mod tests {
         let _ = bak;
         assert!(paths.bak.exists());
         let bak_content = std::fs::read_to_string(&paths.bak).unwrap();
-        assert!(bak_content.contains("v1"),
-            ".bak should hold pre-edit content");
+        assert!(
+            bak_content.contains("v1"),
+            ".bak should hold pre-edit content"
+        );
     }
 
     #[test]
     fn rename_item_updates_name_and_writes_backup() {
-        let path = fresh_workload("rename", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot demo\n",
-            "      over cycle\n",
-        ));
+        let path = fresh_workload(
+            "rename",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot demo\n",
+                "      over cycle\n",
+            ),
+        );
         rename_item(&path, "demo", "demo_v2", false).expect("rename");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("plot demo_v2"));
-        assert!(!content.contains("plot demo\n"),
-            "original name should be gone:\n{content}");
+        assert!(
+            !content.contains("plot demo\n"),
+            "original name should be gone:\n{content}"
+        );
         let paths = backup::BackupPaths::for_workload(&path);
         assert!(paths.bak.exists());
     }
 
     #[test]
     fn rename_target_collision_errors_without_replace() {
-        let path = fresh_workload("rename_collision", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot a\n",
-            "      over cycle\n",
-            "    plot b\n",
-            "      over cycle\n",
-        ));
+        let path = fresh_workload(
+            "rename_collision",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot a\n",
+                "      over cycle\n",
+                "    plot b\n",
+                "      over cycle\n",
+            ),
+        );
         let err = rename_item(&path, "a", "b", false).unwrap_err();
-        assert!(err.to_string().contains("already in use"),
-            "got: {err}");
-        assert!(err.to_string().contains("--replace"),
-            "should hint at the remediation flag: {err}");
+        assert!(err.to_string().contains("already in use"), "got: {err}");
+        assert!(
+            err.to_string().contains("--replace"),
+            "should hint at the remediation flag: {err}"
+        );
     }
 
     #[test]
     fn rename_target_collision_with_replace_drops_existing_target() {
-        let path = fresh_workload("rename_collision_replace", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot a\n",
-            "      label \"keep this spec\"\n",
-            "      over cycle\n",
-            "    plot b\n",
-            "      label \"drop this spec\"\n",
-            "      over cycle\n",
-        ));
+        let path = fresh_workload(
+            "rename_collision_replace",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot a\n",
+                "      label \"keep this spec\"\n",
+                "      over cycle\n",
+                "    plot b\n",
+                "      label \"drop this spec\"\n",
+                "      over cycle\n",
+            ),
+        );
         rename_item(&path, "a", "b", true).expect("destructive rename");
         let content = std::fs::read_to_string(&path).unwrap();
         // Exactly one item named `b` remains.
         let b_count = content.matches("plot b").count();
-        assert_eq!(b_count, 1,
-            "should have exactly one `plot b`, got:\n{content}");
+        assert_eq!(
+            b_count, 1,
+            "should have exactly one `plot b`, got:\n{content}"
+        );
         // `a` is gone.
-        assert!(!content.contains("plot a\n"),
-            "original `a` should be gone:\n{content}");
+        assert!(
+            !content.contains("plot a\n"),
+            "original `a` should be gone:\n{content}"
+        );
         // The surviving spec is `a`'s, renamed.
-        assert!(content.contains("keep this spec"),
-            "`a`'s spec should have survived under name `b`:\n{content}");
-        assert!(!content.contains("drop this spec"),
-            "`b`'s old spec should be gone:\n{content}");
+        assert!(
+            content.contains("keep this spec"),
+            "`a`'s spec should have survived under name `b`:\n{content}"
+        );
+        assert!(
+            !content.contains("drop this spec"),
+            "`b`'s old spec should be gone:\n{content}"
+        );
     }
 
     #[test]
     fn rename_same_name_is_a_noop_error() {
-        let path = fresh_workload("rename_same", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot demo\n",
-            "      over cycle\n",
-        ));
+        let path = fresh_workload(
+            "rename_same",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot demo\n",
+                "      over cycle\n",
+            ),
+        );
         let err = rename_item(&path, "demo", "demo", false).unwrap_err();
-        assert!(err.to_string().contains("nothing to do"),
-            "got: {err}");
+        assert!(err.to_string().contains("nothing to do"), "got: {err}");
     }
 
     #[test]
     fn malformed_mutation_aborts_without_committing() {
-        let path = fresh_workload("malformed", concat!(
-            "report:\n",
-            "  cli_added: |\n",
-            "    plot demo\n",
-            "      over cycle\n",
-        ));
+        let path = fresh_workload(
+            "malformed",
+            concat!(
+                "report:\n",
+                "  cli_added: |\n",
+                "    plot demo\n",
+                "      over cycle\n",
+            ),
+        );
         let original = std::fs::read_to_string(&path).unwrap();
 
         let err = with_workload(&path, |_ctx| {
             // Return malformed YAML (unbalanced quote)
             // forces the post-edit roundtrip parser to fail.
             Ok("\"unbalanced".to_string())
-        }).unwrap_err();
-        assert!(err.to_string().contains("failed to parse"),
-            "got: {err}");
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to parse"), "got: {err}");
 
         let post = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(post, original,
-            "workload must be byte-identical after a failed mutation");
+        assert_eq!(
+            post, original,
+            "workload must be byte-identical after a failed mutation"
+        );
     }
 
     #[test]
@@ -902,13 +961,20 @@ mod tests {
         assert_eq!(Anchor::Root.report_path(), vec!["report"]);
         assert_eq!(
             Anchor::Scenario("foo".into()).report_path(),
-            vec!["scenarios", "foo", "report"]);
+            vec!["scenarios", "foo", "report"]
+        );
         assert_eq!(
             Anchor::Phase("setup".into()).report_path(),
-            vec!["phases", "setup", "report"]);
+            vec!["phases", "setup", "report"]
+        );
         assert_eq!(
-            Anchor::Op { phase: "p".into(), op: "o".into() }.report_path(),
-            vec!["phases", "p", "ops", "o", "report"]);
+            Anchor::Op {
+                phase: "p".into(),
+                op: "o".into()
+            }
+            .report_path(),
+            vec!["phases", "p", "ops", "o", "report"]
+        );
     }
 
     #[allow(dead_code)]
@@ -961,14 +1027,15 @@ mod tests {
             "# Comment between blocks",
             "# phase-block comment",
         ] {
-            assert!(post.contains(c),
-                "missing comment {c:?} in:\n{post}");
+            assert!(post.contains(c), "missing comment {c:?} in:\n{post}");
         }
         // The non-edit phase block must be byte-identical
         // up to and including the trailing newline.
         let unrelated = "phases:\n  # phase-block comment\n  setup:\n    ops:\n      step: noop\n";
-        assert!(post.contains(unrelated),
-            "phases block changed; got:\n{post}");
+        assert!(
+            post.contains(unrelated),
+            "phases block changed; got:\n{post}"
+        );
     }
 
     #[test]
@@ -994,7 +1061,7 @@ mod tests {
         add_item(&path, &Anchor::Root, "cli_added", &item, true).expect("replace");
         let post = std::fs::read_to_string(&path).unwrap();
         assert!(post.contains("a: \"double\""), "double quotes lost: {post}");
-        assert!(post.contains("b: 'single'"),  "single quotes lost: {post}");
-        assert!(post.contains("c: bare"),      "bare scalar lost: {post}");
+        assert!(post.contains("b: 'single'"), "single quotes lost: {post}");
+        assert!(post.contains("c: bare"), "bare scalar lost: {post}");
     }
 }

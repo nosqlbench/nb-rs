@@ -49,7 +49,12 @@ impl Sandbox {
     fn run(&self, body: &str) -> String {
         std::fs::write(self.path.join("w.yaml"), body).expect("write workload");
         let out = Command::new(env!("CARGO_BIN_EXE_nbrs"))
-            .args(["run", "workload=w.yaml", "adapter=stdout", "--session-keep=1000"])
+            .args([
+                "run",
+                "workload=w.yaml",
+                "adapter=stdout",
+                "--session-keep=1000",
+            ])
             .current_dir(&self.path)
             .output()
             .expect("spawn nbrs");
@@ -128,7 +133,10 @@ phases:
         stmt: "placed"
 "#,
     );
-    assert!(out.contains("placed"), "shorthand `tier: str` must parse:\n{out}");
+    assert!(
+        out.contains("placed"),
+        "shorthand `tier: str` must parse:\n{out}"
+    );
 }
 
 /// The payoff for reifying: an undeclared dimension is a load error naming the

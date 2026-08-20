@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use nbrs_metrics::component::{attach, Component, ComponentState};
+use nbrs_metrics::component::{Component, ComponentState, attach};
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::metrics_query::MetricsQuery;
 
@@ -93,8 +93,7 @@ impl Execution {
         // the full `{session, exec_id, workload}` set, exactly
         // as the pre-SRD-88 single-tier root did.
         let component = Arc::new(RwLock::new(Component::new(
-            Labels::of("exec_id", exec_id.to_string())
-                .with("workload", workload_stem),
+            Labels::of("exec_id", exec_id.to_string()).with("workload", workload_stem),
             std::collections::HashMap::new(),
         )));
         attach(&session.component, &component);
@@ -196,7 +195,9 @@ pub fn resolve_flag(args: &[String], flag: &str) -> Option<String> {
         found
     };
     let env_name = flag_env_name(flag);
-    let env = std::env::var(&env_name).ok().filter(|v| !v.trim().is_empty());
+    let env = std::env::var(&env_name)
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     match (cli, env) {
         (Some(_), Some(_)) => {
             eprintln!(
@@ -233,7 +234,9 @@ pub fn resolve_flag(args: &[String], flag: &str) -> Option<String> {
 pub fn check_session_path(p: &str, source: &str) -> Result<(), String> {
     if let Some((head, _)) = p.split_once('=') {
         let head_looks_like_param = !head.is_empty()
-            && head.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            && head
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
             && !head.contains('/');
         if head_looks_like_param {
             return Err(format!(
@@ -412,10 +415,7 @@ pub fn args_request_dryrun(args: &[String]) -> bool {
 /// resolve the target and pick the matching flavor. Windows
 /// symlink creation needs Developer Mode (or admin) — callers
 /// treat failure as best-effort, same as on Unix.
-pub(crate) fn symlink_any(
-    target: &Path,
-    link: &Path,
-) -> std::io::Result<()> {
+pub(crate) fn symlink_any(target: &Path, link: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(target, link)
@@ -427,10 +427,11 @@ pub(crate) fn symlink_any(
         // (those are directory entries) — clean up leftovers here
         // so re-pointing works.
         if let Ok(md) = std::fs::symlink_metadata(link)
-            && (md.file_type().is_symlink() || md.file_type().is_dir()) {
-                let _ = std::fs::remove_file(link);
-                let _ = std::fs::remove_dir(link);
-            }
+            && (md.file_type().is_symlink() || md.file_type().is_dir())
+        {
+            let _ = std::fs::remove_file(link);
+            let _ = std::fs::remove_dir(link);
+        }
         let resolved = match link.parent() {
             Some(p) => p.join(target),
             None => target.to_path_buf(),
@@ -494,12 +495,16 @@ pub fn init_empty_session(
     let metrics_db = dir.join("metrics.db");
     if metrics_db.exists() {
         match reuse {
-            SessionReuse::Error => return Err(format!(
-                "session '{id}' already exists at {} — pass session-reuse=restart to \
+            SessionReuse::Error => {
+                return Err(format!(
+                    "session '{id}' already exists at {} — pass session-reuse=restart to \
                  overwrite, session-reuse=resume to keep it, or choose another name",
-                dir.display(),
-            )),
-            SessionReuse::Restart => { let _ = std::fs::remove_file(&metrics_db); }
+                    dir.display(),
+                ));
+            }
+            SessionReuse::Restart => {
+                let _ = std::fs::remove_file(&metrics_db);
+            }
             SessionReuse::Resume => return Ok(dir),
         }
     }
@@ -622,14 +627,18 @@ impl SessionDirSpec {
         if self.is_empty() {
             return None;
         }
-        let id = self.session_name.clone().unwrap_or_else(|| auto_id.to_string());
+        let id = self
+            .session_name
+            .clone()
+            .unwrap_or_else(|| auto_id.to_string());
         let path = match &self.session_path {
             Some(p) => PathBuf::from(p.replace(SESSION_TOKEN, &id)),
             None => default_session_dir(&id),
         };
         // Re-derive id from basename so a path-only spec
         // (`--session-path /tmp/foo`) still yields id="foo".
-        let id = path.file_name()
+        let id = path
+            .file_name()
             .and_then(|s| s.to_str())
             .map(String::from)
             .unwrap_or(id);
@@ -687,17 +696,31 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
     };
     for raw_item in s.split(',') {
         let item = raw_item.trim();
-        if item.is_empty() { continue; }
+        if item.is_empty() {
+            continue;
+        }
         // Bare shortcut?
         match item {
-            "restart" => { spec.reuse = SessionReuse::Restart; continue; }
-            "resume"  => { spec.reuse = SessionReuse::Resume;  continue; }
-            "error"   => { spec.reuse = SessionReuse::Error;   continue; }
+            "restart" => {
+                spec.reuse = SessionReuse::Restart;
+                continue;
+            }
+            "resume" => {
+                spec.reuse = SessionReuse::Resume;
+                continue;
+            }
+            "error" => {
+                spec.reuse = SessionReuse::Error;
+                continue;
+            }
             // SRD-106 — `--session new`: force a fresh auto-named
             // session, defeating a workload's `stick_session`.
             // Intercepted here so the name heuristic below never
             // reads it as `name:new`.
-            "new"     => { spec.force_new = true;              continue; }
+            "new" => {
+                spec.force_new = true;
+                continue;
+            }
             _ => {}
         }
         // A Windows drive-letter path (`C:\…` or `C:/…`) would
@@ -711,7 +734,11 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
         // key:value pair takes precedence over the
         // bare-token heuristics so `dir:/tmp/x` etc.
         // disambiguate cleanly.
-        let kv = if drive_letter_path { None } else { item.split_once(':') };
+        let kv = if drive_letter_path {
+            None
+        } else {
+            item.split_once(':')
+        };
         let (key, value) = match kv {
             Some((k, v)) => (k.trim(), v.trim()),
             None => {
@@ -726,7 +753,8 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
                 if drive_letter_path
                     || item.contains('/')
                     || (cfg!(windows) && item.contains('\\'))
-                    || std::path::Path::new(item).is_dir() {
+                    || std::path::Path::new(item).is_dir()
+                {
                     validate_session_path_or_exit(item, "umbrella `--session <bare-token>`");
                     spec.session_path = Some(item.to_string());
                 } else {
@@ -736,7 +764,7 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
             }
         };
         match key {
-            "name"      => spec.session_name = Some(value.to_string()),
+            "name" => spec.session_name = Some(value.to_string()),
             "path" | "dir" => {
                 validate_session_path_or_exit(value, "umbrella `--session path:<v>`");
                 spec.session_path = Some(value.to_string());
@@ -764,7 +792,9 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
             },
             other => crate::observer::log(
                 crate::observer::LogLevel::Warn,
-                &format!("--session: unknown key {other:?} (recognised: name, path, dir, reuse, keep, shelflife)"),
+                &format!(
+                    "--session: unknown key {other:?} (recognised: name, path, dir, reuse, keep, shelflife)"
+                ),
             ),
         }
     }
@@ -828,7 +858,8 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
     // consumed as an unrecognised key=value and SILENTLY ignored, so the command
     // reported on `sessions/latest` while naming a different directory. A wrong
     // answer that looks right is the worst outcome available here.
-    let bare_session = args.iter()
+    let bare_session = args
+        .iter()
         .find_map(|a| a.strip_prefix("session="))
         .map(|v| v.to_string());
     let mut spec = match resolve_flag(args, "--session").or(bare_session) {
@@ -855,9 +886,10 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
         spec.session_path = Some(v);
     }
     if let Some(v) = resolve_flag(args, "--session-reuse")
-        && let Ok(r) = SessionReuse::parse(&v) {
-            spec.reuse = r;
-        }
+        && let Ok(r) = SessionReuse::parse(&v)
+    {
+        spec.reuse = r;
+    }
     // Retention. `--session-keep` / `--session-shelflife` are canonical: they match
     // the rest of the `--session-*` family and the umbrella's `keep:` / `shelflife:`
     // sub-keys. The `--sessions-max` / `--sessions-shelflife` spellings are accepted
@@ -866,13 +898,15 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
     // flag and silently ignored, leaving retention at its default while the operator
     // believed they had changed it.
     if let Some(v) = aliased_flag(args, "--session-keep", "--sessions-max")
-        && let Ok(n) = v.trim().parse::<usize>() {
-            spec.session_keep = n;
-        }
+        && let Ok(n) = v.trim().parse::<usize>()
+    {
+        spec.session_keep = n;
+    }
     if let Some(v) = aliased_flag(args, "--session-shelflife", "--sessions-shelflife")
-        && let Ok(d) = parse_duration(&v) {
-            spec.session_shelflife = d;
-        }
+        && let Ok(d) = parse_duration(&v)
+    {
+        spec.session_shelflife = d;
+    }
 
     // Legacy env: SESSION_DIRECTORY is the pre-SRD-04 name for
     // NBRS_SESSION_PATH. Honor it for back-compat with one
@@ -942,7 +976,8 @@ pub fn resolve_active(args: &[String]) -> Result<PathBuf, String> {
     if let Some(p) = read_session_dir(args) {
         if !p.exists() {
             return Err(format!(
-                "session directory '{}' does not exist", p.display(),
+                "session directory '{}' does not exist",
+                p.display(),
             ));
         }
         return Ok(p);
@@ -951,15 +986,13 @@ pub fn resolve_active(args: &[String]) -> Result<PathBuf, String> {
     if latest.exists() {
         // Resolve through the symlink so callers get a stable
         // path that won't change underneath them mid-run.
-        let resolved = std::fs::canonicalize(&latest)
-            .unwrap_or(latest.clone());
+        let resolved = std::fs::canonicalize(&latest).unwrap_or(latest.clone());
         return Ok(resolved);
     }
-    Err(
-        "no active session — run a workload first, or pass \
+    Err("no active session — run a workload first, or pass \
          `--session <name>` / `--session-path <dir>` to point \
-         at an existing one".to_string(),
-    )
+         at an existing one"
+        .to_string())
 }
 
 /// Default for `--session-keep` (alias `--sessions-max`): keep the
@@ -998,11 +1031,11 @@ pub fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
     } else if let Some(n) = s.strip_suffix('s') {
         (n, 1)
     } else {
-        (s, 1)  // bare number = seconds
+        (s, 1) // bare number = seconds
     };
-    let n: u64 = num_part.trim().parse().map_err(|_| format!(
-        "duration: '{s}' is not a valid number with optional s/m/h/d/w suffix",
-    ))?;
+    let n: u64 = num_part.trim().parse().map_err(|_| {
+        format!("duration: '{s}' is not a valid number with optional s/m/h/d/w suffix",)
+    })?;
     Ok(std::time::Duration::from_secs(n * unit_seconds))
 }
 
@@ -1026,7 +1059,9 @@ pub fn session_dir_has_prior_artifacts(dir: &Path) -> bool {
 /// symlinks, files, and the `latest` symlink target). Used
 /// for end-of-run keep-cap forecasting.
 pub fn count_session_dirs(parent: &Path) -> usize {
-    let Ok(rd) = std::fs::read_dir(parent) else { return 0; };
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        return 0;
+    };
     rd.filter_map(|e| e.ok())
         .filter(|e| {
             std::fs::symlink_metadata(e.path())
@@ -1045,7 +1080,9 @@ pub fn count_session_dirs(parent: &Path) -> usize {
 /// operators see the imminent cleanup before it happens, with
 /// instructions for disabling it.
 pub fn forecast_keep_purge(parent: &Path, keep_cap: usize) -> usize {
-    if keep_cap == 0 { return 0; }
+    if keep_cap == 0 {
+        return 0;
+    }
     let current = count_session_dirs(parent);
     // After +1 new session, total would be current+1. Anything
     // past keep_cap gets purged.
@@ -1075,11 +1112,7 @@ fn looks_like_session_dir(path: &Path) -> bool {
 /// Errors during enumeration / removal are logged at Warn
 /// (this is a best-effort housekeeping pass; failure shouldn't
 /// abort startup).
-pub fn purge_stale_sessions(
-    parent: &Path,
-    max_sessions: usize,
-    shelflife: std::time::Duration,
-) {
+pub fn purge_stale_sessions(parent: &Path, max_sessions: usize, shelflife: std::time::Duration) {
     if !parent.exists() {
         return;
     }
@@ -1093,40 +1126,45 @@ pub fn purge_stale_sessions(
     let mut entries: Vec<(PathBuf, std::time::SystemTime)> = match std::fs::read_dir(parent) {
         Ok(rd) => rd,
         Err(e) => {
-            crate::observer::log(crate::observer::LogLevel::Warn, &format!(
-                "warning: session cleanup: failed to read {}: {e}", parent.display(),
-            ));
+            crate::observer::log(
+                crate::observer::LogLevel::Warn,
+                &format!(
+                    "warning: session cleanup: failed to read {}: {e}",
+                    parent.display(),
+                ),
+            );
             return;
         }
-    }.filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let path = entry.path();
-            // Skip symlinks (logs/latest) — only cleanup real
-            // directories.
-            let md = std::fs::symlink_metadata(&path).ok()?;
-            if md.file_type().is_symlink() || !md.file_type().is_dir() {
-                return None;
-            }
-            // Don't delete the active session.
-            if let Some(target) = latest_target.as_ref()
-                && path == *target
-            {
-                return None;
-            }
-            // Only consider directories that *look like* nbrs
-            // sessions — i.e. carry one of the signature
-            // artifacts the runtime writes. Without this, an
-            // explicit `--session-path /tmp/foo` would set
-            // `cleanup_parent = /tmp` and drag arbitrary
-            // unrelated dirs (snap.rootfs_*, systemd-private-*,
-            // …) into the purge set.
-            if !looks_like_session_dir(&path) {
-                return None;
-            }
-            let mtime = md.modified().ok()?;
-            Some((path, mtime))
-        })
-        .collect();
+    }
+    .filter_map(|entry| entry.ok())
+    .filter_map(|entry| {
+        let path = entry.path();
+        // Skip symlinks (logs/latest) — only cleanup real
+        // directories.
+        let md = std::fs::symlink_metadata(&path).ok()?;
+        if md.file_type().is_symlink() || !md.file_type().is_dir() {
+            return None;
+        }
+        // Don't delete the active session.
+        if let Some(target) = latest_target.as_ref()
+            && path == *target
+        {
+            return None;
+        }
+        // Only consider directories that *look like* nbrs
+        // sessions — i.e. carry one of the signature
+        // artifacts the runtime writes. Without this, an
+        // explicit `--session-path /tmp/foo` would set
+        // `cleanup_parent = /tmp` and drag arbitrary
+        // unrelated dirs (snap.rootfs_*, systemd-private-*,
+        // …) into the purge set.
+        if !looks_like_session_dir(&path) {
+            return None;
+        }
+        let mtime = md.modified().ok()?;
+        Some((path, mtime))
+    })
+    .collect();
 
     if entries.is_empty() {
         return;
@@ -1147,7 +1185,11 @@ pub fn purge_stale_sessions(
 
     // Cap by age: anything older than now - shelflife is purged.
     if !shelflife.is_zero() {
-        for (p, mtime) in &entries[..entries.len().min(if max_sessions == 0 { usize::MAX } else { max_sessions })] {
+        for (p, mtime) in &entries[..entries.len().min(if max_sessions == 0 {
+            usize::MAX
+        } else {
+            max_sessions
+        })] {
             if let Ok(age) = now.duration_since(*mtime)
                 && age > shelflife
                 && !to_purge.contains(&p)
@@ -1159,9 +1201,13 @@ pub fn purge_stale_sessions(
 
     for path in to_purge {
         if let Err(e) = std::fs::remove_dir_all(path) {
-            crate::observer::log(crate::observer::LogLevel::Warn, &format!(
-                "warning: session cleanup: failed to remove {}: {e}", path.display(),
-            ));
+            crate::observer::log(
+                crate::observer::LogLevel::Warn,
+                &format!(
+                    "warning: session cleanup: failed to remove {}: {e}",
+                    path.display(),
+                ),
+            );
         }
     }
 }
@@ -1218,7 +1264,8 @@ pub fn purge_stale_sessions_at_startup(args: &[String], creating_session: bool) 
     // *parent* directory is the cleanup target.
     let cleanup_parent = if let Some(sd) = spec.session_path.as_ref() {
         let resolved = sd.replace(SESSION_TOKEN, "");
-        PathBuf::from(resolved).parent()
+        PathBuf::from(resolved)
+            .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(default_sessions_root)
     } else {
@@ -1234,8 +1281,11 @@ pub fn purge_stale_sessions_at_startup(args: &[String], creating_session: bool) 
 pub(crate) fn target_is_under(logs_dir: &Path, target: &Path) -> bool {
     let cwd = std::env::current_dir().ok();
     let abs = |p: &Path| -> Option<PathBuf> {
-        if p.is_absolute() { Some(p.to_path_buf()) }
-        else { cwd.as_ref().map(|c| c.join(p)) }
+        if p.is_absolute() {
+            Some(p.to_path_buf())
+        } else {
+            cwd.as_ref().map(|c| c.join(p))
+        }
     };
     match (abs(logs_dir), abs(target)) {
         (Some(l), Some(t)) => t.starts_with(&l),
@@ -1262,15 +1312,20 @@ pub(crate) fn relative_symlink_target(link_path: &Path, target: &Path) -> PathBu
     // not-yet-existing target case.
     let cwd = std::env::current_dir().ok();
     let abs = |p: &Path| -> Option<PathBuf> {
-        if p.is_absolute() { Some(p.to_path_buf()) }
-        else { cwd.as_ref().map(|c| c.join(p)) }
+        if p.is_absolute() {
+            Some(p.to_path_buf())
+        } else {
+            cwd.as_ref().map(|c| c.join(p))
+        }
     };
     let (Some(link_abs), Some(tgt_abs)) = (abs(link_parent), abs(target)) else {
         return target.to_path_buf();
     };
     let link_comps: Vec<_> = link_abs.components().collect();
-    let tgt_comps: Vec<_>  = tgt_abs.components().collect();
-    let common = link_comps.iter().zip(tgt_comps.iter())
+    let tgt_comps: Vec<_> = tgt_abs.components().collect();
+    let common = link_comps
+        .iter()
+        .zip(tgt_comps.iter())
         .take_while(|(a, b)| a == b)
         .count();
     if common == 0 {
@@ -1281,9 +1336,15 @@ pub(crate) fn relative_symlink_target(link_path: &Path, target: &Path) -> PathBu
     }
     let ups = link_comps.len() - common;
     let mut rel = PathBuf::new();
-    for _ in 0..ups { rel.push(".."); }
-    for c in &tgt_comps[common..] { rel.push(c.as_os_str()); }
-    if rel.as_os_str().is_empty() { rel.push("."); }
+    for _ in 0..ups {
+        rel.push("..");
+    }
+    for c in &tgt_comps[common..] {
+        rel.push(c.as_os_str());
+    }
+    if rel.as_os_str().is_empty() {
+        rel.push(".");
+    }
     rel
 }
 
@@ -1312,7 +1373,8 @@ impl Session {
         let auto_id = format!("{session_name}_{timestamp}");
 
         let spec = resolve_session_dir(args);
-        let (output_dir, id) = spec.resolve(&auto_id)
+        let (output_dir, id) = spec
+            .resolve(&auto_id)
             .unwrap_or_else(|| (default_session_dir(&auto_id), auto_id.clone()));
 
         // Reuse-policy check. Only fires when the resolved
@@ -1338,10 +1400,16 @@ impl Session {
                 }
                 SessionReuse::Restart => {
                     for marker in [
-                        "metrics.db", "session.log", "checkpoint.jsonl",
-                        "checkpoint.lock", "summary.md", "summary.txt",
-                        "summary.json", "tui.dump",
-                        "flamegraph.svg", "flamegraph-perf.svg",
+                        "metrics.db",
+                        "session.log",
+                        "checkpoint.jsonl",
+                        "checkpoint.lock",
+                        "summary.md",
+                        "summary.txt",
+                        "summary.json",
+                        "tui.dump",
+                        "flamegraph.svg",
+                        "flamegraph-perf.svg",
                         "flamegraph-perf.md",
                     ] {
                         let _ = std::fs::remove_file(output_dir.join(marker));
@@ -1370,7 +1438,10 @@ impl Session {
         if let Err(e) = std::fs::create_dir_all(&output_dir) {
             crate::observer::log(
                 crate::observer::LogLevel::Warn,
-                &format!("warning: failed to create session output directory {}: {e}", output_dir.display()),
+                &format!(
+                    "warning: failed to create session output directory {}: {e}",
+                    output_dir.display()
+                ),
             );
         }
 
@@ -1404,10 +1475,7 @@ impl Session {
             let _ = std::fs::create_dir_all(&logs);
             let latest = logs.join("latest");
             let _ = std::fs::remove_file(&latest);
-            let _ = symlink_any(
-                &latest_symlink_target(&output_dir, &logs, &id),
-                &latest,
-            );
+            let _ = symlink_any(&latest_symlink_target(&output_dir, &logs, &id), &latest);
             for stale in [
                 "summary.md",
                 "flamegraph.svg",
@@ -1437,10 +1505,8 @@ impl Session {
         // component tree. Descendant metrics still see the full
         // `{session, exec_id, workload}` set, but every name is
         // owned by exactly one tier.
-        let component = Component::root(
-            Labels::of("session", &id),
-            std::collections::HashMap::new(),
-        );
+        let component =
+            Component::root(Labels::of("session", &id), std::collections::HashMap::new());
         // Install the session root as the resolver backing for
         // Polydat runtime-context nodes (`control(...)`, `rate()`,
         // `concurrency()`, etc.). See SRD 12 §"Runtime context
@@ -1479,11 +1545,9 @@ impl Session {
     /// execution-tier concern (SRD-88) — not a session-tier one.
     /// `session_name` is the fallback id stem used only when the
     /// directory basename can't be read.
-    pub fn reattach(
-        prior_session_dir: PathBuf,
-        session_name: &str,
-    ) -> Self {
-        let id = prior_session_dir.file_name()
+    pub fn reattach(prior_session_dir: PathBuf, session_name: &str) -> Self {
+        let id = prior_session_dir
+            .file_name()
             .and_then(|s| s.to_str())
             .map(String::from)
             .unwrap_or_else(|| {
@@ -1518,10 +1582,8 @@ impl Session {
         // re-attached execution(s) declare `exec_id` / `workload`
         // on their own [`Execution::component`] children, exactly
         // as a fresh session does (see `new_with_args`).
-        let component = Component::root(
-            Labels::of("session", &id),
-            std::collections::HashMap::new(),
-        );
+        let component =
+            Component::root(Labels::of("session", &id), std::collections::HashMap::new());
         crate::polydat_nodes::runtime_context::set_session_root(component.clone());
 
         Self {
@@ -1558,7 +1620,8 @@ impl Session {
     /// Borrow the installed [`MetricsQuery`]. Returns `None` before
     /// the runner wires it.
     pub fn metrics_query(&self) -> Option<Arc<MetricsQuery>> {
-        self.metrics_query.lock()
+        self.metrics_query
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
@@ -1607,7 +1670,16 @@ pub fn utc_datetime_fields() -> (u64, u64, u64, u64, u64, u64, u128, u64) {
     let day_count = secs / 86400;
     let t = secs % 86400;
     let (year, month, day) = days_to_ymd(day_count);
-    (year, month, day, t / 3600, (t % 3600) / 60, t % 60, millis, secs)
+    (
+        year,
+        month,
+        day,
+        t / 3600,
+        (t % 3600) / 60,
+        t % 60,
+        millis,
+        secs,
+    )
 }
 
 fn format_timestamp() -> String {
@@ -1640,8 +1712,7 @@ pub fn now_log_timestamp() -> String {
 /// in `nbrs-tui::observer` to render per-LogEntry
 /// timestamps captured at log-emit time.
 pub fn format_log_timestamp(t: std::time::SystemTime) -> String {
-    let dur = t.duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let dur = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = dur.as_secs();
     let millis = dur.subsec_millis();
     let days = secs / 86400;
@@ -1668,7 +1739,12 @@ pub fn format_utc_short(epoch_seconds: f64) -> String {
     let secs = epoch_seconds as u64;
     let (_, month, day) = days_to_ymd(secs / 86400);
     let t = secs % 86400;
-    format!("{month:02}-{day:02} {:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
+    format!(
+        "{month:02}-{day:02} {:02}:{:02}:{:02}",
+        t / 3600,
+        (t % 3600) / 60,
+        t % 60
+    )
 }
 
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
@@ -1695,7 +1771,10 @@ mod tests {
         let ts = format_timestamp();
         // Should be 15 chars: YYYYMMDD_HHmmss
         assert_eq!(ts.len(), 15, "timestamp: {ts}");
-        assert!(ts.contains('_'), "timestamp should contain underscore: {ts}");
+        assert!(
+            ts.contains('_'),
+            "timestamp should contain underscore: {ts}"
+        );
     }
 
     /// Serialize all tests that mutate process-global state
@@ -1711,9 +1790,8 @@ mod tests {
 
     #[test]
     fn dryrun_detection_from_args() {
-        let yes = |a: &[&str]| {
-            args_request_dryrun(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-        };
+        let yes =
+            |a: &[&str]| args_request_dryrun(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert!(yes(&["run", "workload=w", "dryrun=op"]));
         assert!(yes(&["run", "dryrun=phase,wiring"]));
         assert!(yes(&["run", "--dryrun=structure"]));
@@ -1730,16 +1808,20 @@ mod tests {
         // Session construction installs the process-global session root as a
         // side effect (see `new_with_args`), racing every control-node test
         // that reads through it. Hold the same guard those tests hold.
-        let _root_guard =
-            crate::polydat_nodes::runtime_context::session_root_test_guard();
+        let _root_guard = crate::polydat_nodes::runtime_context::session_root_test_guard();
         let _g = env_test_lock();
-        unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
+        unsafe {
+            std::env::remove_var(SESSION_DIRECTORY_ENV);
+        }
         let session = Session::new("fknn_rampup");
         assert!(session.id.starts_with("fknn_rampup_"), "id: {}", session.id);
         let expected_root = default_sessions_root();
-        assert!(session.output_dir.starts_with(&expected_root),
+        assert!(
+            session.output_dir.starts_with(&expected_root),
             "output_dir {} should start with {}",
-            session.output_dir.display(), expected_root.display());
+            session.output_dir.display(),
+            expected_root.display()
+        );
     }
 
     #[test]
@@ -1747,14 +1829,19 @@ mod tests {
         // Session construction installs the process-global session root as a
         // side effect (see `new_with_args`), racing every control-node test
         // that reads through it. Hold the same guard those tests hold.
-        let _root_guard =
-            crate::polydat_nodes::runtime_context::session_root_test_guard();
+        let _root_guard = crate::polydat_nodes::runtime_context::session_root_test_guard();
         let _g = env_test_lock();
-        unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
+        unsafe {
+            std::env::remove_var(SESSION_DIRECTORY_ENV);
+        }
         let session = Session::new("smoke");
         assert!(session.metrics_path().ends_with("metrics.db"));
         assert!(session.profiler_path("").ends_with("flamegraph.svg"));
-        assert!(session.profiler_path("-perf").ends_with("flamegraph-perf.svg"));
+        assert!(
+            session
+                .profiler_path("-perf")
+                .ends_with("flamegraph-perf.svg")
+        );
     }
 
     /// Clear every env var that `resolve_session_dir` reads, so a
@@ -1805,16 +1892,25 @@ mod tests {
         clear_session_env();
 
         let spec = resolve_session_dir(&["--sessions-max=5".to_string()]);
-        assert_eq!(spec.session_keep, 5, "`--sessions-max` must set the keep cap");
+        assert_eq!(
+            spec.session_keep, 5,
+            "`--sessions-max` must set the keep cap"
+        );
 
         let spec = resolve_session_dir(&["--sessions-shelflife=2w".to_string()]);
-        assert_eq!(spec.session_shelflife, std::time::Duration::from_secs(14 * 24 * 3600),
-            "`--sessions-shelflife` must set the retention window");
+        assert_eq!(
+            spec.session_shelflife,
+            std::time::Duration::from_secs(14 * 24 * 3600),
+            "`--sessions-shelflife` must set the retention window"
+        );
 
         let spec = resolve_session_dir(&["--session-dir=/tmp/explicit".to_string()]);
         let (path, id) = spec.resolve("auto").unwrap();
-        assert_eq!(path.to_str(), Some("/tmp/explicit"),
-            "`--session-dir` must set the session path");
+        assert_eq!(
+            path.to_str(),
+            Some("/tmp/explicit"),
+            "`--session-dir` must set the session path"
+        );
         assert_eq!(id, "explicit");
 
         // The canonical spellings keep working, and win when both are given.
@@ -1824,8 +1920,10 @@ mod tests {
             "--session-keep=7".to_string(),
             "--sessions-max=99".to_string(),
         ]);
-        assert_eq!(spec.session_keep, 7,
-            "the canonical spelling must win over the alias");
+        assert_eq!(
+            spec.session_keep, 7,
+            "the canonical spelling must win over the alias"
+        );
     }
 
     #[test]
@@ -1837,9 +1935,11 @@ mod tests {
         let _g = env_test_lock();
         clear_session_env();
         let bare = resolve_session_dir(&["session=/tmp/explicit".to_string()])
-            .resolve("auto-id").unwrap();
+            .resolve("auto-id")
+            .unwrap();
         let dashed = resolve_session_dir(&["--session=/tmp/explicit".to_string()])
-            .resolve("auto-id").unwrap();
+            .resolve("auto-id")
+            .unwrap();
         assert_eq!(bare, dashed, "both spellings must name the same session");
         assert_eq!(bare.0.to_str(), Some("/tmp/explicit"));
     }
@@ -1895,10 +1995,7 @@ mod tests {
     fn spec_space_form_session_path_flag() {
         let _g = env_test_lock();
         clear_session_env();
-        let args = vec![
-            "--session-path".into(),
-            "/data/path".into(),
-        ];
+        let args = vec!["--session-path".into(), "/data/path".into()];
         let (path, _) = resolve_session_dir(&args).resolve("auto").unwrap();
         assert_eq!(path.to_str(), Some("/data/path"));
     }
@@ -1907,11 +2004,17 @@ mod tests {
     fn spec_falls_back_to_env() {
         let _g = env_test_lock();
         let prior = std::env::var(SESSION_DIRECTORY_ENV).ok();
-        unsafe { std::env::set_var(SESSION_DIRECTORY_ENV, "/from/env"); }
+        unsafe {
+            std::env::set_var(SESSION_DIRECTORY_ENV, "/from/env");
+        }
         let spec = resolve_session_dir(&[]);
         match prior {
-            Some(v) => unsafe { std::env::set_var(SESSION_DIRECTORY_ENV, v); }
-            None    => unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
+            Some(v) => unsafe {
+                std::env::set_var(SESSION_DIRECTORY_ENV, v);
+            },
+            None => unsafe {
+                std::env::remove_var(SESSION_DIRECTORY_ENV);
+            },
         }
         let (path, _) = spec.resolve("auto").unwrap();
         assert_eq!(path.to_str(), Some("/from/env"));
@@ -1921,26 +2024,39 @@ mod tests {
     fn spec_cli_flag_overrides_env() {
         let _g = env_test_lock();
         let prior = std::env::var(SESSION_DIRECTORY_ENV).ok();
-        unsafe { std::env::set_var(SESSION_DIRECTORY_ENV, "/from/env"); }
+        unsafe {
+            std::env::set_var(SESSION_DIRECTORY_ENV, "/from/env");
+        }
         let args = vec!["--session-path=/from/cli".into()];
         let spec = resolve_session_dir(&args);
         match prior {
-            Some(v) => unsafe { std::env::set_var(SESSION_DIRECTORY_ENV, v); }
-            None    => unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
+            Some(v) => unsafe {
+                std::env::set_var(SESSION_DIRECTORY_ENV, v);
+            },
+            None => unsafe {
+                std::env::remove_var(SESSION_DIRECTORY_ENV);
+            },
         }
         let (path, _) = spec.resolve("auto").unwrap();
-        assert_eq!(path.to_str(), Some("/from/cli"),
-            "CLI --session-path must win over SESSION_DIRECTORY env");
+        assert_eq!(
+            path.to_str(),
+            Some("/from/cli"),
+            "CLI --session-path must win over SESSION_DIRECTORY env"
+        );
     }
 
     #[test]
     fn spec_empty_returns_no_resolution() {
         let _g = env_test_lock();
         let prior = std::env::var(SESSION_DIRECTORY_ENV).ok();
-        unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
+        unsafe {
+            std::env::remove_var(SESSION_DIRECTORY_ENV);
+        }
         let spec = resolve_session_dir(&[]);
         if let Some(v) = prior {
-            unsafe { std::env::set_var(SESSION_DIRECTORY_ENV, v); }
+            unsafe {
+                std::env::set_var(SESSION_DIRECTORY_ENV, v);
+            }
         }
         assert!(spec.is_empty());
         assert!(spec.resolve("auto").is_none());
@@ -1984,8 +2100,7 @@ mod tests {
         let args = vec!["--session=dir:asldkfjsldfj".into()];
         let (path, id) = resolve_session_dir(&args).resolve("auto").unwrap();
         assert_eq!(path.to_str(), Some("asldkfjsldfj"));
-        assert_eq!(id, "asldkfjsldfj",
-            "session id is the basename of the path");
+        assert_eq!(id, "asldkfjsldfj", "session id is the basename of the path");
     }
 
     #[test]
@@ -2002,9 +2117,8 @@ mod tests {
     fn umbrella_full_kv_list() {
         let _g = env_test_lock();
         clear_session_env();
-        let args = vec![
-            "--session=keep:42,name:sessname42,path:sessions/dir/SESSION,reuse:resume".into()
-        ];
+        let args =
+            vec!["--session=keep:42,name:sessname42,path:sessions/dir/SESSION,reuse:resume".into()];
         let spec = resolve_session_dir(&args);
         assert_eq!(spec.session_name.as_deref(), Some("sessname42"));
         assert_eq!(spec.session_path.as_deref(), Some("sessions/dir/SESSION"));
@@ -2075,8 +2189,10 @@ mod tests {
             "key_with_underscore=value",
             "kebab-case=value",
         ] {
-            assert!(check_session_path(bad, "test").is_err(),
-                "should reject '{bad}'");
+            assert!(
+                check_session_path(bad, "test").is_err(),
+                "should reject '{bad}'"
+            );
         }
     }
 
@@ -2090,10 +2206,12 @@ mod tests {
     fn latest_session_dir_is_under_default_sessions_root() {
         let root = default_sessions_root();
         let latest = latest_session_dir();
-        assert!(latest.starts_with(&root),
+        assert!(
+            latest.starts_with(&root),
             "latest_session_dir MUST live under default_sessions_root \
              so the env-aware redirect (cargo tmp, etc.) covers it; \
-             root={root:?}, latest={latest:?}");
+             root={root:?}, latest={latest:?}"
+        );
         assert_eq!(latest.file_name().and_then(|s| s.to_str()), Some("latest"));
     }
 
@@ -2101,10 +2219,15 @@ mod tests {
     fn latest_metrics_db_is_under_latest_session_dir() {
         let metrics = latest_metrics_db();
         let latest = latest_session_dir();
-        assert!(metrics.starts_with(&latest),
+        assert!(
+            metrics.starts_with(&latest),
             "latest_metrics_db MUST live under latest_session_dir; \
-             metrics={metrics:?}, latest={latest:?}");
-        assert_eq!(metrics.file_name().and_then(|s| s.to_str()), Some("metrics.db"));
+             metrics={metrics:?}, latest={latest:?}"
+        );
+        assert_eq!(
+            metrics.file_name().and_then(|s| s.to_str()),
+            Some("metrics.db")
+        );
     }
 
     #[test]
@@ -2112,7 +2235,10 @@ mod tests {
         let log = latest_session_log();
         let latest = latest_session_dir();
         assert!(log.starts_with(&latest));
-        assert_eq!(log.file_name().and_then(|s| s.to_str()), Some("session.log"));
+        assert_eq!(
+            log.file_name().and_then(|s| s.to_str()),
+            Some("session.log")
+        );
     }
 
     #[test]
@@ -2120,7 +2246,10 @@ mod tests {
         let ckpt = latest_checkpoint_jsonl();
         let latest = latest_session_dir();
         assert!(ckpt.starts_with(&latest));
-        assert_eq!(ckpt.file_name().and_then(|s| s.to_str()), Some("checkpoint.jsonl"));
+        assert_eq!(
+            ckpt.file_name().and_then(|s| s.to_str()),
+            Some("checkpoint.jsonl")
+        );
     }
 
     #[test]
@@ -2143,12 +2272,14 @@ mod tests {
             "./local/x",
             "../sibling/y",
             "relative/path",
-            "/var/run/x=y",                  // `=` inside path, not at the head
-            "C:/Windows/maybe",              // exotic but harmless
+            "/var/run/x=y",     // `=` inside path, not at the head
+            "C:/Windows/maybe", // exotic but harmless
             "logs/SESSION/x",
         ] {
-            assert!(check_session_path(good, "test").is_ok(),
-                "should accept '{good}'");
+            assert!(
+                check_session_path(good, "test").is_ok(),
+                "should accept '{good}'"
+            );
         }
     }
 
@@ -2158,8 +2289,10 @@ mod tests {
         // not just say "bad path".
         let err = check_session_path("scenario=foo", "test").unwrap_err();
         assert!(err.contains("--session-path"), "missing flag hint: {err}");
-        assert!(err.contains(":") && err.contains("kv separator"),
-            "missing umbrella-form hint: {err}");
+        assert!(
+            err.contains(":") && err.contains("kv separator"),
+            "missing umbrella-form hint: {err}"
+        );
     }
 
     #[test]
@@ -2181,17 +2314,26 @@ mod tests {
     #[test]
     fn resolve_flag_picks_cli_when_only_cli_set() {
         let _g = env_test_lock();
-        unsafe { std::env::remove_var("NBRS_SESSION_NAME"); }
+        unsafe {
+            std::env::remove_var("NBRS_SESSION_NAME");
+        }
         let args = vec!["--session-name=foo".into()];
-        assert_eq!(resolve_flag(&args, "--session-name").as_deref(), Some("foo"));
+        assert_eq!(
+            resolve_flag(&args, "--session-name").as_deref(),
+            Some("foo")
+        );
     }
 
     #[test]
     fn resolve_flag_picks_env_when_only_env_set() {
         let _g = env_test_lock();
-        unsafe { std::env::set_var("NBRS_SESSION_NAME", "bar"); }
+        unsafe {
+            std::env::set_var("NBRS_SESSION_NAME", "bar");
+        }
         let v = resolve_flag(&[], "--session-name");
-        unsafe { std::env::remove_var("NBRS_SESSION_NAME"); }
+        unsafe {
+            std::env::remove_var("NBRS_SESSION_NAME");
+        }
         assert_eq!(v.as_deref(), Some("bar"));
     }
 
@@ -2200,7 +2342,9 @@ mod tests {
         let parent = std::env::temp_dir().join(format!(
             "nbrs-forecast-{}",
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::create_dir_all(&parent).unwrap();
 
@@ -2225,7 +2369,9 @@ mod tests {
     #[test]
     fn resolve_flag_returns_none_when_neither_set() {
         let _g = env_test_lock();
-        unsafe { std::env::remove_var("NBRS_SESSION_NAME"); }
+        unsafe {
+            std::env::remove_var("NBRS_SESSION_NAME");
+        }
         assert!(resolve_flag(&[], "--session-name").is_none());
     }
     // Note: the conflict-error path (both CLI and env set)
@@ -2256,7 +2402,9 @@ mod tests {
         let parent = std::env::temp_dir().join(format!(
             "nbrs-purge-test-{}",
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::create_dir_all(&parent).unwrap();
 
@@ -2278,13 +2426,18 @@ mod tests {
         // Newest 2 should survive after purge with max=2.
         purge_stale_sessions(&parent, 2, std::time::Duration::ZERO);
 
-        let surviving: Vec<_> = std::fs::read_dir(&parent).unwrap()
+        let surviving: Vec<_> = std::fs::read_dir(&parent)
+            .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.is_dir())
             .collect();
-        assert!(surviving.len() <= 2, "expected ≤2 survivors, got {}: {:?}",
-            surviving.len(), surviving);
+        assert!(
+            surviving.len() <= 2,
+            "expected ≤2 survivors, got {}: {:?}",
+            surviving.len(),
+            surviving
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&parent);
@@ -2295,7 +2448,9 @@ mod tests {
         let parent = std::env::temp_dir().join(format!(
             "nbrs-purge-symlink-{}",
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::create_dir_all(&parent).unwrap();
         let active = parent.join("active_session");
@@ -2314,8 +2469,10 @@ mod tests {
         // because it's the symlink target.
         purge_stale_sessions(&parent, 0, std::time::Duration::from_secs(1));
 
-        assert!(active.exists(),
-            "active session pointed-at by logs/latest must survive purge");
+        assert!(
+            active.exists(),
+            "active session pointed-at by logs/latest must survive purge"
+        );
         let _ = std::fs::remove_dir_all(&parent);
     }
 }

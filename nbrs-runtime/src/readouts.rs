@@ -38,11 +38,9 @@ pub mod snapshot;
 pub mod builtins;
 
 pub use binder::{
-    BakedBody, BinderKey, DefaultBinder, LayoutHint, LayoutMode,
-    ReadoutBinder, ReadoutHandle, ReadoutSink, RenderStep, StringSink,
-    TuiReadoutBinder,
-    build_binder_from_workload, build_event_binder, build_event_binder_with_cli,
-    validate_body_for_event,
+    BakedBody, BinderKey, DefaultBinder, LayoutHint, LayoutMode, ReadoutBinder, ReadoutHandle,
+    ReadoutSink, RenderStep, StringSink, TuiReadoutBinder, build_binder_from_workload,
+    build_event_binder, build_event_binder_with_cli, validate_body_for_event,
 };
 pub use buf::ReadoutBuf;
 pub use context::{LifecycleState, ReadoutContext};

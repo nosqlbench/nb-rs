@@ -13,8 +13,8 @@
 //! §"CQL universal field superset" for naming rationale.
 
 use nbrs_runtime::op_modifier::{ModifierChain, OpFieldModifier};
-use polydat::kernel::PolydatKernel;
 use polydat::ast::Value;
+use polydat::kernel::PolydatKernel;
 
 /// Universal per-op field names supported by every CQL engine.
 ///
@@ -183,7 +183,8 @@ pub fn cql_timeout_value_to_ms(value: &Value) -> Result<u64, String> {
         Value::F64(f) if f.is_finite() && *f >= 0.0 => Ok((f * 1000.0).round() as u64),
         other => Err(format!(
             "expected a duration string (e.g. '60s') or a non-negative number \
-             of seconds, got {other:?}")),
+             of seconds, got {other:?}"
+        )),
     }
 }
 
@@ -209,18 +210,37 @@ mod tests {
         let mut sorted: Vec<&str> = CQL_UNIVERSAL_FIELDS.to_vec();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), CQL_UNIVERSAL_FIELDS.len(), "duplicate field names");
+        assert_eq!(
+            sorted.len(),
+            CQL_UNIVERSAL_FIELDS.len(),
+            "duplicate field names"
+        );
     }
 
     #[test]
     fn timeout_value_to_ms_accepts_all_forms() {
         // Duration spec-string.
-        assert_eq!(cql_timeout_value_to_ms(&Value::Str("60s".into())).unwrap(), 60_000);
-        assert_eq!(cql_timeout_value_to_ms(&Value::Str("500ms".into())).unwrap(), 500);
-        assert_eq!(cql_timeout_value_to_ms(&Value::Str("1h30m".into())).unwrap(), 5_400_000);
+        assert_eq!(
+            cql_timeout_value_to_ms(&Value::Str("60s".into())).unwrap(),
+            60_000
+        );
+        assert_eq!(
+            cql_timeout_value_to_ms(&Value::Str("500ms".into())).unwrap(),
+            500
+        );
+        assert_eq!(
+            cql_timeout_value_to_ms(&Value::Str("1h30m".into())).unwrap(),
+            5_400_000
+        );
         // Bare number string = fractional seconds.
-        assert_eq!(cql_timeout_value_to_ms(&Value::Str("60".into())).unwrap(), 60_000);
-        assert_eq!(cql_timeout_value_to_ms(&Value::Str("60.5".into())).unwrap(), 60_500);
+        assert_eq!(
+            cql_timeout_value_to_ms(&Value::Str("60".into())).unwrap(),
+            60_000
+        );
+        assert_eq!(
+            cql_timeout_value_to_ms(&Value::Str("60.5".into())).unwrap(),
+            60_500
+        );
         // Numeric values = fractional seconds (same convention).
         assert_eq!(cql_timeout_value_to_ms(&Value::U64(60)).unwrap(), 60_000);
         assert_eq!(cql_timeout_value_to_ms(&Value::F64(60.5)).unwrap(), 60_500);
@@ -248,6 +268,9 @@ mod tests {
         let err = parse_consistency("NOT_A_LEVEL").unwrap_err();
         assert!(err.contains("unrecognized"));
         assert!(err.contains("NOT_A_LEVEL"));
-        assert!(err.contains("LOCAL_ONE"), "error should list valid names: {err}");
+        assert!(
+            err.contains("LOCAL_ONE"),
+            "error should list valid names: {err}"
+        );
     }
 }

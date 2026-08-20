@@ -5,7 +5,10 @@ use futures::future::BoxFuture;
 
 static NUM_CONCURRENT_REQUESTS: usize = 1000;
 
-fn insert_into_async(session: &Session, key: String) -> Result<Vec<BoxFuture<'_, Result<CassResult>>>> {
+fn insert_into_async(
+    session: &Session,
+    key: String,
+) -> Result<Vec<BoxFuture<'_, Result<CassResult>>>> {
     let mut futures: Vec<BoxFuture<Result<CassResult>>> = Vec::new();
     for i in 0..NUM_CONCURRENT_REQUESTS {
         let key: &str = &(key.clone() + &i.to_string());

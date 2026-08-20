@@ -28,8 +28,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct TruncatedPhases;
 
 impl Readout for TruncatedPhases {
-    fn name(&self) -> &'static str { "truncated_phases" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Session] }
+    fn name(&self) -> &'static str {
+        "truncated_phases"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Session]
+    }
 
     fn render(
         &self,
@@ -45,16 +49,16 @@ impl Readout for TruncatedPhases {
         }
         let color = ctx.use_color();
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact(count, color, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled(count, color, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded(count, color, out),
-            (_,             ContentMode::Explanation) => render_explanation(out),
+            (Lod::Compact, ContentMode::Value) => render_compact(count, color, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled(count, color, out),
+            (Lod::Expanded, ContentMode::Value) => render_expanded(count, color, out),
+            (_, ContentMode::Explanation) => render_explanation(out),
         }
     }
 }
 
 fn render_compact(count: usize, color: bool, out: &mut dyn ReadoutBuf) -> usize {
-    let dim   = if color { "\x1b[2m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let mut tmp = String::with_capacity(48);
     let _ = write!(&mut tmp, "{dim}(… {count} more){reset}");
@@ -67,7 +71,7 @@ fn render_labeled(count: usize, color: bool, out: &mut dyn ReadoutBuf) -> usize 
     // Two-line form: rollup + tip. Both rendered as MUTED
     // (dim) per docs/guide/color_style.md — this is
     // informational tail, not primary signal.
-    let dim   = if color { "\x1b[2m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let suffix = if count == 1 { "" } else { "s" };
     let mut tmp = String::with_capacity(128);
@@ -86,7 +90,7 @@ fn render_expanded(count: usize, color: bool, out: &mut dyn ReadoutBuf) -> usize
     // the rollup explaining *why* the tail was truncated.
     // Same data; just spelled out for the operator who's
     // reading the post-run summary cold.
-    let dim   = if color { "\x1b[2m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let suffix = if count == 1 { "" } else { "s" };
     let mut tmp = String::with_capacity(192);
@@ -115,10 +119,16 @@ mod tests {
     use super::*;
     use crate::readouts::buf::StringBuf;
 
-    struct TestCtx { truncated: usize }
+    struct TestCtx {
+        truncated: usize,
+    }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { "session" }
-        fn session_phases_truncated(&self) -> usize { self.truncated }
+        fn subject_name(&self) -> &str {
+            "session"
+        }
+        fn session_phases_truncated(&self) -> usize {
+            self.truncated
+        }
         fn event(&self) -> crate::lifecycle::EventType {
             crate::lifecycle::EventType::SessionEnd
         }
@@ -128,7 +138,11 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         TruncatedPhases.render(
-            ctx, lod, ContentMode::Value, &ReadoutOptions::new(), &mut buf,
+            ctx,
+            lod,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -139,8 +153,11 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         let n = TruncatedPhases.render(
-            &ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         assert_eq!(n, 0);
         assert!(s.is_empty());
@@ -188,8 +205,11 @@ tip: run with dryrun=phase to see the full plan",
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         let n = TruncatedPhases.render(
-            &ctx, Lod::Labeled, ContentMode::Explanation,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Explanation,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         assert!(n > 0);
         assert!(s.contains("<count>"));

@@ -54,10 +54,7 @@ pub fn show_command(session: &str) -> Result<(), String> {
     let path = resolve_checkpoint_path(session);
     let iter = storage::iter_events(&path)?;
     let Some(iter) = iter else {
-        return Err(format!(
-            "checkpoint log not found at '{}'",
-            path.display(),
-        ));
+        return Err(format!("checkpoint log not found at '{}'", path.display(),));
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -120,10 +117,18 @@ pub fn render_event(e: &CheckpointData) -> String {
     }
     match e {
         CheckpointData::SessionStart {
-            at, version, session, started_at, invocation,
-        } => row(at, "session_start", &format!(
-            "session={session} invocation={invocation} version={version} started_at={started_at}",
-        )),
+            at,
+            version,
+            session,
+            started_at,
+            invocation,
+        } => row(
+            at,
+            "session_start",
+            &format!(
+                "session={session} invocation={invocation} version={version} started_at={started_at}",
+            ),
+        ),
         CheckpointData::SessionEnd { at, outcome, error } => {
             let body = match error {
                 Some(err) => format!("outcome={outcome} error={err}"),
@@ -131,65 +136,120 @@ pub fn render_event(e: &CheckpointData) -> String {
             };
             row(at, "session_end", &body)
         }
-        CheckpointData::PhaseDeclared { at, identity, skip_eligible } => {
-            row(at, "phase_declared",
-                &format!("{} (skip_eligible={skip_eligible})", format_identity(identity)))
-        }
+        CheckpointData::PhaseDeclared {
+            at,
+            identity,
+            skip_eligible,
+        } => row(
+            at,
+            "phase_declared",
+            &format!(
+                "{} (skip_eligible={skip_eligible})",
+                format_identity(identity)
+            ),
+        ),
         CheckpointData::PhaseStarted { at, identity } => {
             row(at, "phase_started", &format_identity(identity))
         }
-        CheckpointData::PhaseProgress { at, identity, op_counts, cursor_state } => {
+        CheckpointData::PhaseProgress {
+            at,
+            identity,
+            op_counts,
+            cursor_state,
+        } => {
             let mut body = format!(
-                "{} {}", format_identity(identity), format_op_counts(op_counts),
+                "{} {}",
+                format_identity(identity),
+                format_op_counts(op_counts),
             );
             if cursor_state.is_some() {
                 body.push_str(" cursor=present");
             }
             row(at, "phase_progress", &body)
         }
-        CheckpointData::PhaseCompleted { at, identity, duration_secs, op_counts } => {
-            row(at, "phase_completed", &format!(
+        CheckpointData::PhaseCompleted {
+            at,
+            identity,
+            duration_secs,
+            op_counts,
+        } => row(
+            at,
+            "phase_completed",
+            &format!(
                 "{} duration={:.3}s {}",
-                format_identity(identity), duration_secs, format_op_counts(op_counts),
-            ))
-        }
-        CheckpointData::PhaseFailed { at, identity, error, op_counts } => {
-            let counts = op_counts.as_ref()
+                format_identity(identity),
+                duration_secs,
+                format_op_counts(op_counts),
+            ),
+        ),
+        CheckpointData::PhaseFailed {
+            at,
+            identity,
+            error,
+            op_counts,
+        } => {
+            let counts = op_counts
+                .as_ref()
                 .map(|c| format!(" {}", format_op_counts(c)))
                 .unwrap_or_default();
-            row(at, "phase_failed", &format!(
-                "{} error={error}{counts}",
-                format_identity(identity),
-            ))
+            row(
+                at,
+                "phase_failed",
+                &format!("{} error={error}{counts}", format_identity(identity),),
+            )
         }
-        CheckpointData::PhaseHash { at, identity, hash_hex, params_consumed } => {
+        CheckpointData::PhaseHash {
+            at,
+            identity,
+            hash_hex,
+            params_consumed,
+        } => {
             // 12-char hash prefix is enough for visual diffing
             // without flooding the line. SRD-107: show the
             // consumed-param NAMES (values are digests — the
             // names are what an operator diffs against a "why
             // did this re-run?" question).
             let prefix: String = hash_hex.chars().take(12).collect();
-            let params_note = params_consumed.as_deref()
-                .and_then(|j| serde_json::from_str::<
-                    std::collections::BTreeMap<String, String>>(j).ok())
+            let params_note = params_consumed
+                .as_deref()
+                .and_then(|j| {
+                    serde_json::from_str::<std::collections::BTreeMap<String, String>>(j).ok()
+                })
                 .filter(|m| !m.is_empty())
-                .map(|m| format!(
-                    " params=[{}]",
-                    m.keys().cloned().collect::<Vec<_>>().join(","),
-                ))
+                .map(|m| {
+                    format!(
+                        " params=[{}]",
+                        m.keys().cloned().collect::<Vec<_>>().join(","),
+                    )
+                })
                 .unwrap_or_default();
-            row(at, "phase_hash",
-                &format!("{} hash={prefix}…{params_note}",
-                    format_identity(identity)))
+            row(
+                at,
+                "phase_hash",
+                &format!("{} hash={prefix}…{params_note}", format_identity(identity)),
+            )
         }
-        CheckpointData::ScopeEnter { at, kind, coords, .. } => {
-            row(at, "scope_enter", &format!("kind={kind} coords={}", format_coords_map(coords)))
-        }
-        CheckpointData::ScopeExit { at, kind, coords, outcome, .. } => {
-            row(at, "scope_exit", &format!(
-                "kind={kind} outcome={outcome} coords={}", format_coords_map(coords),
-            ))
-        }
+        CheckpointData::ScopeEnter {
+            at, kind, coords, ..
+        } => row(
+            at,
+            "scope_enter",
+            &format!("kind={kind} coords={}", format_coords_map(coords)),
+        ),
+        CheckpointData::ScopeExit {
+            at,
+            kind,
+            coords,
+            outcome,
+            ..
+        } => row(
+            at,
+            "scope_exit",
+            &format!(
+                "kind={kind} outcome={outcome} coords={}",
+                format_coords_map(coords),
+            ),
+        ),
     }
 }
 
@@ -210,7 +270,10 @@ fn format_yaml_path(path: &[PathSegment]) -> String {
     if path.is_empty() {
         return "<root>".to_string();
     }
-    path.iter().map(format_segment).collect::<Vec<_>>().join("/")
+    path.iter()
+        .map(format_segment)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn format_segment(seg: &PathSegment) -> String {
@@ -232,18 +295,17 @@ fn format_segment(seg: &PathSegment) -> String {
 }
 
 fn format_op_counts(c: &OpCounts) -> String {
-    format!("started={} finished={} errors={}", c.started, c.finished, c.errors)
+    format!(
+        "started={} finished={} errors={}",
+        c.started, c.finished, c.errors
+    )
 }
 
-fn format_coords_map(
-    m: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> String {
+fn format_coords_map(m: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
     if m.is_empty() {
         return "()".to_string();
     }
-    let parts: Vec<String> = m.iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let parts: Vec<String> = m.iter().map(|(k, v)| format!("{k}={v}")).collect();
     format!("({})", parts.join(","))
 }
 
@@ -263,16 +325,16 @@ pub fn spec() -> crate::cli_spec::Command {
     }
 
     fn handle_show(p: ParsedCommand) -> Result<(), String> {
-        let session = p.positional(0).ok_or_else(|| {
-            "checkpoint show: missing <session> argument".to_string()
-        })?;
+        let session = p
+            .positional(0)
+            .ok_or_else(|| "checkpoint show: missing <session> argument".to_string())?;
         show_command(session)
     }
 
     fn handle_fold(p: ParsedCommand) -> Result<(), String> {
-        let session = p.positional(0).ok_or_else(|| {
-            "checkpoint fold: missing <session> argument".to_string()
-        })?;
+        let session = p
+            .positional(0)
+            .ok_or_else(|| "checkpoint fold: missing <session> argument".to_string())?;
         fold_command(session)
     }
 
@@ -296,12 +358,14 @@ pub fn spec() -> crate::cli_spec::Command {
                 level: Level::Secondary,
                 flags: Vec::new(),
                 kv_params: &[],
-        dynamic_options: None,
-        positionals: vec![Positional {
+                dynamic_options: None,
+                positionals: vec![Positional {
                     name: "session",
                     help: "Session id (under logs/), session dir, or path to checkpoint.jsonl.",
-                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::session_name_provider),
-            kind: PositionalKind::One,
+                    value: crate::cli_spec::ValueProvider::Custom(
+                        crate::completion::session_name_provider,
+                    ),
+                    kind: PositionalKind::One,
                 }],
                 subcommands: Vec::new(),
                 handler: Some(Handler::Sync(handle_show)),
@@ -315,12 +379,14 @@ pub fn spec() -> crate::cli_spec::Command {
                 level: Level::Secondary,
                 flags: Vec::new(),
                 kv_params: &[],
-        dynamic_options: None,
-        positionals: vec![Positional {
+                dynamic_options: None,
+                positionals: vec![Positional {
                     name: "session",
                     help: "Session id (under logs/), session dir, or path to checkpoint.jsonl.",
-                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::session_name_provider),
-            kind: PositionalKind::One,
+                    value: crate::cli_spec::ValueProvider::Custom(
+                        crate::completion::session_name_provider,
+                    ),
+                    kind: PositionalKind::One,
                 }],
                 subcommands: Vec::new(),
                 handler: Some(Handler::Sync(handle_fold)),
@@ -364,7 +430,10 @@ mod tests {
 
     fn tempdir() -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let d = std::env::temp_dir().join(format!("nbrs-checkpoint-cmd-{n:x}"));
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -384,7 +453,14 @@ mod tests {
         w.phase_started(&id1);
         w.phase_completed(&id1, 1.5);
         w.phase_started(&id2);
-        w.update_op_counts(&id2, OpCounts { started: 100, finished: 99, errors: 1 });
+        w.update_op_counts(
+            &id2,
+            OpCounts {
+                started: 100,
+                finished: 99,
+                errors: 1,
+            },
+        );
         w.flush().expect("flush");
     }
 
@@ -405,21 +481,49 @@ mod tests {
         let lines: Vec<String> = events.iter().map(render_event).collect();
 
         // session_start opens the stream.
-        assert!(lines[0].contains("session_start"), "first line: {}", lines[0]);
-        assert!(lines[0].contains("session=test_run"), "first line: {}", lines[0]);
-        assert!(lines[0].contains("invocation=1"), "first line: {}", lines[0]);
+        assert!(
+            lines[0].contains("session_start"),
+            "first line: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("session=test_run"),
+            "first line: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("invocation=1"),
+            "first line: {}",
+            lines[0]
+        );
 
         // Each phase_declared mentions the phase name + skip flag.
-        let declared: Vec<_> = lines.iter().filter(|l| l.contains("phase_declared")).collect();
+        let declared: Vec<_> = lines
+            .iter()
+            .filter(|l| l.contains("phase_declared"))
+            .collect();
         assert_eq!(declared.len(), 2, "two declarations expected");
-        assert!(declared.iter().any(|l| l.contains("schema") && l.contains("skip_eligible=true")));
-        assert!(declared.iter().any(|l| l.contains("rampup") && l.contains("skip_eligible=false")));
+        assert!(
+            declared
+                .iter()
+                .any(|l| l.contains("schema") && l.contains("skip_eligible=true"))
+        );
+        assert!(
+            declared
+                .iter()
+                .any(|l| l.contains("rampup") && l.contains("skip_eligible=false"))
+        );
 
         // phase_completed line carries duration + counts.
-        let completed = lines.iter().find(|l| l.contains("phase_completed"))
+        let completed = lines
+            .iter()
+            .find(|l| l.contains("phase_completed"))
             .expect("expected a phase_completed");
         assert!(completed.contains("schema"), "completed: {completed}");
-        assert!(completed.contains("duration=1.500s"), "completed: {completed}");
+        assert!(
+            completed.contains("duration=1.500s"),
+            "completed: {completed}"
+        );
         assert!(completed.contains("started="), "completed: {completed}");
 
         // The leading column is the timestamp; row() pads the
@@ -443,7 +547,8 @@ mod tests {
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .append(true)
-            .open(&path).unwrap();
+            .open(&path)
+            .unwrap();
         f.write_all(b"this is not valid json\n").unwrap();
         drop(f);
 
@@ -505,15 +610,20 @@ mod tests {
         // 1) Direct file path.
         assert_eq!(resolve_checkpoint_path(nested.to_str().unwrap()), nested);
         // 2) Directory path → joins checkpoint.jsonl.
-        assert_eq!(resolve_checkpoint_path(dir.to_str().unwrap()), dir.join("checkpoint.jsonl"));
+        assert_eq!(
+            resolve_checkpoint_path(dir.to_str().unwrap()),
+            dir.join("checkpoint.jsonl")
+        );
         // 3) Bare id → <sessions-root>/<id>/checkpoint.jsonl
         //    (SRD-77 rename — `logs/` was the pre-SRD-77
         //    name; under cargo workspace the helper resolves
         //    to `<tmp>/nbrs-sessions/` so we assert on the
         //    trailing structure instead of the prefix).
         let id_path = resolve_checkpoint_path("nonexistent_session_id");
-        assert!(id_path.ends_with("nonexistent_session_id/checkpoint.jsonl"),
-            "expected <sessions-root>/<id>/checkpoint.jsonl, got {id_path:?}");
+        assert!(
+            id_path.ends_with("nonexistent_session_id/checkpoint.jsonl"),
+            "expected <sessions-root>/<id>/checkpoint.jsonl, got {id_path:?}"
+        );
     }
 
     #[test]
@@ -534,7 +644,11 @@ mod tests {
             at: "2026-05-07T12:00:10Z".into(),
             identity: ident("rampup"),
             error: "boom".into(),
-            op_counts: Some(OpCounts { started: 5, finished: 2, errors: 3 }),
+            op_counts: Some(OpCounts {
+                started: 5,
+                finished: 2,
+                errors: 3,
+            }),
         };
         let line = render_event(&e);
         assert!(line.contains("phase_failed"));

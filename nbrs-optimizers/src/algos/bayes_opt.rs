@@ -42,7 +42,12 @@ impl Optimizer for BayesOpt {
         "bayes_opt"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         if d == 0 {
@@ -55,8 +60,16 @@ impl Optimizer for BayesOpt {
 
         // RBF lengthscale: a quarter of the box diagonal unless overridden.
         let diag = (0..d).map(|i| (hi[i] - lo[i]).powi(2)).sum::<f64>().sqrt();
-        let ell = if self.lengthscale > 0.0 { self.lengthscale } else { (0.25 * diag).max(1e-6) };
-        let n_cand = if self.candidates >= 1 { self.candidates } else { (200 * d).max(256) };
+        let ell = if self.lengthscale > 0.0 {
+            self.lengthscale
+        } else {
+            (0.25 * diag).max(1e-6)
+        };
+        let n_cand = if self.candidates >= 1 {
+            self.candidates
+        } else {
+            (200 * d).max(256)
+        };
 
         // Initial random design.
         let n_init = if self.init >= 1 { self.init } else { 2 * d + 2 };

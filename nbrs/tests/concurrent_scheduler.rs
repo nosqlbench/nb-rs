@@ -22,23 +22,24 @@ use std::process::Command;
 fn nbrs() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap();
+        .parent()
+        .unwrap();
     cmd.current_dir(workspace_root);
     cmd
 }
 
 fn write_workload(label: &str, body: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all {dir:?}: {e}"));
     dir.push(format!(
         "nbrs_sched_{label}_{}_{}.yaml",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
-    let mut f = std::fs::File::create(&dir)
-        .unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
+    let mut f = std::fs::File::create(&dir).unwrap_or_else(|e| panic!("create {dir:?}: {e}"));
     f.write_all(body.as_bytes())
         .unwrap_or_else(|e| panic!("write {dir:?}: {e}"));
     dir
@@ -83,7 +84,9 @@ fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
         "nbrs-sched-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -95,10 +98,11 @@ fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
     cmd.arg("adapter=testkit");
     cmd.arg("--session-path");
     cmd.arg(&session_path);
-    for a in extra { cmd.arg(a); }
+    for a in extra {
+        cmd.arg(a);
+    }
     let out = cmd.output().expect("failed to exec nbrs");
-    let session_log = std::fs::read_to_string(session_path.join("session.log"))
-        .unwrap_or_default();
+    let session_log = std::fs::read_to_string(session_path.join("session.log")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&session_parent);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),

@@ -63,8 +63,8 @@
 //!   startup and hands the trait object to a single executor —
 //!   one polymorphic dispatch on shutdown, none on the hot path.
 
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 
 use nbrs_metrics::metrics_query::MetricsQuery;
 use nbrs_metrics::snapshot::MetricSet;
@@ -132,5 +132,7 @@ pub trait SinkHandle: Send {
     /// `true` while the alt-screen is up. Used by the runner to
     /// decide whether stdout reports (final summaries) should be
     /// deferred until after the sink shuts down vs. printed live.
-    fn owns_terminal(&self) -> bool { false }
+    fn owns_terminal(&self) -> bool {
+        false
+    }
 }

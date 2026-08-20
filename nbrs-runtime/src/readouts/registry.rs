@@ -27,21 +27,41 @@ impl Registry {
     /// Resolve `name` to its built-in implementation.
     pub fn lookup(name: &str) -> Option<ReadoutHandle> {
         match name {
-            "each_close"      => Some(Arc::new(builtins::each_close::EachClose) as Arc<dyn Readout>),
-            "error_readout"   => Some(Arc::new(builtins::error_readout::ErrorReadout) as Arc<dyn Readout>),
-            "metric"          => Some(Arc::new(builtins::metric::Metric) as Arc<dyn Readout>),
-            "phase_outcome"   => Some(Arc::new(builtins::phase_outcome::PhaseOutcomeReadout) as Arc<dyn Readout>),
-            "phase_starting"  => Some(Arc::new(builtins::phase_starting::PhaseStarting) as Arc<dyn Readout>),
-            "phase_status"    => Some(Arc::new(builtins::phase_status::PhaseStatus) as Arc<dyn Readout>),
-            "phase_summary"   => Some(Arc::new(builtins::phase_summary::PhaseSummary) as Arc<dyn Readout>),
-            "scope_close"     => Some(Arc::new(builtins::scope_close::ScopeClose) as Arc<dyn Readout>),
-            "scope_header"    => Some(Arc::new(builtins::scope_header::ScopeHeader) as Arc<dyn Readout>),
-            "scope_open"      => Some(Arc::new(builtins::scope_open::ScopeOpen) as Arc<dyn Readout>),
-            "session_banner"  => Some(Arc::new(builtins::session_banner::SessionBanner) as Arc<dyn Readout>),
-            "session_notice"  => Some(Arc::new(builtins::session_notice::SessionNotice) as Arc<dyn Readout>),
-            "session_summary" => Some(Arc::new(builtins::session_summary::SessionSummary) as Arc<dyn Readout>),
-            "trace"           => Some(Arc::new(builtins::trace::Trace) as Arc<dyn Readout>),
-            "truncated_phases" => Some(Arc::new(builtins::truncated_phases::TruncatedPhases) as Arc<dyn Readout>),
+            "each_close" => Some(Arc::new(builtins::each_close::EachClose) as Arc<dyn Readout>),
+            "error_readout" => {
+                Some(Arc::new(builtins::error_readout::ErrorReadout) as Arc<dyn Readout>)
+            }
+            "metric" => Some(Arc::new(builtins::metric::Metric) as Arc<dyn Readout>),
+            "phase_outcome" => {
+                Some(Arc::new(builtins::phase_outcome::PhaseOutcomeReadout) as Arc<dyn Readout>)
+            }
+            "phase_starting" => {
+                Some(Arc::new(builtins::phase_starting::PhaseStarting) as Arc<dyn Readout>)
+            }
+            "phase_status" => {
+                Some(Arc::new(builtins::phase_status::PhaseStatus) as Arc<dyn Readout>)
+            }
+            "phase_summary" => {
+                Some(Arc::new(builtins::phase_summary::PhaseSummary) as Arc<dyn Readout>)
+            }
+            "scope_close" => Some(Arc::new(builtins::scope_close::ScopeClose) as Arc<dyn Readout>),
+            "scope_header" => {
+                Some(Arc::new(builtins::scope_header::ScopeHeader) as Arc<dyn Readout>)
+            }
+            "scope_open" => Some(Arc::new(builtins::scope_open::ScopeOpen) as Arc<dyn Readout>),
+            "session_banner" => {
+                Some(Arc::new(builtins::session_banner::SessionBanner) as Arc<dyn Readout>)
+            }
+            "session_notice" => {
+                Some(Arc::new(builtins::session_notice::SessionNotice) as Arc<dyn Readout>)
+            }
+            "session_summary" => {
+                Some(Arc::new(builtins::session_summary::SessionSummary) as Arc<dyn Readout>)
+            }
+            "trace" => Some(Arc::new(builtins::trace::Trace) as Arc<dyn Readout>),
+            "truncated_phases" => {
+                Some(Arc::new(builtins::truncated_phases::TruncatedPhases) as Arc<dyn Readout>)
+            }
             _ => None,
         }
     }

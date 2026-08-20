@@ -23,7 +23,9 @@ fn run_inline(op: &str, cycles: u64) -> (String, String, bool) {
         "nbrs-inline-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -65,10 +67,7 @@ fn hash_and_mod_binding() {
 
 #[test]
 fn multiple_inline_bindings() {
-    let (stdout, stderr, ok) = run_inline(
-        "a={{mod(hash(cycle), 100)}} b={{add(cycle, 1000)}}",
-        3,
-    );
+    let (stdout, stderr, ok) = run_inline("a={{mod(hash(cycle), 100)}} b={{add(cycle, 1000)}}", 3);
     assert!(ok, "nbrs failed: {stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 3);
@@ -77,8 +76,16 @@ fn multiple_inline_bindings() {
         assert!(line.contains("b="), "missing b= in: {line}");
     }
     // b should be 1000, 1001, 1002 for cycles 0, 1, 2.
-    assert!(lines[0].contains("b=1000"), "expected b=1000, got: {}", lines[0]);
-    assert!(lines[2].contains("b=1002"), "expected b=1002, got: {}", lines[2]);
+    assert!(
+        lines[0].contains("b=1000"),
+        "expected b=1000, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[2].contains("b=1002"),
+        "expected b=1002, got: {}",
+        lines[2]
+    );
 }
 
 #[test]
@@ -89,10 +96,26 @@ fn semicolon_multiple_ops() {
     assert_eq!(lines.len(), 4);
     // With bucket sequencer and 1:1 ratio, stanza is [read, write].
     // Cycle 0 → read, cycle 1 → write, cycle 2 → read, cycle 3 → write.
-    assert!(lines[0].starts_with("read "), "expected read, got: {}", lines[0]);
-    assert!(lines[1].starts_with("write "), "expected write, got: {}", lines[1]);
-    assert!(lines[2].starts_with("read "), "expected read, got: {}", lines[2]);
-    assert!(lines[3].starts_with("write "), "expected write, got: {}", lines[3]);
+    assert!(
+        lines[0].starts_with("read "),
+        "expected read, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with("write "),
+        "expected write, got: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("read "),
+        "expected read, got: {}",
+        lines[2]
+    );
+    assert!(
+        lines[3].starts_with("write "),
+        "expected write, got: {}",
+        lines[3]
+    );
 }
 
 #[test]
@@ -137,7 +160,9 @@ fn json_format() {
         "nbrs-json-format-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -148,14 +173,18 @@ fn json_format() {
         .output()
         .expect("failed to execute nbrs");
     let _ = std::fs::remove_dir_all(&session_parent);
-    assert!(output.status.success(), "nbrs failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "nbrs failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2);
     // Should be valid JSON.
     for line in &lines {
-        let _: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("invalid JSON '{line}': {e}"));
+        let _: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSON '{line}': {e}"));
     }
 }
 
@@ -165,7 +194,9 @@ fn dry_run_fields() {
         "nbrs-inline-dry-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -198,7 +229,9 @@ fn empty_op_fails() {
         "nbrs-inline-empty-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
@@ -218,12 +251,19 @@ fn op_overrides_workload_with_warning() {
         "nbrs-inline-override-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
     let output = nbrs()
-        .args(["run", "op=hello {{cycle}}", "workload=nonexistent.yaml", "cycles=1"])
+        .args([
+            "run",
+            "op=hello {{cycle}}",
+            "workload=nonexistent.yaml",
+            "cycles=1",
+        ])
         .arg("--session-path")
         .arg(&session_path)
         .output()

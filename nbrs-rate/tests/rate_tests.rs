@@ -26,8 +26,10 @@ async fn rate_accuracy_100_ops_per_sec() {
 
     // 50 ops at 100/s should take ~500ms. Allow 200ms-1200ms for CI jitter.
     let ms = elapsed.as_millis();
-    assert!((200..=1500).contains(&ms),
-        "50 ops at 100/s took {ms}ms, expected ~500ms");
+    assert!(
+        (200..=1500).contains(&ms),
+        "50 ops at 100/s took {ms}ms, expected ~500ms"
+    );
 }
 
 #[tokio::test]
@@ -44,8 +46,10 @@ async fn rate_accuracy_1000_ops_per_sec() {
 
     // 200 ops at 1000/s should take ~200ms
     let ms = elapsed.as_millis();
-    assert!((80..=800).contains(&ms),
-        "200 ops at 1000/s took {ms}ms, expected ~200ms");
+    assert!(
+        (80..=800).contains(&ms),
+        "200 ops at 1000/s took {ms}ms, expected ~200ms"
+    );
 }
 
 #[tokio::test]
@@ -62,8 +66,10 @@ async fn rate_accuracy_10000_ops_per_sec() {
 
     // 1000 ops at 10000/s should take ~100ms
     let ms = elapsed.as_millis();
-    assert!((30..=500).contains(&ms),
-        "1000 ops at 10000/s took {ms}ms, expected ~100ms");
+    assert!(
+        (30..=500).contains(&ms),
+        "1000 ops at 10000/s took {ms}ms, expected ~100ms"
+    );
 }
 
 // =================================================================
@@ -146,7 +152,11 @@ async fn very_low_rate() {
 
     // At 0.5 ops/s, one op every 2 seconds. But we primed with one,
     // and refill has been running, so first acquire should be fast.
-    assert!(elapsed.as_millis() < 5000, "took too long: {}ms", elapsed.as_millis());
+    assert!(
+        elapsed.as_millis() < 5000,
+        "took too long: {}ms",
+        elapsed.as_millis()
+    );
 }
 
 #[tokio::test]
@@ -163,8 +173,11 @@ async fn very_high_rate() {
     limiter.stop().await;
 
     // 1000 ops at 1M/s should be near-instant (1ms theoretical)
-    assert!(elapsed.as_millis() < 2000,
-        "1000 ops at 1M/s took {}ms", elapsed.as_millis());
+    assert!(
+        elapsed.as_millis() < 2000,
+        "1000 ops at 1M/s took {}ms",
+        elapsed.as_millis()
+    );
 }
 
 #[tokio::test]
@@ -186,8 +199,11 @@ async fn burst_ratio_affects_recovery() {
 
     // With accumulated tokens and 2x burst, should be faster than
     // 100ms (which would be the steady-state time at 1000/s)
-    assert!(elapsed.as_millis() < 200,
-        "burst recovery should speed up, took {}ms", elapsed.as_millis());
+    assert!(
+        elapsed.as_millis() < 200,
+        "burst recovery should speed up, took {}ms",
+        elapsed.as_millis()
+    );
 }
 
 // =================================================================
@@ -251,8 +267,11 @@ async fn acquire_order_is_fair() {
 
     // All 4 tasks should have completed all 25 acquires
     for (i, c) in counters.iter().enumerate() {
-        assert_eq!(c.load(Ordering::Relaxed), 25,
-            "task {i} didn't complete all acquires");
+        assert_eq!(
+            c.load(Ordering::Relaxed),
+            25,
+            "task {i} didn't complete all acquires"
+        );
     }
 }
 

@@ -11,7 +11,7 @@
 //! datetime fields and accepts polydat string form.
 
 use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
-use nbrs_runtime::session::{init_empty_session, utc_datetime_fields, SessionReuse};
+use nbrs_runtime::session::{SessionReuse, init_empty_session, utc_datetime_fields};
 
 /// Spec for the `session` command tree.
 pub fn spec() -> Command {
@@ -34,8 +34,8 @@ pub fn spec() -> Command {
             level: Level::Secondary,
             flags: Vec::new(),
             kv_params: &[],
-        dynamic_options: None,
-        positionals: Vec::new(),
+            dynamic_options: None,
+            positionals: Vec::new(),
             handler: Some(Handler::Sync(handle_init)),
             raw_args: true,
             completion_override: None,
@@ -130,7 +130,9 @@ fn eval_name_template(template: &str) -> Result<String, String> {
         Some(other) => Err(format!(
             "session name template '{template}' must produce a string, got {other:?}"
         )),
-        None => Err(format!("session name template '{template}' produced no value")),
+        None => Err(format!(
+            "session name template '{template}' produced no value"
+        )),
     }
 }
 

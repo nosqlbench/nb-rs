@@ -51,7 +51,8 @@ impl MetricsCache {
             && std::fs::write(&cache_path, json).is_ok()
             && let Ok(db_meta) = std::fs::metadata(db_path)
             && let Ok(modified) = db_meta.modified()
-            && let Ok(f) = std::fs::File::options().write(true).open(&cache_path) {
+            && let Ok(f) = std::fs::File::options().write(true).open(&cache_path)
+        {
             let _ = f.set_modified(modified);
         }
         built
@@ -59,7 +60,8 @@ impl MetricsCache {
 }
 
 fn derive_cache_path(db_path: &Path) -> PathBuf {
-    let stem = db_path.file_name()
+    let stem = db_path
+        .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "metrics.db".into());
     db_path.with_file_name(format!("{stem}.metric_labels.cache.json"))
@@ -72,7 +74,9 @@ fn load_if_fresh(cache_path: &Path, db_path: &Path) -> Option<MetricsCache> {
     let dm_t = dm.modified().ok()?;
     // Stale if cache is older than db. Equal mtime is fresh
     // (we set cache mtime = db mtime after each build).
-    if cm_t < dm_t { return None; }
+    if cm_t < dm_t {
+        return None;
+    }
     let text = std::fs::read_to_string(cache_path).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -83,9 +87,7 @@ fn build_from_db(db_path: &Path) -> MetricsCache {
         Ok(c) => c,
         Err(_) => return out,
     };
-    let mut stmt = match conn.prepare(
-        "SELECT spec FROM metric_instance ORDER BY spec"
-    ) {
+    let mut stmt = match conn.prepare("SELECT spec FROM metric_instance ORDER BY spec") {
         Ok(s) => s,
         Err(_) => return out,
     };
@@ -101,7 +103,8 @@ fn build_from_db(db_path: &Path) -> MetricsCache {
         }
     }
     out.families = family_set.into_iter().collect();
-    out.labels = label_set.into_iter()
+    out.labels = label_set
+        .into_iter()
         .map(|(k, vs)| (k, vs.into_iter().collect()))
         .collect();
     out
@@ -124,20 +127,28 @@ fn build_from_db(db_path: &Path) -> MetricsCache {
 pub fn match_completions(partial: &str, db_path: &Path) -> Vec<String> {
     let cache = MetricsCache::load_or_build(db_path);
     match parse_position(partial) {
-        Position::Family { prefix } => {
-            cache.families.into_iter()
-                .filter(|f| f.starts_with(prefix))
-                .collect()
-        }
-        Position::LabelKey { stable, key_prefix } => {
-            cache.labels.keys()
-                .filter(|k| k.starts_with(key_prefix))
-                .map(|k| format!("{stable}{k}"))
-                .collect()
-        }
-        Position::LabelValue { stable, key, val_prefix, quote } => {
-            let Some(values) = cache.labels.get(key) else { return Vec::new(); };
-            values.iter()
+        Position::Family { prefix } => cache
+            .families
+            .into_iter()
+            .filter(|f| f.starts_with(prefix))
+            .collect(),
+        Position::LabelKey { stable, key_prefix } => cache
+            .labels
+            .keys()
+            .filter(|k| k.starts_with(key_prefix))
+            .map(|k| format!("{stable}{k}"))
+            .collect(),
+        Position::LabelValue {
+            stable,
+            key,
+            val_prefix,
+            quote,
+        } => {
+            let Some(values) = cache.labels.get(key) else {
+                return Vec::new();
+            };
+            values
+                .iter()
                 .filter(|v| v.starts_with(val_prefix))
                 .map(|v| {
                     if quote {
@@ -157,9 +168,19 @@ pub fn match_completions(partial: &str, db_path: &Path) -> Vec<String> {
 /// the full token, not just the trailing piece.
 #[derive(Debug)]
 enum Position<'a> {
-    Family { prefix: &'a str },
-    LabelKey { stable: String, key_prefix: &'a str },
-    LabelValue { stable: String, key: &'a str, val_prefix: &'a str, quote: bool },
+    Family {
+        prefix: &'a str,
+    },
+    LabelKey {
+        stable: String,
+        key_prefix: &'a str,
+    },
+    LabelValue {
+        stable: String,
+        key: &'a str,
+        val_prefix: &'a str,
+        quote: bool,
+    },
 }
 
 fn parse_position(partial: &str) -> Position<'_> {
@@ -198,10 +219,12 @@ fn parse_position(partial: &str) -> Position<'_> {
         } else {
             (false, val)
         };
-        let stable = format!("{stable}{key}{op}{}",
-            if quote { "\"" } else { "" });
+        let stable = format!("{stable}{key}{op}{}", if quote { "\"" } else { "" });
         return Position::LabelValue {
-            stable, key, val_prefix: val_text, quote,
+            stable,
+            key,
+            val_prefix: val_text,
+            quote,
         };
     }
     Position::LabelKey {
@@ -258,7 +281,12 @@ mod tests {
     #[test]
     fn label_value_position_unquoted() {
         match parse_position("recall{k=") {
-            Position::LabelValue { stable, key, val_prefix, quote } => {
+            Position::LabelValue {
+                stable,
+                key,
+                val_prefix,
+                quote,
+            } => {
                 assert_eq!(stable, "recall{k=");
                 assert_eq!(key, "k");
                 assert_eq!(val_prefix, "");
@@ -271,7 +299,12 @@ mod tests {
     #[test]
     fn label_value_position_quoted() {
         match parse_position("recall{k=\"1") {
-            Position::LabelValue { stable, key, val_prefix, quote } => {
+            Position::LabelValue {
+                stable,
+                key,
+                val_prefix,
+                quote,
+            } => {
                 assert_eq!(stable, "recall{k=\"");
                 assert_eq!(key, "k");
                 assert_eq!(val_prefix, "1");
@@ -284,7 +317,12 @@ mod tests {
     #[test]
     fn label_value_position_substring_op() {
         match parse_position("recall{profile=~lab") {
-            Position::LabelValue { stable, key, val_prefix, quote } => {
+            Position::LabelValue {
+                stable,
+                key,
+                val_prefix,
+                quote,
+            } => {
                 assert_eq!(stable, "recall{profile=~");
                 assert_eq!(key, "profile");
                 assert_eq!(val_prefix, "lab");

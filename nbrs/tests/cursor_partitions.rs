@@ -23,7 +23,9 @@ use std::process::Command;
 
 const WORKLOAD: &str = "examples/workloads/cursors/cursor_partitions_coverage.yaml";
 
-struct SessionDir { path: PathBuf }
+struct SessionDir {
+    path: PathBuf,
+}
 
 impl SessionDir {
     fn new() -> Self {
@@ -32,16 +34,21 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-cursor-partitions-{pid}-{nanos}"));
+        let parent = std::env::temp_dir().join(format!("nbrs-cursor-partitions-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
-        Self { path: parent.join("session") }
+        Self {
+            path: parent.join("session"),
+        }
     }
-    fn parent(&self) -> &Path { self.path.parent().unwrap() }
+    fn parent(&self) -> &Path {
+        self.path.parent().unwrap()
+    }
 }
 
 impl Drop for SessionDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(self.parent()); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.parent());
+    }
 }
 
 fn run_scenario(scenario: &str, extra_args: &[&str]) -> (String, String, bool) {
@@ -50,10 +57,13 @@ fn run_scenario(scenario: &str, extra_args: &[&str]) -> (String, String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     cmd.current_dir(workspace_root)
         .arg("run")
-        .arg("--session-path").arg(&session.path)
+        .arg("--session-path")
+        .arg(&session.path)
         .arg(format!("workload={WORKLOAD}"))
         .arg(format!("scenario={scenario}"));
-    for a in extra_args { cmd.arg(a); }
+    for a in extra_args {
+        cmd.arg(a);
+    }
     let out = cmd.output().expect("run nbrs");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -64,7 +74,8 @@ fn run_scenario(scenario: &str, extra_args: &[&str]) -> (String, String, bool) {
 /// filtering out informational stdout and counting / asserting
 /// against the `cp/...` emits the workload phases produce.
 fn lines_with_prefix(stdout: &str, prefix: &str) -> Vec<String> {
-    stdout.lines()
+    stdout
+        .lines()
         .filter(|l| l.starts_with(prefix))
         .map(|l| l.to_string())
         .collect()
@@ -89,8 +100,10 @@ fn cursor_partitions_form1_percentage_end() {
     // `over "0..53%"` against range(0, 1000) → cursor [0, 530).
     let (stdout, stderr, ok) = run_scenario("form1_percentage_end", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=530".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=530".to_string()]
+    );
 }
 
 #[test]
@@ -98,8 +111,10 @@ fn cursor_partitions_form1_fraction_end() {
     // `over "0..0.53"` (fraction form) === `over "0..53%"`.
     let (stdout, stderr, ok) = run_scenario("form1_fraction_end", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=530".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=530".to_string()]
+    );
 }
 
 #[test]
@@ -107,8 +122,10 @@ fn cursor_partitions_form1_literal_ordinals() {
     // `over "100..500"` (bare integers) → cursor [100, 500).
     let (stdout, stderr, ok) = run_scenario("form1_literal_ordinals", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=100 hi=500".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=100 hi=500".to_string()]
+    );
 }
 
 #[test]
@@ -116,8 +133,10 @@ fn cursor_partitions_form1_mixed_literal_then_pct() {
     // `over "100..50%"` — literal start, percentage end.
     let (stdout, stderr, ok) = run_scenario("form1_mixed_literal_then_pct", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=100 hi=500".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=100 hi=500".to_string()]
+    );
 }
 
 #[test]
@@ -125,8 +144,10 @@ fn cursor_partitions_form1_mixed_frac_then_literal() {
     // `over "0.10..800"` — fraction start, literal end.
     let (stdout, stderr, ok) = run_scenario("form1_mixed_frac_then_literal", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=100 hi=800".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=100 hi=800".to_string()]
+    );
 }
 
 #[test]
@@ -134,8 +155,10 @@ fn cursor_partitions_form1_brackets_tolerated() {
     // `over "[0..53%)"` — bracket / closure markers stripped.
     let (stdout, stderr, ok) = run_scenario("form1_brackets_tolerated", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=530".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=530".to_string()]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -148,11 +171,14 @@ fn cursor_partitions_form2_pct_with_star() {
     //   [0..2), [2..12), [12..100).
     let (stdout, stderr, ok) = run_scenario("form2_pct_with_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=2",
-        "cp/iter idx=1 lo=2 hi=12",
-        "cp/iter idx=2 lo=12 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=2",
+            "cp/iter idx=1 lo=2 hi=12",
+            "cp/iter idx=2 lo=12 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -160,11 +186,14 @@ fn cursor_partitions_form2_fraction_with_star() {
     // `partitions("0.02,0.10,*")` equivalent to percentage form.
     let (stdout, stderr, ok) = run_scenario("form2_fraction_with_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=2",
-        "cp/iter idx=1 lo=2 hi=12",
-        "cp/iter idx=2 lo=12 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=2",
+            "cp/iter idx=1 lo=2 hi=12",
+            "cp/iter idx=2 lo=12 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -172,11 +201,14 @@ fn cursor_partitions_form2_literal_with_star() {
     // `partitions("1000,5000,*", 10000)` — literal ordinal deltas.
     let (stdout, stderr, ok) = run_scenario("form2_literal_with_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=1000",
-        "cp/iter idx=1 lo=1000 hi=6000",
-        "cp/iter idx=2 lo=6000 hi=10000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=1000",
+            "cp/iter idx=1 lo=1000 hi=6000",
+            "cp/iter idx=2 lo=6000 hi=10000",
+        ]
+    );
 }
 
 #[test]
@@ -186,11 +218,14 @@ fn cursor_partitions_form2_mixed_literal_pct_with_star() {
     // third the remainder (8000).
     let (stdout, stderr, ok) = run_scenario("form2_mixed_literal_pct_with_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=1000",
-        "cp/iter idx=1 lo=1000 hi=2000",
-        "cp/iter idx=2 lo=2000 hi=10000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=1000",
+            "cp/iter idx=1 lo=1000 hi=2000",
+            "cp/iter idx=2 lo=2000 hi=10000",
+        ]
+    );
 }
 
 #[test]
@@ -199,10 +234,10 @@ fn cursor_partitions_form2_short_list_drops_gap() {
     // 50% gap is dropped, only 2 partitions emitted.
     let (stdout, stderr, ok) = run_scenario("form2_short_list_drops_gap", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=20",
-        "cp/iter idx=1 lo=20 hi=50",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec!["cp/iter idx=0 lo=0 hi=20", "cp/iter idx=1 lo=20 hi=50",]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -228,7 +263,10 @@ fn cursor_partitions_form2_fill() {
     // 1% delta until the extent is used up → 11 partitions.
     let (stdout, stderr, ok) = run_scenario("form2_fill", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), ninety_ten_by_one());
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        ninety_ten_by_one()
+    );
 }
 
 #[test]
@@ -238,7 +276,10 @@ fn cursor_partitions_form2_star_split() {
     // spelling at head=90%.
     let (stdout, stderr, ok) = run_scenario("form2_star_split", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), ninety_ten_by_one());
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        ninety_ten_by_one()
+    );
 }
 
 #[test]
@@ -247,12 +288,15 @@ fn cursor_partitions_form2_star_split_whole() {
     // whole extent: resolves exactly like `linear:4`.
     let (stdout, stderr, ok) = run_scenario("form2_star_split_whole", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=25",
-        "cp/iter idx=1 lo=25 hi=50",
-        "cp/iter idx=2 lo=50 hi=75",
-        "cp/iter idx=3 lo=75 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=25",
+            "cp/iter idx=1 lo=25 hi=50",
+            "cp/iter idx=2 lo=50 hi=75",
+            "cp/iter idx=3 lo=75 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -262,13 +306,16 @@ fn cursor_partitions_form2_fill_truncates() {
     // used up" emits the short tail rather than dropping it.
     let (stdout, stderr, ok) = run_scenario("form2_fill_truncates", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=3",
-        "cp/iter idx=1 lo=3 hi=5",
-        "cp/iter idx=2 lo=5 hi=7",
-        "cp/iter idx=3 lo=7 hi=9",
-        "cp/iter idx=4 lo=9 hi=10",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=3",
+            "cp/iter idx=1 lo=3 hi=5",
+            "cp/iter idx=2 lo=5 hi=7",
+            "cp/iter idx=3 lo=7 hi=9",
+            "cp/iter idx=4 lo=9 hi=10",
+        ]
+    );
 }
 
 #[test]
@@ -278,7 +325,10 @@ fn cursor_partitions_form2_repetition() {
     // fill and split spellings.
     let (stdout, stderr, ok) = run_scenario("form2_repetition", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), ninety_ten_by_one());
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        ninety_ten_by_one()
+    );
 }
 
 #[test]
@@ -288,10 +338,10 @@ fn cursor_partitions_form2_gap() {
     // partitions only.
     let (stdout, stderr, ok) = run_scenario("form2_gap", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=10",
-        "cp/iter idx=1 lo=90 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec!["cp/iter idx=0 lo=0 hi=10", "cp/iter idx=1 lo=90 hi=100",]
+    );
 }
 
 #[test]
@@ -300,11 +350,14 @@ fn cursor_partitions_form2_star_shaped() {
     // (500 ordinals) shaped 25%/75% by the recipe weights.
     let (stdout, stderr, ok) = run_scenario("form2_star_shaped", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=500",
-        "cp/iter idx=1 lo=500 hi=625",
-        "cp/iter idx=2 lo=625 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=500",
+            "cp/iter idx=1 lo=500 hi=625",
+            "cp/iter idx=2 lo=625 hi=1000",
+        ]
+    );
 }
 
 #[test]
@@ -314,12 +367,15 @@ fn cursor_partitions_windowed_chunking() {
     // four chunks are 200 ordinals each starting at 200.
     let (stdout, stderr, ok) = run_scenario("windowed_chunking", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=200 hi=400",
-        "cp/iter idx=1 lo=400 hi=600",
-        "cp/iter idx=2 lo=600 hi=800",
-        "cp/iter idx=3 lo=800 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=200 hi=400",
+            "cp/iter idx=1 lo=400 hi=600",
+            "cp/iter idx=2 lo=600 hi=800",
+            "cp/iter idx=3 lo=800 hi=1000",
+        ]
+    );
 }
 
 #[test]
@@ -331,13 +387,16 @@ fn cursor_partitions_order_largest_first() {
     // helper.
     let (stdout, stderr, ok) = run_scenario("order_largest_first", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=4 lo=58 hi=100",
-        "cp/iter idx=3 lo=32 hi=58",
-        "cp/iter idx=2 lo=16 hi=32",
-        "cp/iter idx=1 lo=5 hi=16",
-        "cp/iter idx=0 lo=0 hi=5",
-    ]);
+    assert_eq!(
+        lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=4 lo=58 hi=100",
+            "cp/iter idx=3 lo=32 hi=58",
+            "cp/iter idx=2 lo=16 hi=32",
+            "cp/iter idx=1 lo=5 hi=16",
+            "cp/iter idx=0 lo=0 hi=5",
+        ]
+    );
 }
 
 #[test]
@@ -350,16 +409,23 @@ fn cursor_partitions_order_random_is_deterministic() {
     assert_eq!(first.len(), 4, "four partitions: {first:?}");
     let mut sorted = first.clone();
     sorted.sort();
-    assert_eq!(sorted, vec![
-        "cp/iter idx=0 lo=0 hi=25",
-        "cp/iter idx=1 lo=25 hi=50",
-        "cp/iter idx=2 lo=50 hi=75",
-        "cp/iter idx=3 lo=75 hi=100",
-    ], "shuffle is a permutation of the same partitions");
+    assert_eq!(
+        sorted,
+        vec![
+            "cp/iter idx=0 lo=0 hi=25",
+            "cp/iter idx=1 lo=25 hi=50",
+            "cp/iter idx=2 lo=50 hi=75",
+            "cp/iter idx=3 lo=75 hi=100",
+        ],
+        "shuffle is a permutation of the same partitions"
+    );
     let (stdout2, stderr2, ok2) = run_scenario("order_random", &[]);
     assert!(ok2, "second run failed: {stderr2}");
-    assert_eq!(lines_with_prefix(&stdout2, "cp/iter "), first,
-        "random order must be deterministic across runs");
+    assert_eq!(
+        lines_with_prefix(&stdout2, "cp/iter "),
+        first,
+        "random order must be deterministic across runs"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -372,12 +438,15 @@ fn cursor_partitions_recipe_linear() {
     // [50..75), [75..100).
     let (stdout, stderr, ok) = run_scenario("recipe_linear", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=25",
-        "cp/iter idx=1 lo=25 hi=50",
-        "cp/iter idx=2 lo=50 hi=75",
-        "cp/iter idx=3 lo=75 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=25",
+            "cp/iter idx=1 lo=25 hi=50",
+            "cp/iter idx=2 lo=50 hi=75",
+            "cp/iter idx=3 lo=75 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -385,11 +454,14 @@ fn cursor_partitions_recipe_ratios() {
     // `ratios:1,1,2` (sum 4) → 25%, 25%, 50%.
     let (stdout, stderr, ok) = run_scenario("recipe_ratios", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=25",
-        "cp/iter idx=1 lo=25 hi=50",
-        "cp/iter idx=2 lo=50 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=25",
+            "cp/iter idx=1 lo=25 hi=50",
+            "cp/iter idx=2 lo=50 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -398,13 +470,16 @@ fn cursor_partitions_recipe_bin() {
     // [6.25%, 25%, 37.5%, 25%, 6.25%].
     let (stdout, stderr, ok) = run_scenario("recipe_bin", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=6",
-        "cp/iter idx=1 lo=6 hi=31",
-        "cp/iter idx=2 lo=31 hi=69",
-        "cp/iter idx=3 lo=69 hi=94",
-        "cp/iter idx=4 lo=94 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=6",
+            "cp/iter idx=1 lo=6 hi=31",
+            "cp/iter idx=2 lo=31 hi=69",
+            "cp/iter idx=3 lo=69 hi=94",
+            "cp/iter idx=4 lo=94 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -412,13 +487,16 @@ fn cursor_partitions_recipe_fib() {
     // `fib:5` → distinct fib (skipping leading 1,1) = [1, 2, 3, 5, 8].
     let (stdout, stderr, ok) = run_scenario("recipe_fib", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=5",
-        "cp/iter idx=1 lo=5 hi=16",
-        "cp/iter idx=2 lo=16 hi=32",
-        "cp/iter idx=3 lo=32 hi=58",
-        "cp/iter idx=4 lo=58 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=5",
+            "cp/iter idx=1 lo=5 hi=16",
+            "cp/iter idx=2 lo=16 hi=32",
+            "cp/iter idx=3 lo=32 hi=58",
+            "cp/iter idx=4 lo=58 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -430,8 +508,10 @@ fn cursor_partitions_recipe_ln() {
     assert_eq!(lines.len(), 5, "ln:5 should produce 5 partitions");
     // Last partition ends at 100% (no trailing gap because
     // sum-of-deltas equals extent exactly).
-    assert!(lines.last().unwrap().contains("hi=100"),
-        "last partition should reach 100, got: {lines:?}");
+    assert!(
+        lines.last().unwrap().contains("hi=100"),
+        "last partition should reach 100, got: {lines:?}"
+    );
 }
 
 #[test]
@@ -441,7 +521,11 @@ fn cursor_partitions_recipe_mul_decay() {
     let (stdout, stderr, ok) = run_scenario("recipe_mul_decay", &[]);
     assert!(ok, "scenario failed: {stderr}");
     let lines = distinct_lines_with_prefix(&stdout, "cp/count ");
-    assert_eq!(lines.len(), 11, "mul:0.5 decay should produce 11 partitions");
+    assert_eq!(
+        lines.len(),
+        11,
+        "mul:0.5 decay should produce 11 partitions"
+    );
 }
 
 #[test]
@@ -458,12 +542,15 @@ fn cursor_partitions_recipe_geom() {
     // `geom:4,2` → fixed 4 terms: 1, 2, 4, 8 (sum 15).
     let (stdout, stderr, ok) = run_scenario("recipe_geom", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=7",
-        "cp/iter idx=1 lo=7 hi=20",
-        "cp/iter idx=2 lo=20 hi=47",
-        "cp/iter idx=3 lo=47 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=7",
+            "cp/iter idx=1 lo=7 hi=20",
+            "cp/iter idx=2 lo=20 hi=47",
+            "cp/iter idx=3 lo=47 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -489,12 +576,15 @@ fn cursor_partitions_recipe_front_heavy() {
     // `front_heavy:4` → 4, 3, 2, 1 (sum 10). 40%, 30%, 20%, 10%.
     let (stdout, stderr, ok) = run_scenario("recipe_front_heavy", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=40",
-        "cp/iter idx=1 lo=40 hi=70",
-        "cp/iter idx=2 lo=70 hi=90",
-        "cp/iter idx=3 lo=90 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=40",
+            "cp/iter idx=1 lo=40 hi=70",
+            "cp/iter idx=2 lo=70 hi=90",
+            "cp/iter idx=3 lo=90 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -502,12 +592,15 @@ fn cursor_partitions_recipe_back_heavy() {
     // `back_heavy:4` → 1, 2, 3, 4 (sum 10). 10%, 20%, 30%, 40%.
     let (stdout, stderr, ok) = run_scenario("recipe_back_heavy", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=10",
-        "cp/iter idx=1 lo=10 hi=30",
-        "cp/iter idx=2 lo=30 hi=60",
-        "cp/iter idx=3 lo=60 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=10",
+            "cp/iter idx=1 lo=10 hi=30",
+            "cp/iter idx=2 lo=30 hi=60",
+            "cp/iter idx=3 lo=60 hi=100",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -520,8 +613,10 @@ fn cursor_partitions_over_workload_param() {
     // narrows to [0, 500).
     let (stdout, stderr, ok) = run_scenario("over_workload_param", &["cursor=0..50%"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/over_cursor "),
-        vec!["cp/over_cursor lo=0 hi=500".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/over_cursor "),
+        vec!["cp/over_cursor lo=0 hi=500".to_string()]
+    );
 }
 
 #[test]
@@ -533,32 +628,33 @@ fn cursor_partitions_phase_scoped_override_exact() {
         &["cursor=0..50%", "over_cursor_phase.cursor=0..25%"],
     );
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/over_cursor "),
-        vec!["cp/over_cursor lo=0 hi=250".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/over_cursor "),
+        vec!["cp/over_cursor lo=0 hi=250".to_string()]
+    );
 }
 
 #[test]
 fn cursor_partitions_phase_scoped_override_glob() {
     // Glob form: `over_*.cursor=` matches `over_cursor_phase`.
-    let (stdout, stderr, ok) = run_scenario(
-        "over_workload_param",
-        &["over_*.cursor=0..10%"],
-    );
+    let (stdout, stderr, ok) = run_scenario("over_workload_param", &["over_*.cursor=0..10%"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/over_cursor "),
-        vec!["cp/over_cursor lo=0 hi=100".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/over_cursor "),
+        vec!["cp/over_cursor lo=0 hi=100".to_string()]
+    );
 }
 
 #[test]
 fn cursor_partitions_phase_override_never_matching_is_startup_error() {
     // A pattern that matches no phase is a typo, not a no-op.
-    let (stdout, stderr, ok) = run_scenario(
-        "over_workload_param",
-        &["nosuch_*.cursor=0..10%"],
-    );
+    let (stdout, stderr, ok) = run_scenario("over_workload_param", &["nosuch_*.cursor=0..10%"]);
     assert!(!ok, "never-matching override pattern must fail at startup");
     let combined = format!("{stdout}\n{stderr}");
-    assert!(combined.contains("matches no phase"), "diagnostic: {combined}");
+    assert!(
+        combined.contains("matches no phase"),
+        "diagnostic: {combined}"
+    );
 }
 
 #[test]
@@ -583,10 +679,14 @@ fn cursor_partitions_over_param_multi_partition_is_startup_error() {
     let (stdout, stderr, ok) = run_scenario("over_workload_param", &["cursor=2%,10%,*"]);
     assert!(!ok, "multi-partition spec on a direct `over` must fail");
     let combined = format!("{stdout}\n{stderr}");
-    assert!(combined.contains("for:"),
-        "diagnostic should point at the `for:` iteration form: {combined}");
-    assert!(combined.contains("partitions"),
-        "diagnostic should name the partition list: {combined}");
+    assert!(
+        combined.contains("for:"),
+        "diagnostic should point at the `for:` iteration form: {combined}"
+    );
+    assert!(
+        combined.contains("partitions"),
+        "diagnostic should name the partition list: {combined}"
+    );
 }
 
 #[test]
@@ -596,11 +696,14 @@ fn cursor_partitions_over_iter_var() {
     // per-iteration cursor narrowings.
     let (stdout, stderr, ok) = run_scenario("over_iter_var", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/over_p "), vec![
-        "cp/over_p idx=0 lo=0 hi=333",
-        "cp/over_p idx=1 lo=333 hi=667",
-        "cp/over_p idx=2 lo=667 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/over_p "),
+        vec![
+            "cp/over_p idx=0 lo=0 hi=333",
+            "cp/over_p idx=1 lo=333 hi=667",
+            "cp/over_p idx=2 lo=667 hi=1000",
+        ]
+    );
 }
 
 #[test]
@@ -609,10 +712,13 @@ fn cursor_partitions_over_cross_cursor() {
     // resolved partition. Both cursors narrow identically.
     let (stdout, stderr, ok) = run_scenario("over_cross_cursor", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/cross "), vec![
-        "cp/cross idx=0 q1=[0..500) q2=[0..500)",
-        "cp/cross idx=1 q1=[500..1000) q2=[500..1000)",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/cross "),
+        vec![
+            "cp/cross idx=0 q1=[0..500) q2=[0..500)",
+            "cp/cross idx=1 q1=[500..1000) q2=[500..1000)",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -635,12 +741,15 @@ fn cursor_partitions_param_sweep_default() {
     // param projection-wire sweep (NOT a hardcoded literal).
     let (stdout, stderr, ok) = run_scenario("param_sweep", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/sweep "), vec![
-        "cp/sweep idx=0 lo=0 hi=25",
-        "cp/sweep idx=1 lo=25 hi=50",
-        "cp/sweep idx=2 lo=50 hi=75",
-        "cp/sweep idx=3 lo=75 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/sweep "),
+        vec![
+            "cp/sweep idx=0 lo=0 hi=25",
+            "cp/sweep idx=1 lo=25 hi=50",
+            "cp/sweep idx=2 lo=50 hi=75",
+            "cp/sweep idx=3 lo=75 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -650,10 +759,10 @@ fn cursor_partitions_param_sweep_cli_override_linear() {
     // the CLI param override re-resolves the partition list.
     let (stdout, stderr, ok) = run_scenario("param_sweep", &["sweep_cursor=linear:2"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/sweep "), vec![
-        "cp/sweep idx=0 lo=0 hi=50",
-        "cp/sweep idx=1 lo=50 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/sweep "),
+        vec!["cp/sweep idx=0 lo=0 hi=50", "cp/sweep idx=1 lo=50 hi=100",]
+    );
 }
 
 #[test]
@@ -661,14 +770,16 @@ fn cursor_partitions_param_sweep_cli_override_pct_list() {
     // `sweep_cursor=2%,10%,*` — a Form-2 percentage delta list driven
     // through the projection wire. `*` absorbs the remainder, so on
     // extent 100: [0,2) [2,12) [12,100).
-    let (stdout, stderr, ok) =
-        run_scenario("param_sweep", &["sweep_cursor=2%,10%,*"]);
+    let (stdout, stderr, ok) = run_scenario("param_sweep", &["sweep_cursor=2%,10%,*"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/sweep "), vec![
-        "cp/sweep idx=0 lo=0 hi=2",
-        "cp/sweep idx=1 lo=2 hi=12",
-        "cp/sweep idx=2 lo=12 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/sweep "),
+        vec![
+            "cp/sweep idx=0 lo=0 hi=2",
+            "cp/sweep idx=1 lo=2 hi=12",
+            "cp/sweep idx=2 lo=12 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -676,16 +787,18 @@ fn cursor_partitions_param_sweep_cli_override_recipe() {
     // `sweep_cursor=fib:5` — a Form-3 recipe driven through the
     // projection wire. Fibonacci weights (1,2,3,5,8 → sum 19) against
     // extent 100 give the cumulative boundaries 5/16/32/58/100.
-    let (stdout, stderr, ok) =
-        run_scenario("param_sweep", &["sweep_cursor=fib:5"]);
+    let (stdout, stderr, ok) = run_scenario("param_sweep", &["sweep_cursor=fib:5"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/sweep "), vec![
-        "cp/sweep idx=0 lo=0 hi=5",
-        "cp/sweep idx=1 lo=5 hi=16",
-        "cp/sweep idx=2 lo=16 hi=32",
-        "cp/sweep idx=3 lo=32 hi=58",
-        "cp/sweep idx=4 lo=58 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/sweep "),
+        vec![
+            "cp/sweep idx=0 lo=0 hi=5",
+            "cp/sweep idx=1 lo=5 hi=16",
+            "cp/sweep idx=2 lo=16 hi=32",
+            "cp/sweep idx=3 lo=32 hi=58",
+            "cp/sweep idx=4 lo=58 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -693,11 +806,12 @@ fn cursor_partitions_param_sweep_cli_override_single_range() {
     // `sweep_cursor=0..50%` — a Form-1 single sub-range driven
     // through the projection wire collapses the sweep to one
     // partition [0,50) on extent 100.
-    let (stdout, stderr, ok) =
-        run_scenario("param_sweep", &["sweep_cursor=0..50%"]);
+    let (stdout, stderr, ok) = run_scenario("param_sweep", &["sweep_cursor=0..50%"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/sweep "),
-        vec!["cp/sweep idx=0 lo=0 hi=50".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/sweep "),
+        vec!["cp/sweep idx=0 lo=0 hi=50".to_string()]
+    );
 }
 
 #[test]
@@ -707,11 +821,14 @@ fn cursor_partitions_reify_sweep_default() {
     // Default `warmup_sweep="linear:3"` → three thirds of extent 100.
     let (stdout, stderr, ok) = run_scenario("reify_sweep", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/reify "), vec![
-        "cp/reify idx=0 lo=0 hi=33",
-        "cp/reify idx=1 lo=33 hi=67",
-        "cp/reify idx=2 lo=67 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/reify "),
+        vec![
+            "cp/reify idx=0 lo=0 hi=33",
+            "cp/reify idx=1 lo=33 hi=67",
+            "cp/reify idx=2 lo=67 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -720,14 +837,16 @@ fn cursor_partitions_reify_sweep_cli_override() {
     // weights 1,1,2 (sum 4) against extent 100 give [0,25) [25,50)
     // [50,100). Confirms the custom-named param's projection wire
     // re-resolves under a CLI override.
-    let (stdout, stderr, ok) =
-        run_scenario("reify_sweep", &["warmup_sweep=ratios:1,1,2"]);
+    let (stdout, stderr, ok) = run_scenario("reify_sweep", &["warmup_sweep=ratios:1,1,2"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/reify "), vec![
-        "cp/reify idx=0 lo=0 hi=25",
-        "cp/reify idx=1 lo=25 hi=50",
-        "cp/reify idx=2 lo=50 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/reify "),
+        vec![
+            "cp/reify idx=0 lo=0 hi=25",
+            "cp/reify idx=1 lo=25 hi=50",
+            "cp/reify idx=2 lo=50 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -739,12 +858,15 @@ fn cursor_partitions_source_over_comprehension() {
     // re-scale to the cursor's own extent → quarters of 1000.
     let (stdout, stderr, ok) = run_scenario("partitions_source_over", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/source "), vec![
-        "cp/source idx=0 lo=0 hi=250",
-        "cp/source idx=1 lo=250 hi=500",
-        "cp/source idx=2 lo=500 hi=750",
-        "cp/source idx=3 lo=750 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/source "),
+        vec![
+            "cp/source idx=0 lo=0 hi=250",
+            "cp/source idx=1 lo=250 hi=500",
+            "cp/source idx=2 lo=500 hi=750",
+            "cp/source idx=3 lo=750 hi=1000",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -759,7 +881,10 @@ fn cursor_partitions_fn_cardinality() {
     let lines = distinct_lines_with_prefix(&stdout, "cp/fn cardinality ");
     assert_eq!(lines.len(), 3);
     for line in &lines {
-        assert!(line.contains("n=100"), "expected cardinality 100, got: {line}");
+        assert!(
+            line.contains("n=100"),
+            "expected cardinality 100, got: {line}"
+        );
     }
 }
 
@@ -768,12 +893,15 @@ fn cursor_partitions_fn_idx_and_bounds() {
     // `linear:4` against default extent 100 → idx 0..3, bounds in 25-step quarters.
     let (stdout, stderr, ok) = run_scenario("fn_idx_and_bounds", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/fn bounds "), vec![
-        "cp/fn bounds idx=0 lo=0 hi=25",
-        "cp/fn bounds idx=1 lo=25 hi=50",
-        "cp/fn bounds idx=2 lo=50 hi=75",
-        "cp/fn bounds idx=3 lo=75 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/fn bounds "),
+        vec![
+            "cp/fn bounds idx=0 lo=0 hi=25",
+            "cp/fn bounds idx=1 lo=25 hi=50",
+            "cp/fn bounds idx=2 lo=50 hi=75",
+            "cp/fn bounds idx=3 lo=75 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -782,13 +910,16 @@ fn cursor_partitions_fn_mod_in() {
     // [0..100). cycle 0..4 maps to 0, 1, 2, 3, 4 (no wrap).
     let (stdout, stderr, ok) = run_scenario("fn_mod_in", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/fn mod_in "), vec![
-        "cp/fn mod_in v=0",
-        "cp/fn mod_in v=1",
-        "cp/fn mod_in v=2",
-        "cp/fn mod_in v=3",
-        "cp/fn mod_in v=4",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/fn mod_in "),
+        vec![
+            "cp/fn mod_in v=0",
+            "cp/fn mod_in v=1",
+            "cp/fn mod_in v=2",
+            "cp/fn mod_in v=3",
+            "cp/fn mod_in v=4",
+        ]
+    );
 }
 
 #[test]
@@ -796,11 +927,10 @@ fn cursor_partitions_fn_at() {
     // `at(p, cycle)` where p is [0..100). cycle 0..2 → 0, 1, 2.
     let (stdout, stderr, ok) = run_scenario("fn_at", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/fn at "), vec![
-        "cp/fn at v=0",
-        "cp/fn at v=1",
-        "cp/fn at v=2",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/fn at "),
+        vec!["cp/fn at v=0", "cp/fn at v=1", "cp/fn at v=2",]
+    );
 }
 
 #[test]
@@ -809,13 +939,16 @@ fn cursor_partitions_fn_clamp_in() {
     // all inside the range → no saturation, just pass-through.
     let (stdout, stderr, ok) = run_scenario("fn_clamp_in", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/fn clamp_in "), vec![
-        "cp/fn clamp_in v=0",
-        "cp/fn clamp_in v=1",
-        "cp/fn clamp_in v=2",
-        "cp/fn clamp_in v=3",
-        "cp/fn clamp_in v=4",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/fn clamp_in "),
+        vec![
+            "cp/fn clamp_in v=0",
+            "cp/fn clamp_in v=1",
+            "cp/fn clamp_in v=2",
+            "cp/fn clamp_in v=3",
+            "cp/fn clamp_in v=4",
+        ]
+    );
 }
 
 #[test]
@@ -828,14 +961,22 @@ fn cursor_partitions_fn_random_in() {
     let lines = lines_with_prefix(&stdout, "cp/fn random_in ");
     assert_eq!(lines.len(), 5, "five cycles → five values: {lines:?}");
     for line in &lines {
-        let v: u64 = line.rsplit("v=").next().unwrap().trim().parse()
+        let v: u64 = line
+            .rsplit("v=")
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
             .unwrap_or_else(|e| panic!("unparseable value in `{line}`: {e}"));
         assert!(v < 100, "random_in escaped the partition: {line}");
     }
     let (stdout2, stderr2, ok2) = run_scenario("fn_random_in", &[]);
     assert!(ok2, "second run failed: {stderr2}");
-    assert_eq!(lines_with_prefix(&stdout2, "cp/fn random_in "), lines,
-        "random_in must be deterministic per seed");
+    assert_eq!(
+        lines_with_prefix(&stdout2, "cp/fn random_in "),
+        lines,
+        "random_in must be deterministic per seed"
+    );
 }
 
 #[test]
@@ -847,11 +988,14 @@ fn cursor_partitions_dotted_scalar_projections() {
     // name directly in the op template).
     let (stdout, stderr, ok) = run_scenario("dotted_projections", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/dotted "), vec![
-        "cp/dotted i=0 n=3 lo=0 hi=333 ord=333",
-        "cp/dotted i=1 n=3 lo=333 hi=667 ord=667",
-        "cp/dotted i=2 n=3 lo=667 hi=1000 ord=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/dotted "),
+        vec![
+            "cp/dotted i=0 n=3 lo=0 hi=333 ord=333",
+            "cp/dotted i=1 n=3 lo=333 hi=667 ord=667",
+            "cp/dotted i=2 n=3 lo=667 hi=1000 ord=1000",
+        ]
+    );
 }
 
 #[test]
@@ -861,9 +1005,10 @@ fn cursor_partitions_fn_subdivide() {
     // token.
     let (stdout, stderr, ok) = run_scenario("fn_subdivide", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/fn subdivide "), vec![
-        "cp/fn subdivide subs=PartitionList[4]=[0..25),[25..50),[50..75),[75..100)",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/fn subdivide "),
+        vec!["cp/fn subdivide subs=PartitionList[4]=[0..25),[25..50),[50..75),[75..100)",]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -880,10 +1025,19 @@ fn cursor_partitions_open_extent_capped_by_partition() {
     let (stdout, stderr, ok) = run_scenario("open_extent_over", &[]);
     assert!(ok, "scenario failed: {stderr}");
     let lines = lines_with_prefix(&stdout, "cp/open_extent ");
-    assert_eq!(lines.len(), 25, "exactly the partition's cardinality: {lines:?}");
+    assert_eq!(
+        lines.len(),
+        25,
+        "exactly the partition's cardinality: {lines:?}"
+    );
     // Ordinals stay inside the partition.
     for line in &lines {
-        let n: u64 = line.rsplit("n=").next().unwrap().trim().parse()
+        let n: u64 = line
+            .rsplit("n=")
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
             .unwrap_or_else(|e| panic!("unparseable `{line}`: {e}"));
         assert!(n < 25, "ordinal escaped the partition: {line}");
     }
@@ -906,8 +1060,10 @@ fn cursor_partitions_status_banner_on_iteration() {
         "partition 2/3 [333..667)",
         "partition 3/3 [667..1000)",
     ] {
-        assert!(combined.contains(needle),
-            "missing banner `{needle}` in output:\n{combined}");
+        assert!(
+            combined.contains(needle),
+            "missing banner `{needle}` in output:\n{combined}"
+        );
     }
 }
 
@@ -918,8 +1074,10 @@ fn cursor_partitions_status_banner_suppressed_for_single() {
     let (stdout, stderr, ok) = run_scenario("over_workload_param", &["cursor=0..50%"]);
     assert!(ok, "scenario failed: {stderr}");
     let combined = format!("{stdout}\n{stderr}");
-    assert!(!combined.contains("partition 1/1"),
-        "single-partition runs must not emit the banner:\n{combined}");
+    assert!(
+        !combined.contains("partition 1/1"),
+        "single-partition runs must not emit the banner:\n{combined}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -934,12 +1092,15 @@ fn cursor_partitions_nested_subdivide_source() {
     // through the kernel's scope chain.
     let (stdout, stderr, ok) = run_scenario("hierarchical_sweep", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/nested "), vec![
-        "cp/nested outer=0 inner=0 lo=0 hi=250",
-        "cp/nested outer=0 inner=1 lo=250 hi=500",
-        "cp/nested outer=1 inner=0 lo=500 hi=750",
-        "cp/nested outer=1 inner=1 lo=750 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/nested "),
+        vec![
+            "cp/nested outer=0 inner=0 lo=0 hi=250",
+            "cp/nested outer=0 inner=1 lo=250 hi=500",
+            "cp/nested outer=1 inner=0 lo=500 hi=750",
+            "cp/nested outer=1 inner=1 lo=750 hi=1000",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -955,25 +1116,30 @@ fn cursor_partitions_reified_warmup_steady() {
     // as the public surface.
     let (stdout, stderr, ok) = run_scenario("reified_warmup_steady", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/warmup "),
-        vec!["cp/warmup lo=0 hi=100".to_string()]);
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/steady "),
-        vec!["cp/steady lo=100 hi=1000".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/warmup "),
+        vec!["cp/warmup lo=0 hi=100".to_string()]
+    );
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/steady "),
+        vec!["cp/steady lo=100 hi=1000".to_string()]
+    );
 }
 
 #[test]
 fn cursor_partitions_reified_warmup_steady_with_cli_override() {
     // Operator overrides `warmup_cursor=0..1%` — cursor narrows
     // to [0, 10). `steady_cursor` keeps its workload default.
-    let (stdout, stderr, ok) = run_scenario(
-        "reified_warmup_steady",
-        &["warmup_cursor=0..1%"],
-    );
+    let (stdout, stderr, ok) = run_scenario("reified_warmup_steady", &["warmup_cursor=0..1%"]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/warmup "),
-        vec!["cp/warmup lo=0 hi=10".to_string()]);
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/steady "),
-        vec!["cp/steady lo=100 hi=1000".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/warmup "),
+        vec!["cp/warmup lo=0 hi=10".to_string()]
+    );
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/steady "),
+        vec!["cp/steady lo=100 hi=1000".to_string()]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -984,15 +1150,15 @@ fn cursor_partitions_reified_warmup_steady_with_cli_override() {
 fn cursor_partitions_no_over_ignores_cursor_param() {
     // Phase's cursor declared without `over` should keep its
     // full extent (50) regardless of the CLI `cursor=` value.
-    let (stdout, stderr, ok) = run_scenario(
-        "no_over_ignores_cursor_param",
-        &["cursor=0..10%"],
-    );
+    let (stdout, stderr, ok) = run_scenario("no_over_ignores_cursor_param", &["cursor=0..10%"]);
     assert!(ok, "scenario failed: {stderr}");
     // 50 emits because the cursor's full extent is 50 ordinals.
-    assert_eq!(lines_with_prefix(&stdout, "cp/no_over ").len(), 50,
+    assert_eq!(
+        lines_with_prefix(&stdout, "cp/no_over ").len(),
+        50,
         "expected 50 emits (cursor's full extent), got {}",
-        lines_with_prefix(&stdout, "cp/no_over ").len());
+        lines_with_prefix(&stdout, "cp/no_over ").len()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1013,12 +1179,18 @@ fn cursor_partitions_no_over_ignores_cursor_param() {
 /// Assert the four-part rejection contract for a scenario run.
 fn assert_clean_rejection(stdout: &str, stderr: &str, ok: bool, fragment: &str) {
     assert!(!ok, "bad spec must fail the run; stderr: {stderr}");
-    assert!(stderr.contains(fragment),
-        "verbatim diagnostic fragment `{fragment}` missing from stderr: {stderr}");
-    assert!(!stderr.contains("panicked"),
-        "rejection must not panic: {stderr}");
-    assert!(!stderr.contains("type mismatch"),
-        "spec diagnostic must not be masked by a type mismatch: {stderr}");
+    assert!(
+        stderr.contains(fragment),
+        "verbatim diagnostic fragment `{fragment}` missing from stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "rejection must not panic: {stderr}"
+    );
+    assert!(
+        !stderr.contains("type mismatch"),
+        "spec diagnostic must not be masked by a type mismatch: {stderr}"
+    );
     let _ = stdout;
 }
 
@@ -1027,9 +1199,13 @@ fn cursor_partitions_reject_delta_overshoot_pct() {
     // `60%,60%` sums to 120% of the default extent 100 → the delta
     // list overshoots the cursor's extent. SRD 71 §"Over-sum lists".
     let (stdout, stderr, ok) = run_scenario("reject_delta_overshoot_pct", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "delta list sums to 120 ordinals, exceeding the cursor's extent 100; \
-         trim the list or use a `*` remainder to absorb the overflow");
+         trim the list or use a `*` remainder to absorb the overflow",
+    );
 }
 
 #[test]
@@ -1037,8 +1213,12 @@ fn cursor_partitions_reject_delta_overshoot_literal() {
     // `10000,5000` against extent 10000 → sums to 15000 ordinals,
     // overshooting the explicit extent.
     let (stdout, stderr, ok) = run_scenario("reject_delta_overshoot_literal", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
-        "delta list sums to 15000 ordinals, exceeding the cursor's extent 10000");
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
+        "delta list sums to 15000 ordinals, exceeding the cursor's extent 10000",
+    );
 }
 
 #[test]
@@ -1046,9 +1226,13 @@ fn cursor_partitions_reject_unknown_recipe() {
     // A bad recipe name surfaces the verbatim diagnostic with the
     // supported-recipe list. SRD 71 §"Form 3 pre-baked recipes".
     let (stdout, stderr, ok) = run_scenario("reject_unknown_recipe", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "unknown recipe `frobnicate` — supported: linear, ratios, mul, bin, \
-         fib, ln, geom, zipf, pareto, front_heavy, back_heavy");
+         fib, ln, geom, zipf, pareto, front_heavy, back_heavy",
+    );
 }
 
 #[test]
@@ -1056,9 +1240,13 @@ fn cursor_partitions_reject_unknown_order() {
     // A bad order suffix surfaces the supported-order list verbatim.
     // SRD 71 §"Ordering suffix".
     let (stdout, stderr, ok) = run_scenario("reject_unknown_order", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "unknown order `sideways` — supported: unchanged, smallest_first, \
-         largest_first, random");
+         largest_first, random",
+    );
 }
 
 #[test]
@@ -1066,8 +1254,12 @@ fn cursor_partitions_reject_bad_window() {
     // `linear:4 in 50%` — the `in` window must be a `start..end`
     // range, not a bare sized value. SRD 71 §"Windowed chunking".
     let (stdout, stderr, ok) = run_scenario("reject_bad_window", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
-        "the window after `in` must be a `start..end` range; got `50%`");
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
+        "the window after `in` must be a `start..end` range; got `50%`",
+    );
 }
 
 #[test]
@@ -1076,8 +1268,12 @@ fn cursor_partitions_reject_tail_pct_divisor() {
     // bare integer; a percentage divisor is rejected with a teaching
     // hint pointing at the fill form. SRD 71 §"Tail tokens".
     let (stdout, stderr, ok) = run_scenario("reject_tail_pct_divisor", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
-        "the divisor after `*/` is a chunk count and must be a bare integer");
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
+        "the divisor after `*/` is a chunk count and must be a bare integer",
+    );
 }
 
 #[test]
@@ -1085,35 +1281,51 @@ fn cursor_partitions_reject_tail_linear_split() {
     // `*/linear:4` — an equal-count remainder split spelled as a
     // recipe; the diagnostic redirects to the canonical `*/4` form.
     let (stdout, stderr, ok) = run_scenario("reject_tail_linear_split", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "spell an equal-count remainder split as `*/4` — `*/N` is the \
-         canonical form");
+         canonical form",
+    );
 }
 
 #[test]
 fn cursor_partitions_reject_double_star() {
     // `*,*` — two remainder tokens; at most one is allowed.
     let (stdout, stderr, ok) = run_scenario("reject_double_star", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "at most one remainder token (`*`, `...`, `*/N`, or `*/recipe`) is \
-         allowed in a delta list; got 2 in `*,*`");
+         allowed in a delta list; got 2 in `*,*`",
+    );
 }
 
 #[test]
 fn cursor_partitions_reject_double_tail() {
     // `90%,...,*` — two distinct tail tokens; only one is allowed.
     let (stdout, stderr, ok) = run_scenario("reject_double_tail", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "at most one remainder token (`*`, `...`, `*/N`, or `*/recipe`) is \
-         allowed in a delta list; got 2 in `90%,...,*`");
+         allowed in a delta list; got 2 in `90%,...,*`",
+    );
 }
 
 #[test]
 fn cursor_partitions_reject_x0() {
     // `1%x0` — a zero repetition count; must be >= 1.
     let (stdout, stderr, ok) = run_scenario("reject_x0", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
-        "`1%x0`: the repetition count must be >= 1");
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
+        "`1%x0`: the repetition count must be >= 1",
+    );
 }
 
 #[test]
@@ -1121,9 +1333,13 @@ fn cursor_partitions_reject_repeated_tail() {
     // `*/4,...` — entries trailing a star tail; the tail must be the
     // last entry in the delta list.
     let (stdout, stderr, ok) = run_scenario("reject_repeated_tail", &[]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "`*/4` consumes the rest of the extent and must be the last entry \
-         in the delta list; got trailing entries after it");
+         in the delta list; got trailing entries after it",
+    );
 }
 
 #[test]
@@ -1135,9 +1351,13 @@ fn cursor_partitions_reject_param_bad_spec() {
     // no panic, no type mismatch.
     let (stdout, stderr, ok) =
         run_scenario("reject_param_bad_spec", &["reject_cursor=frobnicate:3"]);
-    assert_clean_rejection(&stdout, &stderr, ok,
+    assert_clean_rejection(
+        &stdout,
+        &stderr,
+        ok,
         "unknown recipe `frobnicate` — supported: linear, ratios, mul, bin, \
-         fib, ln, geom, zipf, pareto, front_heavy, back_heavy");
+         fib, ln, geom, zipf, pareto, front_heavy, back_heavy",
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1150,8 +1370,10 @@ fn cursor_partitions_form1_both_pct() {
     // range(0, 1000) → [0, 530).
     let (stdout, stderr, ok) = run_scenario("form1_both_pct", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=530".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=530".to_string()]
+    );
 }
 
 #[test]
@@ -1160,8 +1382,10 @@ fn cursor_partitions_form1_bracket_trailing_pct() {
     // to the whole range → [0, 530).
     let (stdout, stderr, ok) = run_scenario("form1_bracket_trailing_pct", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=530".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=530".to_string()]
+    );
 }
 
 #[test]
@@ -1170,8 +1394,10 @@ fn cursor_partitions_form1_bracket_square_close() {
     // closure is always [start, end) → [0, 530).
     let (stdout, stderr, ok) = run_scenario("form1_bracket_square_close", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=530".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=530".to_string()]
+    );
 }
 
 #[test]
@@ -1180,8 +1406,10 @@ fn cursor_partitions_form1_both_fraction() {
     // range(0, 1000) → [50, 500).
     let (stdout, stderr, ok) = run_scenario("form1_both_fraction", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=50 hi=500".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=50 hi=500".to_string()]
+    );
 }
 
 #[test]
@@ -1191,8 +1419,10 @@ fn cursor_partitions_form1_literal_both() {
     // ABSOLUTE end ordinal (per-endpoint type), not a count.
     let (stdout, stderr, ok) = run_scenario("form1_literal_both", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=100 hi=1000".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=100 hi=1000".to_string()]
+    );
 }
 
 #[test]
@@ -1201,8 +1431,10 @@ fn cursor_partitions_form1_literal_end() {
     // [0, 1000) (the first 1000 rows).
     let (stdout, stderr, ok) = run_scenario("form1_literal_end", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/form1 "),
-        vec!["cp/form1 lo=0 hi=1000".to_string()]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/form1 "),
+        vec!["cp/form1 lo=0 hi=1000".to_string()]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1215,10 +1447,13 @@ fn cursor_partitions_form2_literal_drops_remainder() {
     // Sum 6000 < extent 10000 → trailing 4000-ordinal gap dropped.
     let (stdout, stderr, ok) = run_scenario("form2_literal_drops_remainder", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=1000",
-        "cp/iter idx=1 lo=1000 hi=6000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=1000",
+            "cp/iter idx=1 lo=1000 hi=6000",
+        ]
+    );
 }
 
 #[test]
@@ -1228,10 +1463,13 @@ fn cursor_partitions_form2_mixed_drops_remainder() {
     // 1000; sum 2000 < extent → trailing 8000-ordinal gap dropped.
     let (stdout, stderr, ok) = run_scenario("form2_mixed_drops_remainder", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=1000",
-        "cp/iter idx=1 lo=1000 hi=2000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=1000",
+            "cp/iter idx=1 lo=1000 hi=2000",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1244,11 +1482,14 @@ fn cursor_partitions_form2_star_midlist() {
     // may sit MID-LIST, absorbing the middle remainder.
     let (stdout, stderr, ok) = run_scenario("form2_star_midlist", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=2",
-        "cp/iter idx=1 lo=2 hi=90",
-        "cp/iter idx=2 lo=90 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=2",
+            "cp/iter idx=1 lo=2 hi=90",
+            "cp/iter idx=2 lo=90 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1257,10 +1498,10 @@ fn cursor_partitions_form2_head_star() {
     // exactly two partitions.
     let (stdout, stderr, ok) = run_scenario("form2_head_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=90",
-        "cp/iter idx=1 lo=90 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec!["cp/iter idx=0 lo=0 hi=90", "cp/iter idx=1 lo=90 hi=100",]
+    );
 }
 
 #[test]
@@ -1269,11 +1510,14 @@ fn cursor_partitions_form2_plain_pct_star() {
     // interchangeable with the `*%` spelling.
     let (stdout, stderr, ok) = run_scenario("form2_plain_pct_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=2",
-        "cp/iter idx=1 lo=2 hi=12",
-        "cp/iter idx=2 lo=12 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=2",
+            "cp/iter idx=1 lo=2 hi=12",
+            "cp/iter idx=2 lo=12 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1282,24 +1526,27 @@ fn cursor_partitions_form2_star_split_16() {
     // extent into sixteen near-equal partitions.
     let (stdout, stderr, ok) = run_scenario("form2_star_split_16", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=6",
-        "cp/iter idx=1 lo=6 hi=13",
-        "cp/iter idx=10 lo=63 hi=69",
-        "cp/iter idx=11 lo=69 hi=75",
-        "cp/iter idx=12 lo=75 hi=81",
-        "cp/iter idx=13 lo=81 hi=88",
-        "cp/iter idx=14 lo=88 hi=94",
-        "cp/iter idx=15 lo=94 hi=100",
-        "cp/iter idx=2 lo=13 hi=19",
-        "cp/iter idx=3 lo=19 hi=25",
-        "cp/iter idx=4 lo=25 hi=31",
-        "cp/iter idx=5 lo=31 hi=38",
-        "cp/iter idx=6 lo=38 hi=44",
-        "cp/iter idx=7 lo=44 hi=50",
-        "cp/iter idx=8 lo=50 hi=56",
-        "cp/iter idx=9 lo=56 hi=63",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=6",
+            "cp/iter idx=1 lo=6 hi=13",
+            "cp/iter idx=10 lo=63 hi=69",
+            "cp/iter idx=11 lo=69 hi=75",
+            "cp/iter idx=12 lo=75 hi=81",
+            "cp/iter idx=13 lo=81 hi=88",
+            "cp/iter idx=14 lo=88 hi=94",
+            "cp/iter idx=15 lo=94 hi=100",
+            "cp/iter idx=2 lo=13 hi=19",
+            "cp/iter idx=3 lo=19 hi=25",
+            "cp/iter idx=4 lo=25 hi=31",
+            "cp/iter idx=5 lo=31 hi=38",
+            "cp/iter idx=6 lo=38 hi=44",
+            "cp/iter idx=7 lo=44 hi=50",
+            "cp/iter idx=8 lo=50 hi=56",
+            "cp/iter idx=9 lo=56 hi=63",
+        ]
+    );
 }
 
 #[test]
@@ -1307,8 +1554,7 @@ fn cursor_partitions_star_split_equals_linear() {
     // `*/16` (whole-extent split) and `linear:16` (whole-extent
     // recipe) are DISTINCT specs that produce byte-identical
     // boundaries — SRD 71 §"Tail tokens" `*/N` ≡ `linear:N`.
-    let (split_out, split_err, split_ok) =
-        run_scenario("form2_star_split_16", &[]);
+    let (split_out, split_err, split_ok) = run_scenario("form2_star_split_16", &[]);
     let (lin_out, lin_err, lin_ok) = run_scenario("form2_linear_16", &[]);
     assert!(split_ok, "*/16 scenario failed: {split_err}");
     assert!(lin_ok, "linear:16 scenario failed: {lin_err}");
@@ -1325,14 +1571,17 @@ fn cursor_partitions_form2_star_shaped_fib() {
     // 100-ordinal remainder by the fib weights [1,2,3,5,8].
     let (stdout, stderr, ok) = run_scenario("form2_star_shaped_fib", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=900",
-        "cp/iter idx=1 lo=900 hi=905",
-        "cp/iter idx=2 lo=905 hi=916",
-        "cp/iter idx=3 lo=916 hi=932",
-        "cp/iter idx=4 lo=932 hi=958",
-        "cp/iter idx=5 lo=958 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=900",
+            "cp/iter idx=1 lo=900 hi=905",
+            "cp/iter idx=2 lo=905 hi=916",
+            "cp/iter idx=3 lo=916 hi=932",
+            "cp/iter idx=4 lo=932 hi=958",
+            "cp/iter idx=5 lo=958 hi=1000",
+        ]
+    );
 }
 
 #[test]
@@ -1341,10 +1590,10 @@ fn cursor_partitions_form2_star_shaped_nohead() {
     // head: the remainder is the whole extent, shaped 25%/75%.
     let (stdout, stderr, ok) = run_scenario("form2_star_shaped_nohead", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=250",
-        "cp/iter idx=1 lo=250 hi=1000",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec!["cp/iter idx=0 lo=0 hi=250", "cp/iter idx=1 lo=250 hi=1000",]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1358,12 +1607,15 @@ fn cursor_partitions_order_smallest_first() {
     // the schedule: idx sequence 3, 2, 1, 0.
     let (stdout, stderr, ok) = run_scenario("order_smallest_first", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=3 lo=90 hi=100",
-        "cp/iter idx=2 lo=70 hi=90",
-        "cp/iter idx=1 lo=40 hi=70",
-        "cp/iter idx=0 lo=0 hi=40",
-    ]);
+    assert_eq!(
+        lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=3 lo=90 hi=100",
+            "cp/iter idx=2 lo=70 hi=90",
+            "cp/iter idx=1 lo=40 hi=70",
+            "cp/iter idx=0 lo=0 hi=40",
+        ]
+    );
 }
 
 #[test]
@@ -1372,12 +1624,15 @@ fn cursor_partitions_order_unchanged() {
     // self-documenting keyword for generation order: idx 0,1,2,3.
     let (stdout, stderr, ok) = run_scenario("order_unchanged", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=40",
-        "cp/iter idx=1 lo=40 hi=70",
-        "cp/iter idx=2 lo=70 hi=90",
-        "cp/iter idx=3 lo=90 hi=100",
-    ]);
+    assert_eq!(
+        lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=40",
+            "cp/iter idx=1 lo=40 hi=70",
+            "cp/iter idx=2 lo=70 hi=90",
+            "cp/iter idx=3 lo=90 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1391,16 +1646,23 @@ fn cursor_partitions_order_random_front_heavy() {
     assert_eq!(first.len(), 4, "four partitions: {first:?}");
     let mut sorted = first.clone();
     sorted.sort();
-    assert_eq!(sorted, vec![
-        "cp/iter idx=0 lo=0 hi=40",
-        "cp/iter idx=1 lo=40 hi=70",
-        "cp/iter idx=2 lo=70 hi=90",
-        "cp/iter idx=3 lo=90 hi=100",
-    ], "shuffle is a permutation of the same partitions");
+    assert_eq!(
+        sorted,
+        vec![
+            "cp/iter idx=0 lo=0 hi=40",
+            "cp/iter idx=1 lo=40 hi=70",
+            "cp/iter idx=2 lo=70 hi=90",
+            "cp/iter idx=3 lo=90 hi=100",
+        ],
+        "shuffle is a permutation of the same partitions"
+    );
     let (stdout2, stderr2, ok2) = run_scenario("order_random_front_heavy", &[]);
     assert!(ok2, "second run failed: {stderr2}");
-    assert_eq!(lines_with_prefix(&stdout2, "cp/iter "), first,
-        "random order must be deterministic across runs");
+    assert_eq!(
+        lines_with_prefix(&stdout2, "cp/iter "),
+        first,
+        "random order must be deterministic across runs"
+    );
 }
 
 #[test]
@@ -1409,12 +1671,15 @@ fn cursor_partitions_recipe_geom_decay() {
     // [1, 0.5, 0.25, 0.125] → [0,53), [53,80), [80,93), [93,100).
     let (stdout, stderr, ok) = run_scenario("recipe_geom_decay", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=53",
-        "cp/iter idx=1 lo=53 hi=80",
-        "cp/iter idx=2 lo=80 hi=93",
-        "cp/iter idx=3 lo=93 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=53",
+            "cp/iter idx=1 lo=53 hi=80",
+            "cp/iter idx=2 lo=80 hi=93",
+            "cp/iter idx=3 lo=93 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1422,12 +1687,15 @@ fn cursor_partitions_recipe_ratios_head() {
     // `ratios:3,1,1,1` (sum 6) heavy-head → 50%, ~16.7% x3.
     let (stdout, stderr, ok) = run_scenario("recipe_ratios_head", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=50",
-        "cp/iter idx=1 lo=50 hi=67",
-        "cp/iter idx=2 lo=67 hi=83",
-        "cp/iter idx=3 lo=83 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=50",
+            "cp/iter idx=1 lo=50 hi=67",
+            "cp/iter idx=2 lo=67 hi=83",
+            "cp/iter idx=3 lo=83 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1435,12 +1703,15 @@ fn cursor_partitions_recipe_ratios_quadratic() {
     // `ratios:1,4,9,16` (squares, sum 30) → quadratic growth.
     let (stdout, stderr, ok) = run_scenario("recipe_ratios_quadratic", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=3",
-        "cp/iter idx=1 lo=3 hi=17",
-        "cp/iter idx=2 lo=17 hi=47",
-        "cp/iter idx=3 lo=47 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=3",
+            "cp/iter idx=1 lo=3 hi=17",
+            "cp/iter idx=2 lo=17 hi=47",
+            "cp/iter idx=3 lo=47 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1449,15 +1720,18 @@ fn cursor_partitions_recipe_fib7() {
     // → [0,2),[2,6),[6,11),[11,21),[21,36),[36,60),[60,100).
     let (stdout, stderr, ok) = run_scenario("recipe_fib7", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=2",
-        "cp/iter idx=1 lo=2 hi=6",
-        "cp/iter idx=2 lo=6 hi=11",
-        "cp/iter idx=3 lo=11 hi=21",
-        "cp/iter idx=4 lo=21 hi=36",
-        "cp/iter idx=5 lo=36 hi=60",
-        "cp/iter idx=6 lo=60 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=2",
+            "cp/iter idx=1 lo=2 hi=6",
+            "cp/iter idx=2 lo=6 hi=11",
+            "cp/iter idx=3 lo=11 hi=21",
+            "cp/iter idx=4 lo=21 hi=36",
+            "cp/iter idx=5 lo=36 hi=60",
+            "cp/iter idx=6 lo=60 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1468,8 +1742,11 @@ fn cursor_partitions_recipe_mul_growth() {
     // sensitive).
     let (stdout, stderr, ok) = run_scenario("recipe_mul_growth", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/count ").len(), 10,
-        "mul:2.3 growth should produce 10 partitions");
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/count ").len(),
+        10,
+        "mul:2.3 growth should produce 10 partitions"
+    );
 }
 
 #[test]
@@ -1483,15 +1760,20 @@ fn cursor_partitions_recipe_linear_equivalences() {
         "cp/iter idx=2 lo=50 hi=75".to_string(),
         "cp/iter idx=3 lo=75 hi=100".to_string(),
     ];
-    let (ratios_out, ratios_err, ratios_ok) =
-        run_scenario("recipe_ratios_uniform", &[]);
+    let (ratios_out, ratios_err, ratios_ok) = run_scenario("recipe_ratios_uniform", &[]);
     assert!(ratios_ok, "ratios scenario failed: {ratios_err}");
-    assert_eq!(distinct_lines_with_prefix(&ratios_out, "cp/iter "), expected,
-        "ratios:1,1,1,1 must equal linear:4");
+    assert_eq!(
+        distinct_lines_with_prefix(&ratios_out, "cp/iter "),
+        expected,
+        "ratios:1,1,1,1 must equal linear:4"
+    );
     let (geom_out, geom_err, geom_ok) = run_scenario("recipe_geom_unit", &[]);
     assert!(geom_ok, "geom scenario failed: {geom_err}");
-    assert_eq!(distinct_lines_with_prefix(&geom_out, "cp/iter "), expected,
-        "geom:4,1 must equal linear:4");
+    assert_eq!(
+        distinct_lines_with_prefix(&geom_out, "cp/iter "),
+        expected,
+        "geom:4,1 must equal linear:4"
+    );
 }
 
 #[test]
@@ -1501,18 +1783,23 @@ fn cursor_partitions_recipe_zipf_pareto_identity() {
     // byte-identical partition bounds.
     let (zipf_out, zipf_err, zipf_ok) = run_scenario("recipe_zipf_bounds", &[]);
     assert!(zipf_ok, "zipf scenario failed: {zipf_err}");
-    let (pareto_out, pareto_err, pareto_ok) =
-        run_scenario("recipe_pareto_bounds", &[]);
+    let (pareto_out, pareto_err, pareto_ok) = run_scenario("recipe_pareto_bounds", &[]);
     assert!(pareto_ok, "pareto scenario failed: {pareto_err}");
     let zipf = distinct_lines_with_prefix(&zipf_out, "cp/iter ");
-    assert_eq!(zipf, vec![
-        "cp/iter idx=0 lo=0 hi=48",
-        "cp/iter idx=1 lo=48 hi=72",
-        "cp/iter idx=2 lo=72 hi=88",
-        "cp/iter idx=3 lo=88 hi=100",
-    ]);
-    assert_eq!(distinct_lines_with_prefix(&pareto_out, "cp/iter "), zipf,
-        "pareto:1,4 must produce the same bounds as zipf:1,4");
+    assert_eq!(
+        zipf,
+        vec![
+            "cp/iter idx=0 lo=0 hi=48",
+            "cp/iter idx=1 lo=48 hi=72",
+            "cp/iter idx=2 lo=72 hi=88",
+            "cp/iter idx=3 lo=88 hi=100",
+        ]
+    );
+    assert_eq!(
+        distinct_lines_with_prefix(&pareto_out, "cp/iter "),
+        zipf,
+        "pareto:1,4 must produce the same bounds as zipf:1,4"
+    );
 }
 
 #[test]
@@ -1535,14 +1822,17 @@ fn cursor_partitions_repetition_with_open_tail() {
     // remainder as one partition.
     let (stdout, stderr, ok) = run_scenario("rep_open_tail", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=1",
-        "cp/iter idx=1 lo=1 hi=2",
-        "cp/iter idx=2 lo=2 hi=3",
-        "cp/iter idx=3 lo=3 hi=4",
-        "cp/iter idx=4 lo=4 hi=5",
-        "cp/iter idx=5 lo=5 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=0 hi=1",
+            "cp/iter idx=1 lo=1 hi=2",
+            "cp/iter idx=2 lo=2 hi=3",
+            "cp/iter idx=3 lo=3 hi=4",
+            "cp/iter idx=4 lo=4 hi=5",
+            "cp/iter idx=5 lo=5 hi=100",
+        ]
+    );
 }
 
 #[test]
@@ -1553,10 +1843,10 @@ fn cursor_partitions_gap_with_star_tail() {
     // remaining [50,100).
     let (stdout, stderr, ok) = run_scenario("gap_with_star", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=0 hi=10",
-        "cp/iter idx=1 lo=50 hi=100",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec!["cp/iter idx=0 lo=0 hi=10", "cp/iter idx=1 lo=50 hi=100",]
+    );
 }
 
 #[test]
@@ -1567,11 +1857,14 @@ fn cursor_partitions_windowed_fib() {
     // relative with cumulative rounding, landing exactly on 900.
     let (stdout, stderr, ok) = run_scenario("windowed_fib", &[]);
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(distinct_lines_with_prefix(&stdout, "cp/iter "), vec![
-        "cp/iter idx=0 lo=100 hi=142",
-        "cp/iter idx=1 lo=142 hi=226",
-        "cp/iter idx=2 lo=226 hi=353",
-        "cp/iter idx=3 lo=353 hi=563",
-        "cp/iter idx=4 lo=563 hi=900",
-    ]);
+    assert_eq!(
+        distinct_lines_with_prefix(&stdout, "cp/iter "),
+        vec![
+            "cp/iter idx=0 lo=100 hi=142",
+            "cp/iter idx=1 lo=142 hi=226",
+            "cp/iter idx=2 lo=226 hi=353",
+            "cp/iter idx=3 lo=353 hi=563",
+            "cp/iter idx=4 lo=563 hi=900",
+        ]
+    );
 }

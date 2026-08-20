@@ -150,35 +150,43 @@ fn build_dbdir(root: &Path, tear: bool) {
 fn consistent_dataset_reports_full_overlap() {
     let sb = Sandbox::new("consistent");
     build_dbdir(&sb.dir, false);
-    let (stdout, stderr, ok) =
-        nbrs(&["diag", "query-labels", sb.dir.to_str().unwrap()]);
+    let (stdout, stderr, ok) = nbrs(&["diag", "query-labels", sb.dir.to_str().unwrap()]);
     assert!(ok, "diag failed: {stderr}");
 
     // Section 2: both partitions match metadata cardinality.
-    assert!(!stdout.contains("|     NO |"), "no mismatch expected:\n{stdout}");
+    assert!(
+        !stdout.contains("|     NO |"),
+        "no mismatch expected:\n{stdout}"
+    );
     // Section 3: query identity holds.
     assert_eq!(stdout.matches("identical to base").count(), 2, "{stdout}");
     assert!(!stdout.contains("DIFFERENT"), "{stdout}");
     // Section 4: ground truths agree exactly.
-    assert!(stdout.contains("| **All** |       4 |  1.0000 | 100.0% |"),
-        "expected full overlap:\n{stdout}");
+    assert!(
+        stdout.contains("| **All** |       4 |  1.0000 | 100.0% |"),
+        "expected full overlap:\n{stdout}"
+    );
 }
 
 #[test]
 fn torn_dataset_reports_disagreement() {
     let sb = Sandbox::new("torn");
     build_dbdir(&sb.dir, true);
-    let (stdout, stderr, ok) =
-        nbrs(&["diag", "query-labels", sb.dir.to_str().unwrap()]);
+    let (stdout, stderr, ok) = nbrs(&["diag", "query-labels", sb.dir.to_str().unwrap()]);
     assert!(ok, "diag failed: {stderr}");
 
     // The dropped base vector shows as a cardinality mismatch…
-    assert!(stdout.contains("NO"), "expected ordinal-mapping mismatch:\n{stdout}");
+    assert!(
+        stdout.contains("NO"),
+        "expected ordinal-mapping mismatch:\n{stdout}"
+    );
     // …and the shifted oracle ordinals drag overlap below 1:
     // label 0 still agrees (2 queries at 1.0), label 1's two
     // queries overlap 0.5 each → all-up (2·1.0 + 2·0.5)/4 = 0.75.
-    assert!(stdout.contains("| **All** |       4 |  0.7500 |"),
-        "expected degraded overlap:\n{stdout}");
+    assert!(
+        stdout.contains("| **All** |       4 |  0.7500 |"),
+        "expected degraded overlap:\n{stdout}"
+    );
 }
 
 #[test]

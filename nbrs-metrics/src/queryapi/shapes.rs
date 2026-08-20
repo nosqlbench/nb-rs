@@ -116,15 +116,27 @@ pub struct Matcher {
 impl Matcher {
     /// `label="value"`.
     pub fn eq(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { label: label.into(), op: MatchOp::Eq, value: value.into() }
+        Self {
+            label: label.into(),
+            op: MatchOp::Eq,
+            value: value.into(),
+        }
     }
     /// `label!="value"`.
     pub fn ne(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { label: label.into(), op: MatchOp::Ne, value: value.into() }
+        Self {
+            label: label.into(),
+            op: MatchOp::Ne,
+            value: value.into(),
+        }
     }
     /// `label=~"pattern"`.
     pub fn eq_regex(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { label: label.into(), op: MatchOp::EqRegex, value: value.into() }
+        Self {
+            label: label.into(),
+            op: MatchOp::EqRegex,
+            value: value.into(),
+        }
     }
 
     /// Test this matcher against a series label set. A missing label
@@ -150,7 +162,9 @@ impl Matcher {
 /// uncompilable pattern.
 fn regex_full_match(pattern: &str, value: &str) -> Option<bool> {
     let anchored = format!("^(?:{pattern})$");
-    regex::Regex::new(&anchored).ok().map(|re| re.is_match(value))
+    regex::Regex::new(&anchored)
+        .ok()
+        .map(|re| re.is_match(value))
 }
 
 #[cfg(test)]
@@ -158,7 +172,10 @@ mod tests {
     use super::*;
 
     fn labels(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -170,7 +187,11 @@ mod tests {
         assert!(!Matcher::ne("phase", "saturate").matches(&ls));
         assert!(Matcher::eq_regex("phase", "sat.*").matches(&ls));
         assert!(!Matcher::eq_regex("phase", "ramp.*").matches(&ls));
-        let ne_re = Matcher { label: "phase".into(), op: MatchOp::NeRegex, value: "ramp.*".into() };
+        let ne_re = Matcher {
+            label: "phase".into(),
+            op: MatchOp::NeRegex,
+            value: "ramp.*".into(),
+        };
         assert!(ne_re.matches(&ls));
     }
 

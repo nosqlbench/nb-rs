@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
@@ -16,7 +16,9 @@ pub const NAME: WrapperName = WrapperName::new("memo");
 /// Trigger: `memo:` is either a bare string (shorthand) or a
 /// map with `before:` / `after:` keys.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template
         .params
         .get("memo")
@@ -28,16 +30,18 @@ fn describe_assignment(s: WrapperSubject) -> Option<String> {
     let template = s.op()?;
     let v = template.params.get("memo")?;
     if let Some(s) = v.as_str() {
-        if s.is_empty() { return None; }
+        if s.is_empty() {
+            return None;
+        }
         Some(format!("memo: \"{s}\" (before+after)"))
     } else if let Some(obj) = v.as_object() {
         let before = obj.get("before").and_then(|x| x.as_str());
-        let after  = obj.get("after").and_then(|x| x.as_str());
+        let after = obj.get("after").and_then(|x| x.as_str());
         match (before, after) {
             (Some(b), Some(a)) => Some(format!("memo: before \"{b}\" / after \"{a}\"")),
-            (Some(b), None)    => Some(format!("memo: before \"{b}\"")),
-            (None, Some(a))    => Some(format!("memo: after \"{a}\"")),
-            (None, None)       => None,
+            (Some(b), None) => Some(format!("memo: before \"{b}\"")),
+            (None, Some(a)) => Some(format!("memo: after \"{a}\"")),
+            (None, None) => None,
         }
     } else {
         None
@@ -114,8 +118,10 @@ impl MemoDispenser {
                 self.memo_state.store(Arc::new(rendered));
             }
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Debug,
-                    "memo: substitution failed for '{template}': {e}");
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "memo: substitution failed for '{template}': {e}"
+                );
             }
         }
     }
@@ -128,7 +134,9 @@ impl OpDispenser for MemoDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             if let Some(t) = &self.before_template {
                 self.publish(t, ctx.wires);
@@ -158,9 +166,15 @@ mod tests {
         count: u64,
     }
     impl ResultBody for ResultDispBody {
-        fn to_json(&self) -> serde_json::Value { self.value.clone() }
-        fn as_any(&self) -> &dyn std::any::Any { self }
-        fn element_count(&self) -> u64 { self.count }
+        fn to_json(&self) -> serde_json::Value {
+            self.value.clone()
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn element_count(&self) -> u64 {
+            self.count
+        }
     }
 
     /// A canned-result inner dispenser. `body` controls the
@@ -175,7 +189,9 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 if let Some(msg) = self.error {
                     return Err(ExecutionError::Op(AdapterError {
@@ -185,10 +201,12 @@ mod tests {
                     }));
                 }
                 Ok(OpResult {
-                    body: self.body.as_ref().map(|b| Box::new(ResultDispBody {
-                        value: b.value.clone(),
-                        count: b.count,
-                    }) as Box<dyn ResultBody>),
+                    body: self.body.as_ref().map(|b| {
+                        Box::new(ResultDispBody {
+                            value: b.value.clone(),
+                            count: b.count,
+                        }) as Box<dyn ResultBody>
+                    }),
                     skipped: false,
                 })
             })
@@ -204,7 +222,10 @@ mod tests {
     #[tokio::test]
     async fn memo_wrapper_publishes_before_and_after() {
         let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::new()));
-        let inner = Arc::new(FakeInner { body: None, error: None });
+        let inner = Arc::new(FakeInner {
+            body: None,
+            error: None,
+        });
         let dispenser = MemoDispenser::wrap(
             inner,
             Some("before-state".into()),
@@ -220,13 +241,11 @@ mod tests {
     #[tokio::test]
     async fn memo_wrapper_only_before_when_after_unset() {
         let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::new()));
-        let inner = Arc::new(FakeInner { body: None, error: None });
-        let dispenser = MemoDispenser::wrap(
-            inner,
-            Some("ready".into()),
-            None,
-            memo.clone(),
-        );
+        let inner = Arc::new(FakeInner {
+            body: None,
+            error: None,
+        });
+        let dispenser = MemoDispenser::wrap(inner, Some("ready".into()), None, memo.clone());
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let _ = dispenser.execute(0, &ctx).await.expect("inner ok");
@@ -250,7 +269,10 @@ mod tests {
         let ctx = ExecCtx::new(&fields, &pulls);
         let res = dispenser.execute(0, &ctx).await;
         assert!(res.is_err());
-        assert_eq!(memo.load().as_str(), "attempting",
-            "after-template must not run on inner error");
+        assert_eq!(
+            memo.load().as_str(),
+            "attempting",
+            "after-template must not run on inner error"
+        );
     }
 }

@@ -123,32 +123,32 @@ pub type Mapping = (PortType, FusionPolicy);
 pub fn cass_to_polydat(t: cass::ValueType, class_name: Option<&str>) -> Mapping {
     match t {
         // Exact mappings (verifier strict).
-        cass::ValueType::BOOLEAN   => (PortType::Bool,  FusionPolicy::Strict),
-        cass::ValueType::INT       => (PortType::I32,   FusionPolicy::Strict),
-        cass::ValueType::BIGINT    => (PortType::I64,   FusionPolicy::Strict),
-        cass::ValueType::COUNTER   => (PortType::I64,   FusionPolicy::Strict),
-        cass::ValueType::FLOAT     => (PortType::F32,   FusionPolicy::Strict),
-        cass::ValueType::DOUBLE    => (PortType::F64,   FusionPolicy::Strict),
-        cass::ValueType::BLOB      => (PortType::Bytes, FusionPolicy::Strict),
+        cass::ValueType::BOOLEAN => (PortType::Bool, FusionPolicy::Strict),
+        cass::ValueType::INT => (PortType::I32, FusionPolicy::Strict),
+        cass::ValueType::BIGINT => (PortType::I64, FusionPolicy::Strict),
+        cass::ValueType::COUNTER => (PortType::I64, FusionPolicy::Strict),
+        cass::ValueType::FLOAT => (PortType::F32, FusionPolicy::Strict),
+        cass::ValueType::DOUBLE => (PortType::F64, FusionPolicy::Strict),
+        cass::ValueType::BLOB => (PortType::Bytes, FusionPolicy::Strict),
         // Text-natural slots — cluster accepts arbitrary text
         // at bind time, so fusion is the protocol's intended
         // carrier, not a fallback.
-        cass::ValueType::ASCII     => (PortType::Str, FusionPolicy::TextNatural),
-        cass::ValueType::TEXT      => (PortType::Str, FusionPolicy::TextNatural),
-        cass::ValueType::VARCHAR   => (PortType::Str, FusionPolicy::TextNatural),
+        cass::ValueType::ASCII => (PortType::Str, FusionPolicy::TextNatural),
+        cass::ValueType::TEXT => (PortType::Str, FusionPolicy::TextNatural),
+        cass::ValueType::VARCHAR => (PortType::Str, FusionPolicy::TextNatural),
         // Widened mappings (smaller-than-32 signed integers).
         cass::ValueType::SMALL_INT => (PortType::I32, FusionPolicy::Strict),
-        cass::ValueType::TINY_INT  => (PortType::I32, FusionPolicy::Strict),
+        cass::ValueType::TINY_INT => (PortType::I32, FusionPolicy::Strict),
         // CUSTOM: try to introspect the class name. Cassandra
         // vectors come back as CUSTOM with a Java FQN like
         // `org.apache.cassandra.db.marshal.VectorType(...)`.
         cass::ValueType::CUSTOM => match class_name.and_then(parse_vector_class_name) {
-            Some(VectorElement::Float)  => (PortType::VecF32, FusionPolicy::Strict),
-            Some(VectorElement::Int)    => (PortType::VecI32, FusionPolicy::Strict),
+            Some(VectorElement::Float) => (PortType::VecF32, FusionPolicy::Strict),
+            Some(VectorElement::Int) => (PortType::VecI32, FusionPolicy::Strict),
             Some(VectorElement::Double) => (PortType::VecF64, FusionPolicy::Strict),
-            Some(VectorElement::Long)   => (PortType::VecI64, FusionPolicy::Strict),
-            Some(VectorElement::Short)  => (PortType::VecI16, FusionPolicy::Strict),
-            Some(VectorElement::Half)   => (PortType::VecF16, FusionPolicy::Strict),
+            Some(VectorElement::Long) => (PortType::VecI64, FusionPolicy::Strict),
+            Some(VectorElement::Short) => (PortType::VecI16, FusionPolicy::Strict),
+            Some(VectorElement::Half) => (PortType::VecF16, FusionPolicy::Strict),
             Some(VectorElement::Other(elem)) => (
                 PortType::Str,
                 FusionPolicy::Fallback {
@@ -170,7 +170,9 @@ pub fn cass_to_polydat(t: cass::ValueType, class_name: Option<&str>) -> Mapping 
         // TIME, INET, DURATION, VARINT, DECIMAL, etc.
         other => (
             PortType::Str,
-            FusionPolicy::Fallback { cql_label: format!("{other:?}") },
+            FusionPolicy::Fallback {
+                cql_label: format!("{other:?}"),
+            },
         ),
     }
 }
@@ -222,13 +224,13 @@ fn parse_vector_class_name(cn: &str) -> Option<VectorElement> {
     let (element_fqn, _dims) = inner.split_once(',')?;
     let element_short = element_fqn.trim().rsplit('.').next()?.trim();
     match element_short {
-        "FloatType"     => Some(VectorElement::Float),
-        "IntType"       => Some(VectorElement::Int),
-        "DoubleType"    => Some(VectorElement::Double),
-        "LongType"      => Some(VectorElement::Long),
-        "ShortType"     => Some(VectorElement::Short),
+        "FloatType" => Some(VectorElement::Float),
+        "IntType" => Some(VectorElement::Int),
+        "DoubleType" => Some(VectorElement::Double),
+        "LongType" => Some(VectorElement::Long),
+        "ShortType" => Some(VectorElement::Short),
         "HalfFloatType" | "Float16Type" => Some(VectorElement::Half),
-        other           => Some(VectorElement::Other(other.to_string())),
+        other => Some(VectorElement::Other(other.to_string())),
     }
 }
 
@@ -242,35 +244,50 @@ mod tests {
     fn parses_observed_vector_float_class_name() {
         let cn = "org.apache.cassandra.db.marshal.VectorType(\
                   org.apache.cassandra.db.marshal.FloatType, 128)";
-        assert!(matches!(parse_vector_class_name(cn), Some(VectorElement::Float)));
+        assert!(matches!(
+            parse_vector_class_name(cn),
+            Some(VectorElement::Float)
+        ));
     }
 
     #[test]
     fn parses_vector_int_class_name() {
         let cn = "org.apache.cassandra.db.marshal.VectorType(\
                   org.apache.cassandra.db.marshal.IntType, 4)";
-        assert!(matches!(parse_vector_class_name(cn), Some(VectorElement::Int)));
+        assert!(matches!(
+            parse_vector_class_name(cn),
+            Some(VectorElement::Int)
+        ));
     }
 
     #[test]
     fn parses_vector_long_class_name() {
         let cn = "org.apache.cassandra.db.marshal.VectorType(\
                   org.apache.cassandra.db.marshal.LongType, 16)";
-        assert!(matches!(parse_vector_class_name(cn), Some(VectorElement::Long)));
+        assert!(matches!(
+            parse_vector_class_name(cn),
+            Some(VectorElement::Long)
+        ));
     }
 
     #[test]
     fn parses_vector_double_class_name() {
         let cn = "org.apache.cassandra.db.marshal.VectorType(\
                   org.apache.cassandra.db.marshal.DoubleType, 64)";
-        assert!(matches!(parse_vector_class_name(cn), Some(VectorElement::Double)));
+        assert!(matches!(
+            parse_vector_class_name(cn),
+            Some(VectorElement::Double)
+        ));
     }
 
     #[test]
     fn parses_vector_short_class_name() {
         let cn = "org.apache.cassandra.db.marshal.VectorType(\
                   org.apache.cassandra.db.marshal.ShortType, 32)";
-        assert!(matches!(parse_vector_class_name(cn), Some(VectorElement::Short)));
+        assert!(matches!(
+            parse_vector_class_name(cn),
+            Some(VectorElement::Short)
+        ));
     }
 
     #[test]
@@ -280,8 +297,10 @@ mod tests {
                 "org.apache.cassandra.db.marshal.VectorType(\
                  org.apache.cassandra.db.marshal.{name}, 128)"
             );
-            assert!(matches!(parse_vector_class_name(&cn), Some(VectorElement::Half)),
-                "{name} should parse as Half");
+            assert!(
+                matches!(parse_vector_class_name(&cn), Some(VectorElement::Half)),
+                "{name} should parse as Half"
+            );
         }
     }
 
@@ -310,8 +329,11 @@ mod tests {
                   org.apache.cassandra.db.marshal.FloatType, 128)";
         let (pt, policy) = cass_to_polydat(cass::ValueType::CUSTOM, Some(cn));
         assert_eq!(pt, PortType::VecF32);
-        assert_eq!(policy, FusionPolicy::Strict,
-            "precise vector mapping should carry Strict policy: {policy:?}");
+        assert_eq!(
+            policy,
+            FusionPolicy::Strict,
+            "precise vector mapping should carry Strict policy: {policy:?}"
+        );
     }
 
     /// CUSTOM with no class name falls back to Str with a
@@ -321,8 +343,10 @@ mod tests {
         let (pt, policy) = cass_to_polydat(cass::ValueType::CUSTOM, None);
         assert_eq!(pt, PortType::Str);
         assert_eq!(policy.fallback_label(), Some("CUSTOM"));
-        assert!(policy.allow_fusion(),
-            "fallback policy must permit fusion: {policy:?}");
+        assert!(
+            policy.allow_fusion(),
+            "fallback policy must permit fusion: {policy:?}"
+        );
     }
 
     /// Text-natural CQL types (TEXT / VARCHAR / ASCII) map to
@@ -332,15 +356,23 @@ mod tests {
     /// arbitrary text at bind time).
     #[test]
     fn cass_to_polydat_text_natural_is_not_a_fallback() {
-        for vt in [cass::ValueType::ASCII, cass::ValueType::TEXT, cass::ValueType::VARCHAR] {
+        for vt in [
+            cass::ValueType::ASCII,
+            cass::ValueType::TEXT,
+            cass::ValueType::VARCHAR,
+        ] {
             let (pt, policy) = cass_to_polydat(vt, None);
             assert_eq!(pt, PortType::Str, "{vt:?} should map to Str");
-            assert_eq!(policy, FusionPolicy::TextNatural,
-                "{vt:?} should carry TextNatural policy: {policy:?}");
-            assert!(policy.fallback_label().is_none(),
-                "{vt:?} is not a fallback: {policy:?}");
-            assert!(policy.allow_fusion(),
-                "{vt:?} permits fusion: {policy:?}");
+            assert_eq!(
+                policy,
+                FusionPolicy::TextNatural,
+                "{vt:?} should carry TextNatural policy: {policy:?}"
+            );
+            assert!(
+                policy.fallback_label().is_none(),
+                "{vt:?} is not a fallback: {policy:?}"
+            );
+            assert!(policy.allow_fusion(), "{vt:?} permits fusion: {policy:?}");
         }
     }
 
@@ -351,18 +383,23 @@ mod tests {
     fn cass_to_polydat_strict_scalars_reject_fusion() {
         for (vt, expected_pt) in [
             (cass::ValueType::BOOLEAN, PortType::Bool),
-            (cass::ValueType::INT,     PortType::I32),
-            (cass::ValueType::BIGINT,  PortType::I64),
-            (cass::ValueType::FLOAT,   PortType::F32),
-            (cass::ValueType::DOUBLE,  PortType::F64),
-            (cass::ValueType::BLOB,    PortType::Bytes),
+            (cass::ValueType::INT, PortType::I32),
+            (cass::ValueType::BIGINT, PortType::I64),
+            (cass::ValueType::FLOAT, PortType::F32),
+            (cass::ValueType::DOUBLE, PortType::F64),
+            (cass::ValueType::BLOB, PortType::Bytes),
         ] {
             let (pt, policy) = cass_to_polydat(vt, None);
             assert_eq!(pt, expected_pt, "{vt:?} should map to {expected_pt:?}");
-            assert_eq!(policy, FusionPolicy::Strict,
-                "{vt:?} should carry Strict policy: {policy:?}");
-            assert!(!policy.allow_fusion(),
-                "{vt:?} must NOT permit fusion: {policy:?}");
+            assert_eq!(
+                policy,
+                FusionPolicy::Strict,
+                "{vt:?} should carry Strict policy: {policy:?}"
+            );
+            assert!(
+                !policy.allow_fusion(),
+                "{vt:?} must NOT permit fusion: {policy:?}"
+            );
         }
     }
 }

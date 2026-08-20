@@ -31,9 +31,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use nbrs_runtime::phase_end_triggers::{
-    PhaseEndEvent, PhaseEndTrigger,
-};
+use nbrs_runtime::phase_end_triggers::{PhaseEndEvent, PhaseEndTrigger};
 
 /// A trigger that runs a child `nbrs` subprocess with a
 /// fixed argv after every phase end. The first element of
@@ -47,12 +45,12 @@ struct SubprocessTrigger {
 }
 
 impl PhaseEndTrigger for SubprocessTrigger {
-    fn name(&self) -> &str { &self.label }
+    fn name(&self) -> &str {
+        &self.label
+    }
     fn fire(&self, _event: &PhaseEndEvent) {
         let mut cmd = Command::new(&self.nbrs_binary);
-        cmd.args(&self.argv)
-           .arg("--session")
-           .arg(&self.session_dir);
+        cmd.args(&self.argv).arg("--session").arg(&self.session_dir);
         // Suppress child stdout (the report's user-facing
         // text is the side-effect of generated files; pumping
         // its text through the parent's stderr would clutter
@@ -85,9 +83,9 @@ impl PhaseEndTrigger for SubprocessTrigger {
 /// outliving the run are usually fine — the worker thread
 /// holds no state beyond the trigger list, and the registry
 /// is process-global.)
-pub fn register_watch_triggers(specs: &[String])
-    -> Vec<nbrs_runtime::phase_end_triggers::TriggerId>
-{
+pub fn register_watch_triggers(
+    specs: &[String],
+) -> Vec<nbrs_runtime::phase_end_triggers::TriggerId> {
     let mut ids = Vec::new();
     let session_dir = match resolve_session_dir() {
         Some(p) => p,
@@ -105,8 +103,10 @@ pub fn register_watch_triggers(specs: &[String])
     let nbrs_binary = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("watch: cannot resolve self path: {e} — \
-                       triggers disabled");
+            eprintln!(
+                "watch: cannot resolve self path: {e} — \
+                       triggers disabled"
+            );
             return ids;
         }
     };
@@ -123,9 +123,11 @@ pub fn register_watch_triggers(specs: &[String])
                 ids.push(id);
             }
             None => {
-                eprintln!("watch: unknown spec '{spec}' — \
+                eprintln!(
+                    "watch: unknown spec '{spec}' — \
                            accepted forms: report | report:<args> | \
-                           plot | plot:<name>");
+                           plot | plot:<name>"
+                );
             }
         }
     }
@@ -149,11 +151,7 @@ fn spec_to_argv(spec: &str) -> Option<Vec<String>> {
         return Some(vec!["plot".into(), "all".into()]);
     }
     if let Some(name) = trimmed.strip_prefix("plot:") {
-        return Some(vec![
-            "plot".into(),
-            "--name".into(),
-            name.trim().into(),
-        ]);
+        return Some(vec!["plot".into(), "--name".into(), name.trim().into()]);
     }
     None
 }
@@ -175,7 +173,8 @@ fn resolve_session_dir() -> Option<PathBuf> {
 /// dropped so `watch=report,` doesn't register a phantom
 /// trigger.
 pub fn split_watch_param(value: &str) -> Vec<String> {
-    value.split(',')
+    value
+        .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(String::from)
@@ -188,8 +187,10 @@ mod tests {
 
     #[test]
     fn spec_report_default() {
-        assert_eq!(spec_to_argv("report").unwrap(),
-            vec!["report".to_string(), "all".to_string()]);
+        assert_eq!(
+            spec_to_argv("report").unwrap(),
+            vec!["report".to_string(), "all".to_string()]
+        );
     }
 
     #[test]
@@ -202,16 +203,21 @@ mod tests {
 
     #[test]
     fn spec_plot_default() {
-        assert_eq!(spec_to_argv("plot").unwrap(),
-            vec!["plot".to_string(), "all".to_string()]);
+        assert_eq!(
+            spec_to_argv("plot").unwrap(),
+            vec!["plot".to_string(), "all".to_string()]
+        );
     }
 
     #[test]
     fn spec_plot_named() {
         assert_eq!(
             spec_to_argv("plot:throughput").unwrap(),
-            vec!["plot".to_string(), "--name".to_string(),
-                 "throughput".to_string()],
+            vec![
+                "plot".to_string(),
+                "--name".to_string(),
+                "throughput".to_string()
+            ],
         );
     }
 

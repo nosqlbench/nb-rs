@@ -56,8 +56,11 @@
 //! convention for summary/histogram metrics.
 
 use super::catalog::{ExemplarPoint, LabelSet, MetricCatalog, MetricFamilyMeta, MetricType};
-use super::{MetricAccess, Matcher, MatchOp as MatcherOp, QueryError as DataSourceError, Sample, Series, Vector};
-use rusqlite::{Connection, params_from_iter, types::Value, OptionalExtension};
+use super::{
+    MatchOp as MatcherOp, Matcher, MetricAccess, QueryError as DataSourceError, Sample, Series,
+    Vector,
+};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -80,8 +83,7 @@ use std::sync::Mutex;
 /// How a metric instance is selected across the executions in a
 /// (possibly `refine`-d) session store. Reports default to
 /// [`LatestPerInstance`](ExecutionSelection::LatestPerInstance).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionSelection {
     /// For each logical metric instance (its dimensional labels,
     /// ignoring `exec_id`/`session`), keep only the data from the
@@ -99,7 +101,6 @@ pub enum ExecutionSelection {
     Specific(u64),
 }
 
-
 pub struct SqliteDataSource {
     conn: Mutex<Connection>,
     db_path: Option<PathBuf>,
@@ -115,9 +116,9 @@ impl SqliteDataSource {
         let path_ref = path.as_ref();
         let conn = Connection::open_with_flags(
             path_ref,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ).map_err(|e| DataSourceError::new(format!("open metrics.db: {e}")))?;
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| DataSourceError::new(format!("open metrics.db: {e}")))?;
         let mut src = Self::from_connection(conn)?;
         src.db_path = Some(path_ref.to_path_buf());
         Ok(src)
@@ -178,7 +179,8 @@ impl SqliteDataSource {
             "PRAGMA cache_size = -65536;\
              PRAGMA temp_store = MEMORY;\
              PRAGMA mmap_size  = 268435456;",
-        ).map_err(|e| DataSourceError::new(format!("apply pragmas: {e}")))?;
+        )
+        .map_err(|e| DataSourceError::new(format!("apply pragmas: {e}")))?;
         register_regexp(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -203,22 +205,30 @@ fn retain_latest_per_instance(series: Vec<Series>) -> Vec<Series> {
     use std::collections::{HashMap, HashSet};
     let mut best: HashMap<Vec<(String, String)>, (i64, usize)> = HashMap::new();
     for (i, s) in series.iter().enumerate() {
-        let exec = s.labels.iter()
+        let exec = s
+            .labels
+            .iter()
             .find(|(k, _)| k == "exec_id")
             .and_then(|(_, v)| v.parse::<i64>().ok())
             .unwrap_or(0);
-        let mut logical: Vec<(String, String)> = s.labels.iter()
+        let mut logical: Vec<(String, String)> = s
+            .labels
+            .iter()
             .filter(|(k, _)| k != "exec_id" && k != "session")
             .cloned()
             .collect();
         logical.sort();
         match best.get(&logical) {
             Some(&(e, _)) if e >= exec => {}
-            _ => { best.insert(logical, (exec, i)); }
+            _ => {
+                best.insert(logical, (exec, i));
+            }
         }
     }
     let keep: HashSet<usize> = best.values().map(|(_, i)| *i).collect();
-    series.into_iter().enumerate()
+    series
+        .into_iter()
+        .enumerate()
         .filter_map(|(i, s)| keep.contains(&i).then_some(s))
         .collect()
 }
@@ -244,8 +254,8 @@ fn retain_latest_per_instance(series: Vec<Series>) -> Vec<Series> {
 /// reports a useful diagnostic.
 fn register_regexp(conn: &Connection) -> Result<(), DataSourceError> {
     use rusqlite::functions::FunctionFlags;
-    use std::sync::Mutex as StdMutex;
     use std::collections::HashMap;
+    use std::sync::Mutex as StdMutex;
     // Compiled regex cache keyed by pattern string. Bounded
     // by the number of distinct patterns within one query —
     // metricsql evaluators only emit a handful of regex
@@ -254,7 +264,8 @@ fn register_regexp(conn: &Connection) -> Result<(), DataSourceError> {
     // open() since the closure owns it.
     let cache: StdMutex<HashMap<String, regex::Regex>> = StdMutex::new(HashMap::new());
     conn.create_scalar_function(
-        "regexp", 2,
+        "regexp",
+        2,
         FunctionFlags::SQLITE_DETERMINISTIC | FunctionFlags::SQLITE_UTF8,
         move |ctx| {
             let pattern: String = ctx.get(0)?;
@@ -264,18 +275,19 @@ fn register_regexp(conn: &Connection) -> Result<(), DataSourceError> {
                 Some(r) => r.clone(),
                 None => {
                     let anchored = format!("^(?:{pattern})$");
-                    let r = regex::Regex::new(&anchored)
-                        .map_err(|e| rusqlite::Error::UserFunctionError(
-                            format!("regexp pattern '{pattern}': {e}").into()
-                        ))?;
+                    let r = regex::Regex::new(&anchored).map_err(|e| {
+                        rusqlite::Error::UserFunctionError(
+                            format!("regexp pattern '{pattern}': {e}").into(),
+                        )
+                    })?;
                     guard.insert(pattern, r.clone());
                     r
                 }
             };
             Ok(re.is_match(&value))
         },
-    ).map_err(|e| DataSourceError::new(
-        format!("register REGEXP function: {e}")))?;
+    )
+    .map_err(|e| DataSourceError::new(format!("register REGEXP function: {e}")))?;
     Ok(())
 }
 
@@ -286,8 +298,10 @@ impl MetricAccess for SqliteDataSource {
         start_ms: i64,
         end_ms: i64,
     ) -> Result<Vector, DataSourceError> {
-        let conn = self.conn.lock().map_err(|_|
-            DataSourceError::new("sqlite mutex poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
 
         // 1. Resolve __name__ to (family_id, family_name, stat_column).
         //    Without a name matcher we can't build a meaningful
@@ -303,8 +317,11 @@ impl MetricAccess for SqliteDataSource {
             // scope for this push (would need to enumerate
             // families and dispatch per-family). Cleanly
             // surface the gap.
-            _ => return Err(DataSourceError::new(
-                "non-Eq match on __name__ not supported by sqlite adapter yet")),
+            _ => {
+                return Err(DataSourceError::new(
+                    "non-Eq match on __name__ not supported by sqlite adapter yet",
+                ));
+            }
         };
         let Some(resolved) = resolved else {
             // Family doesn't exist — empty result, not an error.
@@ -318,7 +335,8 @@ impl MetricAccess for SqliteDataSource {
         //    (`mi.exec_id`), not an `instance_label` row, so it is excluded
         //    here and applied as `exec_label_filter` below (SRD-90 §M6: the
         //    `exec_id` dimensional label, applied where it lives in sqlite).
-        let other_matchers: Vec<&Matcher> = matchers.iter()
+        let other_matchers: Vec<&Matcher> = matchers
+            .iter()
             .filter(|m| m.label != "__name__" && m.label != "exec_id")
             .collect();
         let label_filter = instance_label_filter_clause(&other_matchers)?;
@@ -339,7 +357,11 @@ impl MetricAccess for SqliteDataSource {
         //    integer precision). Surfacing the warning prevents
         //    silent fictional precision.
         let stat_expr = resolved.stat_expr;
-        let interval_proj = if resolved.is_rate { ", sv.interval_ms" } else { "" };
+        let interval_proj = if resolved.is_rate {
+            ", sv.interval_ms"
+        } else {
+            ""
+        };
         // Execution selection (SRD-77). `Specific` / `Latest` narrow
         // at the SQL level; `LatestPerInstance` fetches every
         // execution and picks the newest per logical instance in a
@@ -351,7 +373,8 @@ impl MetricAccess for SqliteDataSource {
         // is what scopes a hybrid live read's sqlite tail to the reading
         // execution. It composes with `ExecutionSelection` (the report path,
         // which carries no such matcher).
-        let exec_label_filter = matchers.iter()
+        let exec_label_filter = matchers
+            .iter()
             .find(|m| m.label == "exec_id" && m.op == MatcherOp::Eq)
             .and_then(|m| m.value.parse::<i64>().ok())
             .map(|n| format!("AND mi.exec_id = {n} "))
@@ -359,7 +382,8 @@ impl MetricAccess for SqliteDataSource {
         let exec_filter = match self.selection {
             ExecutionSelection::Specific(n) => format!("AND mi.exec_id = {n} "),
             ExecutionSelection::Latest => "AND mi.exec_id = \
-                (SELECT MAX(exec_id) FROM metric_instance WHERE family_id = ?1) ".to_string(),
+                (SELECT MAX(exec_id) FROM metric_instance WHERE family_id = ?1) "
+                .to_string(),
             ExecutionSelection::All | ExecutionSelection::LatestPerInstance => String::new(),
         };
         let exec_filter = format!("{exec_filter}{exec_label_filter}");
@@ -383,13 +407,15 @@ impl MetricAccess for SqliteDataSource {
             params.push(Value::Text(m.value.clone()));
         }
 
-        let mut stmt = conn.prepare(&sql)
+        let mut stmt = conn
+            .prepare(&sql)
             .map_err(|e| DataSourceError::new(format!("prepare fetch: {e}")))?;
 
         // Stream rows, grouping by instance into Series. The
         // ORDER BY lets us batch contiguous rows of the same
         // instance.
-        let mut rows = stmt.query(params_from_iter(params.iter()))
+        let mut rows = stmt
+            .query(params_from_iter(params.iter()))
             .map_err(|e| DataSourceError::new(format!("query fetch: {e}")))?;
         let mut out: Vec<Series> = Vec::new();
         let mut current_instance_id: Option<i64> = None;
@@ -401,35 +427,45 @@ impl MetricAccess for SqliteDataSource {
         // instance.
         let mut min_rate_interval_ms: Option<i64> = None;
 
-        while let Some(row) = rows.next()
-            .map_err(|e| DataSourceError::new(format!("step fetch: {e}")))? {
-            let instance_id: i64 = row.get(0).map_err(|e|
-                DataSourceError::new(format!("row.get(0): {e}")))?;
-            let timestamp_ms: i64 = row.get(1).map_err(|e|
-                DataSourceError::new(format!("row.get(1): {e}")))?;
-            let value: f64 = row.get::<_, Option<f64>>(2)
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| DataSourceError::new(format!("step fetch: {e}")))?
+        {
+            let instance_id: i64 = row
+                .get(0)
+                .map_err(|e| DataSourceError::new(format!("row.get(0): {e}")))?;
+            let timestamp_ms: i64 = row
+                .get(1)
+                .map_err(|e| DataSourceError::new(format!("row.get(1): {e}")))?;
+            let value: f64 = row
+                .get::<_, Option<f64>>(2)
                 .map_err(|e| DataSourceError::new(format!("row.get(2): {e}")))?
                 .unwrap_or(f64::NAN);
             if resolved.is_rate {
-                let iv: i64 = row.get(3).map_err(|e|
-                    DataSourceError::new(format!("row.get(3): {e}")))?;
+                let iv: i64 = row
+                    .get(3)
+                    .map_err(|e| DataSourceError::new(format!("row.get(3): {e}")))?;
                 if iv > 0 && iv < 1000 {
-                    min_rate_interval_ms = Some(min_rate_interval_ms
-                        .map(|m| m.min(iv))
-                        .unwrap_or(iv));
+                    min_rate_interval_ms =
+                        Some(min_rate_interval_ms.map(|m| m.min(iv)).unwrap_or(iv));
                 }
             }
 
             if Some(instance_id) != current_instance_id {
                 if let Some(prev) = current_instance_id.take() {
                     out.push(materialize_series(
-                        &conn, prev,
-                        &resolved.virtual_name, std::mem::take(&mut current_samples),
+                        &conn,
+                        prev,
+                        &resolved.virtual_name,
+                        std::mem::take(&mut current_samples),
                     )?);
                 }
                 current_instance_id = Some(instance_id);
             }
-            current_samples.push(Sample { timestamp_ms, value });
+            current_samples.push(Sample {
+                timestamp_ms,
+                value,
+            });
         }
         if let Some(iv) = min_rate_interval_ms {
             eprintln!(
@@ -446,8 +482,10 @@ impl MetricAccess for SqliteDataSource {
         }
         if let Some(last) = current_instance_id {
             out.push(materialize_series(
-                &conn, last,
-                &resolved.virtual_name, current_samples,
+                &conn,
+                last,
+                &resolved.virtual_name,
+                current_samples,
             )?);
         }
         // `LatestPerInstance`: among the series fetched across all
@@ -467,23 +505,27 @@ impl MetricAccess for SqliteDataSource {
 
 impl MetricCatalog for SqliteDataSource {
     fn metric_families(&self) -> Result<Vec<MetricFamilyMeta>, DataSourceError> {
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
-        let mut stmt = conn.prepare(
-            "SELECT name, type, unit, help FROM metric_family ORDER BY name",
-        ).map_err(|e| DataSourceError::new(format!("prepare families: {e}")))?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
-        }).map_err(|e| DataSourceError::new(format!("query families: {e}")))?;
+        let mut stmt = conn
+            .prepare("SELECT name, type, unit, help FROM metric_family ORDER BY name")
+            .map_err(|e| DataSourceError::new(format!("prepare families: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| DataSourceError::new(format!("query families: {e}")))?;
         let mut out = Vec::new();
         for row in rows {
-            let (name, ty_str, unit, help) = row
-                .map_err(|e| DataSourceError::new(format!("decode family row: {e}")))?;
+            let (name, ty_str, unit, help) =
+                row.map_err(|e| DataSourceError::new(format!("decode family row: {e}")))?;
             out.push(MetricFamilyMeta {
                 name,
                 ty: MetricType::parse(&ty_str),
@@ -494,14 +536,12 @@ impl MetricCatalog for SqliteDataSource {
         Ok(out)
     }
 
-    fn label_keys(
-        &self,
-        family_filter: Option<&str>,
-    ) -> Result<Vec<String>, DataSourceError> {
-        let conn = self.conn.lock()
+    fn label_keys(&self, family_filter: Option<&str>) -> Result<Vec<String>, DataSourceError> {
+        let conn = self
+            .conn
+            .lock()
             .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
-        let mut keys: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
         // `__name__` lives in `instance_label` for matcher
         // uniformity (so `{__name__="x"}` works the same way
@@ -525,17 +565,22 @@ impl MetricCatalog for SqliteDataSource {
             }
         };
 
-        let mut stmt = conn.prepare(sql)
+        let mut stmt = conn
+            .prepare(sql)
             .map_err(|e| DataSourceError::new(format!("prepare label_keys: {e}")))?;
         let mut rows: Box<dyn Iterator<Item = rusqlite::Result<String>>> = match family_filter {
-            Some(name) => Box::new(stmt
-                .query_map([name], |r| r.get::<_, String>(0))
-                .map_err(|e| DataSourceError::new(format!("query label_keys: {e}")))?
-                .collect::<Vec<_>>().into_iter()),
-            None => Box::new(stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .map_err(|e| DataSourceError::new(format!("query label_keys: {e}")))?
-                .collect::<Vec<_>>().into_iter()),
+            Some(name) => Box::new(
+                stmt.query_map([name], |r| r.get::<_, String>(0))
+                    .map_err(|e| DataSourceError::new(format!("query label_keys: {e}")))?
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ),
+            None => Box::new(
+                stmt.query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| DataSourceError::new(format!("query label_keys: {e}")))?
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ),
         };
         for row in &mut rows {
             let k = row.map_err(|e| DataSourceError::new(format!("decode label_key: {e}")))?;
@@ -549,7 +594,9 @@ impl MetricCatalog for SqliteDataSource {
         key: &str,
         family_filter: Option<&str>,
     ) -> Result<Vec<String>, DataSourceError> {
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
         let sql = match family_filter {
             Some(_) => {
@@ -566,7 +613,8 @@ impl MetricCatalog for SqliteDataSource {
                  ORDER BY value"
             }
         };
-        let mut stmt = conn.prepare(sql)
+        let mut stmt = conn
+            .prepare(sql)
             .map_err(|e| DataSourceError::new(format!("prepare label_values: {e}")))?;
         let mut out = Vec::new();
         let rows: Vec<rusqlite::Result<String>> = match family_filter {
@@ -585,11 +633,10 @@ impl MetricCatalog for SqliteDataSource {
         Ok(out)
     }
 
-    fn series(
-        &self,
-        matchers: &[Matcher],
-    ) -> Result<Vec<LabelSet>, DataSourceError> {
-        let conn = self.conn.lock()
+    fn series(&self, matchers: &[Matcher]) -> Result<Vec<LabelSet>, DataSourceError> {
+        let conn = self
+            .conn
+            .lock()
             .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
 
         // `__name__` matcher restricts to a single family;
@@ -597,9 +644,7 @@ impl MetricCatalog for SqliteDataSource {
         // restriction as `fetch`).
         let name_matcher = matchers.iter().find(|m| m.label == "__name__");
         let resolved = match name_matcher.map(|m| m.op) {
-            Some(MatcherOp::Eq) => {
-                resolve_family(&conn, &name_matcher.unwrap().value)?
-            }
+            Some(MatcherOp::Eq) => resolve_family(&conn, &name_matcher.unwrap().value)?,
             Some(_) => {
                 return Err(DataSourceError::new(
                     "non-Eq match on __name__ not supported by sqlite catalog yet",
@@ -608,9 +653,8 @@ impl MetricCatalog for SqliteDataSource {
             None => None,
         };
 
-        let other_matchers: Vec<&Matcher> = matchers.iter()
-            .filter(|m| m.label != "__name__")
-            .collect();
+        let other_matchers: Vec<&Matcher> =
+            matchers.iter().filter(|m| m.label != "__name__").collect();
 
         let label_filter = instance_label_filter_clause(&other_matchers)?;
 
@@ -626,7 +670,11 @@ impl MetricCatalog for SqliteDataSource {
              {label_filter} \
              ORDER BY mi.id"
         );
-        let sql = if resolved.is_some() { sql_with_family } else { sql_no_family };
+        let sql = if resolved.is_some() {
+            sql_with_family
+        } else {
+            sql_no_family
+        };
 
         let mut params: Vec<Value> = Vec::new();
         if let Some(r) = &resolved {
@@ -637,16 +685,17 @@ impl MetricCatalog for SqliteDataSource {
             params.push(Value::Text(m.value.clone()));
         }
 
-        let mut stmt = conn.prepare(&sql)
+        let mut stmt = conn
+            .prepare(&sql)
             .map_err(|e| DataSourceError::new(format!("prepare series: {e}")))?;
-        let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
-            r.get::<_, i64>(0)
-        }).map_err(|e| DataSourceError::new(format!("query series: {e}")))?;
+        let rows = stmt
+            .query_map(params_from_iter(params.iter()), |r| r.get::<_, i64>(0))
+            .map_err(|e| DataSourceError::new(format!("query series: {e}")))?;
 
         let mut out = Vec::new();
         for row in rows {
-            let instance_id = row
-                .map_err(|e| DataSourceError::new(format!("decode series row: {e}")))?;
+            let instance_id =
+                row.map_err(|e| DataSourceError::new(format!("decode series row: {e}")))?;
             // `__name__` is just another row in instance_label
             // (the writer stores it canonically); pull labels
             // sorted, then promote `__name__` to first
@@ -654,10 +703,11 @@ impl MetricCatalog for SqliteDataSource {
             // OpenMetrics convention up front.
             let mut labels = materialize_instance_labels(&conn, instance_id)?;
             if let Some(pos) = labels.iter().position(|(k, _)| k == "__name__")
-                && pos != 0 {
-                    let pair = labels.remove(pos);
-                    labels.insert(0, pair);
-                }
+                && pos != 0
+            {
+                let pair = labels.remove(pos);
+                labels.insert(0, pair);
+            }
             out.push(labels);
         }
         Ok(out)
@@ -672,14 +722,14 @@ impl MetricCatalog for SqliteDataSource {
         // selection `series` uses, then JOIN onto exemplar
         // rows on the (instance_id, sample_timestamp_ms)
         // pair-key.
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
 
         let name_matcher = matchers.iter().find(|m| m.label == "__name__");
         let resolved = match name_matcher.map(|m| m.op) {
-            Some(MatcherOp::Eq) => {
-                resolve_family(&conn, &name_matcher.unwrap().value)?
-            }
+            Some(MatcherOp::Eq) => resolve_family(&conn, &name_matcher.unwrap().value)?,
             Some(_) => {
                 return Err(DataSourceError::new(
                     "non-Eq match on __name__ not supported by sqlite catalog yet",
@@ -687,9 +737,8 @@ impl MetricCatalog for SqliteDataSource {
             }
             None => None,
         };
-        let other_matchers: Vec<&Matcher> = matchers.iter()
-            .filter(|m| m.label != "__name__")
-            .collect();
+        let other_matchers: Vec<&Matcher> =
+            matchers.iter().filter(|m| m.label != "__name__").collect();
         let label_filter = instance_label_filter_clause(&other_matchers)?;
 
         let (start_ms, end_ms) = time_range.unwrap_or((i64::MIN, i64::MAX));
@@ -737,28 +786,32 @@ impl MetricCatalog for SqliteDataSource {
             params.push(Value::Text(m.value.clone()));
         }
 
-        let mut stmt = conn.prepare(&sql)
+        let mut stmt = conn
+            .prepare(&sql)
             .map_err(|e| DataSourceError::new(format!("prepare exemplars: {e}")))?;
-        let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
-            Ok((
-                r.get::<_, i64>(0)?, // instance_id
-                r.get::<_, i64>(1)?, // sample_timestamp_ms
-                r.get::<_, f64>(2)?, // value
-                r.get::<_, Option<i64>>(3)?, // timestamp_ms
-                r.get::<_, String>(4)?, // labels_spec
-            ))
-        }).map_err(|e| DataSourceError::new(format!("query exemplars: {e}")))?;
+        let rows = stmt
+            .query_map(params_from_iter(params.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,         // instance_id
+                    r.get::<_, i64>(1)?,         // sample_timestamp_ms
+                    r.get::<_, f64>(2)?,         // value
+                    r.get::<_, Option<i64>>(3)?, // timestamp_ms
+                    r.get::<_, String>(4)?,      // labels_spec
+                ))
+            })
+            .map_err(|e| DataSourceError::new(format!("query exemplars: {e}")))?;
 
         let mut out = Vec::new();
         for row in rows {
-            let (instance_id, sample_ts, value, ts, labels_spec) = row
-                .map_err(|e| DataSourceError::new(format!("decode exemplar: {e}")))?;
+            let (instance_id, sample_ts, value, ts, labels_spec) =
+                row.map_err(|e| DataSourceError::new(format!("decode exemplar: {e}")))?;
             let mut series = materialize_instance_labels(&conn, instance_id)?;
             if let Some(pos) = series.iter().position(|(k, _)| k == "__name__")
-                && pos != 0 {
-                    let pair = series.remove(pos);
-                    series.insert(0, pair);
-                }
+                && pos != 0
+            {
+                let pair = series.remove(pos);
+                series.insert(0, pair);
+            }
             let labels = parse_labels_spec(&labels_spec);
             out.push(ExemplarPoint {
                 series,
@@ -777,7 +830,9 @@ impl MetricCatalog for SqliteDataSource {
 /// formatter. Tolerant of trailing whitespace / empty input.
 pub fn parse_labels_spec(spec: &str) -> Vec<(String, String)> {
     let s = spec.trim();
-    if s.is_empty() { return Vec::new(); }
+    if s.is_empty() {
+        return Vec::new();
+    }
     // Manual tokenizer — quoted values may contain commas,
     // which serde_json would parse cleanly but we don't
     // want a JSON dep on this read path. Two-state walker.
@@ -792,24 +847,28 @@ pub fn parse_labels_spec(spec: &str) -> Vec<(String, String)> {
             cur_key.push(bytes[i] as char);
             i += 1;
         }
-        if i >= bytes.len() { break; }
+        if i >= bytes.len() {
+            break;
+        }
         i += 1; // consume '='
         // Optional quote.
         let quoted = i < bytes.len() && bytes[i] == b'"';
-        if quoted { i += 1; }
+        if quoted {
+            i += 1;
+        }
         while i < bytes.len() {
             if quoted {
-                if bytes[i] == b'"' { i += 1; break; }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
             } else if bytes[i] == b',' {
                 break;
             }
             cur_val.push(bytes[i] as char);
             i += 1;
         }
-        out.push((
-            cur_key.trim().to_string(),
-            cur_val.clone(),
-        ));
+        out.push((cur_key.trim().to_string(), cur_val.clone()));
         cur_key.clear();
         cur_val.clear();
         // Skip optional ',' and any whitespace.
@@ -827,14 +886,18 @@ fn materialize_instance_labels(
     conn: &Connection,
     instance_id: i64,
 ) -> Result<Vec<(String, String)>, DataSourceError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT key, value FROM instance_label \
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT key, value FROM instance_label \
          WHERE instance_id = ?1 \
          ORDER BY key",
-    ).map_err(|e| DataSourceError::new(format!("prepare label set: {e}")))?;
-    let rows = stmt.query_map([instance_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    }).map_err(|e| DataSourceError::new(format!("query label set: {e}")))?;
+        )
+        .map_err(|e| DataSourceError::new(format!("prepare label set: {e}")))?;
+    let rows = stmt
+        .query_map([instance_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| DataSourceError::new(format!("query label set: {e}")))?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row.map_err(|e| DataSourceError::new(format!("decode label entry: {e}")))?);
@@ -873,9 +936,7 @@ struct ResolvedName {
 /// counter/gauge/summary families with no suffix), then —
 /// if no family is found — strips a known stat suffix and
 /// tries again (the summary-suffix convention).
-fn resolve_family(conn: &Connection, name: &str)
-    -> Result<Option<ResolvedName>, DataSourceError>
-{
+fn resolve_family(conn: &Connection, name: &str) -> Result<Option<ResolvedName>, DataSourceError> {
     // Bare-name lookup: matches counter / gauge / summary
     // families whose name equals the query verbatim.
     if let Some((family_id, family_type)) = lookup_family(conn, name)? {
@@ -912,17 +973,14 @@ fn resolve_family(conn: &Connection, name: &str)
     Ok(None)
 }
 
-fn lookup_family(conn: &Connection, name: &str)
-    -> Result<Option<(i64, String)>, DataSourceError>
-{
+fn lookup_family(conn: &Connection, name: &str) -> Result<Option<(i64, String)>, DataSourceError> {
     conn.query_row(
         "SELECT id, type FROM metric_family WHERE name = ?1",
         rusqlite::params![name],
-        |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        }
-    ).optional().map_err(|e|
-        DataSourceError::new(format!("family lookup: {e}")))
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map_err(|e| DataSourceError::new(format!("family lookup: {e}")))
 }
 
 /// Default expression for a family type's bare-name value.
@@ -934,7 +992,7 @@ pub fn default_column_for_type(family_type: &str) -> &'static str {
         // Counters: cumulative observation total.
         "counter" => "sv.count",
         // Gauges: instantaneous reading.
-        "gauge"   => "sv.mean",
+        "gauge" => "sv.mean",
         // Summaries: bare name returns observation count;
         // suffixes route to specific stat columns
         // (`_sum` → sum, `_p99` → p99, etc.).
@@ -966,7 +1024,7 @@ pub fn default_column_for_type(family_type: &str) -> &'static str {
         // the query at least produces something rather
         // than empty.
         "unknown" => "sv.mean",
-        _ => "sv.mean",  // Same fallback for non-spec types.
+        _ => "sv.mean", // Same fallback for non-spec types.
     }
 }
 
@@ -1003,24 +1061,78 @@ fn applies_counted(t: &str) -> bool {
     // Anything with a `count` column on `sample_value`. The
     // openmetrics types that fall in here: counter, summary,
     // histogram (bucketed), info. Gauges don't have count.
-    matches!(t, "counter" | "summary" | "histogram"
-        | "gaugehistogram" | "info")
+    matches!(
+        t,
+        "counter" | "summary" | "histogram" | "gaugehistogram" | "info"
+    )
 }
 
 const STAT_SUFFIXES: &[StatSuffix] = &[
-    StatSuffix { text: "_p999",   expr: "sv.p999",   applies_to_fn: applies_summary },
-    StatSuffix { text: "_p99",    expr: "sv.p99",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_p98",    expr: "sv.p98",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_p95",    expr: "sv.p95",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_p90",    expr: "sv.p90",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_p75",    expr: "sv.p75",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_p50",    expr: "sv.p50",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_count",  expr: "sv.count",  applies_to_fn: applies_summary },
-    StatSuffix { text: "_sum",    expr: "sv.sum",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_min",    expr: "sv.min",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_max",    expr: "sv.max",    applies_to_fn: applies_summary },
-    StatSuffix { text: "_mean",   expr: "sv.mean",   applies_to_fn: applies_summary },
-    StatSuffix { text: "_stddev", expr: "sv.stddev", applies_to_fn: applies_summary },
+    StatSuffix {
+        text: "_p999",
+        expr: "sv.p999",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_p99",
+        expr: "sv.p99",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_p98",
+        expr: "sv.p98",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_p95",
+        expr: "sv.p95",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_p90",
+        expr: "sv.p90",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_p75",
+        expr: "sv.p75",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_p50",
+        expr: "sv.p50",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_count",
+        expr: "sv.count",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_sum",
+        expr: "sv.sum",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_min",
+        expr: "sv.min",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_max",
+        expr: "sv.max",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_mean",
+        expr: "sv.mean",
+        applies_to_fn: applies_summary,
+    },
+    StatSuffix {
+        text: "_stddev",
+        expr: "sv.stddev",
+        applies_to_fn: applies_summary,
+    },
     // Synthetic per-second rate. Counters are stored CUMULATIVE
     // (Prometheus/VM-schematic, see the cumulative-counter note), so the
     // per-window rate is the increase since the previous sample over its
@@ -1048,17 +1160,17 @@ const STAT_SUFFIXES: &[StatSuffix] = &[
 /// Otherwise produces `AND mi.id IN (... INTERSECT ...)` —
 /// one subquery per matcher hits the
 /// `instance_label(key, value, instance_id)` covering index.
-fn instance_label_filter_clause(matchers: &[&Matcher])
-    -> Result<String, DataSourceError>
-{
-    if matchers.is_empty() { return Ok(String::new()); }
+fn instance_label_filter_clause(matchers: &[&Matcher]) -> Result<String, DataSourceError> {
+    if matchers.is_empty() {
+        return Ok(String::new());
+    }
     let mut parts: Vec<String> = Vec::with_capacity(matchers.len());
     for (i, m) in matchers.iter().enumerate() {
-        let kparam = i * 2 + 4;  // 1, 2, 3 are family_id + ts range
+        let kparam = i * 2 + 4; // 1, 2, 3 are family_id + ts range
         let vparam = i * 2 + 5;
         let cmp_clause = match m.op {
-            MatcherOp::Eq      => format!("il.key = ?{kparam} AND il.value = ?{vparam}"),
-            MatcherOp::Ne      => format!("il.key = ?{kparam} AND il.value != ?{vparam}"),
+            MatcherOp::Eq => format!("il.key = ?{kparam} AND il.value = ?{vparam}"),
+            MatcherOp::Ne => format!("il.key = ?{kparam} AND il.value != ?{vparam}"),
             MatcherOp::EqRegex => format!("il.key = ?{kparam} AND il.value REGEXP ?{vparam}"),
             MatcherOp::NeRegex => format!("il.key = ?{kparam} AND NOT (il.value REGEXP ?{vparam})"),
         };

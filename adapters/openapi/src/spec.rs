@@ -7,11 +7,11 @@
 //! request body schema, and tags. Produces `ApiOperation` structs that
 //! the workload generator converts into `ParsedOp`s.
 
-use serde::de::Error as _;
 use openapiv3::{
-    OpenAPI, Operation, ReferenceOr, Parameter, ParameterSchemaOrContent,
-    Schema, SchemaKind, Type, ObjectType,
+    ObjectType, OpenAPI, Operation, Parameter, ParameterSchemaOrContent, ReferenceOr, Schema,
+    SchemaKind, Type,
 };
+use serde::de::Error as _;
 
 /// A discovered API operation from the OpenAPI spec.
 #[derive(Debug, Clone)]
@@ -96,12 +96,16 @@ pub fn parse_spec(source: &str) -> Result<(OpenAPI, Vec<ApiOperation>), String> 
                 format!("{}{clean}", method.to_lowercase())
             });
 
-            let summary = op.summary.clone()
+            let summary = op
+                .summary
+                .clone()
                 .or_else(|| op.description.clone())
                 .unwrap_or_default();
 
             // Collect parameters from path-level and operation-level
-            let all_params: Vec<&Parameter> = path_item.parameters.iter()
+            let all_params: Vec<&Parameter> = path_item
+                .parameters
+                .iter()
                 .chain(op.parameters.iter())
                 .filter_map(|p| match p {
                     ReferenceOr::Item(param) => Some(param),
@@ -126,11 +130,9 @@ pub fn parse_spec(source: &str) -> Result<(OpenAPI, Vec<ApiOperation>), String> 
             }
 
             // Request body
-            let request_body = op.request_body.as_ref().and_then(|rb| {
-                match rb {
-                    ReferenceOr::Item(body) => extract_body_info(body, &spec),
-                    _ => None,
-                }
+            let request_body = op.request_body.as_ref().and_then(|rb| match rb {
+                ReferenceOr::Item(body) => extract_body_info(body, &spec),
+                _ => None,
             });
 
             operations.push(ApiOperation {
@@ -163,7 +165,9 @@ fn extract_param_type(param: &Parameter) -> String {
 /// Extract body field info from a request body.
 fn extract_body_info(body: &openapiv3::RequestBody, spec: &OpenAPI) -> Option<BodyInfo> {
     // Prefer application/json
-    let (content_type, media) = body.content.iter()
+    let (content_type, media) = body
+        .content
+        .iter()
         .find(|(k, _)| k.contains("json"))
         .or_else(|| body.content.iter().next())?;
 
@@ -199,7 +203,9 @@ fn flatten_schema_ref(
                         ReferenceOr::Item(s) => ReferenceOr::Item(s.clone()),
                         r @ ReferenceOr::Reference { .. } => r.clone(),
                     },
-                    spec, prefix, parent_required,
+                    spec,
+                    prefix,
+                    parent_required,
                 );
             }
             vec![]
@@ -215,9 +221,7 @@ fn flatten_schema(
     required_fields: &[String],
 ) -> Vec<FieldInfo> {
     match kind {
-        SchemaKind::Type(Type::Object(obj)) => {
-            flatten_object(obj, spec, prefix, required_fields)
-        }
+        SchemaKind::Type(Type::Object(obj)) => flatten_object(obj, spec, prefix, required_fields),
         SchemaKind::Type(typ) => {
             if !prefix.is_empty() {
                 vec![FieldInfo {
@@ -253,37 +257,40 @@ fn flatten_object(
         let is_required = required.contains(name);
 
         match prop_ref {
-            ReferenceOr::Item(boxed_schema) => {
-                match &boxed_schema.schema_kind {
-                    SchemaKind::Type(Type::Object(nested_obj)) => {
-                        fields.extend(flatten_object(nested_obj, spec, &full_name, &[]));
-                    }
-                    SchemaKind::Type(typ) => {
-                        fields.push(FieldInfo {
-                            name: full_name,
-                            schema_type: type_name(typ),
-                            required: is_required,
-                        });
-                    }
-                    _ => {
-                        fields.push(FieldInfo {
-                            name: full_name,
-                            schema_type: "string".into(),
-                            required: is_required,
-                        });
-                    }
+            ReferenceOr::Item(boxed_schema) => match &boxed_schema.schema_kind {
+                SchemaKind::Type(Type::Object(nested_obj)) => {
+                    fields.extend(flatten_object(nested_obj, spec, &full_name, &[]));
                 }
-            }
+                SchemaKind::Type(typ) => {
+                    fields.push(FieldInfo {
+                        name: full_name,
+                        schema_type: type_name(typ),
+                        required: is_required,
+                    });
+                }
+                _ => {
+                    fields.push(FieldInfo {
+                        name: full_name,
+                        schema_type: "string".into(),
+                        required: is_required,
+                    });
+                }
+            },
             ReferenceOr::Reference { reference } => {
                 if let Some(schema_name) = reference.strip_prefix("#/components/schemas/")
-                    && let Some(schema_ref) = spec.components.as_ref().and_then(|c| c.schemas.get(schema_name))
+                    && let Some(schema_ref) = spec
+                        .components
+                        .as_ref()
+                        .and_then(|c| c.schemas.get(schema_name))
                 {
                     let resolved = flatten_schema_ref(
                         &match schema_ref {
                             ReferenceOr::Item(s) => ReferenceOr::Item(s.clone()),
                             r @ ReferenceOr::Reference { .. } => r.clone(),
                         },
-                        spec, &full_name, &is_required,
+                        spec,
+                        &full_name,
+                        &is_required,
                     );
                     fields.extend(resolved);
                 }
@@ -323,20 +330,32 @@ pub fn describe_operations(ops: &[ApiOperation]) {
 
     for op in ops {
         let params_str = if !op.path_params.is_empty() || !op.query_params.is_empty() {
-            let pp: Vec<String> = op.path_params.iter().map(|p| format!("{{{}}}", p.name)).collect();
-            let qp: Vec<String> = op.query_params.iter().map(|p| format!("{}?", p.name)).collect();
+            let pp: Vec<String> = op
+                .path_params
+                .iter()
+                .map(|p| format!("{{{}}}", p.name))
+                .collect();
+            let qp: Vec<String> = op
+                .query_params
+                .iter()
+                .map(|p| format!("{}?", p.name))
+                .collect();
             let all: Vec<String> = pp.into_iter().chain(qp).collect();
             format!(" params=[{}]", all.join(", "))
         } else {
             String::new()
         };
 
-        let body_str = op.request_body.as_ref()
+        let body_str = op
+            .request_body
+            .as_ref()
             .map(|b| format!(" body=[{} fields]", b.fields.len()))
             .unwrap_or_default();
 
-        println!("  {:7} {:<40} {:<30}{}{}",
-            op.method, op.path, op.operation_id, params_str, body_str);
+        println!(
+            "  {:7} {:<40} {:<30}{}{}",
+            op.method, op.path, op.operation_id, params_str, body_str
+        );
         if !op.summary.is_empty() {
             println!("          {}", op.summary);
         }
@@ -419,7 +438,10 @@ paths:
         assert_eq!(body.fields.len(), 2); // name, tag
         assert!(body.fields.iter().any(|f| f.name == "name" && f.required));
 
-        let show = ops.iter().find(|o| o.operation_id == "showPetById").unwrap();
+        let show = ops
+            .iter()
+            .find(|o| o.operation_id == "showPetById")
+            .unwrap();
         assert_eq!(show.method, "GET");
         assert_eq!(show.path_params.len(), 1);
         assert_eq!(show.path_params[0].name, "petId");

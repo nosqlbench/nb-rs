@@ -42,11 +42,11 @@
 
 use std::any::Any;
 use std::panic;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 /// Trigger callback. Implementors fire whenever a phase
@@ -62,7 +62,9 @@ pub trait PhaseEndTrigger: Send + Sync + 'static {
 
     /// Human-readable trigger name for logging / debugging.
     /// Default returns the type name via `Any` downcast hint.
-    fn name(&self) -> &str { "phase-end-trigger" }
+    fn name(&self) -> &str {
+        "phase-end-trigger"
+    }
 }
 
 /// What the executor knows about a finished phase.
@@ -127,7 +129,9 @@ fn registry() -> &'static Mutex<Registry> {
 /// stays alive for the rest of the process so subsequent
 /// registrations are cheap.
 pub fn register(trigger: Arc<dyn PhaseEndTrigger>) -> TriggerId {
-    let mut reg = registry().lock().expect("phase-end-triggers registry poisoned");
+    let mut reg = registry()
+        .lock()
+        .expect("phase-end-triggers registry poisoned");
     let id = TriggerId(reg.next_id);
     reg.next_id += 1;
     reg.triggers.push(Entry { id, trigger });
@@ -150,7 +154,9 @@ pub fn register(trigger: Arc<dyn PhaseEndTrigger>) -> TriggerId {
 /// doesn't match anything currently registered (already
 /// removed, never registered, or freed by another caller).
 pub fn unregister(id: TriggerId) {
-    let mut reg = registry().lock().expect("phase-end-triggers registry poisoned");
+    let mut reg = registry()
+        .lock()
+        .expect("phase-end-triggers registry poisoned");
     reg.triggers.retain(|e| e.id != id);
     TRIGGER_COUNT.store(reg.triggers.len(), Ordering::Release);
 }
@@ -160,7 +166,9 @@ pub fn unregister(id: TriggerId) {
 /// not call this.
 #[cfg(test)]
 pub fn reset_for_tests() {
-    let mut reg = registry().lock().expect("phase-end-triggers registry poisoned");
+    let mut reg = registry()
+        .lock()
+        .expect("phase-end-triggers registry poisoned");
     reg.triggers.clear();
     TRIGGER_COUNT.store(0, Ordering::Release);
     reg.next_id = 1;
@@ -185,7 +193,9 @@ pub fn fire_phase_failed(name: &str, labels: &str, error: &str) {
     fire(PhaseEndEvent {
         phase_name: name.to_string(),
         phase_labels: labels.to_string(),
-        outcome: PhaseOutcome::Failed { error: error.to_string() },
+        outcome: PhaseOutcome::Failed {
+            error: error.to_string(),
+        },
         duration_secs: 0.0,
     });
 }
@@ -197,8 +207,12 @@ fn fire(event: PhaseEndEvent) {
     if TRIGGER_COUNT.load(Ordering::Acquire) == 0 {
         return;
     }
-    let reg = registry().lock().expect("phase-end-triggers registry poisoned");
-    if reg.triggers.is_empty() { return; }
+    let reg = registry()
+        .lock()
+        .expect("phase-end-triggers registry poisoned");
+    if reg.triggers.is_empty() {
+        return;
+    }
     if let Some(tx) = reg.dispatch.as_ref() {
         // Send to the worker. A full channel would only
         // happen if the worker is wedged for many seconds;
@@ -269,8 +283,8 @@ fn payload_to_message(payload: Box<dyn Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     /// Counter trigger — records how many times it fired and
@@ -281,7 +295,9 @@ mod tests {
         name: &'static str,
     }
     impl PhaseEndTrigger for CountingTrigger {
-        fn name(&self) -> &str { self.name }
+        fn name(&self) -> &str {
+            self.name
+        }
         fn fire(&self, event: &PhaseEndEvent) {
             self.count.fetch_add(1, Ordering::Release);
             self.names.lock().unwrap().push(event.phase_name.clone());
@@ -294,7 +310,9 @@ mod tests {
     fn wait_for(count: &AtomicUsize, target: usize, timeout: Duration) -> bool {
         let start = Instant::now();
         while count.load(Ordering::Acquire) < target {
-            if start.elapsed() > timeout { return false; }
+            if start.elapsed() > timeout {
+                return false;
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
         true
@@ -318,8 +336,10 @@ mod tests {
         let _id = register(trig);
 
         fire_phase_completed("setup", "", 1.5);
-        assert!(wait_for(&count, 1, Duration::from_secs(2)),
-            "trigger did not fire within 2s");
+        assert!(
+            wait_for(&count, 1, Duration::from_secs(2)),
+            "trigger did not fire within 2s"
+        );
         assert_eq!(*names.lock().unwrap(), vec!["setup".to_string()]);
         reset_for_tests();
     }
@@ -363,8 +383,11 @@ mod tests {
         fire_phase_completed("b", "", 0.2);
         // Worker is async — give it time to (not) fire.
         std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(count.load(Ordering::Acquire), 1,
-            "trigger fired after unregister");
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "trigger fired after unregister"
+        );
         reset_for_tests();
     }
 
@@ -389,8 +412,10 @@ mod tests {
         fire_phase_completed("phase1", "", 0.0);
         assert!(wait_for(&count_a, 1, Duration::from_secs(2)));
         assert!(wait_for(&count_b, 1, Duration::from_secs(2)));
-        assert_eq!(*names.lock().unwrap(),
-            vec!["phase1".to_string(), "phase1".to_string()]);
+        assert_eq!(
+            *names.lock().unwrap(),
+            vec!["phase1".to_string(), "phase1".to_string()]
+        );
         reset_for_tests();
     }
 
@@ -400,8 +425,12 @@ mod tests {
         reset_for_tests();
         struct PanickingTrigger;
         impl PhaseEndTrigger for PanickingTrigger {
-            fn name(&self) -> &str { "panicker" }
-            fn fire(&self, _: &PhaseEndEvent) { panic!("boom"); }
+            fn name(&self) -> &str {
+                "panicker"
+            }
+            fn fire(&self, _: &PhaseEndEvent) {
+                panic!("boom");
+            }
         }
         let count = Arc::new(AtomicUsize::new(0));
         let names = Arc::new(StdMutex::new(Vec::new()));
@@ -413,8 +442,10 @@ mod tests {
         }));
         fire_phase_completed("phase", "", 0.0);
         // The downstream counter must still see its fire.
-        assert!(wait_for(&count, 1, Duration::from_secs(2)),
-            "downstream trigger lost to upstream panic");
+        assert!(
+            wait_for(&count, 1, Duration::from_secs(2)),
+            "downstream trigger lost to upstream panic"
+        );
         reset_for_tests();
     }
 

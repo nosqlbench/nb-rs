@@ -38,8 +38,8 @@ pub mod status;
 
 pub use config::{CqlConfig, CqlConsistency};
 pub use opmode::{OpMode, STMT_FIELD_NAMES};
-pub use session_handle::{CqlSessionHandle, CqlSettingsSource};
 pub use resolver::CQL_TRACE_RATE;
+pub use session_handle::{CqlSessionHandle, CqlSettingsSource};
 pub use status::default_status_metrics;
 
 /// Whether a raw CQL driver error string denotes a TRANSIENT condition a
@@ -94,26 +94,37 @@ mod retryable_tests {
     use super::{cql_error_is_retryable, cql_statement_retry_safe};
     #[test]
     fn transient_errors_retry_permanent_do_not() {
-        assert!(cql_error_is_retryable("LIB_REQUEST_TIMED_OUT: Request timed out"));
+        assert!(cql_error_is_retryable(
+            "LIB_REQUEST_TIMED_OUT: Request timed out"
+        ));
         assert!(cql_error_is_retryable("Request timeout"));
         assert!(cql_error_is_retryable("Database returned: WRITE_TIMEOUT"));
         assert!(cql_error_is_retryable("Overloaded"));
-        assert!(cql_error_is_retryable("Not enough replicas available: UNAVAILABLE"));
-        assert!(!cql_error_is_retryable("Invalid query: unconfigured table foo"));
+        assert!(cql_error_is_retryable(
+            "Not enough replicas available: UNAVAILABLE"
+        ));
+        assert!(!cql_error_is_retryable(
+            "Invalid query: unconfigured table foo"
+        ));
         assert!(!cql_error_is_retryable("Syntax error at line 1"));
     }
 
     #[test]
     fn plain_upserts_are_retry_safe_lwt_is_not() {
         assert!(cql_statement_retry_safe(
-            "INSERT INTO ks.t (key, value) VALUES (?, ?)"));
+            "INSERT INTO ks.t (key, value) VALUES (?, ?)"
+        ));
         assert!(cql_statement_retry_safe(
-            "UPDATE ks.t SET value = ? WHERE key = ?"));
+            "UPDATE ks.t SET value = ? WHERE key = ?"
+        ));
         assert!(!cql_statement_retry_safe(
-            "INSERT INTO ks.t (key, value) VALUES (?, ?) IF NOT EXISTS"));
+            "INSERT INTO ks.t (key, value) VALUES (?, ?) IF NOT EXISTS"
+        ));
         assert!(!cql_statement_retry_safe(
-            "UPDATE ks.t SET value = ? WHERE key = ? IF value = ?"));
+            "UPDATE ks.t SET value = ? WHERE key = ? IF value = ?"
+        ));
         assert!(!cql_statement_retry_safe(
-            "DELETE FROM ks.t WHERE key = ? IF EXISTS"));
+            "DELETE FROM ks.t WHERE key = ? IF EXISTS"
+        ));
     }
 }

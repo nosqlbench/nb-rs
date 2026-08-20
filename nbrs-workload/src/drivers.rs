@@ -56,10 +56,11 @@ pub struct DriverManifest {
 /// top-level keys and malformed sections are errors — never
 /// silently ignored.
 pub fn parse_driver_manifest(source: &str, origin: &str) -> Result<DriverManifest, String> {
-    let doc: serde_json::Value = serde_yaml::from_str(source)
-        .map_err(|e| format!("driver manifest {origin}: {e}"))?;
-    let obj = doc.as_object().ok_or_else(|| format!(
-        "driver manifest {origin}: top level must be a mapping"))?;
+    let doc: serde_json::Value =
+        serde_yaml::from_str(source).map_err(|e| format!("driver manifest {origin}: {e}"))?;
+    let obj = doc
+        .as_object()
+        .ok_or_else(|| format!("driver manifest {origin}: top level must be a mapping"))?;
 
     let mut driver = None;
     let mut adapter = None;
@@ -74,14 +75,18 @@ pub fn parse_driver_manifest(source: &str, origin: &str) -> Result<DriverManifes
             "library" => library = Some(string_field(v, k, origin)?),
             "description" => description = Some(string_field(v, k, origin)?),
             "defaults" => {
-                let d = v.as_object().ok_or_else(|| format!(
-                    "driver manifest {origin}: `defaults:` must be a mapping"))?;
+                let d = v.as_object().ok_or_else(|| {
+                    format!("driver manifest {origin}: `defaults:` must be a mapping")
+                })?;
                 for (dk, dv) in d {
                     match dk.as_str() {
                         "params" => {
-                            let p = dv.as_object().ok_or_else(|| format!(
-                                "driver manifest {origin}: `defaults.params:` \
-                                 must be a mapping"))?;
+                            let p = dv.as_object().ok_or_else(|| {
+                                format!(
+                                    "driver manifest {origin}: `defaults.params:` \
+                                 must be a mapping"
+                                )
+                            })?;
                             for (pk, pv) in p {
                                 let s = match pv {
                                     serde_json::Value::String(s) => s.clone(),
@@ -90,33 +95,37 @@ pub fn parse_driver_manifest(source: &str, origin: &str) -> Result<DriverManifes
                                 default_params.insert(pk.clone(), s);
                             }
                         }
-                        other => return Err(format!(
-                            "driver manifest {origin}: unknown key \
-                             `defaults.{other}` (allowed: params)")),
+                        other => {
+                            return Err(format!(
+                                "driver manifest {origin}: unknown key \
+                             `defaults.{other}` (allowed: params)"
+                            ));
+                        }
                     }
                 }
             }
-            other => return Err(format!(
-                "driver manifest {origin}: unknown top-level key `{other}` \
-                 (allowed: driver, adapter, library, description, defaults)")),
+            other => {
+                return Err(format!(
+                    "driver manifest {origin}: unknown top-level key `{other}` \
+                 (allowed: driver, adapter, library, description, defaults)"
+                ));
+            }
         }
     }
 
     Ok(DriverManifest {
-        driver: driver.ok_or_else(|| format!(
-            "driver manifest {origin}: missing `driver:`"))?,
-        adapter: adapter.ok_or_else(|| format!(
-            "driver manifest {origin}: missing `adapter:`"))?,
-        library: library.ok_or_else(|| format!(
-            "driver manifest {origin}: missing `library:`"))?,
+        driver: driver.ok_or_else(|| format!("driver manifest {origin}: missing `driver:`"))?,
+        adapter: adapter.ok_or_else(|| format!("driver manifest {origin}: missing `adapter:`"))?,
+        library: library.ok_or_else(|| format!("driver manifest {origin}: missing `library:`"))?,
         description: description.map(|s| s.trim().to_string()),
         default_params,
     })
 }
 
 fn string_field(v: &serde_json::Value, key: &str, origin: &str) -> Result<String, String> {
-    v.as_str().map(str::to_string).ok_or_else(|| format!(
-        "driver manifest {origin}: `{key}:` must be a string, got {v}"))
+    v.as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("driver manifest {origin}: `{key}:` must be a string, got {v}"))
 }
 
 #[cfg(test)]
@@ -125,7 +134,8 @@ mod tests {
 
     #[test]
     fn parses_full_manifest() {
-        let m = parse_driver_manifest(r#"
+        let m = parse_driver_manifest(
+            r#"
 driver: vendorx
 adapter: http
 library: vector_impl
@@ -134,26 +144,30 @@ defaults:
   params:
     base_url: "http://localhost:8099"
     api_key: ""
-"#, "<test>").unwrap();
+"#,
+            "<test>",
+        )
+        .unwrap();
         assert_eq!(m.driver, "vendorx");
         assert_eq!(m.adapter, "http");
         assert_eq!(m.library, "vector_impl");
-        assert_eq!(m.default_params.get("base_url").map(String::as_str),
-            Some("http://localhost:8099"));
+        assert_eq!(
+            m.default_params.get("base_url").map(String::as_str),
+            Some("http://localhost:8099")
+        );
     }
 
     #[test]
     fn unknown_keys_are_rejected() {
-        let err = parse_driver_manifest(
-            "driver: x\nadapter: http\nlibrary: l\nops: {}\n", "<test>")
-            .unwrap_err();
+        let err =
+            parse_driver_manifest("driver: x\nadapter: http\nlibrary: l\nops: {}\n", "<test>")
+                .unwrap_err();
         assert!(err.contains("unknown top-level key `ops`"), "err: {err}");
     }
 
     #[test]
     fn missing_required_fields_are_named() {
-        let err = parse_driver_manifest("driver: x\nadapter: http\n", "<test>")
-            .unwrap_err();
+        let err = parse_driver_manifest("driver: x\nadapter: http\n", "<test>").unwrap_err();
         assert!(err.contains("missing `library:`"), "err: {err}");
     }
 }

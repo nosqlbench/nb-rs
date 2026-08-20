@@ -29,8 +29,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct PhaseSummary;
 
 impl Readout for PhaseSummary {
-    fn name(&self) -> &'static str { "phase_summary" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+    fn name(&self) -> &'static str {
+        "phase_summary"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Phase]
+    }
 
     fn render(
         &self,
@@ -61,13 +65,13 @@ fn render_labeled_value(
     //   [..] → INFO (sky), [  ] → MUTED (dim),
     //   phase name → bold INFO, duration → MUTED.
     let color = ctx.use_color();
-    let bold   = if color { "\x1b[1m"  } else { "" };
-    let dim    = if color { "\x1b[2m"  } else { "" };
+    let bold = if color { "\x1b[1m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
     let yellow = if color { "\x1b[33m" } else { "" };
-    let blue   = if color { "\x1b[34m" } else { "" };
-    let green  = if color { "\x1b[32m" } else { "" };
-    let red    = if color { "\x1b[1;31m" } else { "" };
-    let reset  = if color { "\x1b[0m"  } else { "" };
+    let blue = if color { "\x1b[34m" } else { "" };
+    let green = if color { "\x1b[32m" } else { "" };
+    let red = if color { "\x1b[1;31m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
 
     // Status marker mirrors the TUI observer's existing
     // bracket vocabulary — same characters so the
@@ -75,16 +79,16 @@ fn render_labeled_value(
     // through the legacy direct emit or through the
     // engine. (Push 8b's whole point.)
     let (marker, suffix) = match ctx.subject_state() {
-        LifecycleState::Completed   =>
-            (format!("{green}[ok]{reset}"), String::new()),
-        LifecycleState::Running     =>
-            (format!("{blue}[..]{reset}"),
-             format!(" {dim}(still running){reset}")),
-        LifecycleState::Pending     =>
-            (format!("{dim}[  ]{reset}"),
-             format!(" {dim}(not run){reset}")),
-        LifecycleState::Failed(err) =>
-            (format!("{red}[!!]{reset}"), format!(" ({err})")),
+        LifecycleState::Completed => (format!("{green}[ok]{reset}"), String::new()),
+        LifecycleState::Running => (
+            format!("{blue}[..]{reset}"),
+            format!(" {dim}(still running){reset}"),
+        ),
+        LifecycleState::Pending => (
+            format!("{dim}[  ]{reset}"),
+            format!(" {dim}(not run){reset}"),
+        ),
+        LifecycleState::Failed(err) => (format!("{red}[!!]{reset}"), format!(" ({err})")),
     };
     let seq_part: String = match ctx.subject_seq() {
         Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
@@ -135,10 +139,7 @@ fn render_labeled_value(
     len
 }
 
-fn render_labeled_explanation(
-    _ctx: &dyn ReadoutContext,
-    out: &mut dyn ReadoutBuf,
-) -> usize {
+fn render_labeled_explanation(_ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let s = "[ok|!!] [idx/total] phase-name (elapsed)";
     let _ = out.write_str(s);
     s.len()
@@ -173,30 +174,65 @@ mod tests {
         }
     }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { &self.phase_name }
-        fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
-        fn subject_labels(&self) -> &str { &self.phase_labels }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 1 }
-        fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { &self.depth_indent }
-        fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
-        fn subject_state(&self) -> LifecycleState { self.state.clone() }
+        fn subject_name(&self) -> &str {
+            &self.phase_name
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            self.phase_seq
+        }
+        fn subject_labels(&self) -> &str {
+            &self.phase_labels
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            1
+        }
+        fn elapsed_secs(&self) -> f64 {
+            self.elapsed_secs
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            &self.depth_indent
+        }
+        fn use_color(&self) -> bool {
+            false
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::PhaseEnd
+        }
+        fn subject_state(&self) -> LifecycleState {
+            self.state.clone()
+        }
     }
 
     fn render(ctx: &TestCtx) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseSummary.render(
-            ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -264,8 +300,11 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         let n = PhaseSummary.render(
-            &ctx, Lod::Labeled, ContentMode::Explanation,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Explanation,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         assert!(n > 0);
         assert!(s.contains("phase-name"));
@@ -275,13 +314,19 @@ mod tests {
 
     #[test]
     fn other_lods_are_zero_bytes() {
-        let ctx = TestCtx { phase_name: "x".into(), ..TestCtx::defaults() };
+        let ctx = TestCtx {
+            phase_name: "x".into(),
+            ..TestCtx::defaults()
+        };
         for lod in [Lod::Compact, Lod::Expanded] {
             let mut s = String::new();
             let mut buf = StringBuf::new(&mut s);
             let n = PhaseSummary.render(
-                &ctx, lod, ContentMode::Value,
-                &ReadoutOptions::new(), &mut buf,
+                &ctx,
+                lod,
+                ContentMode::Value,
+                &ReadoutOptions::new(),
+                &mut buf,
             );
             assert_eq!(n, 0, "{lod:?} should render zero bytes");
         }
@@ -296,20 +341,48 @@ mod tests {
         // surface as plain text even on a TTY.
         struct TestCtxColor;
         impl ReadoutContext for TestCtxColor {
-            fn subject_name(&self) -> &str { "setup" }
-            fn subject_seq(&self) -> Option<(usize, usize)> { Some((1, 2)) }
-            fn subject_labels(&self) -> &str { "" }
-            fn cycles_completed(&self) -> u64 { 0 }
-            fn cycles_total(&self) -> u64 { 0 }
-            fn ops_ok(&self) -> u64 { 0 }
-            fn errors(&self) -> u64 { 0 }
-            fn retries(&self) -> u64 { 0 }
-            fn concurrency(&self) -> usize { 1 }
-            fn elapsed_secs(&self) -> f64 { 0.5 }
-            fn consumed(&self) -> u64 { 0 }
-            fn status_metric_chips(&self) -> String { String::new() }
-            fn depth_indent(&self) -> &str { "" }
-            fn use_color(&self) -> bool { true }
+            fn subject_name(&self) -> &str {
+                "setup"
+            }
+            fn subject_seq(&self) -> Option<(usize, usize)> {
+                Some((1, 2))
+            }
+            fn subject_labels(&self) -> &str {
+                ""
+            }
+            fn cycles_completed(&self) -> u64 {
+                0
+            }
+            fn cycles_total(&self) -> u64 {
+                0
+            }
+            fn ops_ok(&self) -> u64 {
+                0
+            }
+            fn errors(&self) -> u64 {
+                0
+            }
+            fn retries(&self) -> u64 {
+                0
+            }
+            fn concurrency(&self) -> usize {
+                1
+            }
+            fn elapsed_secs(&self) -> f64 {
+                0.5
+            }
+            fn consumed(&self) -> u64 {
+                0
+            }
+            fn status_metric_chips(&self) -> String {
+                String::new()
+            }
+            fn depth_indent(&self) -> &str {
+                ""
+            }
+            fn use_color(&self) -> bool {
+                true
+            }
             fn event(&self) -> crate::lifecycle::EventType {
                 crate::lifecycle::EventType::PhaseEnd
             }
@@ -321,18 +394,27 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseSummary.render(
-            &ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         // Green wrapper around the [ok] marker.
-        assert!(s.contains("\x1b[32m[ok]\x1b[0m"),
-            "expected green [ok] marker, got: {s:?}");
+        assert!(
+            s.contains("\x1b[32m[ok]\x1b[0m"),
+            "expected green [ok] marker, got: {s:?}"
+        );
         // Bold + blue around the phase name.
-        assert!(s.contains("\x1b[1m\x1b[34msetup\x1b[0m"),
-            "expected bold-blue phase name, got: {s:?}");
+        assert!(
+            s.contains("\x1b[1m\x1b[34msetup\x1b[0m"),
+            "expected bold-blue phase name, got: {s:?}"
+        );
         // Dim duration tail.
-        assert!(s.contains("\x1b[2m0.50s\x1b[0m"),
-            "expected dim duration, got: {s:?}");
+        assert!(
+            s.contains("\x1b[2m0.50s\x1b[0m"),
+            "expected dim duration, got: {s:?}"
+        );
     }
 
     #[test]
@@ -351,13 +433,8 @@ mod tests {
         let mut buf = StringBuf::new(&mut s);
         let mut opts = ReadoutOptions::new();
         opts.set("show_labels", OptionValue::Bool(true));
-        PhaseSummary.render(
-            &ctx, Lod::Labeled, ContentMode::Value, &opts, &mut buf,
-        );
-        assert_eq!(
-            s,
-            "[!!] ann_query (profile=alpha, k=10) (connection lost)",
-        );
+        PhaseSummary.render(&ctx, Lod::Labeled, ContentMode::Value, &opts, &mut buf);
+        assert_eq!(s, "[!!] ann_query (profile=alpha, k=10) (connection lost)",);
     }
 
     #[test]
@@ -375,8 +452,11 @@ mod tests {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseSummary.render(
-            &ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            &ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         assert_eq!(s, "[ok] ann_query");
     }

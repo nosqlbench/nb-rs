@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
@@ -17,7 +17,9 @@ pub const NAME: WrapperName = WrapperName::new("if");
 
 /// Trigger: op declares an `if:` condition.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template.condition.is_some()
 }
 
@@ -74,15 +76,18 @@ impl ConditionalDispenser {
         metrics: Arc<crate::activity::ActivityMetrics>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
-        let condition_handle = fx.register_pull(condition_field).map_err(|e| {
-            format!("conditional `if`: {e}")
-        })?;
-        Ok(Arc::new(Self { inner, condition_handle, metrics }))
+        let condition_handle = fx
+            .register_pull(condition_field)
+            .map_err(|e| format!("conditional `if`: {e}"))?;
+        Ok(Arc::new(Self {
+            inner,
+            condition_handle,
+            metrics,
+        }))
     }
 }
 
 /// Test whether a resolved field value is truthy.
-
 
 impl WrappingDispenser for ConditionalDispenser {}
 
@@ -91,7 +96,9 @@ impl OpDispenser for ConditionalDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Single read path: condition value via handle from
             // the cycle's ResolvedPulls. Adapter never sees the
@@ -104,5 +111,7 @@ impl OpDispenser for ConditionalDispenser {
             self.inner.execute(cycle, ctx).await
         })
     }
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
 }

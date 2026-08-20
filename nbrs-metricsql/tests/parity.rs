@@ -30,11 +30,11 @@ struct Case {
 
 fn load_fixture(name: &str) -> Fixture {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures").join(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+        .join("tests/fixtures")
+        .join(name);
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 /// Which parse path to feed each fixture's `input` through.
@@ -43,7 +43,10 @@ fn load_fixture(name: &str) -> Fixture {
 /// `parse_for_prettify` so the round-trip can preserve
 /// `WITH (...)` templates and unfolded literal subtrees.
 #[derive(Copy, Clone)]
-enum ParseMode { Full, Prettify }
+enum ParseMode {
+    Full,
+    Prettify,
+}
 
 fn parse_with_mode(input: &str, mode: ParseMode) -> Result<nbrs_metricsql::ast::Expr, String> {
     match mode {
@@ -53,8 +56,11 @@ fn parse_with_mode(input: &str, mode: ParseMode) -> Result<nbrs_metricsql::ast::
 }
 
 fn run_round_trip(fixture: &str) {
-    let mode = if fixture.starts_with("prettifier") { ParseMode::Prettify }
-        else { ParseMode::Full };
+    let mode = if fixture.starts_with("prettifier") {
+        ParseMode::Prettify
+    } else {
+        ParseMode::Full
+    };
     run_round_trip_with(fixture, mode)
 }
 
@@ -70,8 +76,11 @@ fn run_round_trip_with(fixture: &str, parse_mode: ParseMode) {
     let mode = std::env::var("RUN_METRICSQL_PARITY").unwrap_or_default();
     if mode.is_empty() {
         let fx = load_fixture(fixture);
-        eprintln!("{}: {} round-trip cases (set RUN_METRICSQL_PARITY=count to exercise)",
-            fx.source, fx.round_trip.len());
+        eprintln!(
+            "{}: {} round-trip cases (set RUN_METRICSQL_PARITY=count to exercise)",
+            fx.source,
+            fx.round_trip.len()
+        );
         return;
     }
 
@@ -90,27 +99,36 @@ fn run_round_trip_with(fixture: &str, parse_mode: ParseMode) {
                 } else {
                     failures.push(format!(
                         "  in : {:?}\n    want: {:?}\n    got : {:?}",
-                        case.input, case.expected, got));
+                        case.input, case.expected, got
+                    ));
                 }
             }
-            Err(e) => failures.push(format!(
-                "  in : {:?}\n    parse error: {e}", case.input)),
+            Err(e) => failures.push(format!("  in : {:?}\n    parse error: {e}", case.input)),
         }
     }
     let total = fx.round_trip.len();
-    let pct = if total == 0 { 0.0 } else { passed as f64 * 100.0 / total as f64 };
+    let pct = if total == 0 {
+        0.0
+    } else {
+        passed as f64 * 100.0 / total as f64
+    };
     eprintln!("{}: {}/{} ({:.1}%) passed", fx.source, passed, total, pct);
     if mode == "strict" && !failures.is_empty() {
         let limit: usize = std::env::var("RUN_METRICSQL_PARITY_LIMIT")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
         for f in failures.iter().take(limit) {
             eprintln!("{f}");
         }
         if failures.len() > limit {
             eprintln!("... and {} more failures", failures.len() - limit);
         }
-        panic!("{} round-trip cases failed in {} (strict mode)",
-            failures.len(), fx.source);
+        panic!(
+            "{} round-trip cases failed in {} (strict mode)",
+            failures.len(),
+            fx.source
+        );
     }
 }
 

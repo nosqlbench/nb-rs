@@ -69,7 +69,12 @@ impl BackupPaths {
         let bak = path_with_suffix(&workload, ".bak");
         let bak_prev = path_with_suffix(&workload, ".bak.prev");
         let temp = path_with_suffix(&workload, ".tmp");
-        Self { workload, bak, bak_prev, temp }
+        Self {
+            workload,
+            bak,
+            bak_prev,
+            temp,
+        }
     }
 }
 
@@ -91,8 +96,10 @@ pub fn rotate(workload_path: &Path) -> io::Result<BackupPaths> {
     if !paths.workload.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("workload '{}' does not exist; cannot create backup",
-                paths.workload.display()),
+            format!(
+                "workload '{}' does not exist; cannot create backup",
+                paths.workload.display()
+            ),
         ));
     }
 
@@ -103,23 +110,31 @@ pub fn rotate(workload_path: &Path) -> io::Result<BackupPaths> {
         // on Windows (which fails rename when destination
         // exists; Unix overwrites silently).
         let _ = fs::remove_file(&paths.bak_prev);
-        fs::rename(&paths.bak, &paths.bak_prev)
-            .map_err(|e| io::Error::new(
+        fs::rename(&paths.bak, &paths.bak_prev).map_err(|e| {
+            io::Error::new(
                 e.kind(),
-                format!("backup rotate {} → {}: {e}",
-                    paths.bak.display(), paths.bak_prev.display()),
-            ))?;
+                format!(
+                    "backup rotate {} → {}: {e}",
+                    paths.bak.display(),
+                    paths.bak_prev.display()
+                ),
+            )
+        })?;
     }
 
     // Step 2: workload → bak (copy, not rename — the
     // workload has to stay in place for callers reading it
     // mid-edit).
-    fs::copy(&paths.workload, &paths.bak)
-        .map_err(|e| io::Error::new(
+    fs::copy(&paths.workload, &paths.bak).map_err(|e| {
+        io::Error::new(
             e.kind(),
-            format!("backup copy {} → {}: {e}",
-                paths.workload.display(), paths.bak.display()),
-        ))?;
+            format!(
+                "backup copy {} → {}: {e}",
+                paths.workload.display(),
+                paths.bak.display()
+            ),
+        )
+    })?;
 
     Ok(paths)
 }
@@ -131,12 +146,16 @@ pub fn rotate(workload_path: &Path) -> io::Result<BackupPaths> {
 /// content and the workload itself holds the post-edit
 /// content.
 pub fn commit_temp(paths: &BackupPaths) -> io::Result<()> {
-    fs::rename(&paths.temp, &paths.workload)
-        .map_err(|e| io::Error::new(
+    fs::rename(&paths.temp, &paths.workload).map_err(|e| {
+        io::Error::new(
             e.kind(),
-            format!("commit {} → {}: {e}",
-                paths.temp.display(), paths.workload.display()),
-        ))
+            format!(
+                "commit {} → {}: {e}",
+                paths.temp.display(),
+                paths.workload.display()
+            ),
+        )
+    })
 }
 
 /// Roll back a partially-applied rotation. Used when the
@@ -171,12 +190,16 @@ pub fn rollback(paths: &BackupPaths) -> io::Result<()> {
     // (failed) edit kicked off.
     if paths.bak_prev.exists() {
         let _ = fs::remove_file(&paths.bak);
-        fs::rename(&paths.bak_prev, &paths.bak)
-            .map_err(|e| io::Error::new(
+        fs::rename(&paths.bak_prev, &paths.bak).map_err(|e| {
+            io::Error::new(
                 e.kind(),
-                format!("backup rollback {} → {}: {e}",
-                    paths.bak_prev.display(), paths.bak.display()),
-            ))?;
+                format!(
+                    "backup rollback {} → {}: {e}",
+                    paths.bak_prev.display(),
+                    paths.bak.display()
+                ),
+            )
+        })?;
     } else {
         // No prev — first edit. Drop the new bak so we
         // return to the no-history state.
@@ -194,7 +217,8 @@ mod tests {
     fn fresh_dir(label: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let p = std::env::temp_dir().join(format!(
-            "nbrs-edit-backup-{label}-{}-{n}", std::process::id(),
+            "nbrs-edit-backup-{label}-{}-{n}",
+            std::process::id(),
         ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
@@ -208,7 +232,10 @@ mod tests {
         fs::write(&workload, b"v1\n").unwrap();
         let paths = rotate(&workload).expect("rotate");
         assert!(paths.bak.exists(), ".bak should exist");
-        assert!(!paths.bak_prev.exists(), ".bak.prev should not exist on first edit");
+        assert!(
+            !paths.bak_prev.exists(),
+            ".bak.prev should not exist on first edit"
+        );
         assert_eq!(fs::read(&paths.bak).unwrap(), b"v1\n");
     }
 
@@ -225,10 +252,16 @@ mod tests {
         let paths2 = rotate(&workload).expect("rotate v2");
         assert!(paths2.bak.exists());
         assert!(paths2.bak_prev.exists());
-        assert_eq!(fs::read(&paths2.bak).unwrap(), b"v2\n",
-            ".bak should hold the just-prior content (v2)");
-        assert_eq!(fs::read(&paths2.bak_prev).unwrap(), b"v1\n",
-            ".bak.prev should hold the one-before-prior content (v1)");
+        assert_eq!(
+            fs::read(&paths2.bak).unwrap(),
+            b"v2\n",
+            ".bak should hold the just-prior content (v2)"
+        );
+        assert_eq!(
+            fs::read(&paths2.bak_prev).unwrap(),
+            b"v1\n",
+            ".bak.prev should hold the one-before-prior content (v1)"
+        );
         // Original BackupPaths still consistent.
         let _ = paths;
     }
@@ -259,8 +292,11 @@ mod tests {
         commit_temp(&paths).expect("commit");
         assert_eq!(fs::read(&workload).unwrap(), b"v2 new content\n");
         assert!(!paths.temp.exists(), "temp consumed by rename");
-        assert_eq!(fs::read(&paths.bak).unwrap(), b"v1\n",
-            ".bak still holds pre-edit content");
+        assert_eq!(
+            fs::read(&paths.bak).unwrap(),
+            b"v1\n",
+            ".bak still holds pre-edit content"
+        );
     }
 
     #[test]
@@ -272,11 +308,16 @@ mod tests {
         // Simulate the mutation step failing — caller never
         // wrote temp, never committed. Roll back.
         rollback(&paths).expect("rollback");
-        assert!(!paths.bak.exists(),
-            ".bak should be dropped on rollback of first edit");
+        assert!(
+            !paths.bak.exists(),
+            ".bak should be dropped on rollback of first edit"
+        );
         assert!(!paths.bak_prev.exists());
-        assert_eq!(fs::read(&workload).unwrap(), b"v1\n",
-            "workload itself untouched");
+        assert_eq!(
+            fs::read(&workload).unwrap(),
+            b"v1\n",
+            "workload itself untouched"
+        );
     }
 
     #[test]
@@ -292,12 +333,17 @@ mod tests {
         // .bak=v1 (the original pre-history backup),
         // .bak.prev gone.
         rollback(&paths2).expect("rollback");
-        assert_eq!(fs::read(&paths2.bak).unwrap(), b"v1\n",
-            ".bak restored from .bak.prev");
-        assert!(!paths2.bak_prev.exists(),
-            ".bak.prev consumed by rollback");
-        assert_eq!(fs::read(&workload).unwrap(), b"v2\n",
-            "workload still at v2 (rollback doesn't touch workload — that's the temp's job)");
+        assert_eq!(
+            fs::read(&paths2.bak).unwrap(),
+            b"v1\n",
+            ".bak restored from .bak.prev"
+        );
+        assert!(!paths2.bak_prev.exists(), ".bak.prev consumed by rollback");
+        assert_eq!(
+            fs::read(&workload).unwrap(),
+            b"v2\n",
+            "workload still at v2 (rollback doesn't touch workload — that's the temp's job)"
+        );
     }
 
     #[test]
@@ -306,7 +352,6 @@ mod tests {
         let workload = dir.join("missing.yaml");
         let err = rotate(&workload).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
-        assert!(err.to_string().contains("does not exist"),
-            "got: {err}");
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
     }
 }

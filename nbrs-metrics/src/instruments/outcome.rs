@@ -20,12 +20,12 @@
 //! recording site always calls [`OutcomeInstrument::observe`] with the
 //! op duration; in Counts mode the duration is dropped.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use crate::labels::Labels;
+use crate::component::InstrumentRef;
 use crate::instruments::counter::Counter;
 use crate::instruments::timer::Timer;
-use crate::component::InstrumentRef;
+use crate::labels::Labels;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Detail level for an [`OutcomeInstrument`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,7 +63,10 @@ pub struct MetricDetailConfig {
 impl MetricDetailConfig {
     /// Config with a global default and no overrides.
     pub fn new(default: MetricDetail) -> Self {
-        Self { default, overrides: HashMap::new() }
+        Self {
+            default,
+            overrides: HashMap::new(),
+        }
     }
 
     /// Builder-style per-family override.
@@ -146,7 +149,11 @@ mod tests {
 
     #[test]
     fn counts_mode_is_counter_with_count() {
-        let i = OutcomeInstrument::new(Labels::of("name", "result_success"), 3, MetricDetail::Counts);
+        let i = OutcomeInstrument::new(
+            Labels::of("name", "result_success"),
+            3,
+            MetricDetail::Counts,
+        );
         assert!(!i.is_timed());
         i.observe(1234);
         i.observe(5678);
@@ -155,7 +162,11 @@ mod tests {
 
     #[test]
     fn timed_mode_keeps_count_and_distribution() {
-        let i = OutcomeInstrument::new(Labels::of("name", "result_success"), 3, MetricDetail::Timers);
+        let i = OutcomeInstrument::new(
+            Labels::of("name", "result_success"),
+            3,
+            MetricDetail::Timers,
+        );
         assert!(i.is_timed());
         i.observe(1_000_000);
         i.observe(2_000_000);

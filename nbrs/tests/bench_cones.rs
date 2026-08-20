@@ -22,8 +22,14 @@ fn bench(expr: &str) -> String {
 #[test]
 fn cones_flag_reports_fusion_and_residue() {
     let text = bench("default_or(add(mul(cycle, 3), 7), 9)");
-    assert!(text.contains("Lattice (jit=auto)"), "section header: {text}");
-    assert!(text.contains("jit_cone[mul+add]"), "cone with members: {text}");
+    assert!(
+        text.contains("Lattice (jit=auto)"),
+        "section header: {text}"
+    );
+    assert!(
+        text.contains("jit_cone[mul+add]"),
+        "cone with members: {text}"
+    );
     assert!(text.contains("default_or"), "residue listed: {text}");
     assert!(
         text.contains("p3-classifiable") || text.contains("p2-capable") || text.contains("p1-only"),
@@ -38,7 +44,10 @@ fn tier_table_p1_row_stays_interpreter() {
     // unextracted node count (4), not one fused cone.
     let text = bench("hash(mod(add(mul(cycle, 3), 7), 1000))");
     assert!(text.contains("4 nodes"), "structural summary: {text}");
-    assert!(text.contains("1 cone (4 nodes fused)"), "lattice view: {text}");
+    assert!(
+        text.contains("1 cone (4 nodes fused)"),
+        "lattice view: {text}"
+    );
 }
 
 #[test]

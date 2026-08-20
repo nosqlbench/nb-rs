@@ -25,14 +25,18 @@ fn cli_check_sweep_over_examples_is_green() {
         .parent()
         .expect("repo root")
         .join("examples");
-    assert!(examples.is_dir(), "examples dir missing: {}", examples.display());
+    assert!(
+        examples.is_dir(),
+        "examples dir missing: {}",
+        examples.display()
+    );
 
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let sandbox = std::env::temp_dir()
-        .join(format!("nbrs-checksweep-{}-{nanos}", std::process::id()));
+    let sandbox =
+        std::env::temp_dir().join(format!("nbrs-checksweep-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&sandbox).expect("create sandbox");
 
     let out = Command::new(env!("CARGO_BIN_EXE_nbrs"))

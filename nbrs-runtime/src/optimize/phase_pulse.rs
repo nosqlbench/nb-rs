@@ -21,8 +21,8 @@
 //! ([`super::settle::SettleEvaluator`]) is the first implementation;
 //! the mechanism is general (any cadence-driven phase-stop policy).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arc_swap::ArcSwap;
 use nbrs_metrics::scheduler::Reporter;
@@ -128,7 +128,11 @@ mod tests {
     fn fires_once_then_reports_finished_and_no_ops() {
         let stop = Arc::new(AtomicBool::new(false));
         let mut ev = PhaseStopEvaluator::new(
-            Box::new(FireOnNth { n: 3, seen: 0, outcome: Outcome::interrupted() }),
+            Box::new(FireOnNth {
+                n: 3,
+                seen: 0,
+                outcome: Outcome::interrupted(),
+            }),
             stop.clone(),
         );
         let cell = ev.outcome_cell();
@@ -140,7 +144,10 @@ mod tests {
         assert!(cell.load().is_none(), "no outcome before the verdict");
 
         ev.report(&empty_window()); // third pulse fires
-        assert!(stop.load(Ordering::Relaxed), "stop flag raised on the verdict");
+        assert!(
+            stop.load(Ordering::Relaxed),
+            "stop flag raised on the verdict"
+        );
         assert!(ev.finished(), "self-unregisters after the verdict");
         let got = (**cell.load()).clone().expect("outcome published");
         assert_eq!(got.disposition, Disposition::Interrupted);
@@ -148,7 +155,10 @@ mod tests {
 
         // Further pulses are no-ops — the disposition is not overwritten.
         ev.report(&empty_window());
-        assert_eq!((**cell.load()).clone().expect("still set").disposition, Disposition::Interrupted);
+        assert_eq!(
+            (**cell.load()).clone().expect("still set").disposition,
+            Disposition::Interrupted
+        );
     }
 
     #[test]
@@ -156,13 +166,21 @@ mod tests {
         // A failed() verdict (timeout) publishes Interrupted+Failed.
         let stop = Arc::new(AtomicBool::new(false));
         let mut ev = PhaseStopEvaluator::new(
-            Box::new(FireOnNth { n: 1, seen: 0, outcome: Outcome::failed() }),
+            Box::new(FireOnNth {
+                n: 1,
+                seen: 0,
+                outcome: Outcome::failed(),
+            }),
             stop.clone(),
         );
         let cell = ev.outcome_cell();
         ev.report(&empty_window());
         let got = (**cell.load()).clone().expect("outcome published");
         assert_eq!(got.disposition, Disposition::Interrupted);
-        assert_eq!(got.validity, Validity::Failed, "timeout is the untrustworthy quadrant");
+        assert_eq!(
+            got.validity,
+            Validity::Failed,
+            "timeout is the untrustworthy quadrant"
+        );
     }
 }

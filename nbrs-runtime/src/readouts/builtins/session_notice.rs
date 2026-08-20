@@ -24,8 +24,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct SessionNotice;
 
 impl Readout for SessionNotice {
-    fn name(&self) -> &'static str { "session_notice" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Session] }
+    fn name(&self) -> &'static str {
+        "session_notice"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Session]
+    }
 
     fn render(
         &self,
@@ -44,7 +48,7 @@ impl Readout for SessionNotice {
         }
         let color = ctx.use_color();
         let accent = if color { "\x1b[1;95m" } else { "" };
-        let reset  = if color { "\x1b[0m" } else { "" };
+        let reset = if color { "\x1b[0m" } else { "" };
         let mut tmp = String::with_capacity(id.len() + 96);
         let _ = write!(
             &mut tmp,
@@ -75,32 +79,65 @@ mod tests {
         color: bool,
     }
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { "session" }
-        fn subject_seq(&self) -> Option<(usize, usize)> { None }
-        fn subject_labels(&self) -> &str { "" }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { 0 }
-        fn retries(&self) -> u64 { 0 }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { "" }
-        fn use_color(&self) -> bool { self.color }
+        fn subject_name(&self) -> &str {
+            "session"
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            None
+        }
+        fn subject_labels(&self) -> &str {
+            ""
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            0
+        }
+        fn retries(&self) -> u64 {
+            0
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            ""
+        }
+        fn use_color(&self) -> bool {
+            self.color
+        }
         fn event(&self) -> crate::lifecycle::EventType {
             crate::lifecycle::EventType::SessionStart
         }
-        fn stick_reattached_session(&self) -> &str { &self.reattached }
+        fn stick_reattached_session(&self) -> &str {
+            &self.reattached
+        }
     }
 
     fn render(ctx: &TestCtx) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         SessionNotice.render(
-            ctx, Lod::Labeled, ContentMode::Value,
-            &ReadoutOptions::new(), &mut buf,
+            ctx,
+            Lod::Labeled,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
         );
         s
     }
@@ -124,7 +161,10 @@ mod tests {
             color: true,
         };
         let out = render(&ctx);
-        assert!(out.starts_with("\x1b[1;95m"), "ACCENT opens the line: {out:?}");
+        assert!(
+            out.starts_with("\x1b[1;95m"),
+            "ACCENT opens the line: {out:?}"
+        );
         assert!(out.ends_with("\x1b[0m"), "reset closes the line: {out:?}");
     }
 

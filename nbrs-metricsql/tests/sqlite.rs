@@ -47,8 +47,9 @@ mod tests {
                 mean REAL, stddev REAL,
                 p50 REAL, p75 REAL, p90 REAL, p95 REAL,
                 p98 REAL, p99 REAL, p999 REAL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
@@ -64,33 +65,48 @@ mod tests {
     ) -> i64 {
         conn.execute(
             "INSERT OR IGNORE INTO metric_family (name, type) VALUES (?1, ?2)",
-            params![family_name, family_type]).unwrap();
-        let family_id: i64 = conn.query_row(
-            "SELECT id FROM metric_family WHERE name = ?1 AND type = ?2",
             params![family_name, family_type],
-            |r| r.get(0)).unwrap();
+        )
+        .unwrap();
+        let family_id: i64 = conn
+            .query_row(
+                "SELECT id FROM metric_family WHERE name = ?1 AND type = ?2",
+                params![family_name, family_type],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         // Build the OpenMetrics-canonical spec (sorted, with
         // `__name__` excluded from the labels block).
-        let mut sorted: Vec<(&str, &str)> = labels.iter()
+        let mut sorted: Vec<(&str, &str)> = labels
+            .iter()
             .filter(|(k, _)| *k != "__name__")
-            .copied().collect();
+            .copied()
+            .collect();
         sorted.sort();
         let mut spec = String::new();
         spec.push_str(family_name);
         spec.push('{');
         for (i, (k, v)) in sorted.iter().enumerate() {
-            if i > 0 { spec.push(','); }
+            if i > 0 {
+                spec.push(',');
+            }
             spec.push_str(&format!(r#"{k}="{v}""#));
         }
         spec.push('}');
 
         conn.execute(
             "INSERT OR IGNORE INTO metric_instance (family_id, spec) VALUES (?1, ?2)",
-            params![family_id, &spec]).unwrap();
-        let instance_id: i64 = conn.query_row(
-            "SELECT id FROM metric_instance WHERE spec = ?1",
-            params![&spec], |r| r.get(0)).unwrap();
+            params![family_id, &spec],
+        )
+        .unwrap();
+        let instance_id: i64 = conn
+            .query_row(
+                "SELECT id FROM metric_instance WHERE spec = ?1",
+                params![&spec],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         // `__name__` + every other label as `instance_label` rows.
         conn.execute(
@@ -108,33 +124,49 @@ mod tests {
         conn.execute(
             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
              VALUES (?1, ?2, 0, ?3)",
-            params![instance_id, ts, count]).unwrap();
+            params![instance_id, ts, count],
+        )
+        .unwrap();
     }
 
     fn add_counter_sample_with_interval(
-        conn: &Connection, instance_id: i64, ts: i64, interval_ms: i64, count: i64,
+        conn: &Connection,
+        instance_id: i64,
+        ts: i64,
+        interval_ms: i64,
+        count: i64,
     ) {
         conn.execute(
             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
              VALUES (?1, ?2, ?3, ?4)",
-            params![instance_id, ts, interval_ms, count]).unwrap();
+            params![instance_id, ts, interval_ms, count],
+        )
+        .unwrap();
     }
 
     fn add_gauge_sample(conn: &Connection, instance_id: i64, ts: i64, mean: f64) {
         conn.execute(
             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
              VALUES (?1, ?2, 0, ?3)",
-            params![instance_id, ts, mean]).unwrap();
+            params![instance_id, ts, mean],
+        )
+        .unwrap();
     }
 
     fn add_summary_sample(
-        conn: &Connection, instance_id: i64, ts: i64,
-        count: i64, p50: f64, p99: f64,
+        conn: &Connection,
+        instance_id: i64,
+        ts: i64,
+        count: i64,
+        p50: f64,
+        p99: f64,
     ) {
         conn.execute(
             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count, p50, p99) \
              VALUES (?1, ?2, 0, ?3, ?4, ?5)",
-            params![instance_id, ts, count, p50, p99]).unwrap();
+            params![instance_id, ts, count, p50, p99],
+        )
+        .unwrap();
     }
 
     fn open_ds(conn: Connection) -> SqliteDataSource {
@@ -142,23 +174,31 @@ mod tests {
     }
 
     fn lookup<'a>(s: &'a Series, key: &str) -> Option<&'a str> {
-        s.labels.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        s.labels
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     #[test]
     fn fetch_counter_returns_count_column() {
         let conn = make_schema();
-        let id = make_instance(&conn, "cycles_total", "counter",
-            &[("op", "read")]);
+        let id = make_instance(&conn, "cycles_total", "counter", &[("op", "read")]);
         add_counter_sample(&conn, id, 100, 42);
         add_counter_sample(&conn, id, 200, 100);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "cycles_total".into() }],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "cycles_total".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert_eq!(got.len(), 1);
         assert_eq!(lookup(&got[0], "__name__"), Some("cycles_total"));
         assert_eq!(lookup(&got[0], "op"), Some("read"));
@@ -177,26 +217,40 @@ mod tests {
         // quantization that came from interval being stamped
         // to integer seconds.
         let conn = make_schema();
-        let id = make_instance(&conn, "cycles_total", "counter",
-            &[("limit", "1"), ("phase", "pvs_query")]);
+        let id = make_instance(
+            &conn,
+            "cycles_total",
+            "counter",
+            &[("limit", "1"), ("phase", "pvs_query")],
+        );
         // 10000 ops in 7843 ms.
         add_counter_sample_with_interval(&conn, id, 7_843, 7_843, 10_000);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "cycles_total_rate".into() }],
-            0, 100_000,
-        ).expect("fetch cycles_total_rate");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "cycles_total_rate".into(),
+                }],
+                0,
+                100_000,
+            )
+            .expect("fetch cycles_total_rate");
         assert_eq!(got.len(), 1);
         let r = got[0].samples[0].value;
         // 10000 / 7.843 = 1275.020...
         // Verify it's distinctly above the old 1250 quantization
         // floor — within 0.1 of the true rate.
-        assert!((r - 1275.0).abs() < 0.1,
-            "expected ~1275 ops/sec for 10000 ops in 7843ms, got {r}");
-        assert!(r > 1265.0,
-            "rate must NOT round down to the old 1250 cluster: {r}");
+        assert!(
+            (r - 1275.0).abs() < 0.1,
+            "expected ~1275 ops/sec for 10000 ops in 7843ms, got {r}"
+        );
+        assert!(
+            r > 1265.0,
+            "rate must NOT round down to the old 1250 cluster: {r}"
+        );
     }
 
     #[test]
@@ -207,20 +261,33 @@ mod tests {
         // must resolve to 857 ops/sec via the synthetic
         // `_rate` suffix — no `rate([window])` rollup involved.
         let conn = make_schema();
-        let id = make_instance(&conn, "cycles_total", "counter",
-            &[("k", "10"), ("phase", "ann_query")]);
+        let id = make_instance(
+            &conn,
+            "cycles_total",
+            "counter",
+            &[("k", "10"), ("phase", "ann_query")],
+        );
         add_counter_sample_with_interval(&conn, id, 1_000, 1_000, 857);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "cycles_total_rate".into() }],
-            0, 10_000,
-        ).expect("fetch cycles_total_rate");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "cycles_total_rate".into(),
+                }],
+                0,
+                10_000,
+            )
+            .expect("fetch cycles_total_rate");
         assert_eq!(got.len(), 1, "one series expected, got: {got:?}");
         assert_eq!(got[0].samples.len(), 1);
-        assert!((got[0].samples[0].value - 857.0).abs() < 1e-9,
-            "expected 857.0 ops/s, got {}", got[0].samples[0].value);
+        assert!(
+            (got[0].samples[0].value - 857.0).abs() < 1e-9,
+            "expected 857.0 ops/s, got {}",
+            got[0].samples[0].value
+        );
         // Series virtual name must echo the queried suffix
         // so downstream metricsql operators see what was asked.
         assert_eq!(lookup(&got[0], "__name__"), Some("cycles_total_rate"));
@@ -233,46 +300,76 @@ mod tests {
         // one fetch. Confirms the WHERE clause and the
         // synthetic stat expression cooperate.
         let conn = make_schema();
-        let id_match = make_instance(&conn, "cycles_total", "counter",
-            &[("k", "10"), ("phase", "ann_query"), ("profile", "label_00")]);
-        let id_other = make_instance(&conn, "cycles_total", "counter",
-            &[("k", "1"), ("phase", "ann_query"), ("profile", "label_00")]);
+        let id_match = make_instance(
+            &conn,
+            "cycles_total",
+            "counter",
+            &[("k", "10"), ("phase", "ann_query"), ("profile", "label_00")],
+        );
+        let id_other = make_instance(
+            &conn,
+            "cycles_total",
+            "counter",
+            &[("k", "1"), ("phase", "ann_query"), ("profile", "label_00")],
+        );
         add_counter_sample_with_interval(&conn, id_match, 100, 500, 200);
         add_counter_sample_with_interval(&conn, id_other, 100, 500, 999);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[
-                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                    value: "cycles_total_rate".into() },
-                Matcher { label: "k".into(), op: MatcherOp::Eq,
-                    value: "10".into() },
-                Matcher { label: "phase".into(), op: MatcherOp::Eq,
-                    value: "ann_query".into() },
-            ],
-            0, 10_000,
-        ).expect("fetch");
-        assert_eq!(got.len(), 1,
-            "label filter should narrow to one instance; got: {got:?}");
+        let got = ds
+            .select_range(
+                &[
+                    Matcher {
+                        label: "__name__".into(),
+                        op: MatcherOp::Eq,
+                        value: "cycles_total_rate".into(),
+                    },
+                    Matcher {
+                        label: "k".into(),
+                        op: MatcherOp::Eq,
+                        value: "10".into(),
+                    },
+                    Matcher {
+                        label: "phase".into(),
+                        op: MatcherOp::Eq,
+                        value: "ann_query".into(),
+                    },
+                ],
+                0,
+                10_000,
+            )
+            .expect("fetch");
+        assert_eq!(
+            got.len(),
+            1,
+            "label filter should narrow to one instance; got: {got:?}"
+        );
         // 200 ops in 500ms = 400 ops/s.
-        assert!((got[0].samples[0].value - 400.0).abs() < 1e-9,
+        assert!(
+            (got[0].samples[0].value - 400.0).abs() < 1e-9,
             "expected 400.0 ops/s for the k=10 instance, got {}",
-            got[0].samples[0].value);
+            got[0].samples[0].value
+        );
     }
 
     #[test]
     fn fetch_gauge_returns_mean_column() {
         let conn = make_schema();
-        let id = make_instance(&conn, "cpu_load", "gauge",
-            &[("host", "h1")]);
+        let id = make_instance(&conn, "cpu_load", "gauge", &[("host", "h1")]);
         add_gauge_sample(&conn, id, 0, 0.75);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "cpu_load".into() }],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "cpu_load".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].samples[0].value, 0.75);
     }
@@ -280,30 +377,47 @@ mod tests {
     #[test]
     fn summary_suffix_resolution_picks_correct_column() {
         let conn = make_schema();
-        let id = make_instance(&conn, "latency", "summary",
-            &[("op", "read")]);
+        let id = make_instance(&conn, "latency", "summary", &[("op", "read")]);
         add_summary_sample(&conn, id, 100, 1000, 12.5, 99.9);
 
         let ds = open_ds(conn);
-        let p50 = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "latency_p50".into() }],
-            0, 1000,
-        ).expect("fetch p50");
+        let p50 = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "latency_p50".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch p50");
         assert_eq!(p50[0].samples[0].value, 12.5);
 
-        let p99 = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "latency_p99".into() }],
-            0, 1000,
-        ).expect("fetch p99");
+        let p99 = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "latency_p99".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch p99");
         assert_eq!(p99[0].samples[0].value, 99.9);
 
-        let count = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "latency_count".into() }],
-            0, 1000,
-        ).expect("fetch count");
+        let count = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "latency_count".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch count");
         assert_eq!(count[0].samples[0].value, 1000.0);
     }
 
@@ -316,15 +430,24 @@ mod tests {
         add_gauge_sample(&conn, id_b, 0, 2.0);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[
-                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                    value: "cpu".into() },
-                Matcher { label: "host".into(), op: MatcherOp::Eq,
-                    value: "a".into() },
-            ],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[
+                    Matcher {
+                        label: "__name__".into(),
+                        op: MatcherOp::Eq,
+                        value: "cpu".into(),
+                    },
+                    Matcher {
+                        label: "host".into(),
+                        op: MatcherOp::Eq,
+                        value: "a".into(),
+                    },
+                ],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert_eq!(got.len(), 1);
         assert_eq!(lookup(&got[0], "host"), Some("a"));
         assert_eq!(got[0].samples[0].value, 1.0);
@@ -340,11 +463,17 @@ mod tests {
         add_gauge_sample(&conn, id, 200, 4.0);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "cpu".into() }],
-            50, 100,  // inclusive both
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "cpu".into(),
+                }],
+                50,
+                100, // inclusive both
+            )
+            .expect("fetch");
         assert_eq!(got.len(), 1);
         let values: Vec<f64> = got[0].samples.iter().map(|s| s.value).collect();
         assert_eq!(values, vec![2.0, 3.0]);
@@ -353,11 +482,17 @@ mod tests {
     #[test]
     fn unknown_family_returns_empty() {
         let ds = open_ds(make_schema());
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "nonexistent".into() }],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "nonexistent".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert!(got.is_empty());
     }
 
@@ -383,15 +518,24 @@ mod tests {
         add_gauge_sample(&conn, id_b, 0, 2.0);
 
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[
-                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                    value: "cpu".into() },
-                Matcher { label: "host".into(), op: MatcherOp::Ne,
-                    value: "a".into() },
-            ],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[
+                    Matcher {
+                        label: "__name__".into(),
+                        op: MatcherOp::Eq,
+                        value: "cpu".into(),
+                    },
+                    Matcher {
+                        label: "host".into(),
+                        op: MatcherOp::Ne,
+                        value: "a".into(),
+                    },
+                ],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert_eq!(got.len(), 1);
         assert_eq!(lookup(&got[0], "host"), Some("b"));
     }
@@ -410,16 +554,26 @@ mod tests {
             add_gauge_sample(&conn, id, 0, v);
         }
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[
-                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                    value: "cpu".into() },
-                Matcher { label: "host".into(), op: MatcherOp::EqRegex,
-                    value: "label.*".into() },
-            ],
-            0, 1000,
-        ).expect("fetch");
-        let mut hosts: Vec<&str> = got.iter()
+        let got = ds
+            .select_range(
+                &[
+                    Matcher {
+                        label: "__name__".into(),
+                        op: MatcherOp::Eq,
+                        value: "cpu".into(),
+                    },
+                    Matcher {
+                        label: "host".into(),
+                        op: MatcherOp::EqRegex,
+                        value: "label.*".into(),
+                    },
+                ],
+                0,
+                1000,
+            )
+            .expect("fetch");
+        let mut hosts: Vec<&str> = got
+            .iter()
             .map(|s| lookup(s, "host").unwrap_or(""))
             .collect();
         hosts.sort();
@@ -437,15 +591,24 @@ mod tests {
             add_gauge_sample(&conn, id, 0, v);
         }
         let ds = open_ds(conn);
-        let got = ds.select_range(
-            &[
-                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                    value: "cpu".into() },
-                Matcher { label: "host".into(), op: MatcherOp::NeRegex,
-                    value: "label.*".into() },
-            ],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[
+                    Matcher {
+                        label: "__name__".into(),
+                        op: MatcherOp::Eq,
+                        value: "cpu".into(),
+                    },
+                    Matcher {
+                        label: "host".into(),
+                        op: MatcherOp::NeRegex,
+                        value: "label.*".into(),
+                    },
+                ],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert_eq!(got.len(), 1);
         assert_eq!(lookup(&got[0], "host"), Some("other"));
     }
@@ -462,18 +625,29 @@ mod tests {
         let id = make_instance(&conn, "cpu", "gauge", &[("host", "a")]);
         add_gauge_sample(&conn, id, 0, 1.0);
         let ds = open_ds(conn);
-        let err = ds.select_range(
-            &[
-                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                    value: "cpu".into() },
-                Matcher { label: "host".into(), op: MatcherOp::EqRegex,
-                    value: "[unclosed".into() },
-            ],
-            0, 1000,
-        ).expect_err("expected regex compile error");
-        assert!(err.message.to_lowercase().contains("regex")
+        let err = ds
+            .select_range(
+                &[
+                    Matcher {
+                        label: "__name__".into(),
+                        op: MatcherOp::Eq,
+                        value: "cpu".into(),
+                    },
+                    Matcher {
+                        label: "host".into(),
+                        op: MatcherOp::EqRegex,
+                        value: "[unclosed".into(),
+                    },
+                ],
+                0,
+                1000,
+            )
+            .expect_err("expected regex compile error");
+        assert!(
+            err.message.to_lowercase().contains("regex")
                 || err.message.to_lowercase().contains("regexp"),
-            "diagnostic should mention regex/regexp: {err:?}");
+            "diagnostic should mention regex/regexp: {err:?}"
+        );
     }
 
     #[test]
@@ -492,11 +666,17 @@ mod tests {
         // a gauge), so the bare-name lookup with the FULL
         // name `cpu_load_p99` is what runs first → also no
         // match → empty result.
-        let got = ds.select_range(
-            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
-                value: "cpu_load_p99".into() }],
-            0, 1000,
-        ).expect("fetch");
+        let got = ds
+            .select_range(
+                &[Matcher {
+                    label: "__name__".into(),
+                    op: MatcherOp::Eq,
+                    value: "cpu_load_p99".into(),
+                }],
+                0,
+                1000,
+            )
+            .expect("fetch");
         assert!(got.is_empty());
     }
 
@@ -509,24 +689,46 @@ mod tests {
         use nbrs_metricsql::eval::{EvalContext, evaluate};
 
         let conn = make_schema();
-        let id_a = make_instance(&conn, "latency", "summary",
-            &[("op", "read"), ("zone", "z1")]);
-        let id_b = make_instance(&conn, "latency", "summary",
-            &[("op", "read"), ("zone", "z2")]);
-        let id_c = make_instance(&conn, "latency", "summary",
-            &[("op", "write"), ("zone", "z1")]);
+        let id_a = make_instance(
+            &conn,
+            "latency",
+            "summary",
+            &[("op", "read"), ("zone", "z1")],
+        );
+        let id_b = make_instance(
+            &conn,
+            "latency",
+            "summary",
+            &[("op", "read"), ("zone", "z2")],
+        );
+        let id_c = make_instance(
+            &conn,
+            "latency",
+            "summary",
+            &[("op", "write"), ("zone", "z1")],
+        );
         // p99 values: read/z1 → 10, read/z2 → 20, write/z1 → 30.
         add_summary_sample(&conn, id_a, 100, 1000, 5.0, 10.0);
         add_summary_sample(&conn, id_b, 100, 1000, 8.0, 20.0);
         add_summary_sample(&conn, id_c, 100, 1000, 7.0, 30.0);
 
         let ds = open_ds(conn);
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 1000, step_ms: 1, lookback_ms: None, query_start_ms: None, query_end_ms: None };
-        let ast = nbrs_metricsql::parse(r#"max(latency_p99{op="read"}) by (zone)"#)
-            .expect("parse");
+        let ctx = EvalContext {
+            data: &ds,
+            start_ms: 0,
+            end_ms: 1000,
+            step_ms: 1,
+            lookback_ms: None,
+            query_start_ms: None,
+            query_end_ms: None,
+        };
+        let ast = nbrs_metricsql::parse(r#"max(latency_p99{op="read"}) by (zone)"#).expect("parse");
         let mut got = evaluate(&ctx, &ast).expect("evaluate");
-        got.sort_by(|a, b|
-            lookup(a, "zone").unwrap_or("").cmp(lookup(b, "zone").unwrap_or("")));
+        got.sort_by(|a, b| {
+            lookup(a, "zone")
+                .unwrap_or("")
+                .cmp(lookup(b, "zone").unwrap_or(""))
+        });
         assert_eq!(got.len(), 2);
         assert_eq!(lookup(&got[0], "zone"), Some("z1"));
         assert_eq!(got[0].samples[0].value, 10.0);
@@ -549,8 +751,13 @@ mod tests {
         add_counter_sample_with_interval(&conn, id, 4000, 1000, 400);
         let ds = open_ds(conn);
         let ctx = EvalContext {
-            data: &ds, start_ms: 4000, end_ms: 4000, step_ms: 1,
-            lookback_ms: None, query_start_ms: None, query_end_ms: None,
+            data: &ds,
+            start_ms: 4000,
+            end_ms: 4000,
+            step_ms: 1,
+            lookback_ms: None,
+            query_start_ms: None,
+            query_end_ms: None,
         };
         let ast = nbrs_metricsql::parse("rate(ops[3s])").expect("parse");
         let got = evaluate(&ctx, &ast).expect("evaluate");
@@ -595,7 +802,10 @@ mod tests {
         reporter.flush_for_tests();
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
         let live = MetricsQueryAccess::new(Arc::new(MetricsQuery::new(reporter, root)));
-        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
         let lv = live
             .select_instant(&[Matcher::eq("__name__", "ops")], now_ms, Some(60_000))
             .expect("live select");
@@ -613,14 +823,21 @@ mod tests {
         assert_eq!(sv.len(), 1, "one sqlite series, got {sv:?}");
         let sqlite_val = sv.series()[0].samples.last().expect("sqlite sample").value;
 
-        assert_eq!(live_val, 400.0, "live backend must expose cumulative (400), not delta (100)");
-        assert_eq!(sqlite_val, 400.0, "sqlite backend must expose cumulative (400)");
-        assert_eq!(live_val, sqlite_val, "backends must agree on the cumulative value");
+        assert_eq!(
+            live_val, 400.0,
+            "live backend must expose cumulative (400), not delta (100)"
+        );
+        assert_eq!(
+            sqlite_val, 400.0,
+            "sqlite backend must expose cumulative (400)"
+        );
+        assert_eq!(
+            live_val, sqlite_val,
+            "backends must agree on the cumulative value"
+        );
     }
 
     // ── MetricCatalog impl tests ─────────────────────────────
-
-    
 
     fn make_catalog_fixture() -> SqliteDataSource {
         let conn = make_schema();
@@ -629,16 +846,17 @@ mod tests {
                 "INSERT INTO metric_family (name, type, unit, help) \
                  VALUES (?1, ?2, ?3, ?4)",
                 params![name, ty, unit, help],
-            ).unwrap();
+            )
+            .unwrap();
         };
-        unit_help("ops_total",   "counter",   None,            Some("operations completed"));
-        unit_help("cpu_load",    "gauge",     Some("ratio"),   None);
-        unit_help("latency",     "histogram", Some("seconds"), Some("op latency"));
+        unit_help("ops_total", "counter", None, Some("operations completed"));
+        unit_help("cpu_load", "gauge", Some("ratio"), None);
+        unit_help("latency", "histogram", Some("seconds"), Some("op latency"));
         // A separate instance per family so we have label data.
         let _ = make_instance(&conn, "ops_total", "counter", &[("phase", "setup")]);
         let _ = make_instance(&conn, "ops_total", "counter", &[("phase", "run")]);
-        let _ = make_instance(&conn, "cpu_load",  "gauge",   &[("zone", "z1")]);
-        let _ = make_instance(&conn, "cpu_load",  "gauge",   &[("zone", "z2")]);
+        let _ = make_instance(&conn, "cpu_load", "gauge", &[("zone", "z1")]);
+        let _ = make_instance(&conn, "cpu_load", "gauge", &[("zone", "z2")]);
         SqliteDataSource::from_connection(conn).unwrap()
     }
 
@@ -709,15 +927,25 @@ mod tests {
         let mut got = ds.series(&m).unwrap();
         got.sort_by(|a, b| {
             // Sort by phase value for stable assertions.
-            let av = a.iter().find(|(k, _)| k == "phase").map(|(_, v)| v.as_str()).unwrap_or("");
-            let bv = b.iter().find(|(k, _)| k == "phase").map(|(_, v)| v.as_str()).unwrap_or("");
+            let av = a
+                .iter()
+                .find(|(k, _)| k == "phase")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            let bv = b
+                .iter()
+                .find(|(k, _)| k == "phase")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
             av.cmp(bv)
         });
         assert_eq!(got.len(), 2);
         for ls in &got {
             // Every series must carry the synthetic __name__.
-            assert!(ls.iter().any(|(k, v)| k == "__name__" && v == "ops_total"),
-                "series missing __name__: {ls:?}");
+            assert!(
+                ls.iter().any(|(k, v)| k == "__name__" && v == "ops_total"),
+                "series missing __name__: {ls:?}"
+            );
         }
         // First entry is the run phase (alphabetic).
         assert!(got[0].iter().any(|(k, v)| k == "phase" && v == "run"));
@@ -741,7 +969,9 @@ mod tests {
         let conn = make_schema();
         conn.execute(
             "INSERT INTO metric_family (name, type) VALUES (?1, ?2)",
-            params!["weird", "untyped"]).unwrap();
+            params!["weird", "untyped"],
+        )
+        .unwrap();
         let ds = SqliteDataSource::from_connection(conn).unwrap();
         let fams = ds.metric_families().unwrap();
         assert_eq!(fams.len(), 1);
@@ -760,7 +990,9 @@ mod tests {
     fn insert_family_with_type(conn: &Connection, name: &str, ty: &str) {
         conn.execute(
             "INSERT INTO metric_family (name, type) VALUES (?1, ?2)",
-            params![name, ty]).unwrap();
+            params![name, ty],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -778,15 +1010,22 @@ mod tests {
         // Bucket boundaries surface as label values for `le`.
         let mut le_values = ds.label_values("le", Some("latency")).unwrap();
         le_values.sort();
-        assert_eq!(le_values, vec!["+Inf".to_string(), "0.1".to_string(), "0.5".to_string()]);
+        assert_eq!(
+            le_values,
+            vec!["+Inf".to_string(), "0.1".to_string(), "0.5".to_string()]
+        );
     }
 
     #[test]
     fn catalog_round_trip_gauge_histogram_type() {
         let conn = make_schema();
         insert_family_with_type(&conn, "queue_size_buckets", "gaugehistogram");
-        let _ = make_instance(&conn, "queue_size_buckets", "gaugehistogram",
-            &[("le", "10")]);
+        let _ = make_instance(
+            &conn,
+            "queue_size_buckets",
+            "gaugehistogram",
+            &[("le", "10")],
+        );
         let ds = SqliteDataSource::from_connection(conn).unwrap();
         let fams = ds.metric_families().unwrap();
         assert_eq!(fams[0].ty, MetricType::GaugeHistogram);
@@ -796,8 +1035,12 @@ mod tests {
     fn catalog_round_trip_info_type() {
         let conn = make_schema();
         insert_family_with_type(&conn, "build_info", "info");
-        let _ = make_instance(&conn, "build_info", "info",
-            &[("version", "1.2.3"), ("commit", "abc")]);
+        let _ = make_instance(
+            &conn,
+            "build_info",
+            "info",
+            &[("version", "1.2.3"), ("commit", "abc")],
+        );
         let ds = SqliteDataSource::from_connection(conn).unwrap();
         let fams = ds.metric_families().unwrap();
         assert_eq!(fams[0].ty, MetricType::Info);
@@ -813,10 +1056,8 @@ mod tests {
         let conn = make_schema();
         insert_family_with_type(&conn, "feature_flags", "stateset");
         // One instance per state name.
-        let _ = make_instance(&conn, "feature_flags", "stateset",
-            &[("feature", "alpha")]);
-        let _ = make_instance(&conn, "feature_flags", "stateset",
-            &[("feature", "beta")]);
+        let _ = make_instance(&conn, "feature_flags", "stateset", &[("feature", "alpha")]);
+        let _ = make_instance(&conn, "feature_flags", "stateset", &[("feature", "beta")]);
         let ds = SqliteDataSource::from_connection(conn).unwrap();
         let fams = ds.metric_families().unwrap();
         assert_eq!(fams[0].ty, MetricType::StateSet);
@@ -831,8 +1072,7 @@ mod tests {
         // but pin it for the SRD-49 round-trip matrix.
         let conn = make_schema();
         insert_family_with_type(&conn, "request_latency", "summary");
-        let _ = make_instance(&conn, "request_latency", "summary",
-            &[("phase", "run")]);
+        let _ = make_instance(&conn, "request_latency", "summary", &[("phase", "run")]);
         let ds = SqliteDataSource::from_connection(conn).unwrap();
         assert_eq!(ds.metric_families().unwrap()[0].ty, MetricType::Summary);
     }
@@ -854,11 +1094,11 @@ mod tests {
                 value REAL NOT NULL,
                 timestamp_ms INTEGER,
                 labels_spec TEXT NOT NULL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         insert_family_with_type(&conn, "ops_total", "counter");
-        let inst_id = make_instance(&conn, "ops_total", "counter",
-            &[("phase", "run")]);
+        let inst_id = make_instance(&conn, "ops_total", "counter", &[("phase", "run")]);
         // Exemplar 1: with timestamp + trace label.
         conn.execute(
             "INSERT INTO exemplar (instance_id, sample_timestamp_ms, value, timestamp_ms, labels_spec) \
@@ -885,15 +1125,40 @@ mod tests {
         assert_eq!(got[0].value, 42.0);
         assert_eq!(got[0].timestamp_ms, Some(1010));
         // Synthetic __name__ + the instance's labels.
-        assert!(got[0].series.iter().any(|(k, v)| k == "__name__" && v == "ops_total"));
-        assert!(got[0].series.iter().any(|(k, v)| k == "phase" && v == "run"));
+        assert!(
+            got[0]
+                .series
+                .iter()
+                .any(|(k, v)| k == "__name__" && v == "ops_total")
+        );
+        assert!(
+            got[0]
+                .series
+                .iter()
+                .any(|(k, v)| k == "phase" && v == "run")
+        );
         // Exemplar's own labels parsed correctly.
-        assert!(got[0].labels.iter().any(|(k, v)| k == "trace_id" && v == "abc"));
-        assert!(got[0].labels.iter().any(|(k, v)| k == "span_id" && v == "def"));
+        assert!(
+            got[0]
+                .labels
+                .iter()
+                .any(|(k, v)| k == "trace_id" && v == "abc")
+        );
+        assert!(
+            got[0]
+                .labels
+                .iter()
+                .any(|(k, v)| k == "span_id" && v == "def")
+        );
 
         assert_eq!(got[1].sample_timestamp_ms, 2000);
         assert_eq!(got[1].timestamp_ms, None);
-        assert!(got[1].labels.iter().any(|(k, v)| k == "trace_id" && v == "xyz"));
+        assert!(
+            got[1]
+                .labels
+                .iter()
+                .any(|(k, v)| k == "trace_id" && v == "xyz")
+        );
     }
 
     #[test]
@@ -907,8 +1172,9 @@ mod tests {
                 value REAL NOT NULL,
                 timestamp_ms INTEGER,
                 labels_spec TEXT NOT NULL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         insert_family_with_type(&conn, "ops_total", "counter");
         let inst_id = make_instance(&conn, "ops_total", "counter", &[]);
         for ts in [500, 1500, 2500, 3500] {
@@ -925,9 +1191,15 @@ mod tests {
             value: "ops_total".into(),
         }];
         let in_window = ds.exemplars(&m, Some((1000, 3000))).unwrap();
-        assert_eq!(in_window.len(), 2,
+        assert_eq!(
+            in_window.len(),
+            2,
             "expected 1500 + 2500; got: {:?}",
-            in_window.iter().map(|e| e.sample_timestamp_ms).collect::<Vec<_>>());
+            in_window
+                .iter()
+                .map(|e| e.sample_timestamp_ms)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(in_window[0].sample_timestamp_ms, 1500);
         assert_eq!(in_window[1].sample_timestamp_ms, 2500);
     }
@@ -935,10 +1207,13 @@ mod tests {
     #[test]
     fn parse_labels_spec_handles_quoted_values() {
         let lab = parse_labels_spec(r#"trace_id="abc",span_id="d e f""#);
-        assert_eq!(lab, vec![
-            ("trace_id".into(), "abc".into()),
-            ("span_id".into(), "d e f".into()),
-        ]);
+        assert_eq!(
+            lab,
+            vec![
+                ("trace_id".into(), "abc".into()),
+                ("span_id".into(), "d e f".into()),
+            ]
+        );
     }
 
     #[test]
@@ -954,41 +1229,72 @@ mod tests {
         // instance was an unchanged phase (only exec 1).
         let build = || {
             let conn = make_schema();
-            let r1 = make_instance(&conn, "recall", "gauge", &[("op", "read"), ("exec_id", "1")]);
-            let r2 = make_instance(&conn, "recall", "gauge", &[("op", "read"), ("exec_id", "2")]);
-            let w1 = make_instance(&conn, "recall", "gauge", &[("op", "write"), ("exec_id", "1")]);
+            let r1 = make_instance(
+                &conn,
+                "recall",
+                "gauge",
+                &[("op", "read"), ("exec_id", "1")],
+            );
+            let r2 = make_instance(
+                &conn,
+                "recall",
+                "gauge",
+                &[("op", "read"), ("exec_id", "2")],
+            );
+            let w1 = make_instance(
+                &conn,
+                "recall",
+                "gauge",
+                &[("op", "write"), ("exec_id", "1")],
+            );
             add_gauge_sample(&conn, r1, 0, 0.80);
             add_gauge_sample(&conn, r2, 0, 0.95); // newer execution, better recall
             add_gauge_sample(&conn, w1, 0, 0.50);
             conn
         };
-        let name = || vec![Matcher {
-            label: "__name__".into(), op: MatcherOp::Eq, value: "recall".into(),
-        }];
+        let name = || {
+            vec![Matcher {
+                label: "__name__".into(),
+                op: MatcherOp::Eq,
+                value: "recall".into(),
+            }]
+        };
 
         // All: every execution's instance is included.
         let all = open_ds(build())
             .with_execution_selection(ExecutionSelection::All)
-            .select_range(&name(), 0, 1000).expect("fetch all");
+            .select_range(&name(), 0, 1000)
+            .expect("fetch all");
         assert_eq!(all.len(), 3, "All keeps every execution's instance");
 
         // LatestPerInstance (the default): newest execution per
         // logical instance — read from exec 2, write from exec 1.
         let latest = open_ds(build())
             .with_execution_selection(ExecutionSelection::LatestPerInstance)
-            .select_range(&name(), 0, 1000).expect("fetch latest-per-instance");
+            .select_range(&name(), 0, 1000)
+            .expect("fetch latest-per-instance");
         assert_eq!(latest.len(), 2, "one series per logical instance");
-        let read = latest.iter().find(|s| lookup(s, "op") == Some("read"))
+        let read = latest
+            .iter()
+            .find(|s| lookup(s, "op") == Some("read"))
             .expect("read series present");
-        assert_eq!(lookup(read, "exec_id"), Some("2"), "read comes from newest execution");
+        assert_eq!(
+            lookup(read, "exec_id"),
+            Some("2"),
+            "read comes from newest execution"
+        );
         assert_eq!(read.samples[0].value, 0.95);
-        let write = latest.iter().find(|s| lookup(s, "op") == Some("write"))
+        let write = latest
+            .iter()
+            .find(|s| lookup(s, "op") == Some("write"))
             .expect("write series survives from its only execution");
         assert_eq!(lookup(write, "exec_id"), Some("1"));
         assert_eq!(write.samples[0].value, 0.50);
 
         // Default (no explicit selection) matches LatestPerInstance.
-        let defaulted = open_ds(build()).select_range(&name(), 0, 1000).expect("fetch default");
+        let defaulted = open_ds(build())
+            .select_range(&name(), 0, 1000)
+            .expect("fetch default");
         assert_eq!(defaulted.len(), 2, "default is per-instance-latest");
     }
 
@@ -1004,8 +1310,18 @@ mod tests {
         let conn = make_schema();
         let t1 = 1_000_000_i64;
         let t2 = t1 + 3_600_000; // +1h
-        let r25 = make_instance(&conn, "recall", "gauge", &[("limit", "25"), ("exec_id", "1")]);
-        let r50 = make_instance(&conn, "recall", "gauge", &[("limit", "50"), ("exec_id", "2")]);
+        let r25 = make_instance(
+            &conn,
+            "recall",
+            "gauge",
+            &[("limit", "25"), ("exec_id", "1")],
+        );
+        let r50 = make_instance(
+            &conn,
+            "recall",
+            "gauge",
+            &[("limit", "50"), ("exec_id", "2")],
+        );
         add_gauge_sample(&conn, r25, t1, 0.80);
         add_gauge_sample(&conn, r50, t2, 0.90);
         let ds = open_ds(conn); // default = LatestPerInstance
@@ -1014,19 +1330,27 @@ mod tests {
         // every sample (`latest_sample_window` = [min,max]) and the
         // instant projection uses a 5-minute stale lookback.
         let ctx = EvalContext {
-            data: &ds, start_ms: t1, end_ms: t2, step_ms: 60_000,
+            data: &ds,
+            start_ms: t1,
+            end_ms: t2,
+            step_ms: 60_000,
             lookback_ms: Some(300_000),
-            query_start_ms: Some(t1), query_end_ms: Some(t2),
+            query_start_ms: Some(t1),
+            query_end_ms: Some(t2),
         };
         let ast = nbrs_metricsql::parse("recall").expect("parse");
         let series = evaluate(&ctx, &ast).expect("evaluate");
         let limits: std::collections::BTreeSet<&str> =
             series.iter().filter_map(|s| lookup(s, "limit")).collect();
-        assert!(limits.contains("50"),
-            "exec 2's new instance (limit=50) must appear: {limits:?}");
-        assert!(limits.contains("25"),
+        assert!(
+            limits.contains("50"),
+            "exec 2's new instance (limit=50) must appear: {limits:?}"
+        );
+        assert!(
+            limits.contains("25"),
             "exec 1's instance (limit=25) must coalesce in, not be dropped \
-             by the recency window: {limits:?}");
+             by the recency window: {limits:?}"
+        );
     }
 
     #[test]
@@ -1037,13 +1361,13 @@ mod tests {
         // returns; expressions are now fully-qualified
         // (`sv.<col>`) so the SQL template can blend in
         // derived stat suffixes like `_rate`.
-        assert_eq!(default_column_for_type("counter"),         "sv.count");
-        assert_eq!(default_column_for_type("gauge"),           "sv.mean");
-        assert_eq!(default_column_for_type("summary"),         "sv.count");
-        assert_eq!(default_column_for_type("histogram"),       "sv.count");
-        assert_eq!(default_column_for_type("gaugehistogram"),  "sv.count");
-        assert_eq!(default_column_for_type("info"),            "sv.count");
-        assert_eq!(default_column_for_type("stateset"),        "sv.mean");
-        assert_eq!(default_column_for_type("unknown"),         "sv.mean");
+        assert_eq!(default_column_for_type("counter"), "sv.count");
+        assert_eq!(default_column_for_type("gauge"), "sv.mean");
+        assert_eq!(default_column_for_type("summary"), "sv.count");
+        assert_eq!(default_column_for_type("histogram"), "sv.count");
+        assert_eq!(default_column_for_type("gaugehistogram"), "sv.count");
+        assert_eq!(default_column_for_type("info"), "sv.count");
+        assert_eq!(default_column_for_type("stateset"), "sv.mean");
+        assert_eq!(default_column_for_type("unknown"), "sv.mean");
     }
 }

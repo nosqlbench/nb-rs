@@ -17,7 +17,7 @@ extern crate nbrs_adapter_stdout;
 
 use std::path::PathBuf;
 
-use nbrs_runtime::concurrent::{run_workload_headless, PhaseRecord};
+use nbrs_runtime::concurrent::{PhaseRecord, run_workload_headless};
 
 /// Tempdir under the project's redirected `TMPDIR` (`target/test-tmp`).
 struct TempDir {
@@ -61,7 +61,10 @@ async fn headless_run_executes_a_workload_in_context_and_captures_outcome() {
     // captured here — proving the de-globalized run path resolves to the
     // task-local context end-to-end (incl. the spawned per-cycle fibers).
     assert!(
-        outcome.phases.iter().any(|p| matches!(p, PhaseRecord::Completed { .. })),
+        outcome
+            .phases
+            .iter()
+            .any(|p| matches!(p, PhaseRecord::Completed { .. })),
         "expected a completed phase captured by the scoped observer; got {:?}",
         outcome.phases
     );

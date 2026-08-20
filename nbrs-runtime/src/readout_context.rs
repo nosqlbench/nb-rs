@@ -70,23 +70,57 @@ pub struct ActivityReadoutContext {
 }
 
 impl ReadoutContext for ActivityReadoutContext {
-    fn subject_name(&self) -> &str { &self.phase_name }
-    fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
-    fn subject_labels(&self) -> &str { &self.phase_labels }
-    fn open_ended(&self) -> bool { self.open_ended }
-    fn cycles_completed(&self) -> u64 { self.cycles_completed }
-    fn cycles_total(&self) -> u64 { self.cycles_total }
-    fn ops_ok(&self) -> u64 { self.ops_ok }
-    fn skips(&self) -> u64 { self.skips }
-    fn errors(&self) -> u64 { self.errors }
-    fn retries(&self) -> u64 { self.retries }
-    fn concurrency(&self) -> usize { self.concurrency }
-    fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-    fn consumed(&self) -> u64 { self.consumed }
-    fn status_metric_chips(&self) -> String { self.status_metric_chips.clone() }
-    fn depth_indent(&self) -> &str { &self.depth_indent }
-    fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> EventType { EventType::PhaseEnd }
+    fn subject_name(&self) -> &str {
+        &self.phase_name
+    }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        self.phase_seq
+    }
+    fn subject_labels(&self) -> &str {
+        &self.phase_labels
+    }
+    fn open_ended(&self) -> bool {
+        self.open_ended
+    }
+    fn cycles_completed(&self) -> u64 {
+        self.cycles_completed
+    }
+    fn cycles_total(&self) -> u64 {
+        self.cycles_total
+    }
+    fn ops_ok(&self) -> u64 {
+        self.ops_ok
+    }
+    fn skips(&self) -> u64 {
+        self.skips
+    }
+    fn errors(&self) -> u64 {
+        self.errors
+    }
+    fn retries(&self) -> u64 {
+        self.retries
+    }
+    fn concurrency(&self) -> usize {
+        self.concurrency
+    }
+    fn elapsed_secs(&self) -> f64 {
+        self.elapsed_secs
+    }
+    fn consumed(&self) -> u64 {
+        self.consumed
+    }
+    fn status_metric_chips(&self) -> String {
+        self.status_metric_chips.clone()
+    }
+    fn depth_indent(&self) -> &str {
+        &self.depth_indent
+    }
+    fn use_color(&self) -> bool {
+        self.use_color
+    }
+    fn event(&self) -> EventType {
+        EventType::PhaseEnd
+    }
     fn subject_state(&self) -> LifecycleState {
         // Mirror the outcome status onto the lifecycle axis
         // so existing consumers that branch on `subject_state`
@@ -95,17 +129,18 @@ impl ReadoutContext for ActivityReadoutContext {
         // executor recorded the failure). SRD-76 unifies
         // the two surfaces.
         match self.outcome.validity {
-            crate::phase_outcome::Validity::Succeeded
-                => LifecycleState::Completed,
-            crate::phase_outcome::Validity::Failed
-                => LifecycleState::Failed(
-                    self.outcome_errors.first()
-                        .map(|e| e.message.clone())
-                        .unwrap_or_else(|| "phase failed".into())
-                ),
+            crate::phase_outcome::Validity::Succeeded => LifecycleState::Completed,
+            crate::phase_outcome::Validity::Failed => LifecycleState::Failed(
+                self.outcome_errors
+                    .first()
+                    .map(|e| e.message.clone())
+                    .unwrap_or_else(|| "phase failed".into()),
+            ),
         }
     }
-    fn phase_memo(&self) -> &str { &self.memo }
+    fn phase_memo(&self) -> &str {
+        &self.memo
+    }
     fn outcome(&self) -> crate::phase_outcome::Outcome {
         self.outcome.clone()
     }
@@ -144,22 +179,54 @@ pub struct LifecycleContext {
 }
 
 impl ReadoutContext for LifecycleContext {
-    fn subject_name(&self) -> &str { &self.subject_name }
-    fn subject_seq(&self) -> Option<(usize, usize)> { None }
-    fn subject_labels(&self) -> &str { &self.subject_labels }
-    fn cycles_completed(&self) -> u64 { 0 }
-    fn cycles_total(&self) -> u64 { 0 }
-    fn ops_ok(&self) -> u64 { 0 }
-    fn errors(&self) -> u64 { 0 }
-    fn retries(&self) -> u64 { 0 }
-    fn concurrency(&self) -> usize { 0 }
-    fn elapsed_secs(&self) -> f64 { 0.0 }
-    fn consumed(&self) -> u64 { 0 }
-    fn status_metric_chips(&self) -> String { String::new() }
-    fn depth_indent(&self) -> &str { &self.depth_indent }
-    fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> crate::lifecycle::EventType { self.event }
-    fn stick_reattached_session(&self) -> &str { &self.stick_reattached }
+    fn subject_name(&self) -> &str {
+        &self.subject_name
+    }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        None
+    }
+    fn subject_labels(&self) -> &str {
+        &self.subject_labels
+    }
+    fn cycles_completed(&self) -> u64 {
+        0
+    }
+    fn cycles_total(&self) -> u64 {
+        0
+    }
+    fn ops_ok(&self) -> u64 {
+        0
+    }
+    fn errors(&self) -> u64 {
+        0
+    }
+    fn retries(&self) -> u64 {
+        0
+    }
+    fn concurrency(&self) -> usize {
+        0
+    }
+    fn elapsed_secs(&self) -> f64 {
+        0.0
+    }
+    fn consumed(&self) -> u64 {
+        0
+    }
+    fn status_metric_chips(&self) -> String {
+        String::new()
+    }
+    fn depth_indent(&self) -> &str {
+        &self.depth_indent
+    }
+    fn use_color(&self) -> bool {
+        self.use_color
+    }
+    fn event(&self) -> crate::lifecycle::EventType {
+        self.event
+    }
+    fn stick_reattached_session(&self) -> &str {
+        &self.stick_reattached
+    }
     fn subject_state(&self) -> LifecycleState {
         // Lifecycle events fire at the boundary; the
         // subject is in transition. `Running` is the safe
@@ -240,37 +307,99 @@ pub struct InlineRefreshContext {
 }
 
 impl ReadoutContext for InlineRefreshContext {
-    fn subject_name(&self) -> &str { &self.phase_name }
-    fn activity_name(&self) -> &str { &self.activity_name }
-    fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
-    fn subject_labels(&self) -> &str { &self.phase_labels }
-    fn cycles_completed(&self) -> u64 { self.cycles_completed }
-    fn cycles_total(&self) -> u64 { self.cycles_total }
-    fn ops_started(&self) -> u64 { self.ops_started }
-    fn ops_finished(&self) -> u64 { self.ops_finished }
-    fn ops_ok(&self) -> u64 { self.ops_ok }
-    fn skips(&self) -> u64 { self.skips }
-    fn errors(&self) -> u64 { self.errors }
-    fn retries(&self) -> u64 { self.retries }
-    fn attempt_ok(&self) -> u64 { self.attempt_ok }
-    fn attempt_failed(&self) -> u64 { self.attempt_failed }
-    fn concurrency(&self) -> usize { self.concurrency }
-    fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
-    fn consumed(&self) -> u64 { self.consumed }
-    fn rows_consumed(&self) -> u64 { self.rows_consumed }
-    fn rows_total(&self) -> u64 { self.rows_total }
-    fn status_metric_chips(&self) -> String { self.status_metric_chips.clone() }
-    fn adapter_counters_text(&self) -> String { self.adapter_counters_text.clone() }
-    fn batch_info_text(&self) -> String { self.batch_info_text.clone() }
-    fn depth_indent(&self) -> &str { &self.depth_indent }
-    fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> EventType { EventType::Update }
-    fn refresh_tick(&self) -> u64 { self.refresh_tick }
-    fn phase_memo(&self) -> &str { &self.memo }
-    fn progress_override(&self) -> Option<f64> { self.progress_override }
-    fn open_ended(&self) -> bool { self.open_ended }
-    fn latency_p50_nanos(&self) -> u64 { self.lat_p50_nanos }
-    fn latency_p99_nanos(&self) -> u64 { self.lat_p99_nanos }
+    fn subject_name(&self) -> &str {
+        &self.phase_name
+    }
+    fn activity_name(&self) -> &str {
+        &self.activity_name
+    }
+    fn subject_seq(&self) -> Option<(usize, usize)> {
+        self.phase_seq
+    }
+    fn subject_labels(&self) -> &str {
+        &self.phase_labels
+    }
+    fn cycles_completed(&self) -> u64 {
+        self.cycles_completed
+    }
+    fn cycles_total(&self) -> u64 {
+        self.cycles_total
+    }
+    fn ops_started(&self) -> u64 {
+        self.ops_started
+    }
+    fn ops_finished(&self) -> u64 {
+        self.ops_finished
+    }
+    fn ops_ok(&self) -> u64 {
+        self.ops_ok
+    }
+    fn skips(&self) -> u64 {
+        self.skips
+    }
+    fn errors(&self) -> u64 {
+        self.errors
+    }
+    fn retries(&self) -> u64 {
+        self.retries
+    }
+    fn attempt_ok(&self) -> u64 {
+        self.attempt_ok
+    }
+    fn attempt_failed(&self) -> u64 {
+        self.attempt_failed
+    }
+    fn concurrency(&self) -> usize {
+        self.concurrency
+    }
+    fn elapsed_secs(&self) -> f64 {
+        self.elapsed_secs
+    }
+    fn consumed(&self) -> u64 {
+        self.consumed
+    }
+    fn rows_consumed(&self) -> u64 {
+        self.rows_consumed
+    }
+    fn rows_total(&self) -> u64 {
+        self.rows_total
+    }
+    fn status_metric_chips(&self) -> String {
+        self.status_metric_chips.clone()
+    }
+    fn adapter_counters_text(&self) -> String {
+        self.adapter_counters_text.clone()
+    }
+    fn batch_info_text(&self) -> String {
+        self.batch_info_text.clone()
+    }
+    fn depth_indent(&self) -> &str {
+        &self.depth_indent
+    }
+    fn use_color(&self) -> bool {
+        self.use_color
+    }
+    fn event(&self) -> EventType {
+        EventType::Update
+    }
+    fn refresh_tick(&self) -> u64 {
+        self.refresh_tick
+    }
+    fn phase_memo(&self) -> &str {
+        &self.memo
+    }
+    fn progress_override(&self) -> Option<f64> {
+        self.progress_override
+    }
+    fn open_ended(&self) -> bool {
+        self.open_ended
+    }
+    fn latency_p50_nanos(&self) -> u64 {
+        self.lat_p50_nanos
+    }
+    fn latency_p99_nanos(&self) -> u64 {
+        self.lat_p99_nanos
+    }
     /// SRD-63 Push 9f: derive ETA from `cycles_total -
     /// ops_finished` divided by the observed throughput
     /// rate (`ops_finished / elapsed`). `None` when the
@@ -290,7 +419,9 @@ impl ReadoutContext for InlineRefreshContext {
             return None;
         }
         if let (Some(f), Some(e)) = (self.progress_override, self.progress_override_elapsed)
-            && f > 0.0 && f < 1.0 && e > 0.0
+            && f > 0.0
+            && f < 1.0
+            && e > 0.0
         {
             return Some(e * (1.0 - f) / f);
         }
@@ -300,7 +431,9 @@ impl ReadoutContext for InlineRefreshContext {
         // ETA by the stride factor (e.g. ~64/s ops vs 7.8K/s rows
         // → 35h instead of 18m).
         if self.rows_total > 0 && self.elapsed_secs > 0.0 {
-            if self.rows_consumed == 0 { return None; }
+            if self.rows_consumed == 0 {
+                return None;
+            }
             let rate = self.rows_consumed as f64 / self.elapsed_secs;
             let remaining = self.rows_total.saturating_sub(self.rows_consumed) as f64;
             return Some(remaining / rate);
@@ -309,7 +442,9 @@ impl ReadoutContext for InlineRefreshContext {
             return None;
         }
         let rate = self.ops_finished as f64 / self.elapsed_secs;
-        if rate <= 0.0 { return None; }
+        if rate <= 0.0 {
+            return None;
+        }
         let remaining = self.cycles_total.saturating_sub(self.ops_finished) as f64;
         Some(remaining / rate)
     }
@@ -347,9 +482,11 @@ pub fn fire_lifecycle(
     let mut binder = match crate::readouts::build_event_binder(bindings, event, seed) {
         Ok(b) => b,
         Err(e) => {
-            crate::diag!(crate::observer::LogLevel::Warn,
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
                 "readouts: failed to bind {slot} — {e}",
-                slot = event.slot_name());
+                slot = event.slot_name()
+            );
             return;
         }
     };
@@ -365,12 +502,12 @@ pub fn fire_lifecycle(
     // slots stay `Diagnostic` (they have no region counterpart;
     // scope nodes are stored-`Pending` and never appear there).
     let category = match event {
-        crate::lifecycle::EventType::PhaseStart | crate::lifecycle::EventType::PhaseEnd =>
-            crate::observer::LogCategory::PhaseLifecycle,
+        crate::lifecycle::EventType::PhaseStart | crate::lifecycle::EventType::PhaseEnd => {
+            crate::observer::LogCategory::PhaseLifecycle
+        }
         _ => crate::observer::LogCategory::Diagnostic,
     };
-    crate::observer::log_categorized(
-        crate::observer::LogLevel::Info, category, &rendered);
+    crate::observer::log_categorized(crate::observer::LogLevel::Info, category, &rendered);
 
     // Snapshot capture per Push 6. Subject identity comes
     // straight from the context: `subject_kind` from the
@@ -420,9 +557,12 @@ pub fn resolve_phase_coord_by_name(activity_name: &str) -> (Option<(usize, usize
         .unwrap_or(activity_name);
     crate::scene_tree::current()
         .and_then(|t| {
-            let node = t.dfs_phases()
-                .find(|n| n.name == bare_name
-                    && matches!(n.status, crate::scene_tree::PhaseStatus::Running))?
+            let node = t
+                .dfs_phases()
+                .find(|n| {
+                    n.name == bare_name
+                        && matches!(n.status, crate::scene_tree::PhaseStatus::Running)
+                })?
                 .clone();
             let seq = node.seq?;
             let depth = node.depth.saturating_sub(1);
@@ -494,9 +634,7 @@ pub(crate) fn rows_per_batch(
     match batch_writes {
         // A batch write count is present: divide by it directly. Show
         // only when a real batch (>1 row/op) was observed.
-        Some(batches) if batches > 0 => {
-            (rows > batches).then(|| rows as f64 / batches as f64)
-        }
+        Some(batches) if batches > 0 => (rows > batches).then(|| rows as f64 / batches as f64),
         // Legacy / non-CQL fallback: attempt-count denominator.
         _ => (stanzas > 0 && rows > stanzas).then(|| rows as f64 / stanzas as f64),
     }
@@ -580,7 +718,9 @@ pub fn build_inline_refresh_context(
         }
         let item_rate = if elapsed_secs > 0.0 {
             *total as f64 / elapsed_secs
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let rate_str = if item_rate >= 1_000_000.0 {
             format!("{:.1}M", item_rate / 1_000_000.0)
         } else if item_rate >= 1_000.0 {
@@ -597,12 +737,14 @@ pub fn build_inline_refresh_context(
     // otherwise falls back to the attempt-based `rows_inserted /
     // stanzas_total`. See [`rows_per_batch`].
     let stanzas = progress_metrics.stanzas_total.get();
-    let find_counter =
-        |want: &str| counters.iter().find(|(n, _)| n == want).map(|(_, t)| *t);
-    let batch_info_text =
-        rows_per_batch(find_counter("rows_inserted"), find_counter("_batch_writes"), stanzas)
-            .map(|avg| format!(" rows/batch:{avg:.1}"))
-            .unwrap_or_default();
+    let find_counter = |want: &str| counters.iter().find(|(n, _)| n == want).map(|(_, t)| *t);
+    let batch_info_text = rows_per_batch(
+        find_counter("rows_inserted"),
+        find_counter("_batch_writes"),
+        stanzas,
+    )
+    .map(|avg| format!(" rows/batch:{avg:.1}"))
+    .unwrap_or_default();
 
     // Pre-rendered status-metric chip string.
     let status_metric_chips = progress_metrics
@@ -624,8 +766,11 @@ pub fn build_inline_refresh_context(
     let (lat_p50, lat_p99) = {
         let snap = progress_metrics.service_time.peek_snapshot();
         let h = &snap.histogram;
-        if h.is_empty() { (0, 0) }
-        else { (h.value_at_quantile(0.50), h.value_at_quantile(0.99)) }
+        if h.is_empty() {
+            (0, 0)
+        } else {
+            (h.value_at_quantile(0.50), h.value_at_quantile(0.99))
+        }
     };
     InlineRefreshContext {
         phase_name: bare_name.to_string(),
@@ -705,7 +850,10 @@ mod tests {
         let eta = ctx.eta_secs().expect("measured ETA");
         assert!((eta - 180.0).abs() < 1e-9, "eta={eta}");
         // Without the elapsed companion, fall back to cycle basis.
-        let ctx2 = super::InlineRefreshContext { progress_override_elapsed: None, ..ctx };
+        let ctx2 = super::InlineRefreshContext {
+            progress_override_elapsed: None,
+            ..ctx
+        };
         let eta2 = ctx2.eta_secs().expect("cycle ETA");
         assert!((eta2 - 200.0).abs() < 1e-9, "eta2={eta2}");
     }
@@ -753,9 +901,14 @@ mod tests {
         let eta = ctx.eta_secs().expect("row-basis ETA");
         assert!((eta - 800.0).abs() < 1e-6, "eta={eta}");
         // No rows consumed yet → unknown, not a fabricated op-basis ETA.
-        let ctx2 = super::InlineRefreshContext { rows_consumed: 0, ..ctx };
-        assert!(ctx2.eta_secs().is_none(),
-            "zero-row cursor phase must have no ETA");
+        let ctx2 = super::InlineRefreshContext {
+            rows_consumed: 0,
+            ..ctx
+        };
+        assert!(
+            ctx2.eta_secs().is_none(),
+            "zero-row cursor phase must have no ETA"
+        );
     }
 
     use super::{is_internal_counter, rows_per_batch};

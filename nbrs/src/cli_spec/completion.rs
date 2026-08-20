@@ -22,8 +22,11 @@ pub fn build_command_tree(root: &Command) -> CommandTree {
     for sub in &root.subcommands {
         tree = tree.strict_command(sub.name, to_strict_node(sub));
     }
-    debug_assert!(tree.validate().is_ok(), "command tree metadata: {:?}",
-        tree.validate().err());
+    debug_assert!(
+        tree.validate().is_ok(),
+        "command tree metadata: {:?}",
+        tree.validate().err()
+    );
     tree
 }
 
@@ -40,7 +43,9 @@ fn to_strict_node(cmd: &Command) -> StrictNode<true, true> {
     } else if cmd.subcommands.is_empty() {
         leaf_strict(cmd)
     } else {
-        let children: Vec<(&str, Node)> = cmd.subcommands.iter()
+        let children: Vec<(&str, Node)> = cmd
+            .subcommands
+            .iter()
             .map(|s| (s.name, to_node(s)))
             .collect();
         StrictNode::group(children)
@@ -68,9 +73,10 @@ fn to_node(cmd: &Command) -> Node {
         leaf_node(cmd)
     } else {
         Node::group(
-            cmd.subcommands.iter()
+            cmd.subcommands
+                .iter()
                 .map(|s| (s.name, to_node(s)))
-                .collect()
+                .collect(),
         )
     };
     node.with_category(cmd.category.tag())
@@ -78,11 +84,15 @@ fn to_node(cmd: &Command) -> Node {
 }
 
 fn leaf_node(cmd: &Command) -> Node {
-    let value_flags: Vec<&str> = cmd.flags.iter()
+    let value_flags: Vec<&str> = cmd
+        .flags
+        .iter()
         .filter(|f| matches!(f.arity, Arity::Value))
         .flat_map(|f| std::iter::once(f.long).chain(f.short))
         .collect();
-    let bool_flags: Vec<&str> = cmd.flags.iter()
+    let bool_flags: Vec<&str> = cmd
+        .flags
+        .iter()
         .filter(|f| matches!(f.arity, Arity::Bool))
         .map(|f| f.long)
         .collect();
@@ -114,8 +124,8 @@ fn leaf_node(cmd: &Command) -> Node {
                 node = node.with_positional_provider(fn_provider(provider));
             }
             ValueProvider::Path => {
-                node = node.with_positional_provider(
-                    veks_completion::providers::fs_paths_provider());
+                node =
+                    node.with_positional_provider(veks_completion::providers::fs_paths_provider());
             }
             ValueProvider::None => {}
         }
@@ -168,9 +178,10 @@ mod tests {
             completion_override: None,
         };
         let tree = build_command_tree(&root);
-        let got = veks_completion::complete(
-            &tree, &["nbrs", "aliased", "--only"]);
-        assert!(got.iter().any(|c| c == "--only-via-override"),
-            "root-level override node must supply completions, got {got:?}");
+        let got = veks_completion::complete(&tree, &["nbrs", "aliased", "--only"]);
+        assert!(
+            got.iter().any(|c| c == "--only-via-override"),
+            "root-level override node must supply completions, got {got:?}"
+        );
     }
 }

@@ -69,7 +69,10 @@ pub fn install_global(tree: SceneTree) -> Arc<RwLock<SceneTree>> {
 /// execution scope this is exactly `GLOBAL_TREE`.
 fn active_handle() -> Option<Arc<RwLock<SceneTree>>> {
     crate::execution_context::current_scene_tree().or_else(|| {
-        GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        GLOBAL_TREE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     })
 }
 
@@ -84,9 +87,10 @@ pub fn current() -> Option<SceneTree> {
 /// emit sites so the tree mirrors the observer's view.
 pub fn with_global_mut<F: FnOnce(&mut SceneTree)>(f: F) {
     if let Some(arc) = active_handle()
-        && let Ok(mut g) = arc.write() {
-            f(&mut g);
-        }
+        && let Ok(mut g) = arc.write()
+    {
+        f(&mut g);
+    }
 }
 
 /// Read-only access to the active scene tree, if installed.
@@ -228,7 +232,9 @@ pub struct SceneNode {
     pub active: bool,
 }
 
-fn default_active() -> bool { true }
+fn default_active() -> bool {
+    true
+}
 
 /// The scene tree itself. `nodes[0]` is always the synthetic root.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,7 +243,9 @@ pub struct SceneTree {
 }
 
 impl Default for SceneTree {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SceneTree {
@@ -266,7 +274,9 @@ impl SceneTree {
     }
 
     /// Index of the synthetic root.
-    pub fn root(&self) -> SceneNodeId { 0 }
+    pub fn root(&self) -> SceneNodeId {
+        0
+    }
 
     /// Append a node under `parent` and return its id.
     ///
@@ -299,7 +309,9 @@ impl SceneTree {
         // existing match on (kind, name). Matches are returned
         // unchanged — the second walk pass re-encounters every
         // node from the first pass and must not duplicate.
-        if let Some(&existing) = self.nodes[parent].children.iter()
+        if let Some(&existing) = self.nodes[parent]
+            .children
+            .iter()
             .find(|&&c| self.nodes[c].kind == kind && self.nodes[c].name == name)
         {
             return existing;
@@ -308,7 +320,9 @@ impl SceneTree {
         let depth = self.nodes[parent].depth + 1;
         let seq = match kind {
             NodeKind::Phase => {
-                let count = self.nodes.iter()
+                let count = self
+                    .nodes
+                    .iter()
                     .filter(|n| n.kind == NodeKind::Phase)
                     .count();
                 Some(count + 1)
@@ -344,11 +358,7 @@ impl SceneTree {
     /// root down to its declaration site. Used by the
     /// checkpoint resume planner to identify phases across
     /// runs (per SRD-44 §"Phase identity").
-    pub fn set_yaml_path(
-        &mut self,
-        id: SceneNodeId,
-        path: Vec<crate::checkpoint::PathSegment>,
-    ) {
+    pub fn set_yaml_path(&mut self, id: SceneNodeId, path: Vec<crate::checkpoint::PathSegment>) {
         if id < self.nodes.len() {
             self.nodes[id].yaml_path = path;
         }
@@ -357,7 +367,10 @@ impl SceneTree {
     /// Total number of `Phase` entries in the tree. Equal to the
     /// largest assigned `seq` value once the tree is fully built.
     pub fn total_phases(&self) -> usize {
-        self.nodes.iter().filter(|n| n.kind == NodeKind::Phase).count()
+        self.nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Phase)
+            .count()
     }
 
     /// Apply a phase-name filter to the tree. Phase nodes whose
@@ -386,7 +399,9 @@ impl SceneTree {
             if n.kind == NodeKind::Phase {
                 n.active = pat.is_match(&n.name);
                 stats.total += 1;
-                if n.active { stats.matched += 1; }
+                if n.active {
+                    stats.matched += 1;
+                }
             }
         }
         // Pass 2: scope nodes (and the root) are active iff any
@@ -396,7 +411,9 @@ impl SceneTree {
         // append-only construction guarantees this).
         let n = self.nodes.len();
         for i in (0..n).rev() {
-            if matches!(self.nodes[i].kind, NodeKind::Phase) { continue; }
+            if matches!(self.nodes[i].kind, NodeKind::Phase) {
+                continue;
+            }
             let kids = self.nodes[i].children.clone();
             let any_active = kids.iter().any(|c| self.nodes[*c].active);
             self.nodes[i].active = any_active;
@@ -449,7 +466,10 @@ impl SceneTree {
     /// order. The synthetic root itself is included as the first
     /// item; renderers filter on `kind == Root` to skip it.
     pub fn dfs(&self) -> DfsIter<'_> {
-        DfsIter { tree: self, stack: vec![0] }
+        DfsIter {
+            tree: self,
+            stack: vec![0],
+        }
     }
 
     /// DFS yielding only `Phase`-kind nodes, in the same order
@@ -487,10 +507,7 @@ impl SceneTree {
         want: Option<&PhaseStatus>,
     ) -> Option<SceneNodeId> {
         self.dfs_phases()
-            .find(|n| {
-                n.name == name
-                    && want.is_none_or(|w| &n.status == w)
-            })
+            .find(|n| n.name == name && want.is_none_or(|w| &n.status == w))
             .map(|n| n.id)
     }
 
@@ -521,7 +538,9 @@ impl SceneTree {
     /// Used by the `skipped_phases=elide|prune` display modes to drop
     /// fully-gated-off phases from the completed tree.
     pub fn remove_node(&mut self, id: SceneNodeId) {
-        let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) else { return };
+        let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) else {
+            return;
+        };
         if let Some(p) = self.nodes.get_mut(parent) {
             p.children.retain(|c| *c != id);
         }
@@ -590,7 +609,9 @@ impl SceneTree {
         labels: &str,
         outcome: crate::phase_outcome::PhaseOutcome,
     ) {
-        let Some(id) = self.find_phase(name, labels, None) else { return };
+        let Some(id) = self.find_phase(name, labels, None) else {
+            return;
+        };
         self.set_phase_outcome_at(id, outcome);
     }
 
@@ -604,7 +625,9 @@ impl SceneTree {
         id: SceneNodeId,
         outcome: crate::phase_outcome::PhaseOutcome,
     ) {
-        let Some(n) = self.nodes.get_mut(id) else { return };
+        let Some(n) = self.nodes.get_mut(id) else {
+            return;
+        };
         // Overwrite-on-re-run matches the legacy `status` /
         // `duration_secs` fields: comprehension iterations
         // re-use the same SceneNode for each tuple of the
@@ -622,10 +645,10 @@ impl SceneTree {
         // renders Completed; an untrustworthy one renders Failed
         // with the first error message.
         let lifecycle = match outcome.validity {
-            crate::phase_outcome::Validity::Succeeded =>
-                PhaseStatus::Completed,
+            crate::phase_outcome::Validity::Succeeded => PhaseStatus::Completed,
             crate::phase_outcome::Validity::Failed => {
-                let msg = outcome.first_error_message()
+                let msg = outcome
+                    .first_error_message()
                     .unwrap_or("unknown error")
                     .to_string();
                 PhaseStatus::Failed(msg)
@@ -647,10 +670,10 @@ impl SceneTree {
     /// that never ran (still Pending at session end)
     /// contribute nothing — interrupted-mid-run is not a
     /// failure per SRD-76 §"SessionDisposition".
-    pub fn session_disposition(&self)
-        -> crate::phase_outcome::SessionDisposition
-    {
-        let any_failed = self.nodes.iter()
+    pub fn session_disposition(&self) -> crate::phase_outcome::SessionDisposition {
+        let any_failed = self
+            .nodes
+            .iter()
             .filter(|n| matches!(n.kind, NodeKind::Phase))
             .filter_map(|n| n.outcome.as_ref())
             .any(|o| o.is_failure());
@@ -672,13 +695,15 @@ impl SceneTree {
     /// epilogue ran) so it can route it through the visible
     /// surfaces exactly once.
     pub fn phase_outcome_present_at(&self, id: SceneNodeId) -> bool {
-        self.nodes.get(id).map(|n| n.outcome.is_some()).unwrap_or(false)
+        self.nodes
+            .get(id)
+            .map(|n| n.outcome.is_some())
+            .unwrap_or(false)
     }
 
-    pub fn iter_phase_outcomes(&self)
-        -> impl Iterator<Item = &crate::phase_outcome::PhaseOutcome>
-    {
-        self.nodes.iter()
+    pub fn iter_phase_outcomes(&self) -> impl Iterator<Item = &crate::phase_outcome::PhaseOutcome> {
+        self.nodes
+            .iter()
             .filter(|n| matches!(n.kind, NodeKind::Phase))
             .filter_map(|n| n.outcome.as_ref())
     }
@@ -702,7 +727,9 @@ impl SceneTree {
             let cs = self.aggregate_status(child);
             match cs {
                 PhaseStatus::Failed(e) => {
-                    if first_failure.is_none() { first_failure = Some(e); }
+                    if first_failure.is_none() {
+                        first_failure = Some(e);
+                    }
                     all_completed = false;
                 }
                 PhaseStatus::Running => {
@@ -714,22 +741,30 @@ impl SceneTree {
                 }
                 PhaseStatus::Completed => {}
             }
-            if self.nodes[child].kind == NodeKind::Phase
-                || self.descendants_contain_phase(child)
-            {
+            if self.nodes[child].kind == NodeKind::Phase || self.descendants_contain_phase(child) {
                 seen_phase = true;
             }
         }
-        if let Some(e) = first_failure { return PhaseStatus::Failed(e); }
-        if any_running { return PhaseStatus::Running; }
-        if seen_phase && all_completed { return PhaseStatus::Completed; }
+        if let Some(e) = first_failure {
+            return PhaseStatus::Failed(e);
+        }
+        if any_running {
+            return PhaseStatus::Running;
+        }
+        if seen_phase && all_completed {
+            return PhaseStatus::Completed;
+        }
         PhaseStatus::Pending
     }
 
     fn descendants_contain_phase(&self, id: SceneNodeId) -> bool {
         let n = &self.nodes[id];
-        if n.kind == NodeKind::Phase { return true; }
-        n.children.iter().any(|&c| self.descendants_contain_phase(c))
+        if n.kind == NodeKind::Phase {
+            return true;
+        }
+        n.children
+            .iter()
+            .any(|&c| self.descendants_contain_phase(c))
     }
 
     /// Total count of `Phase`-kind nodes in the tree.
@@ -762,7 +797,9 @@ impl SceneTree {
 /// phase task-local (the metrics scheduler thread and other
 /// genuinely cross-phase sinks, where "which phase" is undefined).
 pub fn running_phase_indent() -> String {
-    let Some(tree) = current() else { return String::new(); };
+    let Some(tree) = current() else {
+        return String::new();
+    };
     if let Some(id) = crate::execution_context::current_phase_node()
         && let Some(n) = tree.nodes.get(id)
     {
@@ -812,7 +849,10 @@ mod tests {
     fn dfs_yields_all_in_display_order() {
         let t = build_simple();
         let names: Vec<&str> = t.dfs().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, vec!["", "for_each x=1", "p", "q", "for_each x=2", "p", "q"]);
+        assert_eq!(
+            names,
+            vec!["", "for_each x=1", "p", "q", "for_each x=2", "p", "q"]
+        );
     }
 
     #[test]
@@ -827,12 +867,16 @@ mod tests {
         let mut t = build_simple();
         // First (p, x=1) Pending → Running → Completed.
         t.set_phase_running("p", "x=1", 3);
-        let n = t.find_phase("p", "x=1", Some(&PhaseStatus::Running)).unwrap();
+        let n = t
+            .find_phase("p", "x=1", Some(&PhaseStatus::Running))
+            .unwrap();
         assert_eq!(t.nodes[n].op_count, 3);
         t.set_phase_completed("p", "x=1", 0.5);
         // The next pending (p, x=2) is now matchable.
         t.set_phase_running("p", "x=2", 5);
-        let n2 = t.find_phase("p", "x=2", Some(&PhaseStatus::Running)).unwrap();
+        let n2 = t
+            .find_phase("p", "x=2", Some(&PhaseStatus::Running))
+            .unwrap();
         assert_ne!(n, n2);
         assert_eq!(t.nodes[n2].op_count, 5);
     }
@@ -895,10 +939,14 @@ mod tests {
         t.set_phase_running_at(p_x1, 1);
         t.set_phase_running_at(p_x2, 1);
         // Install x=2's outcome first (reversed completion order).
-        t.set_phase_outcome_at(p_x2,
-            PhaseOutcome::completed(PhaseIdentity::new("p", "x=2"), 9.0));
-        t.set_phase_outcome_at(p_x1,
-            PhaseOutcome::completed(PhaseIdentity::new("p", "x=1"), 4.0));
+        t.set_phase_outcome_at(
+            p_x2,
+            PhaseOutcome::completed(PhaseIdentity::new("p", "x=2"), 9.0),
+        );
+        t.set_phase_outcome_at(
+            p_x1,
+            PhaseOutcome::completed(PhaseIdentity::new("p", "x=1"), 4.0),
+        );
         assert_eq!(t.nodes[p_x1].duration_secs, Some(4.0));
         assert_eq!(t.nodes[p_x2].duration_secs, Some(9.0));
         assert!(t.nodes[p_x1].outcome.is_some());
@@ -921,13 +969,18 @@ mod tests {
         let s = t.push(t.root(), NodeKind::Scope, "phase.for_each x", "");
         let c1 = t.push(s, NodeKind::Phase, "p", "x=1");
         let c2 = t.push(s, NodeKind::Phase, "p", "x=2");
-        assert_eq!(c1, c2,
-            "push is idempotent by name — flat for_each / sweep cells collapse");
+        assert_eq!(
+            c1, c2,
+            "push is idempotent by name — flat for_each / sweep cells collapse"
+        );
         // Contrast: distinct PARENTS yield distinct ids (the topology the
         // attribution tests above rely on).
         let s2 = t.push(t.root(), NodeKind::Scope, "phase.for_each y", "");
         let c3 = t.push(s2, NodeKind::Phase, "p", "y=1");
-        assert_ne!(c1, c3, "same name under a DIFFERENT parent is a distinct node");
+        assert_ne!(
+            c1, c3,
+            "same name under a DIFFERENT parent is a distinct node"
+        );
     }
 
     #[test]
@@ -949,7 +1002,10 @@ mod tests {
         t.set_phase_running("p", "x=1", 1);
         t.set_phase_failed("p", "x=1", "boom");
         let s = t.aggregate_status(t.root());
-        assert!(matches!(s, PhaseStatus::Failed(ref e) if e == "boom"), "got {s:?}");
+        assert!(
+            matches!(s, PhaseStatus::Failed(ref e) if e == "boom"),
+            "got {s:?}"
+        );
     }
 
     #[test]
@@ -969,10 +1025,7 @@ mod tests {
         use crate::phase_outcome::{PhaseIdentity, PhaseOutcome};
         let mut t = build_simple();
         t.set_phase_running("p", "x=1", 1);
-        let outcome = PhaseOutcome::completed(
-            PhaseIdentity::new("p", "x=1"),
-            2.5,
-        );
+        let outcome = PhaseOutcome::completed(PhaseIdentity::new("p", "x=1"), 2.5);
         t.set_phase_outcome("p", "x=1", outcome.clone());
         let phase_id = t.find_phase("p", "x=1", None).expect("phase found");
         let n = &t.nodes[phase_id];
@@ -992,7 +1045,7 @@ mod tests {
     /// reason without code changes.
     #[test]
     fn failed_outcome_legacy_status_carries_first_error_message() {
-        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome, PhaseErrorDetail};
+        use crate::phase_outcome::{PhaseErrorDetail, PhaseIdentity, PhaseOutcome};
         let mut t = build_simple();
         t.set_phase_running("p", "x=1", 1);
         let outcome = PhaseOutcome::failed(
@@ -1012,8 +1065,7 @@ mod tests {
         t.set_phase_outcome("p", "x=1", outcome);
         let phase_id = t.find_phase("p", "x=1", None).expect("phase found");
         match &t.nodes[phase_id].status {
-            PhaseStatus::Failed(msg) =>
-                assert_eq!(msg, "deadline reached after 14400s"),
+            PhaseStatus::Failed(msg) => assert_eq!(msg, "deadline reached after 14400s"),
             other => panic!("expected Failed, got {other:?}"),
         }
     }
@@ -1024,27 +1076,34 @@ mod tests {
     /// contribute nothing (interrupted ≠ failed).
     #[test]
     fn session_disposition_failure_when_any_phase_failed() {
-        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome,
-            PhaseErrorDetail, SessionDisposition};
+        use crate::phase_outcome::{
+            PhaseErrorDetail, PhaseIdentity, PhaseOutcome, SessionDisposition,
+        };
         let mut t = build_simple();
-        t.set_phase_outcome("p", "x=1",
-            PhaseOutcome::completed(
-                PhaseIdentity::new("p", "x=1"), 1.0,
-            ),
+        t.set_phase_outcome(
+            "p",
+            "x=1",
+            PhaseOutcome::completed(PhaseIdentity::new("p", "x=1"), 1.0),
         );
         // Still all-success — only one outcome installed, and it's Completed.
         assert_eq!(t.session_disposition(), SessionDisposition::Success);
 
         // Install a Failed outcome — disposition flips.
-        t.set_phase_outcome("q", "x=1",
+        t.set_phase_outcome(
+            "q",
+            "x=1",
             PhaseOutcome::failed(
-                PhaseIdentity::new("q", "x=1"), 0.5,
+                PhaseIdentity::new("q", "x=1"),
+                0.5,
                 vec![PhaseErrorDetail {
                     class: "BindError".into(),
                     message: "bad".into(),
-                    op_name: None, cycle: None,
-                    op_template: None, op_resolved: None,
-                    at_nanos: 0, retryable: false,
+                    op_name: None,
+                    cycle: None,
+                    op_template: None,
+                    op_resolved: None,
+                    at_nanos: 0,
+                    retryable: false,
                 }],
             ),
         );
@@ -1067,18 +1126,19 @@ mod tests {
     /// `Completed` siblings.
     #[test]
     fn session_disposition_skipped_and_cursor_suspended_are_success() {
-        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome,
-            SessionDisposition};
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome, SessionDisposition};
         let mut t = build_simple();
-        t.set_phase_outcome("p", "x=1",
+        t.set_phase_outcome(
+            "p",
+            "x=1",
             PhaseOutcome::skipped(PhaseIdentity::new("p", "x=1")),
         );
         // Interrupted+Succeeded — re-usable partial progress (the
         // retired CursorSuspended collapses here, SRD-82 Part 1).
-        t.set_phase_outcome("q", "x=1",
-            PhaseOutcome::interrupted(
-                PhaseIdentity::new("q", "x=1"), 0.5, None,
-            ),
+        t.set_phase_outcome(
+            "q",
+            "x=1",
+            PhaseOutcome::interrupted(PhaseIdentity::new("q", "x=1"), 0.5, None),
         );
         assert_eq!(t.session_disposition(), SessionDisposition::Success);
     }

@@ -188,7 +188,12 @@ pub struct StanzaRuns<'a> {
 
 impl<'a> StanzaRuns<'a> {
     pub fn new(range: Range<u64>, per_pos_rows: &'a [usize]) -> Self {
-        Self { per_pos_rows, pos: 0, base: range.start, end: range.end }
+        Self {
+            per_pos_rows,
+            pos: 0,
+            base: range.start,
+            end: range.end,
+        }
     }
 }
 
@@ -290,7 +295,10 @@ mod tests {
     fn select_drive_aligns_with_source_kinds() {
         // a Node-yielding source drives via bounded-spawn; an Ordinals-yielding
         // (cursor) source drives via cursor-reserve.
-        assert_eq!(select_drive(CountedSource::new(2).realizability()), Drive::BoundedSpawn);
+        assert_eq!(
+            select_drive(CountedSource::new(2).realizability()),
+            Drive::BoundedSpawn
+        );
         let cursor = CursorSource::new(RangeSourceFactory::new(0, 4).create_reader(), 2);
         assert_eq!(select_drive(cursor.realizability()), Drive::CursorReserve);
     }

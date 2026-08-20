@@ -27,9 +27,7 @@
 //! nbrs run adapter=cql cqldriver=cassandra-cpp   # force cassandra-cpp
 //! ```
 
-use nbrs_runtime::adapter::{
-    AdapterRegistration, DisplayPreference, instantiate_with_driver,
-};
+use nbrs_runtime::adapter::{AdapterRegistration, DisplayPreference, instantiate_with_driver};
 use nbrs_runtime::control_catalog::{ControlDesc, ControlValueType, DeclaredWhen};
 
 /// The workload-param name a user sets to pick a specific CQL

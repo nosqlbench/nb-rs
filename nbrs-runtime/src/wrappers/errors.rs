@@ -29,10 +29,9 @@
 //! first; this is the whole-stack backstop.)
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-
 
 use crate::activity::ActivityMetrics;
 use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult, WrappingDispenser};
@@ -49,13 +48,16 @@ const PHASE_ERROR_CAPTURE_CAP: usize = 64;
 
 /// Every op has an effective error policy (the session root seeds the
 /// `.*:warn,stop` default), so the handler applies to every op.
-fn triggers(s: WrapperSubject) -> bool { s.op().is_some() }
+fn triggers(s: WrapperSubject) -> bool {
+    s.op().is_some()
+}
 
 /// Show the op-level `errors:` override when one is declared; the
 /// inherited default is boilerplate (every op has it) and stays quiet.
 fn describe_assignment(s: WrapperSubject) -> Option<String> {
     let op = s.op()?;
-    op.params.get("errors")
+    op.params
+        .get("errors")
         .and_then(|v| v.as_str())
         .map(|spec| format!("errors: {spec}"))
 }
@@ -119,8 +121,14 @@ impl ErrorHandlerDispenser {
         records_attempts: bool,
     ) -> Arc<dyn OpDispenser> {
         Arc::new(Self {
-            inner, policy, metrics, phase_errors, stop_flag, stop_reason,
-            op_name, records_attempts,
+            inner,
+            policy,
+            metrics,
+            phase_errors,
+            stop_flag,
+            stop_reason,
+            op_name,
+            records_attempts,
         })
     }
 
@@ -136,7 +144,10 @@ impl ErrorHandlerDispenser {
     ) {
         let inner_err = e.error();
         let detail = self.policy.router.handle_error(
-            &inner_err.error_name, &inner_err.message, cycle, service_nanos,
+            &inner_err.error_name,
+            &inner_err.message,
+            cycle,
+            service_nanos,
         );
         self.metrics.errors_total.inc();
         self.metrics.count_error_type(&detail.name);
@@ -174,10 +185,13 @@ impl ErrorHandlerDispenser {
             if let Ok(mut slot) = self.stop_reason.lock()
                 && slot.is_none()
             {
-                let op_shape = self.inner.describe()
+                let op_shape = self
+                    .inner
+                    .describe()
                     .map(|d| format!("\n    op-template: {d}"))
                     .unwrap_or_default();
-                let op_resolved = self.inner
+                let op_resolved = self
+                    .inner
                     .describe_resolved(wires)
                     .map(|d| format!("\n    op-resolved: {d}"))
                     .unwrap_or_default();
@@ -186,13 +200,14 @@ impl ErrorHandlerDispenser {
                 // was captured verbatim into phase_errors above
                 // and renders once in the `errors:` block
                 // (SRD-82 §"Panic reporting: one full render").
-                let first = inner_err.message.lines().next()
+                let first = inner_err
+                    .message
+                    .lines()
+                    .next()
                     .unwrap_or(&inner_err.message);
                 *slot = Some(format!(
                     "[{}] op '{}' at cycle {}: {first}{op_shape}{op_resolved}",
-                    inner_err.error_name,
-                    self.op_name,
-                    cycle,
+                    inner_err.error_name, self.op_name, cycle,
                 ));
             }
         }
@@ -206,7 +221,9 @@ impl OpDispenser for ErrorHandlerDispenser {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let service_start = Instant::now();
             // Whole-stack panic backstop: a panic in ANY layer below
@@ -287,7 +304,9 @@ mod tests {
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 if self.panics {
                     panic!("inner blew up");
@@ -314,13 +333,8 @@ mod tests {
         stop_reason: Arc<Mutex<Option<String>>>,
     }
 
-    fn wrap_with(
-        spec: &str,
-        inner: FakeInner,
-    ) -> (Arc<dyn OpDispenser>, Harness) {
-        let policy = ErrorPolicy::standalone(
-            crate::error_policy::PolicyConfig::new(spec, None),
-        );
+    fn wrap_with(spec: &str, inner: FakeInner) -> (Arc<dyn OpDispenser>, Harness) {
+        let policy = ErrorPolicy::standalone(crate::error_policy::PolicyConfig::new(spec, None));
         let h = Harness {
             metrics: Arc::new(ActivityMetrics::new(&Labels::empty())),
             phase_errors: Arc::new(Mutex::new(Vec::new())),
@@ -350,7 +364,13 @@ mod tests {
     /// effects — no tallies, no capture, no stop.
     #[tokio::test]
     async fn ok_passes_through_untouched() {
-        let (d, h) = wrap_with(".*:warn,stop", FakeInner { error: None, panics: false });
+        let (d, h) = wrap_with(
+            ".*:warn,stop",
+            FakeInner {
+                error: None,
+                panics: false,
+            },
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         d.execute(0, &ctx).await.expect("ok");
@@ -363,19 +383,32 @@ mod tests {
     /// stop flag + first-stop diagnostic.
     #[tokio::test]
     async fn stop_policy_sets_flag_and_captures() {
-        let (d, h) = wrap_with(".*:warn,stop", FakeInner {
-            error: Some(("ModelError".into(), "boom".into())),
-            panics: false,
-        });
+        let (d, h) = wrap_with(
+            ".*:warn,stop",
+            FakeInner {
+                error: Some(("ModelError".into(), "boom".into())),
+                panics: false,
+            },
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(7, &ctx).await.expect_err("must propagate");
         assert_eq!(err.error().error_name, "ModelError");
         assert_eq!(h.metrics.errors_total.get(), 1);
-        assert!(h.stop_flag.load(Ordering::Relaxed), "stop verb must set the flag");
-        let reason = h.stop_reason.lock().unwrap().clone().expect("reason captured");
-        assert!(reason.contains("test_op") && reason.contains("cycle 7"),
-            "diagnostic names op + cycle: {reason}");
+        assert!(
+            h.stop_flag.load(Ordering::Relaxed),
+            "stop verb must set the flag"
+        );
+        let reason = h
+            .stop_reason
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("reason captured");
+        assert!(
+            reason.contains("test_op") && reason.contains("cycle 7"),
+            "diagnostic names op + cycle: {reason}"
+        );
         let errs = h.phase_errors.lock().unwrap();
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].class, "ModelError");
@@ -385,15 +418,21 @@ mod tests {
     /// NOT stop.
     #[tokio::test]
     async fn lenient_policy_counts_without_stopping() {
-        let (d, h) = wrap_with(".*:warn,counter", FakeInner {
-            error: Some(("Timeout".into(), "slow".into())),
-            panics: false,
-        });
+        let (d, h) = wrap_with(
+            ".*:warn,counter",
+            FakeInner {
+                error: Some(("Timeout".into(), "slow".into())),
+                panics: false,
+            },
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let _ = d.execute(0, &ctx).await.expect_err("must propagate");
         assert_eq!(h.metrics.errors_total.get(), 1);
-        assert!(!h.stop_flag.load(Ordering::Relaxed), "counter/warn must not stop");
+        assert!(
+            !h.stop_flag.load(Ordering::Relaxed),
+            "counter/warn must not stop"
+        );
         assert!(h.stop_reason.lock().unwrap().is_none());
     }
 
@@ -402,7 +441,13 @@ mod tests {
     /// never unwinds.
     #[tokio::test]
     async fn panic_below_is_routed_not_unwound() {
-        let (d, h) = wrap_with(".*:warn,stop", FakeInner { error: None, panics: true });
+        let (d, h) = wrap_with(
+            ".*:warn,stop",
+            FakeInner {
+                error: None,
+                panics: true,
+            },
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("panic becomes Err");
@@ -415,16 +460,25 @@ mod tests {
     /// true total keeps counting.
     #[tokio::test]
     async fn capture_buffer_caps_but_totals_keep_counting() {
-        let (d, h) = wrap_with(".*:counter", FakeInner {
-            error: Some(("E".into(), "m".into())),
-            panics: false,
-        });
+        let (d, h) = wrap_with(
+            ".*:counter",
+            FakeInner {
+                error: Some(("E".into(), "m".into())),
+                panics: false,
+            },
+        );
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         for c in 0..(PHASE_ERROR_CAPTURE_CAP as u64 + 10) {
             let _ = d.execute(c, &ctx).await;
         }
-        assert_eq!(h.phase_errors.lock().unwrap().len(), PHASE_ERROR_CAPTURE_CAP);
-        assert_eq!(h.metrics.errors_total.get(), PHASE_ERROR_CAPTURE_CAP as u64 + 10);
+        assert_eq!(
+            h.phase_errors.lock().unwrap().len(),
+            PHASE_ERROR_CAPTURE_CAP
+        );
+        assert_eq!(
+            h.metrics.errors_total.get(),
+            PHASE_ERROR_CAPTURE_CAP as u64 + 10
+        );
     }
 }

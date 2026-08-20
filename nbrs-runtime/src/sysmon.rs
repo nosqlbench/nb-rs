@@ -104,13 +104,15 @@ pub fn parse_selection(value: &str) -> Result<Selection, String> {
     if trimmed.eq_ignore_ascii_case("any") {
         return Ok(Selection::Any);
     }
-    if trimmed.to_ascii_lowercase().split(',').any(|t| t.trim() == "any") {
-        return Err(
-            "sysmon: `any` stands alone (it means \"every available \
+    if trimmed
+        .to_ascii_lowercase()
+        .split(',')
+        .any(|t| t.trim() == "any")
+    {
+        return Err("sysmon: `any` stands alone (it means \"every available \
              subsystem\") — combining it with named categories is \
              ambiguous. Use `sysmon=any`, or name the categories."
-                .to_string(),
-        );
+            .to_string());
     }
     parse_categories(trimmed).map(Selection::Cats)
 }
@@ -228,7 +230,10 @@ sysmon=cpu,io,ram,storage  — or use  sysmon=any"
 pub fn resolve_any(config: &SysmonConfig) -> (Categories, Vec<String>) {
     let mut cats = Categories::ALL;
     let mut skipped = Vec::new();
-    let rambw_probe = SysmonConfig { cats, ..config.clone() };
+    let rambw_probe = SysmonConfig {
+        cats,
+        ..config.clone()
+    };
     if let Err(reason) = check_rambw_requirements(&rambw_probe) {
         cats.rambw = false;
         // First line of the full instructions — the one that names the
@@ -275,8 +280,7 @@ pub fn max_disk_util(
         let Some((_, prev_ticks)) = prev.iter().find(|(n, _)| n == name) else {
             continue;
         };
-        let util = (cur_ticks.saturating_sub(*prev_ticks) as f64 / dt_ms)
-            .clamp(0.0, 1.0);
+        let util = (cur_ticks.saturating_sub(*prev_ticks) as f64 / dt_ms).clamp(0.0, 1.0);
         if best.as_ref().is_none_or(|(_, b)| util > *b) {
             best = Some((name.clone(), util));
         }
@@ -312,7 +316,10 @@ pub fn parse_proc_stat(text: &str) -> Option<(CpuTicks, Vec<CpuTicks>)> {
         }
         let total: u64 = fields[..8].iter().sum();
         let idle = fields[3] + fields[4];
-        let ticks = CpuTicks { busy: total - idle, total };
+        let ticks = CpuTicks {
+            busy: total - idle,
+            total,
+        };
         if name == "cpu" {
             aggregate = Some(ticks);
         } else if let Ok(n) = name[3..].parse::<usize>() {
@@ -376,8 +383,7 @@ pub fn mem_utils(m: MemInfo) -> (f64, f64) {
     if m.total_kb == 0 {
         return (0.0, 0.0);
     }
-    let committed =
-        (m.total_kb.saturating_sub(m.available_kb)) as f64 / m.total_kb as f64;
+    let committed = (m.total_kb.saturating_sub(m.available_kb)) as f64 / m.total_kb as f64;
     let cached = (m.total_kb.saturating_sub(m.free_kb)) as f64 / m.total_kb as f64;
     (committed.clamp(0.0, 1.0), cached.clamp(0.0, 1.0))
 }
@@ -499,12 +505,13 @@ struct SubjectGauge {
 }
 
 impl SubjectGauge {
-    fn new(
-        family: &'static str,
-        label_key: &'static str,
-        parent: Arc<RwLock<Component>>,
-    ) -> Self {
-        Self { family, label_key, parent, instances: Default::default() }
+    fn new(family: &'static str, label_key: &'static str, parent: Arc<RwLock<Component>>) -> Self {
+        Self {
+            family,
+            label_key,
+            parent,
+            instances: Default::default(),
+        }
     }
 
     fn set(&mut self, subject: &str, value: f64) {
@@ -529,8 +536,11 @@ impl SubjectGauge {
         if let Err(e) = registered {
             // One cell, one family: a second registration here is a
             // programming error worth hearing about once, not per sample.
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "sysmon: {family} cell {subject}: {e}", family = self.family);
+            crate::diag!(
+                crate::observer::LogLevel::Warn,
+                "sysmon: {family} cell {subject}: {e}",
+                family = self.family
+            );
         }
         g.set(value);
         self.instances.insert(subject.to_string(), g);
@@ -554,10 +564,7 @@ struct Gauges {
 /// Direct registration on the session root — no child component, no new
 /// labels: the samples describe the whole host, which is exactly the
 /// session's dimensional cell.
-fn register_gauges(
-    component: &Arc<RwLock<Component>>,
-    cats: Categories,
-) -> Result<Gauges, String> {
+fn register_gauges(component: &Arc<RwLock<Component>>, cats: Categories) -> Result<Gauges, String> {
     let mut guard = component.write().unwrap_or_else(|e| e.into_inner());
     let labels = guard.effective_labels().clone();
     let mut mk = |family: &str| -> Result<Option<Arc<ValueGauge>>, String> {
@@ -593,15 +600,24 @@ fn register_gauges(
     // family for the un-refined identity and collide with the first cell.
     if cats.io {
         gauges.io = Some(SubjectGauge::new(
-            "sysmon_io_util", "device", component.clone()));
+            "sysmon_io_util",
+            "device",
+            component.clone(),
+        ));
     }
     if cats.cpu {
         gauges.cpu_core_max = Some(SubjectGauge::new(
-            "sysmon_cpu_core_max", "core", component.clone()));
+            "sysmon_cpu_core_max",
+            "core",
+            component.clone(),
+        ));
     }
     if cats.storage {
         gauges.storage = Some(SubjectGauge::new(
-            "sysmon_storage_util", "mount", component.clone()));
+            "sysmon_storage_util",
+            "mount",
+            component.clone(),
+        ));
     }
     Ok(gauges)
 }
@@ -662,8 +678,7 @@ pub fn spawn(
                     .ok()
                     .and_then(|t| parse_proc_stat(&t));
                 if let (Some((pa, pc)), Some((ca, cc))) = (&prev_cpu, &cur) {
-                    let (top_core, max_core) =
-                        max_core_util(pc, cc).unwrap_or((0, 0.0));
+                    let (top_core, max_core) = max_core_util(pc, cc).unwrap_or((0, 0.0));
                     sample.cpu = Some(CpuReading {
                         mean: cpu_util(*pa, *ca),
                         max_core,
@@ -684,9 +699,7 @@ pub fn spawn(
                 let cur = read_membw_bytes();
                 if let (Some(p), Some(c)) = (prev_membw, cur) {
                     sample.rambw = Some(
-                        ((c.saturating_sub(p)) as f64
-                            / dt.as_secs_f64().max(1e-9)
-                            / peak)
+                        ((c.saturating_sub(p)) as f64 / dt.as_secs_f64().max(1e-9) / peak)
                             .clamp(0.0, 1.0),
                     );
                 }
@@ -705,13 +718,10 @@ pub fn spawn(
             if let (Some(g), Some(c)) = (&mut gauges.cpu_core_max, &sample.cpu) {
                 g.set(&c.top_core.to_string(), c.max_core);
             }
-            if let (Some(g), Some((committed, _))) =
-                (&gauges.ram_committed, &sample.ram)
-            {
+            if let (Some(g), Some((committed, _))) = (&gauges.ram_committed, &sample.ram) {
                 g.set(*committed);
             }
-            if let (Some(g), Some((_, cached))) = (&gauges.ram_cached, &sample.ram)
-            {
+            if let (Some(g), Some((_, cached))) = (&gauges.ram_cached, &sample.ram) {
                 g.set(*cached);
             }
             if let (Some(g), Some(u)) = (&gauges.rambw, sample.rambw) {
@@ -745,8 +755,10 @@ mod tests {
         let c = parse_categories("cpu, io").unwrap();
         assert!(c.cpu && c.io && !c.ram && !c.rambw && !c.storage);
         let err = parse_categories("cpu,ramb").unwrap_err();
-        assert!(err.contains("ramb") && err.contains("rambw"),
-            "the error names the typo and the valid set: {err}");
+        assert!(
+            err.contains("ramb") && err.contains("rambw"),
+            "the error names the typo and the valid set: {err}"
+        );
         assert!(parse_categories("").is_err(), "empty enables nothing");
     }
 
@@ -766,10 +778,14 @@ mod tests {
             return;
         }
         let err = check_rambw_requirements(&config).unwrap_err();
-        assert!(err.contains("mount -t resctrl"),
-            "the abort must tell the user HOW to enable it: {err}");
-        assert!(err.contains("sysmon=cpu,io,ram,storage"),
-            "…and how to run without it: {err}");
+        assert!(
+            err.contains("mount -t resctrl"),
+            "the abort must tell the user HOW to enable it: {err}"
+        );
+        assert!(
+            err.contains("sysmon=cpu,io,ram,storage"),
+            "…and how to run without it: {err}"
+        );
     }
 
     /// rambw with resctrl but no peak reference is equally an abort — a
@@ -782,8 +798,10 @@ mod tests {
             membw_peak_bytes_per_s: None,
         };
         let err = check_rambw_requirements(&config).unwrap_err();
-        assert!(err.contains("sysmon-membw-gbps") || err.contains("resctrl"),
-            "must name the missing prerequisite: {err}");
+        assert!(
+            err.contains("sysmon-membw-gbps") || err.contains("resctrl"),
+            "must name the missing prerequisite: {err}"
+        );
     }
 
     /// Disabled rambw asks nothing of the host.
@@ -824,8 +842,11 @@ mod tests {
         }
         assert!(!cats.rambw, "unavailable rambw is disabled under `any`");
         assert_eq!(skipped.len(), 1);
-        assert!(skipped[0].contains("sysmon=rambw"),
-            "the skip points at the full enable steps: {}", skipped[0]);
+        assert!(
+            skipped[0].contains("sysmon=rambw"),
+            "the skip points at the full enable steps: {}",
+            skipped[0]
+        );
     }
 
     /// A subject-dimensioned gauge materialises ONE cell per subject under
@@ -833,28 +854,28 @@ mod tests {
     /// and re-setting an existing subject attaches no twin.
     #[test]
     fn subject_gauges_dimension_by_cell_under_the_session_component() {
-        let session = Arc::new(RwLock::new(
-            nbrs_metrics::component::Component::new(
-                nbrs_metrics::labels::Labels::of("session", "s1"),
-                std::collections::HashMap::new(),
-            ),
-        ));
+        let session = Arc::new(RwLock::new(nbrs_metrics::component::Component::new(
+            nbrs_metrics::labels::Labels::of("session", "s1"),
+            std::collections::HashMap::new(),
+        )));
         let mut g = SubjectGauge::new("sysmon_io_util", "device", session.clone());
         g.set("nvme1n1", 0.97);
         g.set("nvme2n1", 0.40);
         g.set("nvme1n1", 0.98);
 
         let guard = session.read().unwrap();
-        assert_eq!(guard.child_count(), 2,
-            "one cell per device, re-sets attach no twin");
+        assert_eq!(
+            guard.child_count(),
+            2,
+            "one cell per device, re-sets attach no twin"
+        );
         drop(guard);
         assert_eq!(g.instances.len(), 2);
         // The series carries session + device + family — the session's
         // identity refined by the subject, never replaced.
         let labels = g.instances["nvme1n1"].labels().to_prometheus();
         for owned in ["session=", "device=\"nvme1n1\"", "family="] {
-            assert!(labels.contains(owned),
-                "{owned} missing from {labels}");
+            assert!(labels.contains(owned), "{owned} missing from {labels}");
         }
     }
 
@@ -865,10 +886,13 @@ mod tests {
  259       0 nvme0n1 1083809 77036 79071293 1310486 4905083 3299234 633830668 26973654 0 3344862 28284141 0 0 0 0 0 0
  259       5 nvme1n1 16478852962 684755 139660303464 4041025697 191545776 3994164 30038357911 3695409309 0 588447592 3442404703 29888 5913 38808742648 936992 0 0";
         let parsed = parse_diskstats(text);
-        assert_eq!(parsed, vec![
-            ("nvme0n1".to_string(), 3_344_862),
-            ("nvme1n1".to_string(), 588_447_592),
-        ]);
+        assert_eq!(
+            parsed,
+            vec![
+                ("nvme0n1".to_string(), 3_344_862),
+                ("nvme1n1".to_string(), 588_447_592),
+            ]
+        );
     }
 
     /// Highest utilization wins and is named; a device busy 1000ms of a
@@ -917,10 +941,8 @@ cpu2 0 0 0 8000 0 0 0 0 0 0";
     /// The two memory measures diverge exactly by reclaimable cache.
     #[test]
     fn committed_and_cached_measures_are_distinct() {
-        let m = parse_meminfo(
-            "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 600 kB\n",
-        )
-        .unwrap();
+        let m =
+            parse_meminfo("MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 600 kB\n").unwrap();
         let (committed, cached) = mem_utils(m);
         assert!((committed - 0.4).abs() < 1e-9, "claimed = 1 - avail/total");
         assert!((cached - 0.9).abs() < 1e-9, "touched = 1 - free/total");
@@ -948,10 +970,13 @@ tmpfs /tmp tmpfs rw 0 0
 /dev/nvme1n1 /mnt/nvme xfs rw 0 0
 /dev/nvme1n1 /mnt/alias xfs rw 0 0
 /dev/mapper/vg-data /data\\040dir ext4 rw 0 0";
-        assert_eq!(parse_dev_mounts(mounts), vec![
-            "/".to_string(),
-            "/mnt/nvme".to_string(),
-            "/data dir".to_string(),
-        ]);
+        assert_eq!(
+            parse_dev_mounts(mounts),
+            vec![
+                "/".to_string(),
+                "/mnt/nvme".to_string(),
+                "/data dir".to_string(),
+            ]
+        );
     }
 }

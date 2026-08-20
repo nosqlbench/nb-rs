@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use nbrs_runtime::concurrent::HeadlessObserver;
 use nbrs_runtime::observer::RunObserver;
-use nbrs_runtime::runner::{run_executions, ExecutionSpec};
+use nbrs_runtime::runner::{ExecutionSpec, run_executions};
 
 struct TempDir {
     path: PathBuf,
@@ -56,8 +56,10 @@ fn example(rel: &str) -> String {
 async fn example_workloads_run_as_concurrent_in_process_executions_in_one_session() {
     let tmp = TempDir::new();
     let session = tmp.path.join("s");
-    let session_args: Vec<String> =
-        vec!["--session-path".into(), session.to_string_lossy().into_owned()];
+    let session_args: Vec<String> = vec![
+        "--session-path".into(),
+        session.to_string_lossy().into_owned(),
+    ];
     let session_obs: Arc<dyn RunObserver> = Arc::new(HeadlessObserver::new());
 
     // A handful of bare-runnable stdout example workloads — run them ALL
@@ -93,9 +95,16 @@ async fn example_workloads_run_as_concurrent_in_process_executions_in_one_sessio
     let n_exec: i64 = conn
         .query_row("SELECT COUNT(*) FROM executions", [], |r| r.get(0))
         .expect("count executions");
-    assert_eq!(n_exec, n, "expected {n} executions rows in the ONE shared session");
+    assert_eq!(
+        n_exec, n,
+        "expected {n} executions rows in the ONE shared session"
+    );
     let distinct: i64 = conn
-        .query_row("SELECT COUNT(DISTINCT exec_id) FROM metric_instance", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(DISTINCT exec_id) FROM metric_instance",
+            [],
+            |r| r.get(0),
+        )
         .expect("count distinct exec_id");
     assert_eq!(
         distinct, n,

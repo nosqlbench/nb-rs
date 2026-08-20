@@ -9,10 +9,10 @@
 //! returned. This avoids separate `/api/*` routes for navigation.
 
 use askama::Template;
+use axum::Form;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
-use axum::Form;
 
 use nbrs_metrics::reporters::openmetrics_parse;
 use polydat::dsl::registry;
@@ -29,24 +29,25 @@ fn is_htmx(headers: &HeaderMap) -> bool {
 // ─── Dashboard ──────────────────────────────────────────────
 
 pub async fn dashboard(headers: HeaderMap) -> Html<String> {
-    let (tc, ops, p99, ec) = (
-        "0".into(),
-        "\u{2014}".into(),
-        "\u{2014}".into(),
-        "0".into(),
-    );
+    let (tc, ops, p99, ec) = ("0".into(), "\u{2014}".into(), "\u{2014}".into(), "0".into());
     let activities = vec![];
 
     if is_htmx(&headers) {
         let frag = DashboardContentFragment {
-            total_cycles: tc, ops_per_sec: ops, p99_ms: p99,
-            error_count: ec, activities,
+            total_cycles: tc,
+            ops_per_sec: ops,
+            p99_ms: p99,
+            error_count: ec,
+            activities,
         };
         Html(frag.render().expect("dashboard content fragment"))
     } else {
         let page = DashboardPage {
-            total_cycles: tc, ops_per_sec: ops, p99_ms: p99,
-            error_count: ec, activities,
+            total_cycles: tc,
+            ops_per_sec: ops,
+            p99_ms: p99,
+            error_count: ec,
+            activities,
         };
         Html(page.render().expect("dashboard template"))
     }
@@ -89,9 +90,7 @@ pub async fn stdlib_page(headers: HeaderMap) -> Html<String> {
     }
 }
 
-pub async fn stdlib_source(
-    axum::extract::Path(name): axum::extract::Path<String>,
-) -> Html<String> {
+pub async fn stdlib_source(axum::extract::Path(name): axum::extract::Path<String>) -> Html<String> {
     let sources = polydat::dsl::stdlib_sources();
     for (_filename, source) in sources {
         if source.contains(&format!("{name}(")) {
@@ -149,9 +148,7 @@ pub async fn dag_render(Form(form): Form<DagRenderForm>) -> Html<String> {
 // ─── Activities API ─────────────────────────────────────────
 
 pub async fn activities_api() -> Html<String> {
-    let fragment = ActivitiesFragment {
-        activities: vec![],
-    };
+    let fragment = ActivitiesFragment { activities: vec![] };
     Html(fragment.render().expect("activities_table fragment"))
 }
 
@@ -236,15 +233,22 @@ pub async fn list_controls() -> axum::Json<Vec<ControlView>> {
         return axum::Json(views);
     };
     for comp in find(&root, &Selector::new()) {
-        let Ok(guard) = comp.read() else { continue; };
-        let path = guard.effective_labels()
+        let Ok(guard) = comp.read() else {
+            continue;
+        };
+        let path = guard
+            .effective_labels()
             .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join(",");
         for ctl in guard.controls().list() {
             views.push(ControlView {
-                component: if path.is_empty() { "<root>".into() } else { path.clone() },
+                component: if path.is_empty() {
+                    "<root>".into()
+                } else {
+                    path.clone()
+                },
                 name: ctl.name().to_string(),
                 value_type: ctl.value_type_name().to_string(),
                 value: ctl.value_string(),
@@ -261,8 +265,11 @@ pub async fn list_controls() -> axum::Json<Vec<ControlView>> {
             });
         }
     }
-    views.sort_by(|a, b| a.component.cmp(&b.component)
-        .then_with(|| a.name.cmp(&b.name)));
+    views.sort_by(|a, b| {
+        a.component
+            .cmp(&b.component)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     axum::Json(views)
 }
 
@@ -315,7 +322,8 @@ pub async fn set_control(
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(SetControlError {
-                name, code: "no_session",
+                name,
+                code: "no_session",
                 message: "no active session; cannot resolve controls".into(),
             }),
         ));
@@ -325,7 +333,8 @@ pub async fn set_control(
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(SetControlError {
-                    name, code: "session_poisoned",
+                    name,
+                    code: "session_poisoned",
                     message: "session root RwLock is poisoned".into(),
                 }),
             ));
@@ -336,7 +345,8 @@ pub async fn set_control(
                 return Err((
                     StatusCode::NOT_FOUND,
                     axum::Json(SetControlError {
-                        name: name.clone(), code: "not_found",
+                        name: name.clone(),
+                        code: "not_found",
                         message: format!("no control named '{name}' via walk-up"),
                     }),
                 ));
@@ -347,7 +357,9 @@ pub async fn set_control(
     let origin = nbrs_metrics::controls::ControlOrigin::Api { source };
     match erased.set_f64(body.value, origin).await {
         Ok(rev) => Ok(axum::Json(SetControlResponse {
-            name, submitted_value: body.value, committed_rev: rev,
+            name,
+            submitted_value: body.value,
+            committed_rev: rev,
         })),
         Err(e) => {
             use nbrs_metrics::controls::SetError;
@@ -355,17 +367,24 @@ pub async fn set_control(
                 SetError::ValidationFailed(m) => ("validation_failed", m.clone()),
                 SetError::ApplyFailed(fs) => (
                     "apply_failed",
-                    fs.iter().map(|f| format!("#{}: {}", f.applier_index, f.message))
-                        .collect::<Vec<_>>().join("; "),
+                    fs.iter()
+                        .map(|f| format!("#{}: {}", f.applier_index, f.message))
+                        .collect::<Vec<_>>()
+                        .join("; "),
                 ),
                 SetError::FinalViolation { scope } => (
                     "final_violation",
                     format!("control is final at scope '{scope}'"),
                 ),
             };
-            Err((StatusCode::BAD_REQUEST, axum::Json(SetControlError {
-                name, code, message: msg,
-            })))
+            Err((
+                StatusCode::BAD_REQUEST,
+                axum::Json(SetControlError {
+                    name,
+                    code,
+                    message: msg,
+                }),
+            ))
         }
     }
 }
@@ -385,8 +404,14 @@ pub async fn set_control(
 /// Endpoint: `GET /api/scope-tree`
 pub async fn scope_tree() -> axum::Json<ScopeTreeResponse> {
     match nbrs_runtime::scene_tree::current() {
-        Some(tree) => axum::Json(ScopeTreeResponse { installed: true, tree: Some(tree) }),
-        None => axum::Json(ScopeTreeResponse { installed: false, tree: None }),
+        Some(tree) => axum::Json(ScopeTreeResponse {
+            installed: true,
+            tree: Some(tree),
+        }),
+        None => axum::Json(ScopeTreeResponse {
+            installed: false,
+            tree: None,
+        }),
     }
 }
 

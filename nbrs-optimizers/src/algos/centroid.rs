@@ -23,7 +23,9 @@ pub struct CentroidVariant {
 
 impl CentroidVariant {
     pub fn from_params(p: &OptimizerParams) -> Self {
-        Self { delta_scale: p.get("delta_scale", 1.0) }
+        Self {
+            delta_scale: p.get("delta_scale", 1.0),
+        }
     }
 }
 
@@ -32,7 +34,12 @@ impl Optimizer for CentroidVariant {
         "centroid_variant"
     }
 
-    fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {
+    fn optimize(
+        &mut self,
+        space: &SearchSpace,
+        obj: &mut dyn Objective,
+        budget: &Budget,
+    ) -> Report {
         let mut ev = Eval::new(space, obj, budget);
         let d = space.dims();
         let center = space.center();
@@ -62,7 +69,11 @@ impl Optimizer for CentroidVariant {
             // gradient is ~0 (curvature-dominated).
             let impact = main_effect.abs() * delta + 0.5 * curvature.abs() * delta * delta;
             scored.push((
-                AxisImpact { name: space.axes[i].name.clone(), main_effect, curvature },
+                AxisImpact {
+                    name: space.axes[i].name.clone(),
+                    main_effect,
+                    curvature,
+                },
                 impact,
             ));
         }

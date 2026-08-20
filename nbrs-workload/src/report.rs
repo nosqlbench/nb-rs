@@ -26,9 +26,9 @@ use std::collections::HashSet;
 
 pub mod vocab;
 pub use vocab::{
-    Directive, DirectiveTarget, KindMask, ValueProvider, YamlForm,
-    ALL_DIRECTIVES, AGG_FNS, AXIS_SCALES, LINE_STYLES, MARKER_SHAPES, PALETTE_NAMES,
-    cli_flags_for, directive_by_cli_flag, directive_by_yaml_keyword, directives_for,
+    AGG_FNS, ALL_DIRECTIVES, AXIS_SCALES, Directive, DirectiveTarget, KindMask, LINE_STYLES,
+    MARKER_SHAPES, PALETTE_NAMES, ValueProvider, YamlForm, cli_flags_for, directive_by_cli_flag,
+    directive_by_yaml_keyword, directives_for,
 };
 
 /// Top-level `report:` block.
@@ -175,7 +175,6 @@ pub enum Kind {
     File,
     Details,
 }
-
 
 impl Kind {
     pub fn as_str(&self) -> &'static str {
@@ -333,7 +332,9 @@ impl ReportItem {
         // the canonical form the renderer expects.
         if !self.body.trim().is_empty() {
             for line in self.body.split('\n') {
-                if line.trim().is_empty() { continue; }
+                if line.trim().is_empty() {
+                    continue;
+                }
                 out.push_str("  ");
                 out.push_str(line.trim_start());
                 out.push('\n');
@@ -380,13 +381,13 @@ impl Style {
                 continue;
             }
             let value: Option<String> = match d.yaml_directive {
-                "palette"       => self.palette.clone(),
-                "line"          => self.line.clone(),
-                "width"         => self.width.map(|v| v.to_string()),
-                "marker"        => self.marker.clone(),
-                "size"          => self.size.map(|v| v.to_string()),
-                "color"         => self.color.clone(),
-                "figure_width"  => self.figure_width.map(|v| v.to_string()),
+                "palette" => self.palette.clone(),
+                "line" => self.line.clone(),
+                "width" => self.width.map(|v| v.to_string()),
+                "marker" => self.marker.clone(),
+                "size" => self.size.map(|v| v.to_string()),
+                "color" => self.color.clone(),
+                "figure_width" => self.figure_width.map(|v| v.to_string()),
                 "figure_height" => self.figure_height.map(|v| v.to_string()),
                 _ => None,
             };
@@ -401,17 +402,34 @@ impl Style {
     /// overrides the corresponding field in `self`. Used to walk
     /// the cascade outer → inner.
     pub fn merge_from(&mut self, other: &Style) {
-        if other.palette.is_some() { self.palette = other.palette.clone(); }
-        if other.line.is_some() { self.line = other.line.clone(); }
-        if other.width.is_some() { self.width = other.width; }
-        if other.marker.is_some() { self.marker = other.marker.clone(); }
-        if other.size.is_some() { self.size = other.size; }
-        if other.color.is_some() { self.color = other.color.clone(); }
-        if other.figure_width.is_some() { self.figure_width = other.figure_width; }
-        if other.figure_height.is_some() { self.figure_height = other.figure_height; }
+        if other.palette.is_some() {
+            self.palette = other.palette.clone();
+        }
+        if other.line.is_some() {
+            self.line = other.line.clone();
+        }
+        if other.width.is_some() {
+            self.width = other.width;
+        }
+        if other.marker.is_some() {
+            self.marker = other.marker.clone();
+        }
+        if other.size.is_some() {
+            self.size = other.size;
+        }
+        if other.color.is_some() {
+            self.color = other.color.clone();
+        }
+        if other.figure_width.is_some() {
+            self.figure_width = other.figure_width;
+        }
+        if other.figure_height.is_some() {
+            self.figure_height = other.figure_height;
+        }
         if !other.series.is_empty() {
             for s in &other.series {
-                self.series.retain(|t| !(t.key == s.key && t.value == s.value));
+                self.series
+                    .retain(|t| !(t.key == s.key && t.value == s.value));
                 self.series.push(s.clone());
             }
         }
@@ -428,17 +446,38 @@ impl Style {
 /// (2) detect when a directive line is the start of a new item
 ///     (`plot`, `table`) vs a continuation directive.
 const STYLE_DIRECTIVE_KEYWORDS: &[&str] = &[
-    "palette", "line", "width", "marker", "size", "color",
-    "figure_width", "figure_height", "style", "label", "as",
+    "palette",
+    "line",
+    "width",
+    "marker",
+    "size",
+    "color",
+    "figure_width",
+    "figure_height",
+    "style",
+    "label",
+    "as",
 ];
 
 const ITEM_KIND_KEYWORDS: &[&str] = &["plot", "table", "text", "file"];
 
 const ALL_RESERVED_DIRECTIVES: &[&str] = &[
     "defaults",
-    "plot", "table", "text", "file",
-    "palette", "line", "width", "marker", "size", "color",
-    "figure_width", "figure_height", "style", "label", "as",
+    "plot",
+    "table",
+    "text",
+    "file",
+    "palette",
+    "line",
+    "width",
+    "marker",
+    "size",
+    "color",
+    "figure_width",
+    "figure_height",
+    "style",
+    "label",
+    "as",
 ];
 
 /// Parse a `report:` value (a YAML mapping) into a [`Report`].
@@ -448,7 +487,8 @@ const ALL_RESERVED_DIRECTIVES: &[&str] = &[
 /// alongside so callers can decide whether to surface or promote
 /// to errors under strict mode.
 pub fn parse_report(value: &serde_json::Value) -> Result<ParsedReport, String> {
-    let map = value.as_object()
+    let map = value
+        .as_object()
         .ok_or_else(|| "report: must be a mapping".to_string())?;
 
     let mut report = Report::default();
@@ -462,8 +502,8 @@ pub fn parse_report(value: &serde_json::Value) -> Result<ParsedReport, String> {
     for (key, v) in map {
         let key: &str = key.as_str();
         if key == "defaults" {
-            report.defaults = parse_style_mapping(v)
-                .map_err(|e| format!("report.defaults: {e}"))?;
+            report.defaults =
+                parse_style_mapping(v).map_err(|e| format!("report.defaults: {e}"))?;
             continue;
         }
         if STYLE_DIRECTIVE_KEYWORDS.contains(&key) {
@@ -476,10 +516,12 @@ pub fn parse_report(value: &serde_json::Value) -> Result<ParsedReport, String> {
         let body = match v {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Null => String::new(),
-            _ => return Err(format!(
-                "report.{key}: must be a string (single-line or block scalar) \
+            _ => {
+                return Err(format!(
+                    "report.{key}: must be a string (single-line or block scalar) \
                  of directive lines starting with `plot` / `table`"
-            )),
+                ));
+            }
         };
 
         let group = parse_group(key, &body, &mut warnings, &mut text_counter)?;
@@ -532,9 +574,11 @@ pub fn parse_persisted_item(body: &str) -> Result<ReportItem, String> {
     let mut warnings: Vec<String> = Vec::new();
     let mut text_counter: usize = 0;
     let group = parse_group("__persisted__", body, &mut warnings, &mut text_counter)?;
-    group.items.into_iter().next().ok_or_else(|| {
-        "persisted report item body did not yield any item".to_string()
-    })
+    group
+        .items
+        .into_iter()
+        .next()
+        .ok_or_else(|| "persisted report item body did not yield any item".to_string())
 }
 
 fn parse_group(
@@ -543,7 +587,10 @@ fn parse_group(
     warnings: &mut Vec<String>,
     text_counter: &mut usize,
 ) -> Result<ReportGroup, String> {
-    let mut group = ReportGroup { name: name.to_string(), ..Default::default() };
+    let mut group = ReportGroup {
+        name: name.to_string(),
+        ..Default::default()
+    };
     let mut current: Option<PartialItem> = None;
     // Active output file scope (set by a `file <filename>` line).
     // Items declared after a `file` directive inherit this until
@@ -554,7 +601,7 @@ fn parse_group(
                 target_file: &Option<String>,
                 group: &mut ReportGroup,
                 warnings: &mut Vec<String>|
-        -> Result<(), String> {
+     -> Result<(), String> {
         let mut item = partial.finalize(warnings)?;
         if item.target_file.is_none() {
             item.target_file = target_file.clone();
@@ -569,7 +616,9 @@ fn parse_group(
         // survives.
         let stripped = strip_line_comment(raw_line);
         let line = stripped.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let line_no = lineno + 1;
 
         // `defaults <directives>` — group-level defaults. Only
@@ -596,12 +645,13 @@ fn parse_group(
             match kind {
                 Kind::Plot | Kind::Table => {
                     let mut tokens = rest.splitn(2, char::is_whitespace);
-                    let raw_item_name = tokens.next()
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| format!(
-                            "report.{name}:{line_no}: `{}` must be followed by a name",
-                            kind.as_str()
-                        ))?;
+                    let raw_item_name =
+                        tokens.next().filter(|s| !s.is_empty()).ok_or_else(|| {
+                            format!(
+                                "report.{name}:{line_no}: `{}` must be followed by a name",
+                                kind.as_str()
+                            )
+                        })?;
                     // Allow trailing `:` on the block header
                     // (`plot recall_vs_qps:`) for visual parity with
                     // the body's `name: value` directives. The
@@ -664,8 +714,7 @@ fn parse_group(
                         && is_bare_text_name(first)
                         && (header_has_colon || has_as_alias);
                     let (item_name, alias) = if looks_named {
-                        let alias = strip_directive_keyword(after, "as")
-                            .map(parse_quoted_or_bare);
+                        let alias = strip_directive_keyword(after, "as").map(parse_quoted_or_bare);
                         (first.to_string(), alias)
                     } else {
                         // Anonymous — auto-name globally so the
@@ -675,8 +724,7 @@ fn parse_group(
                         let auto = format!("text_{:03}", *text_counter);
                         (auto, None)
                     };
-                    let mut p = PartialItem::new(
-                        Kind::Text, &item_name, name.to_string(), line_no);
+                    let mut p = PartialItem::new(Kind::Text, &item_name, name.to_string(), line_no);
                     if let Some(label) = alias {
                         p.directives.push(format!("label {label}"));
                     } else if !looks_named && !rest.is_empty() {
@@ -693,15 +741,17 @@ fn parse_group(
                     // listing surface can show it; no body
                     // attaches.
                     let mut tokens = rest.splitn(2, char::is_whitespace);
-                    let filename = tokens.next()
+                    let filename = tokens
+                        .next()
                         .filter(|s| !s.is_empty())
-                        .ok_or_else(|| format!(
-                            "report.{name}:{line_no}: `file` must be followed by a filename"
-                        ))?
+                        .ok_or_else(|| {
+                            format!(
+                                "report.{name}:{line_no}: `file` must be followed by a filename"
+                            )
+                        })?
                         .to_string();
                     let trailing = tokens.next().unwrap_or("");
-                    let mut p = PartialItem::new(
-                        Kind::File, &filename, name.to_string(), line_no);
+                    let mut p = PartialItem::new(Kind::File, &filename, name.to_string(), line_no);
                     // Honor optional `as '<label>'` on the same
                     // line (passed through to finalize via the
                     // directive list — the `label` extractor
@@ -726,8 +776,8 @@ fn parse_group(
                     // the assembler decides — usually empty
                     // when declared explicitly (the runtime
                     // fills it in).
-                    let mut p = PartialItem::new(
-                        Kind::Details, "details", name.to_string(), line_no);
+                    let mut p =
+                        PartialItem::new(Kind::Details, "details", name.to_string(), line_no);
                     if !rest.trim().is_empty() {
                         p.directives.push(rest.to_string());
                     }
@@ -740,10 +790,12 @@ fn parse_group(
         // Continuation directive line for the current item.
         match current.as_mut() {
             Some(p) => p.directives.push(line.to_string()),
-            None => return Err(format!(
-                "report.{name}:{line_no}: directive `{line}` precedes any \
+            None => {
+                return Err(format!(
+                    "report.{name}:{line_no}: directive `{line}` precedes any \
                  kind keyword (plot / table / text / file)"
-            )),
+                ));
+            }
         }
     }
 
@@ -763,7 +815,13 @@ struct PartialItem {
 
 impl PartialItem {
     fn new(kind: Kind, name: &str, group: String, line_no: usize) -> Self {
-        Self { kind, name: name.to_string(), group, line_no, directives: Vec::new() }
+        Self {
+            kind,
+            name: name.to_string(),
+            group,
+            line_no,
+            directives: Vec::new(),
+        }
     }
 
     /// Pull `label` / `as` / style directives out of the directive
@@ -827,7 +885,9 @@ impl PartialItem {
         let mut residual: Vec<String> = Vec::new();
         for line in &self.directives {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             if let Some(rest) = strip_directive_keyword(line, "label") {
                 item.label = Some(parse_quoted_or_bare(rest));
@@ -870,7 +930,8 @@ impl PartialItem {
                         "report.{}:{} `with-tables`: expected `[label1, label2, …]`, got `{trimmed}`",
                         self.group, self.line_no,
                     ))?;
-                let labels: Vec<String> = inner.split(',')
+                let labels: Vec<String> = inner
+                    .split(',')
                     .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
@@ -885,7 +946,10 @@ impl PartialItem {
                     warnings.push(format!(
                         "report.{}:{} item '{}' uses `with-tables` but is a {}; \
                          only plots can have a faceted companion table.",
-                        self.group, self.line_no, item.name, item.kind.as_str(),
+                        self.group,
+                        self.line_no,
+                        item.name,
+                        item.kind.as_str(),
                     ));
                 } else {
                     item.with_tables = labels;
@@ -919,18 +983,19 @@ impl PartialItem {
                     warnings.push(format!(
                         "report.{}:{} item '{}' uses `with-table` but is a {}; \
                          only plots can have a companion table.",
-                        self.group, self.line_no, item.name, item.kind.as_str(),
+                        self.group,
+                        self.line_no,
+                        item.name,
+                        item.kind.as_str(),
                     ));
                     item.with_table = false;
                 }
                 continue;
             }
             if let Some(rest) = strip_directive_keyword(line, "style") {
-                let so = parse_series_override(rest)
-                    .map_err(|e| format!(
-                        "report.{}:{} `style`: {}",
-                        self.group, self.line_no, e,
-                    ))?;
+                let so = parse_series_override(rest).map_err(|e| {
+                    format!("report.{}:{} `style`: {}", self.group, self.line_no, e,)
+                })?;
                 item.style.series.push(so);
                 continue;
             }
@@ -945,8 +1010,11 @@ impl PartialItem {
                         warnings.push(format!(
                             "report.{}:{} item '{}' is a {} but uses \
                              directive `{}`, which has no effect on this kind",
-                            self.group, self.line_no, item.name,
-                            item.kind.as_str(), line
+                            self.group,
+                            self.line_no,
+                            item.name,
+                            item.kind.as_str(),
+                            line
                         ));
                     }
                 }
@@ -970,9 +1038,9 @@ fn strip_directive_keyword<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
             || next == Some('=')
             || next == Some(':')
         {
-            return Some(rest.trim_start_matches(|c: char| {
-                c == ' ' || c == '\t' || c == '=' || c == ':'
-            }));
+            return Some(
+                rest.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '=' || c == ':'),
+            );
         }
     }
     None
@@ -982,7 +1050,8 @@ fn strip_kind_keyword(line: &str) -> Option<(Kind, &str)> {
     for kw in ITEM_KIND_KEYWORDS {
         if let Some(rest) = line.strip_prefix(kw)
             && let Some(next) = rest.chars().next()
-            && next.is_whitespace() {
+            && next.is_whitespace()
+        {
             let kind = match *kw {
                 "plot" => Kind::Plot,
                 "table" => Kind::Table,
@@ -1055,16 +1124,32 @@ fn apply_one_style_kv(k: &str, v: &str, style: &mut Style) -> Result<(), String>
     match k {
         "palette" => style.palette = Some(v.to_string()),
         "line" => style.line = Some(v.to_string()),
-        "width" => style.width = Some(v.parse()
-            .map_err(|_| format!("`width={v}` is not a number"))?),
+        "width" => {
+            style.width = Some(
+                v.parse()
+                    .map_err(|_| format!("`width={v}` is not a number"))?,
+            )
+        }
         "marker" => style.marker = Some(v.to_string()),
-        "size" => style.size = Some(v.parse()
-            .map_err(|_| format!("`size={v}` is not a number"))?),
+        "size" => {
+            style.size = Some(
+                v.parse()
+                    .map_err(|_| format!("`size={v}` is not a number"))?,
+            )
+        }
         "color" => style.color = Some(v.to_string()),
-        "figure_width" => style.figure_width = Some(v.parse()
-            .map_err(|_| format!("`figure_width={v}` is not an integer"))?),
-        "figure_height" => style.figure_height = Some(v.parse()
-            .map_err(|_| format!("`figure_height={v}` is not an integer"))?),
+        "figure_width" => {
+            style.figure_width = Some(
+                v.parse()
+                    .map_err(|_| format!("`figure_width={v}` is not an integer"))?,
+            )
+        }
+        "figure_height" => {
+            style.figure_height = Some(
+                v.parse()
+                    .map_err(|_| format!("`figure_height={v}` is not an integer"))?,
+            )
+        }
         _ => return Err(format!("unknown style directive `{k}`")),
     }
     Ok(())
@@ -1079,18 +1164,28 @@ fn tokenize_directive_line(line: &str) -> Vec<String> {
     let mut quote: Option<char> = None;
     for ch in line.chars() {
         match quote {
-            Some(q) if ch == q => { quote = None; cur.push(ch); }
+            Some(q) if ch == q => {
+                quote = None;
+                cur.push(ch);
+            }
             Some(_) => cur.push(ch),
             None => match ch {
-                '"' | '\'' => { quote = Some(ch); cur.push(ch); }
+                '"' | '\'' => {
+                    quote = Some(ch);
+                    cur.push(ch);
+                }
                 ' ' | '\t' | ',' => {
-                    if !cur.is_empty() { out.push(std::mem::take(&mut cur)); }
+                    if !cur.is_empty() {
+                        out.push(std::mem::take(&mut cur));
+                    }
                 }
                 _ => cur.push(ch),
-            }
+            },
         }
     }
-    if !cur.is_empty() { out.push(cur); }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
     out
 }
 
@@ -1098,15 +1193,21 @@ fn line_starts_with_any(line: &str, kws: &[&str]) -> bool {
     let trimmed = line.trim_start();
     kws.iter().any(|kw| {
         trimmed.starts_with(kw)
-            && trimmed.as_bytes().get(kw.len())
+            && trimmed
+                .as_bytes()
+                .get(kw.len())
                 .is_none_or(|c| matches!(*c, b' ' | b'\t' | b'='))
     })
 }
 
 fn style_directive_applies_to_kind(line: &str, kind: Kind) -> bool {
-    let head = tokenize_directive_line(line).first()
-        .map(|s| s.split_once('=').map(|(k, _)| k.to_string())
-            .unwrap_or_else(|| s.clone()))
+    let head = tokenize_directive_line(line)
+        .first()
+        .map(|s| {
+            s.split_once('=')
+                .map(|(k, _)| k.to_string())
+                .unwrap_or_else(|| s.clone())
+        })
         .unwrap_or_default();
     !matches!(
         (kind, head.as_str()),
@@ -1128,15 +1229,16 @@ fn parse_series_override(s: &str) -> Result<SeriesOverride, String> {
     let first_ws = s.find(char::is_whitespace);
     let split_at = match (first_colon, first_ws) {
         (Some(c), Some(w)) if c < w => Some((c, 1)), // colon wins
-        (Some(c), None)              => Some((c, 1)),
-        (_, Some(w))                 => Some((w, 1)),
-        (None, None)                 => None,
+        (Some(c), None) => Some((c, 1)),
+        (_, Some(w)) => Some((w, 1)),
+        (None, None) => None,
     };
     let (head, rest) = match split_at {
         Some((idx, n)) => (&s[..idx], s[idx + n..].trim_start()),
         None => (s, ""),
     };
-    let (key, value) = head.split_once('=')
+    let (key, value) = head
+        .split_once('=')
         .ok_or_else(|| format!("series discriminator must be <key>=<value>, got `{head}`"))?;
 
     let mut style = Style::default();
@@ -1147,8 +1249,8 @@ fn parse_series_override(s: &str) -> Result<SeriesOverride, String> {
         if !rest.ends_with('}') {
             return Err("JSON sub-block must close with `}` on the same line".to_string());
         }
-        let json: serde_json::Value = serde_json::from_str(rest)
-            .map_err(|e| format!("JSON sub-block parse error: {e}"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(rest).map_err(|e| format!("JSON sub-block parse error: {e}"))?;
         apply_json_to_style(&json, &mut style)?;
     } else if !rest.is_empty() {
         // Brace-free directive form.
@@ -1157,22 +1259,29 @@ fn parse_series_override(s: &str) -> Result<SeriesOverride, String> {
 
     Ok(SeriesOverride {
         key: key.trim().to_string(),
-        value: value.trim().trim_matches('"').trim_matches('\'').to_string(),
+        value: value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string(),
         style,
     })
 }
 
 fn apply_json_to_style(v: &serde_json::Value, style: &mut Style) -> Result<(), String> {
-    let map = v.as_object()
+    let map = v
+        .as_object()
         .ok_or_else(|| "series JSON sub-block must be an object".to_string())?;
     for (k, val) in map {
         let v_str = match val {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::Bool(b) => b.to_string(),
-            _ => return Err(format!(
-                "series JSON sub-block: value for `{k}` must be a string, number, or bool"
-            )),
+            _ => {
+                return Err(format!(
+                    "series JSON sub-block: value for `{k}` must be a string, number, or bool"
+                ));
+            }
         };
         apply_one_style_kv(k, &v_str, style)?;
     }
@@ -1201,21 +1310,34 @@ fn strip_line_comment(line: &str) -> &str {
     let mut prev_ws = true; // start-of-line counts as whitespace boundary
     for (i, ch) in line.char_indices() {
         match quote {
-            Some(q) if ch == q => { quote = None; prev_ws = false; }
-            Some(_) => { prev_ws = false; }
-            None => match ch {
-                '"' | '\'' => { quote = Some(ch); prev_ws = false; }
-                '#' if prev_ws => return &line[..i],
-                c if c.is_whitespace() => { prev_ws = true; }
-                _ => { prev_ws = false; }
+            Some(q) if ch == q => {
+                quote = None;
+                prev_ws = false;
             }
+            Some(_) => {
+                prev_ws = false;
+            }
+            None => match ch {
+                '"' | '\'' => {
+                    quote = Some(ch);
+                    prev_ws = false;
+                }
+                '#' if prev_ws => return &line[..i],
+                c if c.is_whitespace() => {
+                    prev_ws = true;
+                }
+                _ => {
+                    prev_ws = false;
+                }
+            },
         }
     }
     line
 }
 
 fn parse_style_mapping(v: &serde_json::Value) -> Result<Style, String> {
-    let map = v.as_object()
+    let map = v
+        .as_object()
         .ok_or_else(|| "must be a mapping of style directives".to_string())?;
     let mut style = Style::default();
     for (key, val) in map {
@@ -1225,9 +1347,11 @@ fn parse_style_mapping(v: &serde_json::Value) -> Result<Style, String> {
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::Bool(b) => b.to_string(),
             serde_json::Value::Null => continue,
-            _ => return Err(format!(
-                "value for `{key}` must be a scalar (string, number, or bool)"
-            )),
+            _ => {
+                return Err(format!(
+                    "value for `{key}` must be a scalar (string, number, or bool)"
+                ));
+            }
         };
         apply_one_style_kv(key, &value, &mut style)?;
     }
@@ -1245,12 +1369,14 @@ mod tests {
 
     #[test]
     fn single_plot_minimal() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 recall_block: |
   plot recall_at_k10
     over limit by profile
     label "Recall@10 vs k limit"
-"#);
+"#,
+        );
         assert_eq!(p.report.groups.len(), 1);
         let g = &p.report.groups[0];
         assert_eq!(g.name, "recall_block");
@@ -1264,7 +1390,8 @@ recall_block: |
 
     #[test]
     fn defaults_at_root_and_group() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 defaults:
   palette: wong
   width: 1024
@@ -1272,7 +1399,8 @@ defaults:
 recall_block: |
   defaults palette=tol_muted
   plot recall_at_k10 over limit
-"#);
+"#,
+        );
         assert_eq!(p.report.defaults.palette.as_deref(), Some("wong"));
         assert_eq!(p.report.defaults.width, Some(1024.0));
         let g = &p.report.groups[0];
@@ -1285,11 +1413,13 @@ recall_block: |
 
     #[test]
     fn plots_and_tables_in_one_group() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 combo: |
   plot recall_at_k10 over limit
   table recall_summary metric=recall@.* group_by=profile
-"#);
+"#,
+        );
         let items = &p.report.groups[0].items;
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].kind, Kind::Plot);
@@ -1300,11 +1430,13 @@ combo: |
 
     #[test]
     fn style_json_sub_block() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   plot p1 over x
     style profile=hnsw {"line": "dashed", "marker": "triangle"}
-"#);
+"#,
+        );
         let item = &p.report.groups[0].items[0];
         assert_eq!(item.style.series.len(), 1);
         let so = &item.style.series[0];
@@ -1316,11 +1448,13 @@ g: |
 
     #[test]
     fn style_directive_form() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   plot p1 over x
     style profile=ivf line=dotted color=#117733
-"#);
+"#,
+        );
         let so = &p.report.groups[0].items[0].style.series[0];
         assert_eq!(so.value, "ivf");
         assert_eq!(so.style.line.as_deref(), Some("dotted"));
@@ -1329,18 +1463,23 @@ g: |
 
     #[test]
     fn duplicate_name_is_error() {
-        let v: serde_json::Value = serde_yaml::from_str(r#"
+        let v: serde_json::Value = serde_yaml::from_str(
+            r#"
 g1: "plot dup over x"
 g2: "plot dup over y"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(parse_report(&v).is_err());
     }
 
     #[test]
     fn empty_group_warns() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 empty_block: ""
-"#);
+"#,
+        );
         assert_eq!(p.report.groups.len(), 1);
         assert!(p.warnings.iter().any(|w| w.contains("empty_block")));
     }
@@ -1377,7 +1516,8 @@ empty_block: ""
 
     #[test]
     fn parse_report_stamps_declaration_ordinals() {
-        let yaml: serde_json::Value = serde_yaml::from_str(r#"
+        let yaml: serde_json::Value = serde_yaml::from_str(
+            r#"
 section_a: |
   table alpha:
     query: v: avg(x)
@@ -1386,16 +1526,23 @@ section_a: |
 section_b: |
   table beta:
     query: v: avg(y)
-"#).expect("yaml");
+"#,
+        )
+        .expect("yaml");
         let parsed = parse_report(&yaml).expect("parse report");
-        let orders: Vec<(String, Option<usize>)> = parsed.report.items()
+        let orders: Vec<(String, Option<usize>)> = parsed
+            .report
+            .items()
             .map(|i| (i.name.clone(), i.order))
             .collect();
-        assert_eq!(orders, vec![
-            ("alpha".to_string(), Some(0)),
-            ("zeta".to_string(), Some(1)),
-            ("beta".to_string(), Some(2)),
-        ]);
+        assert_eq!(
+            orders,
+            vec![
+                ("alpha".to_string(), Some(0)),
+                ("zeta".to_string(), Some(1)),
+                ("beta".to_string(), Some(2)),
+            ]
+        );
     }
 
     #[test]
@@ -1414,8 +1561,7 @@ x: r
 y1: avg(recall_mean{k=\"1\"}) by (k,r)
 y-ranges: [[0.0,1.0]]
 with-table: true";
-        let item = parse_persisted_item(body)
-            .expect("parse_persisted_item should succeed");
+        let item = parse_persisted_item(body).expect("parse_persisted_item should succeed");
         assert_eq!(item.name, "recall_1_mean");
         assert!(item.with_table, "with_table should be set");
         assert!(
@@ -1432,12 +1578,14 @@ with-table: true";
         // accepted space/tab/`=` separators), leaving the line in
         // `item.body`. The plot renderer then saw it as an
         // unknown directive and failed every plot it touched.
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   plot p1
     over limit
     with-table: true
-"#);
+"#,
+        );
         let item = &p.report.groups[0].items[0];
         assert!(item.with_table, "with-table flag should be set");
         assert!(
@@ -1449,13 +1597,15 @@ g: |
 
     #[test]
     fn unknown_directive_falls_into_body() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   plot p1
     over limit
     where dataset=glove
     custom_directive=foo
-"#);
+"#,
+        );
         let item = &p.report.groups[0].items[0];
         assert!(item.body.contains("over limit"));
         assert!(item.body.contains("custom_directive=foo"));
@@ -1463,37 +1613,47 @@ g: |
 
     #[test]
     fn label_with_quotes() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   plot p1 over x
     label 'p99 latency'
-"#);
-        assert_eq!(p.report.groups[0].items[0].label.as_deref(), Some("p99 latency"));
+"#,
+        );
+        assert_eq!(
+            p.report.groups[0].items[0].label.as_deref(),
+            Some("p99 latency")
+        );
     }
 
     #[test]
     fn item_name_collides_with_directive_keyword_errors() {
-        let v: serde_json::Value = serde_yaml::from_str(r#"
+        let v: serde_json::Value = serde_yaml::from_str(
+            r#"
 g: "plot palette over x"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert!(parse_report(&v).is_err());
     }
 
     #[test]
     fn declaration_order_preserved_across_groups() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 zzz_block: "plot z over x"
 aaa_block: "plot a over x"
 mmm_block: "plot m over x"
-"#);
-        let names: Vec<_> = p.report.groups.iter()
-            .map(|g| g.name.clone()).collect();
+"#,
+        );
+        let names: Vec<_> = p.report.groups.iter().map(|g| g.name.clone()).collect();
         assert_eq!(names, vec!["zzz_block", "aaa_block", "mmm_block"]);
     }
 
     #[test]
     fn style_cascade_root_to_item() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 defaults:
   palette: wong
   width: 1024
@@ -1502,7 +1662,8 @@ g: |
   defaults palette=tol_muted
   plot p1 over x
     palette=ibm
-"#);
+"#,
+        );
         let g = &p.report.groups[0];
         let item = &g.items[0];
         let s = p.report.effective_style(g, item);
@@ -1512,12 +1673,14 @@ g: |
 
     #[test]
     fn text_kind_keeps_body_verbatim() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 intro: |
   text Welcome to the report.
    Multi-line prose continues here
    with arbitrary text.
-"#);
+"#,
+        );
         let item = &p.report.groups[0].items[0];
         assert_eq!(item.kind, Kind::Text);
         assert_eq!(item.name, "text_001");
@@ -1527,13 +1690,15 @@ intro: |
 
     #[test]
     fn file_directive_scopes_following_items() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 sections: |
   file my_report.md as 'Markdown Report'
     text Intro paragraph
     plot recall_at_k10 over limit
     table summary metric=recall@.* group_by=p
-"#);
+"#,
+        );
         let items = &p.report.groups[0].items;
         assert_eq!(items.len(), 4);
         assert_eq!(items[0].kind, Kind::File);
@@ -1541,21 +1706,27 @@ sections: |
         assert_eq!(items[0].label.as_deref(), Some("Markdown Report"));
         // Subsequent items inherit the file as target.
         for it in &items[1..] {
-            assert_eq!(it.target_file.as_deref(), Some("my_report.md"),
+            assert_eq!(
+                it.target_file.as_deref(),
+                Some("my_report.md"),
                 "item {} should target my_report.md, got {:?}",
-                it.name, it.target_file);
+                it.name,
+                it.target_file
+            );
         }
     }
 
     #[test]
     fn file_switch_resets_scope() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 two_files: |
   file alpha.md as 'Alpha'
     plot p1 over x
   file beta.md
     plot p2 over y
-"#);
+"#,
+        );
         let items = &p.report.groups[0].items;
         // Items 0=file alpha, 1=plot p1 (alpha), 2=file beta, 3=plot p2 (beta)
         assert_eq!(items[0].name, "alpha.md");
@@ -1566,12 +1737,14 @@ two_files: |
 
     #[test]
     fn items_before_any_file_have_no_target() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 mixed: |
   plot orphan over x
   file r.md
     plot inside over x
-"#);
+"#,
+        );
         let items = &p.report.groups[0].items;
         assert_eq!(items[0].name, "orphan");
         assert_eq!(items[0].target_file, None);
@@ -1581,30 +1754,42 @@ mixed: |
 
     #[test]
     fn hash_line_comments_stripped() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   # comment line — ignored
   plot p1   # trailing comment
     over limit  # also stripped
     label "Mean recall"  # don't strip inside quotes
-"#);
+"#,
+        );
         let item = &p.report.groups[0].items[0];
         assert_eq!(item.kind, Kind::Plot);
         assert_eq!(item.name, "p1");
-        assert!(item.body.contains("over limit"), "body kept: {:?}", item.body);
-        assert!(!item.body.contains("trailing"), "comment leaked: {:?}", item.body);
+        assert!(
+            item.body.contains("over limit"),
+            "body kept: {:?}",
+            item.body
+        );
+        assert!(
+            !item.body.contains("trailing"),
+            "comment leaked: {:?}",
+            item.body
+        );
         assert_eq!(item.label.as_deref(), Some("Mean recall"));
     }
 
     #[test]
     fn auto_text_names_unique_across_document() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g1: |
   text First
   text Second
 g2: |
   text Third
-"#);
+"#,
+        );
         let g1 = &p.report.groups[0];
         assert_eq!(g1.items[0].name, "text_001");
         assert_eq!(g1.items[1].name, "text_002");
@@ -1616,13 +1801,15 @@ g2: |
 
     #[test]
     fn label_directive_strips_quotes() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 g: |
   plot p1 over x
     label "My label"
   plot p2 over x
     label 'Another'
-"#);
+"#,
+        );
         let items = &p.report.groups[0].items;
         assert_eq!(items[0].label.as_deref(), Some("My label"));
         assert_eq!(items[1].label.as_deref(), Some("Another"));
@@ -1639,14 +1826,26 @@ g: |
 
     fn round_trip_via_group(item: &ReportItem) -> ReportItem {
         let group_body = item.to_yaml_directive_string();
-        let yaml = format!("g: |\n{}",
-            group_body.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n"));
+        let yaml = format!(
+            "g: |\n{}",
+            group_body
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         let parsed = parse(&yaml);
-        assert_eq!(parsed.report.groups.len(), 1,
-            "round-trip should yield one group, got: {parsed:#?}");
+        assert_eq!(
+            parsed.report.groups.len(),
+            1,
+            "round-trip should yield one group, got: {parsed:#?}"
+        );
         let items = &parsed.report.groups[0].items;
-        assert_eq!(items.len(), 1,
-            "round-trip should yield one item, got: {items:#?}");
+        assert_eq!(
+            items.len(),
+            1,
+            "round-trip should yield one item, got: {items:#?}"
+        );
         items[0].clone()
     }
 
@@ -1673,9 +1872,13 @@ g: |
         // Body comparison is whitespace-tolerant: the emitter
         // re-indents to canonical 2-space, the parser strips
         // leading whitespace anyway.
-        let normalize = |s: &str| s.split('\n')
-            .map(|l| l.trim()).filter(|l| !l.is_empty())
-            .collect::<Vec<_>>().join("\n");
+        let normalize = |s: &str| {
+            s.split('\n')
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         assert_eq!(normalize(&recovered.body), normalize(&item.body));
     }
 
@@ -1710,8 +1913,7 @@ g: |
             name: "full".to_string(),
             label: Some("Full".to_string()),
             as_stem: Some("plot_full".to_string()),
-            body: "over limit\nby profile\nwhere dataset=glove\nagg=mean"
-                .to_string(),
+            body: "over limit\nby profile\nwhere dataset=glove\nagg=mean".to_string(),
             ..Default::default()
         };
         item.style.palette = Some("tol_muted".to_string());
@@ -1769,10 +1971,19 @@ g: |
         assert_eq!(recovered.style.series.len(), 2);
         assert_eq!(recovered.style.series[0].key, "profile");
         assert_eq!(recovered.style.series[0].value, "hnsw");
-        assert_eq!(recovered.style.series[0].style.line.as_deref(), Some("dashed"));
-        assert_eq!(recovered.style.series[0].style.marker.as_deref(), Some("triangle"));
+        assert_eq!(
+            recovered.style.series[0].style.line.as_deref(),
+            Some("dashed")
+        );
+        assert_eq!(
+            recovered.style.series[0].style.marker.as_deref(),
+            Some("triangle")
+        );
         assert_eq!(recovered.style.series[1].value, "ivf");
-        assert_eq!(recovered.style.series[1].style.line.as_deref(), Some("solid"));
+        assert_eq!(
+            recovered.style.series[1].style.line.as_deref(),
+            Some("solid")
+        );
     }
 
     #[test]
@@ -1789,8 +2000,10 @@ g: |
         // strips outer quotes only; if it doesn't honour the
         // escape, the test catches that as a real bug to fix.)
         let group_body = item.to_yaml_directive_string();
-        assert!(group_body.contains(r#"label "He said \"hi\"""#),
-            "emitter should escape inner quotes; got:\n{group_body}");
+        assert!(
+            group_body.contains(r#"label "He said \"hi\"""#),
+            "emitter should escape inner quotes; got:\n{group_body}"
+        );
     }
 
     #[test]
@@ -1815,17 +2028,21 @@ g: |
             style: Style::default(),
         });
         let s = item.to_yaml_directive_string();
-        let pos = |needle: &str| s.find(needle)
-            .unwrap_or_else(|| panic!("missing {needle} in:\n{s}"));
-        let pos_as     = pos("as S");
-        let pos_label  = pos("label \"L\"");
-        let pos_style  = pos("palette=wong");
-        let pos_body   = pos("over cycle");
+        let pos = |needle: &str| {
+            s.find(needle)
+                .unwrap_or_else(|| panic!("missing {needle} in:\n{s}"))
+        };
+        let pos_as = pos("as S");
+        let pos_label = pos("label \"L\"");
+        let pos_style = pos("palette=wong");
+        let pos_body = pos("over cycle");
         let pos_per_series = pos("style k=v");
-        assert!(pos_as < pos_label,    "as before label");
+        assert!(pos_as < pos_label, "as before label");
         assert!(pos_label < pos_style, "label before style");
-        assert!(pos_style < pos_body,  "style before body");
-        assert!(pos_body < pos_per_series,
-            "body before per-series style overrides");
+        assert!(pos_style < pos_body, "style before body");
+        assert!(
+            pos_body < pos_per_series,
+            "body before per-series style overrides"
+        );
     }
 }

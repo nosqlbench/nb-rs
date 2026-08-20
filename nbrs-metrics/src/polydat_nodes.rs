@@ -34,8 +34,8 @@
 //! - `"rate"` — cycles/second (session-average / per-window)
 //! - `"p50"`, `"p99"`, `"mean"` — latency quantiles from cycles_servicetime (nanos)
 
-use std::sync::{Arc, LazyLock, Mutex};
 use polydat::derive_support::Const;
+use std::sync::{Arc, LazyLock, Mutex};
 
 // Node metadata + registration are emitted by `#[polydat::polydat_node]`
 // (fully-qualified `polydat::…` paths, including the `Const<…>` marker), so
@@ -56,7 +56,10 @@ pub fn set_global_query(query: Arc<MetricsQuery>) {
 
 /// Get the global metrics query reference.
 fn get_query() -> Option<Arc<MetricsQuery>> {
-    METRICS_QUERY.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    METRICS_QUERY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Build a [`Selection`] from a `"family, key=value, key~substring"`
@@ -70,7 +73,9 @@ fn selection_from_pattern(pattern: &str) -> (Selection, Option<String>) {
     let mut sel = Selection::all();
     let mut family: Option<String> = None;
     for part in pattern.split(',').map(str::trim) {
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if let Some((key, value)) = part.split_once('=') {
             sel = sel.with_label(key.trim(), value.trim());
         } else if let Some((key, substring)) = part.split_once('~') {
@@ -132,7 +137,9 @@ fn metric_window(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
     get_query()
         .and_then(|q| {
             let smallest = q.reporter().declared_cadences().smallest();
-            if smallest.is_zero() { return None; }
+            if smallest.is_zero() {
+                return None;
+            }
             let snap = match stat.0 {
                 "p50" | "p99" | "mean" => q.distribution_over(smallest, &sel),
                 _ => q.increase_over(smallest, &sel),
@@ -156,7 +163,8 @@ fn warn_family_required(node: &str, pattern: &str) {
         crate::diag::warn(&format!(
             "{node}('{pattern}', …): no metric family named — the first \
              bare token in the pattern must be an instrument name (e.g. \
-             {node}('errors_total', 'rate')); reading 0.0"));
+             {node}('errors_total', 'rate')); reading 0.0"
+        ));
     }
 }
 
@@ -183,13 +191,14 @@ pub fn metric_selector_resolves(pattern: &str) -> bool {
     let Some(fam) = family else { return false };
     get_query()
         .map(|q| q.session_lifetime(&sel))
-        .and_then(|snap| snap.family(&fam)
-            // Mirror `extract_family_stat` exactly: an instance with a
-            // readable POINT — presence without a point still reads
-            // 0.0 at the `metric()` reader, so it must not count as
-            // resolved.
-            .map(|f| f.metrics().next()
-                .and_then(|m| m.point()).is_some()))
+        .and_then(|snap| {
+            snap.family(&fam)
+                // Mirror `extract_family_stat` exactly: an instance with a
+                // readable POINT — presence without a point still reads
+                // 0.0 at the `metric()` reader, so it must not count as
+                // resolved.
+                .map(|f| f.metrics().next().and_then(|m| m.point()).is_some())
+        })
         .unwrap_or(false)
 }
 
@@ -205,10 +214,12 @@ fn extract_family_stat(snapshot: &MetricSet, family: &str, stat: &str) -> Option
         (MetricValue::Gauge(g), "value") => Some(g.value),
         (MetricValue::Histogram(h), "count") => Some(h.count as f64),
         (MetricValue::Histogram(h), "mean") if h.count > 0 => Some(h.reservoir.mean()),
-        (MetricValue::Histogram(h), "p50") if h.count > 0 =>
-            Some(h.reservoir.value_at_quantile(0.50) as f64),
-        (MetricValue::Histogram(h), "p99") if h.count > 0 =>
-            Some(h.reservoir.value_at_quantile(0.99) as f64),
+        (MetricValue::Histogram(h), "p50") if h.count > 0 => {
+            Some(h.reservoir.value_at_quantile(0.50) as f64)
+        }
+        (MetricValue::Histogram(h), "p99") if h.count > 0 => {
+            Some(h.reservoir.value_at_quantile(0.99) as f64)
+        }
         _ => None,
     }
 }

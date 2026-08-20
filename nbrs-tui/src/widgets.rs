@@ -64,7 +64,9 @@ pub mod colors {
 /// the segment list, and rejoins. Empty input → empty output.
 /// Single-group input is returned unchanged.
 pub fn coords_root_first(leaf_first: &str) -> String {
-    if leaf_first.is_empty() { return String::new(); }
+    if leaf_first.is_empty() {
+        return String::new();
+    }
     let inner = leaf_first
         .strip_prefix('(')
         .and_then(|s| s.strip_suffix(')'))
@@ -88,7 +90,11 @@ pub fn sparkline_str(values: &[f64], width: usize) -> String {
     if values.is_empty() {
         return " ".repeat(width);
     }
-    let start = if values.len() > width { values.len() - width } else { 0 };
+    let start = if values.len() > width {
+        values.len() - width
+    } else {
+        0
+    };
     let visible = &values[start..];
 
     let min = visible.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -179,8 +185,13 @@ pub fn format_dur_compact(secs: f64) -> String {
 // the executable form of that documentation for the SRD-63 margin work.
 #[allow(dead_code)]
 pub fn margin_body_width(total_phases: usize) -> usize {
-    TIMING_MARK.chars().count() + 1
-        + 8 + 1 + (total_phases.to_string().len().max(1) * 2 + 3) + 1 + 8
+    TIMING_MARK.chars().count()
+        + 1
+        + 8
+        + 1
+        + (total_phases.to_string().len().max(1) * 2 + 3)
+        + 1
+        + 8
 }
 
 /// Marks a gutter cell as PHASE TIMING, so timings are identifiable at a glance
@@ -199,11 +210,20 @@ pub const TIMING_MARK: &str = "◷";
 /// to the `[n/total]` field width so the flanking right-aligned 8-col time slots
 /// line up across every row; `—` fills an absent time. Shared by the managed-TUI
 /// gutter and the op leaves so surfaces align identically.
-pub fn margin_body(total_phases: usize, count: &str, leaf: Option<f64>, sess: Option<f64>) -> String {
+pub fn margin_body(
+    total_phases: usize,
+    count: &str,
+    leaf: Option<f64>,
+    sess: Option<f64>,
+) -> String {
     let tw = total_phases.to_string().len().max(1);
     let count_w = tw * 2 + 3;
-    let leaf_s = leaf.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
-    let sess_s = sess.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
+    let leaf_s = leaf
+        .map(format_dur_compact)
+        .unwrap_or_else(|| "—".to_string());
+    let sess_s = sess
+        .map(format_dur_compact)
+        .unwrap_or_else(|| "—".to_string());
     format!("{TIMING_MARK} {sess_s:>8} {count:<count_w$} {leaf_s:>8}")
 }
 
@@ -237,8 +257,12 @@ pub fn format_count(n: u64) -> String {
 pub fn bar_str(fraction: f64, width: usize) -> String {
     let fill = (fraction.clamp(0.0, 1.0) * width as f64).round() as usize;
     let mut s = String::with_capacity(width);
-    for _ in 0..fill { s.push('━'); }
-    for _ in fill..width { s.push('╌'); }
+    for _ in 0..fill {
+        s.push('━');
+    }
+    for _ in fill..width {
+        s.push('╌');
+    }
     s
 }
 
@@ -294,8 +318,8 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
     // hanging-from-the-top one. Left column first (the
     // earlier-progress side), then right column.
     const PIP_ORDER: [u32; 8] = [
-        0x40, 0x04, 0x02, 0x01,  // left column: bottom → top
-        0x80, 0x20, 0x10, 0x08,  // right column: bottom → top
+        0x40, 0x04, 0x02, 0x01, // left column: bottom → top
+        0x80, 0x20, 0x10, 0x08, // right column: bottom → top
     ];
 
     let mut filled = String::with_capacity(width * 3);
@@ -305,7 +329,9 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
     // sub-cell animation actually happens, so the eye is
     // drawn to the moving frontier rather than the static
     // bulk of the bar.
-    for _ in 0..full_cells { filled.push('\u{2588}'); }
+    for _ in 0..full_cells {
+        filled.push('\u{2588}');
+    }
     if partial > 0 && full_cells < width {
         let mut bits: u32 = 0;
         for &pip in &PIP_ORDER[..partial] {
@@ -321,13 +347,20 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
         }
     }
 
-    let drawn = full_cells + if partial > 0 && full_cells < width { 1 } else { 0 };
+    let drawn = full_cells
+        + if partial > 0 && full_cells < width {
+            1
+        } else {
+            0
+        };
     let mut unfilled = String::with_capacity((width - drawn) * 3);
     // `⣀` (U+28C0) — dots 7 + 8, the bottom row of both
     // columns. Reads as a low-key baseline that grounds the
     // unfilled portion without grabbing focus from the lit
     // pips above.
-    for _ in drawn..width { unfilled.push('\u{28C0}'); }
+    for _ in drawn..width {
+        unfilled.push('\u{28C0}');
+    }
 
     (filled, unfilled)
 }
@@ -353,11 +386,17 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
 /// the two views balanced, and a power of two makes every halving of the
 /// history exact.
 pub fn nearest_pow2_half(n: usize) -> usize {
-    if n < 2 { return 1; }
+    if n < 2 {
+        return 1;
+    }
     let half = (n as f64) / 2.0;
     let lo_exp = (half.log2().floor().max(0.0) as u32).min(31);
     let (a, b) = (1usize << lo_exp, 1usize << (lo_exp + 1));
-    let pick = if (half - a as f64).abs() <= (b as f64 - half).abs() { a } else { b };
+    let pick = if (half - a as f64).abs() <= (b as f64 - half).abs() {
+        a
+    } else {
+        b
+    };
     pick.clamp(1, n.saturating_sub(1).max(1))
 }
 
@@ -414,8 +453,12 @@ impl DecimatingTrend {
         }
         self.hist_cap = hist_cap;
         self.raw_cap = cap - hist_cap;
-        while self.raw.len() > self.raw_cap { self.evict_oldest_raw(); }
-        while self.hist.len() > self.hist_cap { self.halve_hist(); }
+        while self.raw.len() > self.raw_cap {
+            self.evict_oldest_raw();
+        }
+        while self.hist.len() > self.hist_cap {
+            self.halve_hist();
+        }
     }
 
     /// Halve the history in place: pairwise average, stride doubles. Exact,
@@ -436,7 +479,9 @@ impl DecimatingTrend {
     /// Move the oldest per-sample cell into the history bucket, emitting a
     /// history cell once a full `stride` of samples has accumulated.
     fn evict_oldest_raw(&mut self) {
-        if self.raw.is_empty() { return; }
+        if self.raw.is_empty() {
+            return;
+        }
         let v = self.raw.remove(0);
         self.pending_sum += v;
         self.pending_n += 1;
@@ -445,7 +490,9 @@ impl DecimatingTrend {
             self.hist.push(self.pending_sum / n);
             self.pending_sum = 0.0;
             self.pending_n = 0;
-            if self.hist.len() > self.hist_cap { self.halve_hist(); }
+            if self.hist.len() > self.hist_cap {
+                self.halve_hist();
+            }
         }
     }
 
@@ -479,11 +526,15 @@ impl DecimatingTrend {
     // tests and for callers that want the raw regions rather than the fixed view.
     #[allow(dead_code)]
     /// Cells reserved for the history region.
-    pub fn hist_cap(&self) -> usize { self.hist_cap }
+    pub fn hist_cap(&self) -> usize {
+        self.hist_cap
+    }
 
     #[allow(dead_code)]
     /// Cells reserved for the per-sample tail region.
-    pub fn raw_cap(&self) -> usize { self.raw_cap }
+    pub fn raw_cap(&self) -> usize {
+        self.raw_cap
+    }
 
     /// Render-ready split at a FIXED boundary: the history resampled to exactly
     /// `hist_cap` cells, and the newest samples one-per-cell up to `raw_cap`.
@@ -533,14 +584,16 @@ mod trend_split_tests {
 
     #[test]
     fn nearest_pow2_half_picks_the_closer_power() {
-        assert_eq!(nearest_pow2_half(20), 8);   // half=10 -> 8 is closer than 16
-        assert_eq!(nearest_pow2_half(24), 8);   // half=12 ties 8 vs 16; tie goes low,
-                                               // leaving more cells for live detail
-        assert_eq!(nearest_pow2_half(16), 8);   // exact
-        assert_eq!(nearest_pow2_half(32), 16);  // exact
-        assert_eq!(nearest_pow2_half(5), 2);    // half=2.5 -> 2 (tie-break low)
+        assert_eq!(nearest_pow2_half(20), 8); // half=10 -> 8 is closer than 16
+        assert_eq!(nearest_pow2_half(24), 8); // half=12 ties 8 vs 16; tie goes low,
+        // leaving more cells for live detail
+        assert_eq!(nearest_pow2_half(16), 8); // exact
+        assert_eq!(nearest_pow2_half(32), 16); // exact
+        assert_eq!(nearest_pow2_half(5), 2); // half=2.5 -> 2 (tie-break low)
         // Always leaves at least one cell for the per-sample tail.
-        for n in 2..64 { assert!(nearest_pow2_half(n) < n, "n={n}"); }
+        for n in 2..64 {
+            assert!(nearest_pow2_half(n) < n, "n={n}");
+        }
     }
 
     #[test]
@@ -555,13 +608,25 @@ mod trend_split_tests {
         for i in 0..5_000 {
             t.push(i as f64);
             let (hist, raw) = t.split_view();
-            assert!(raw.len() <= raw_cap, "tail overdrew at push {i}: {}", raw.len());
+            assert!(
+                raw.len() <= raw_cap,
+                "tail overdrew at push {i}: {}",
+                raw.len()
+            );
             if i >= 64 {
                 // Warmed: the RENDERED split must be constant on every tick.
-                assert_eq!(hist.len(), hist_cap,
-                    "history view must stay fixed at {hist_cap}, got {} at push {i}", hist.len());
-                assert_eq!(raw.len(), raw_cap,
-                    "tail view must stay fixed at {raw_cap}, got {} at push {i}", raw.len());
+                assert_eq!(
+                    hist.len(),
+                    hist_cap,
+                    "history view must stay fixed at {hist_cap}, got {} at push {i}",
+                    hist.len()
+                );
+                assert_eq!(
+                    raw.len(),
+                    raw_cap,
+                    "tail view must stay fixed at {raw_cap}, got {} at push {i}",
+                    raw.len()
+                );
             }
         }
     }
@@ -573,7 +638,9 @@ mod trend_split_tests {
         let hist_cap = nearest_pow2_half(cap);
         let raw_cap = cap - hist_cap;
         let mut t = DecimatingTrend::new(cap);
-        for i in 0..1_000 { t.push(i as f64); }
+        for i in 0..1_000 {
+            t.push(i as f64);
+        }
         let series = t.series();
         let tail = &series[series.len() - raw_cap..];
         let expected: Vec<f64> = ((1_000 - raw_cap)..1_000).map(|i| i as f64).collect();
@@ -583,14 +650,20 @@ mod trend_split_tests {
     #[test]
     fn resize_rebalances_without_losing_the_series() {
         let mut t = DecimatingTrend::new(20);
-        for i in 0..500 { t.push(i as f64); }
+        for i in 0..500 {
+            t.push(i as f64);
+        }
         t.resize(40);
-        for i in 0..500 { t.push(i as f64); }
+        for i in 0..500 {
+            t.push(i as f64);
+        }
         let (h, r) = t.split_view();
         assert_eq!(h.len(), nearest_pow2_half(40));
         assert_eq!(h.len() + r.len(), 40);
         t.resize(12);
-        for i in 0..500 { t.push(i as f64); }
+        for i in 0..500 {
+            t.push(i as f64);
+        }
         let (h, r) = t.split_view();
         assert_eq!(h.len(), nearest_pow2_half(12));
         assert_eq!(h.len() + r.len(), 12, "shrinking must not overdraw");
@@ -600,7 +673,9 @@ mod trend_split_tests {
     fn lifetime_extrema_survive_decimation() {
         let mut t = DecimatingTrend::new(16);
         t.push(1000.0);
-        for i in 0..500 { t.push(i as f64); }
+        for i in 0..500 {
+            t.push(i as f64);
+        }
         assert_eq!(t.max, 1000.0, "max must be the discrete lifetime max");
         assert_eq!(t.min, 0.0);
     }
@@ -618,20 +693,23 @@ mod sparkline_tests {
         // render it flat (mid-height throughout), same as exactly
         // equal values.
         let base = 200.0 / 3.0; // 66.666… — the shape observed live
-        let noisy: Vec<f64> = (0..16)
-            .map(|i| base + (i as f64) * 5e-14)
-            .collect();
+        let noisy: Vec<f64> = (0..16).map(|i| base + (i as f64) * 5e-14).collect();
         let s = sparkline_str(&noisy, 16);
         let glyphs: std::collections::HashSet<char> = s.chars().collect();
-        assert_eq!(glyphs.len(), 1,
-            "noise-flat series must render one glyph, got {s:?}");
+        assert_eq!(
+            glyphs.len(),
+            1,
+            "noise-flat series must render one glyph, got {s:?}"
+        );
         assert!(s.chars().all(|c| c == '▅'), "mid-height flat: {s:?}");
 
         // A genuine trend still renders as one.
         let real: Vec<f64> = (0..16).map(|i| i as f64).collect();
         let s = sparkline_str(&real, 16);
-        assert!(s.contains('▁') && s.contains('█'),
-            "real spread must span the bar range: {s:?}");
+        assert!(
+            s.contains('▁') && s.contains('█'),
+            "real spread must span the bar range: {s:?}"
+        );
     }
 }
 
@@ -654,8 +732,15 @@ mod decimating_trend_tests {
         }
         let (_hist, raw) = t.split_view();
         assert_eq!(raw.len(), raw_cap, "tail is bounded at {raw_cap}");
-        assert_eq!(raw, vec![4.0, 5.0, 6.0, 7.0], "tail holds the newest samples, unaveraged");
-        assert!(t.hist_len() > 0, "older samples fold into history rather than being dropped");
+        assert_eq!(
+            raw,
+            vec![4.0, 5.0, 6.0, 7.0],
+            "tail holds the newest samples, unaveraged"
+        );
+        assert!(
+            t.hist_len() > 0,
+            "older samples fold into history rather than being dropped"
+        );
     }
 
     #[test]
@@ -663,12 +748,21 @@ mod decimating_trend_tests {
         let cap = 8;
         let hist_cap = nearest_pow2_half(cap); // 4
         let mut t = DecimatingTrend::new(cap);
-        for v in 0..64 { t.push(v as f64); }
+        for v in 0..64 {
+            t.push(v as f64);
+        }
         let (hist, raw) = t.split_view();
         assert_eq!(hist.len(), hist_cap, "history view is a constant width");
-        assert_eq!(hist.len() + raw.len(), cap, "the two regions tile the cell exactly");
+        assert_eq!(
+            hist.len() + raw.len(),
+            cap,
+            "the two regions tile the cell exactly"
+        );
         // History is averaged and ordered oldest -> newest; the tail is raw.
-        assert!(hist.windows(2).all(|w| w[0] <= w[1]), "history stays ordered: {hist:?}");
+        assert!(
+            hist.windows(2).all(|w| w[0] <= w[1]),
+            "history stays ordered: {hist:?}"
+        );
         assert_eq!(raw, vec![60.0, 61.0, 62.0, 63.0]);
     }
 
@@ -693,7 +787,9 @@ mod decimating_trend_tests {
             t.push(v);
         }
         assert_eq!(t.min, 1.0, "min is the discrete lifetime minimum");
-        assert_eq!(t.max, 100.0,
-            "max survives even after its sample is averaged away");
+        assert_eq!(
+            t.max, 100.0,
+            "max survives even after its sample is averaged away"
+        );
     }
 }

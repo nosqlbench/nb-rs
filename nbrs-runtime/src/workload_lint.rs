@@ -71,8 +71,7 @@ pub fn lint_workload<'a>(
     // The metric-family allowlist: built-ins + every phase-declared
     // phase-metric name across the workload (a gate in one phase may
     // legitimately read a metric another phase declares).
-    let mut known: Vec<String> =
-        ACTIVITY_FAMILIES.iter().map(|s| s.to_string()).collect();
+    let mut known: Vec<String> = ACTIVITY_FAMILIES.iter().map(|s| s.to_string()).collect();
     for (_, phase) in phases.clone() {
         known.extend(phase.metrics.keys().cloned());
     }
@@ -93,15 +92,27 @@ pub fn lint_workload<'a>(
         }
         for sc in &phase.stop_when {
             lint_metric_families(
-                &sc.when, &known, &format!("{ctx} `stop_when`"), &mut warnings);
+                &sc.when,
+                &known,
+                &format!("{ctx} `stop_when`"),
+                &mut warnings,
+            );
         }
         if let Some(gate) = &phase.continue_if {
             lint_metric_families(
-                &gate.when, &known, &format!("{ctx} `continue_if`"), &mut warnings);
+                &gate.when,
+                &known,
+                &format!("{ctx} `continue_if`"),
+                &mut warnings,
+            );
         }
         if let Some(poll) = &phase.poll {
             lint_metric_families(
-                &poll.until, &known, &format!("{ctx} `poll.until`"), &mut warnings);
+                &poll.until,
+                &known,
+                &format!("{ctx} `poll.until`"),
+                &mut warnings,
+            );
         }
     }
 
@@ -111,11 +122,7 @@ pub fn lint_workload<'a>(
 /// Check one `errors:` router spec: it must parse (hard error), and it
 /// should carry a catch-all rule (warning). Interpolated specs are
 /// deferred to runtime resolution.
-fn lint_error_router(
-    spec: &str,
-    ctx: &str,
-    warnings: &mut Vec<String>,
-) -> Result<(), String> {
+fn lint_error_router(spec: &str, ctx: &str, warnings: &mut Vec<String>) -> Result<(), String> {
     if spec.contains('{') {
         return Ok(()); // `{param}`-bearing; resolved and parsed later
     }
@@ -134,12 +141,7 @@ fn lint_error_router(
 /// Scan one polydat predicate source for `metric(…)` /
 /// `metric_window(…)` calls with a literal selector, and warn on family
 /// tokens outside the known namespace.
-fn lint_metric_families(
-    src: &str,
-    known: &[String],
-    ctx: &str,
-    warnings: &mut Vec<String>,
-) {
+fn lint_metric_families(src: &str, known: &[String], ctx: &str, warnings: &mut Vec<String>) {
     for family in metric_families(src) {
         if family.contains('{') {
             continue; // interpolated — resolved later
@@ -179,21 +181,19 @@ fn metric_families(src: &str) -> Vec<String> {
             j += "_window".len();
         }
         let rest = src[j..].trim_start();
-        let Some(after_paren) = rest.strip_prefix('(') else { continue };
+        let Some(after_paren) = rest.strip_prefix('(') else {
+            continue;
+        };
         let sel = after_paren.trim_start();
-        let Some(quote) = sel.chars().next().filter(|c| *c == '\'' || *c == '"')
-        else {
+        let Some(quote) = sel.chars().next().filter(|c| *c == '\'' || *c == '"') else {
             continue; // non-literal selector
         };
         let body = &sel[1..];
-        let Some(end) = body.find(quote) else { continue };
+        let Some(end) = body.find(quote) else {
+            continue;
+        };
         let selector = &body[..end];
-        let family = selector
-            .split(',')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let family = selector.split(',').next().unwrap_or("").trim().to_string();
         if !family.is_empty() {
             out.push(family);
         }
@@ -225,11 +225,19 @@ mod tests {
         let known: Vec<String> = ACTIVITY_FAMILIES.iter().map(|s| s.to_string()).collect();
         let mut w = Vec::new();
         lint_metric_families(
-            "metric('cycles_totl, phase=x', 'count') > 0", &known, "t", &mut w);
+            "metric('cycles_totl, phase=x', 'count') > 0",
+            &known,
+            "t",
+            &mut w,
+        );
         assert_eq!(w.len(), 1, "typo'd family must warn: {w:?}");
         w.clear();
         lint_metric_families(
-            "metric('cycles_total, phase=x', 'count') > 0", &known, "t", &mut w);
+            "metric('cycles_total, phase=x', 'count') > 0",
+            &known,
+            "t",
+            &mut w,
+        );
         assert!(w.is_empty(), "known family must not warn: {w:?}");
     }
 

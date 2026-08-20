@@ -78,7 +78,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use polydat::kernel::{PolydatKernel, ManifestEntry};
+use polydat::kernel::{ManifestEntry, PolydatKernel};
 
 use super::helpers::{
     format_value_as_final_literal, port_type_to_extern_name, workload_param_type_name,
@@ -311,12 +311,15 @@ pub fn cascade_parent_into_source(inputs: CascadeInputs<'_>, outputs: CascadeOut
         // the ancestral cell — descendants then read the frozen
         // initializer forever and a writer's update is never
         // visible to them.
-        let Some(output_idx) = parent_program.output_index(&owned) else { continue };
+        let Some(output_idx) = parent_program.output_index(&owned) else {
+            continue;
+        };
         let (node_idx, port_idx) = parent_program.resolve_output_by_index(output_idx);
-        let is_shared = parent_program.output_modifier(&owned)
-            == polydat::dsl::ast::BindingModifier::SHARED;
+        let is_shared =
+            parent_program.output_modifier(&owned) == polydat::dsl::ast::BindingModifier::SHARED;
         let upstream_is_statically_known = !is_shared
-            && parent_program.input_provenance_for(node_idx)
+            && parent_program
+                .input_provenance_for(node_idx)
                 .is_none_or(|p| p.is_zero());
         if upstream_is_statically_known
             && let Some(value) = parent_kernel.lookup(&owned)

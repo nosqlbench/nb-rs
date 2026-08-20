@@ -20,10 +20,10 @@
 //! `tui=on|off` overrides auto-detection.
 
 // Link adapter crates for inventory registration.
-extern crate nbrs_adapter_stdout;
 extern crate nbrs_adapter_http;
-extern crate nbrs_adapter_testkit;
 extern crate nbrs_adapter_plotter;
+extern crate nbrs_adapter_stdout;
+extern crate nbrs_adapter_testkit;
 // CQL adapter — `default-features = false` in Cargo.toml; nbrs's
 // own engine-* features forward into it. The always-on `common`
 // module registers `adapter=cql`; the engine modules contribute
@@ -46,8 +46,8 @@ extern crate nbrs_metricsql;
 use std::sync::Arc;
 
 use nbrs_metrics::cadence::Cadences;
-use nbrs_tui::observer::{print_post_run_summary, unreached_phase_exit_code, TuiObserver};
-use nbrs_tui::run_state_actor::{spawn_run_state_actor, RunStateCmd};
+use nbrs_tui::observer::{TuiObserver, print_post_run_summary, unreached_phase_exit_code};
+use nbrs_tui::run_state_actor::{RunStateCmd, spawn_run_state_actor};
 use nbrs_tui::state::RunState;
 
 /// Resolve a log-level floor (SRD-41) from the effective params (workload
@@ -73,7 +73,8 @@ fn resolve_log_level(
 pub async fn run_command(args: &[String]) {
     // Parse only `key=value` and workload-file args for mode
     // detection. Skip the `run` subcommand token itself.
-    let param_args: Vec<String> = args.iter()
+    let param_args: Vec<String> = args
+        .iter()
         .filter(|a| a.contains('=') || a.ends_with(".yaml") || a.ends_with(".yml"))
         .cloned()
         .collect();
@@ -101,7 +102,8 @@ pub async fn run_command(args: &[String]) {
     // `dryrun=labels` and `dryrun=wiring` are *output filter*
     // sub-flags that ride on whichever execution depth was selected;
     // they don't drive this decision themselves.
-    let dryrun_runs_cycles = params.get("dryrun")
+    let dryrun_runs_cycles = params
+        .get("dryrun")
         .map(|s| {
             let cfg = nbrs_runtime::runner::DiagnosticConfig::parse(s);
             cfg.depth >= nbrs_runtime::runner::ExecDepth::Cycle
@@ -113,8 +115,9 @@ pub async fn run_command(args: &[String]) {
     // override TUI detection — checked at startup before any
     // adapter is constructed.
     let has_workload = params.contains_key("workload")
-        || param_args.iter().any(|a|
-            (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='));
+        || param_args
+            .iter()
+            .any(|a| (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='));
     // SRD-41/87 console-ownership: a console-owning adapter (plotter,
     // stdout-to-terminal) may be declared in the WORKLOAD's `params:` block,
     // not just on the CLI. The run's EFFECTIVE params — the workload's
@@ -124,11 +127,18 @@ pub async fn run_command(args: &[String]) {
     // adapter and its shaping keys (e.g. stdout's `filename`) up front.
     let effective_params = nbrs_runtime::runner::effective_params(&param_args);
     // CLI adapter wins; else the workload's declared adapter.
-    let resolved_adapter: Option<String> = params.get("adapter")
+    let resolved_adapter: Option<String> = params
+        .get("adapter")
         .or(params.get("driver"))
-        .or_else(|| effective_params.get("adapter").or(effective_params.get("driver")))
+        .or_else(|| {
+            effective_params
+                .get("adapter")
+                .or(effective_params.get("driver"))
+        })
         .cloned();
-    let adapter_name = resolved_adapter.clone().unwrap_or_else(|| "stdout".to_string());
+    let adapter_name = resolved_adapter
+        .clone()
+        .unwrap_or_else(|| "stdout".to_string());
     // Console-ownership (the adapter writes its own output to the terminal, so
     // the dashboard must yield) is a property of a console-owning adapter
     // (stdout-to-terminal, plotter) declared on the CLI *or* in the workload,
@@ -160,9 +170,10 @@ pub async fn run_command(args: &[String]) {
     // live display so it composites without the raw-mode staircase. Replaces
     // the prior `console_reserved_for_adapter` global flag that `op_output`
     // consulted inline — the selected impl now *is* the routing decision.
-    nbrs_runtime::output_channel::install(
-        nbrs_runtime::output_channel::select(silent_console, is_tty),
-    );
+    nbrs_runtime::output_channel::install(nbrs_runtime::output_channel::select(
+        silent_console,
+        is_tty,
+    ));
 
     // Three-mode lattice. Default is `terminal` for interactive
     // sessions: line-mode rendering driven by the snapshot stream
@@ -236,13 +247,29 @@ pub async fn run_command(args: &[String]) {
     // leave the terminal untouched.
     let (run_state, run_state_join) = spawn_run_state_actor(RunState::new(
         params.get("workload").map(|s| s.as_str()).unwrap_or("?"),
-        params.get("scenario").map(|s| s.as_str()).unwrap_or("default"),
-        params.get("adapter").or(params.get("driver"))
-            .map(|s| s.as_str()).unwrap_or(&adapter_name),
+        params
+            .get("scenario")
+            .map(|s| s.as_str())
+            .unwrap_or("default"),
+        params
+            .get("adapter")
+            .or(params.get("driver"))
+            .map(|s| s.as_str())
+            .unwrap_or(&adapter_name),
     ));
     run_state.send(RunStateCmd::SetMeta {
-        profiler: Some(params.get("profiler").cloned().unwrap_or_else(|| "off".into())),
-        limit:    Some(params.get("limit").cloned().unwrap_or_else(|| "none".into())),
+        profiler: Some(
+            params
+                .get("profiler")
+                .cloned()
+                .unwrap_or_else(|| "off".into()),
+        ),
+        limit: Some(
+            params
+                .get("limit")
+                .cloned()
+                .unwrap_or_else(|| "none".into()),
+        ),
     });
 
     // Capture the current tokio runtime handle so the inspector
@@ -259,15 +286,18 @@ pub async fn run_command(args: &[String]) {
     // reads it. Most runs are never attached to, so it's OFF by default
     // — a per-run socket plus an announcement line is just noise. Opt in
     // with `inspector=on` when you intend to attach to a long workload.
-    let inspector_enabled = params.get("inspector")
+    let inspector_enabled = params
+        .get("inspector")
         .map(|v| matches!(v.as_str(), "on" | "true" | "1"))
         .unwrap_or(false);
     let _inspector_join = if inspector_enabled {
         match nbrs_tui::inspector_server::spawn(run_state.clone(), runtime_handle.clone()) {
             Ok((_path, join)) => Some(join),
             Err(e) => {
-                nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
-                    "inspector endpoint disabled: {e}");
+                nbrs_runtime::diag!(
+                    nbrs_runtime::observer::LogLevel::Warn,
+                    "inspector endpoint disabled: {e}"
+                );
                 None
             }
         }
@@ -302,8 +332,12 @@ pub async fn run_command(args: &[String]) {
         // just wants the post-run plan view. Default loglevel up to
         // Warn so the construction Info chatter falls below the
         // stderr threshold; explicit `loglevel=info` still wins.
-        let dryrun_phase_default = cli_params.get("dryrun")
-            .map(|s| s.split(',').any(|f| f.trim() == "phase" || f.trim() == "controls"))
+        let dryrun_phase_default = cli_params
+            .get("dryrun")
+            .map(|s| {
+                s.split(',')
+                    .any(|f| f.trim() == "phase" || f.trim() == "controls")
+            })
             .unwrap_or(false);
         // A console-owning adapter (stdout to the terminal, plotter)
         // forced tui=off because it writes its own output there. Raise
@@ -351,20 +385,23 @@ pub async fn run_command(args: &[String]) {
         // Same cadence parsing the `tui=on` path uses, so the
         // metrics scheduler plans the same windows whether the
         // observer eventually drives a LogOnlySink or a TuiSink.
-        let cadences = cli_params.get("latency-cadences")
+        let cadences = cli_params
+            .get("latency-cadences")
             .or_else(|| cli_params.get("latency_cadences"))
             .and_then(|s| match nbrs_metrics::cadence::Cadences::parse(s) {
                 Ok(c) => Some(c),
                 Err(e) => {
-                    nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
-                        "latency-cadences='{s}': {e} — using defaults");
+                    nbrs_runtime::diag!(
+                        nbrs_runtime::observer::LogLevel::Warn,
+                        "latency-cadences='{s}': {e} — using defaults"
+                    );
                     None
                 }
             })
             .unwrap_or_else(nbrs_metrics::cadence::Cadences::defaults);
-        let observer_concrete = nbrs_tui::log_only_observer::LogOnlyObserver::new(
-            run_state.clone(), cadences,
-        ).with_min_level(stderr_min_level);
+        let observer_concrete =
+            nbrs_tui::log_only_observer::LogOnlyObserver::new(run_state.clone(), cadences)
+                .with_min_level(stderr_min_level);
         let observer_concrete = if silent_console {
             observer_concrete.reserve_console_for_adapter()
         } else {
@@ -434,7 +471,9 @@ pub async fn run_command(args: &[String]) {
         // dryruns keep the synchronous path: they run no workload
         // (nothing to throttle) and their console diagnostics matter.
         let off_claimed = if tui_mode == "off" && !dryrun_is_early_exit {
-            observer_arc.sink_active_flag().store(true, std::sync::atomic::Ordering::Release);
+            observer_arc
+                .sink_active_flag()
+                .store(true, std::sync::atomic::Ordering::Release);
             true
         } else {
             false
@@ -444,7 +483,9 @@ pub async fn run_command(args: &[String]) {
 
         if off_claimed {
             // Post-run: release so shutdown stragglers print normally.
-            observer_arc.sink_active_flag().store(false, std::sync::atomic::Ordering::Release);
+            observer_arc
+                .sink_active_flag()
+                .store(false, std::sync::atomic::Ordering::Release);
         }
 
         if let Some(s) = supervisor {
@@ -508,13 +549,16 @@ pub async fn run_command(args: &[String]) {
 
     // Parse user-declared latency cadences. Defaults if
     // omitted; bad values fall back to defaults with a warning.
-    let cadences = params.get("latency-cadences")
+    let cadences = params
+        .get("latency-cadences")
         .or_else(|| params.get("latency_cadences"))
         .and_then(|s| match Cadences::parse(s) {
             Ok(c) => Some(c),
             Err(e) => {
-                nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
-                    "latency-cadences='{s}': {e} — using defaults");
+                nbrs_runtime::diag!(
+                    nbrs_runtime::observer::LogLevel::Warn,
+                    "latency-cadences='{s}': {e} — using defaults"
+                );
                 None
             }
         })
@@ -543,10 +587,8 @@ pub async fn run_command(args: &[String]) {
     .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
     nbrs_runtime::observer::set_retain_level(retain_min_level);
     nbrs_runtime::observer::set_display_level(stderr_min_level);
-    let observer = Arc::new(
-        TuiObserver::new(run_state.clone(), cadences)
-            .with_min_level(stderr_min_level),
-    );
+    let observer =
+        Arc::new(TuiObserver::new(run_state.clone(), cadences).with_min_level(stderr_min_level));
 
     // Run with the TUI observer. The TUI thread is spawned
     // lazily on the first phase_starting event.
@@ -648,8 +690,10 @@ fn print_post_run_reports(
                 Ok(_) => {}
                 Err(failures) => {
                     for f in failures {
-                        nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Error,
-                            "post-run report: {f}");
+                        nbrs_runtime::diag!(
+                            nbrs_runtime::observer::LogLevel::Error,
+                            "post-run report: {f}"
+                        );
                     }
                 }
             }
@@ -674,17 +718,19 @@ fn print_post_run_reports(
             .collect();
         summary_paths.sort();
         for path in &summary_paths {
-            let ext = path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext == "md" {
                 if let Ok(rendered) = std::fs::read_to_string(path)
-                    && !rendered.is_empty() {
-                        print!("{rendered}");
-                    }
+                    && !rendered.is_empty()
+                {
+                    print!("{rendered}");
+                }
             } else {
-                nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Info,
-                    "summary ({ext}): {}", path.display());
+                nbrs_runtime::diag!(
+                    nbrs_runtime::observer::LogLevel::Info,
+                    "summary ({ext}): {}",
+                    path.display()
+                );
             }
         }
     }
@@ -708,7 +754,9 @@ fn print_post_run_reports(
 /// `adapter`).
 fn auto_inject_details(session_dir: &std::path::Path) {
     let db_path = session_dir.join("metrics.db");
-    if !db_path.exists() { return; }
+    if !db_path.exists() {
+        return;
+    }
     let conn = match rusqlite::Connection::open(&db_path) {
         Ok(c) => c,
         Err(_) => return,
@@ -729,10 +777,8 @@ fn auto_inject_details(session_dir: &std::path::Path) {
     let adapter = read_meta("adapter").unwrap_or_else(|| "?".into());
     let phase_count = read_meta("phase_count").unwrap_or_else(|| "?".into());
     let scenario_count = read_meta("scenario_count").unwrap_or_else(|| "?".into());
-    let start_time = read_meta("start_time")
-        .and_then(|s| s.parse::<u64>().ok());
-    let end_time = read_meta("end_time")
-        .and_then(|s| s.parse::<u64>().ok());
+    let start_time = read_meta("start_time").and_then(|s| s.parse::<u64>().ok());
+    let end_time = read_meta("end_time").and_then(|s| s.parse::<u64>().ok());
     let duration = match (start_time, end_time) {
         (Some(s), Some(e)) if e >= s => format_duration(e - s),
         _ => "?".to_string(),
@@ -760,8 +806,7 @@ fn auto_inject_details(session_dir: &std::path::Path) {
 
     // Collect every distinct target file referenced by any
     // persisted report item, plus the default summary.md.
-    let mut files: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
+    let mut files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     files.insert("summary.md".into());
     for (_k, value) in
         nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "report.%")
@@ -775,12 +820,14 @@ fn auto_inject_details(session_dir: &std::path::Path) {
 
     for f in &files {
         let path = session_dir.join(f);
-        if let Err(e) = crate::report::write_named_section_first(
-            &path, "run_details", "Run Details", &body,
-        ) {
-            nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
+        if let Err(e) =
+            crate::report::write_named_section_first(&path, "run_details", "Run Details", &body)
+        {
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "details auto-inject failed on '{}': {e}",
-                path.display());
+                path.display()
+            );
         }
     }
 }
@@ -790,9 +837,13 @@ fn format_duration(seconds: u64) -> String {
     let h = seconds / 3600;
     let m = (seconds % 3600) / 60;
     let s = seconds % 60;
-    if h > 0 { format!("{h}h {m}m {s}s") }
-    else if m > 0 { format!("{m}m {s}s") }
-    else { format!("{s}s") }
+    if h > 0 {
+        format!("{h}h {m}m {s}s")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
 }
 
 /// UNIX seconds → ISO-ish `YYYY-MM-DD HH:MM:SS UTC`.
@@ -826,8 +877,7 @@ fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
 // ── cli_spec entry ─────────────────────────────────────────
 
 use crate::cli_spec::{
-    Arity, Category, Command, Flag, Handler, Level,
-    ParsedCommand, ValueProvider,
+    Arity, Category, Command, Flag, Handler, Level, ParsedCommand, ValueProvider,
 };
 
 /// `nbrs run` — workload execution. The argument grammar
@@ -855,9 +905,9 @@ pub fn spec() -> Command {
     }
 }
 
-fn run_handler(p: ParsedCommand)
-    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>
-{
+fn run_handler(
+    p: ParsedCommand,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>> {
     Box::pin(async move {
         // Re-prepend the matched command path's last segment
         // ("run") because the legacy parser expects argv[0] ==
@@ -877,51 +927,73 @@ fn run_handler(p: ParsedCommand)
 pub fn standard_run_flags() -> Vec<Flag> {
     vec![
         Flag {
-            long: "--strict", short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
+            long: "--strict",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
             help: "Strict workload-param validation.",
             repeatable: false,
         },
         Flag {
-            long: "--no-prompt", short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
+            long: "--no-prompt",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
             help: "Don't prompt; assume non-interactive.",
             repeatable: false,
         },
         Flag {
-            long: "--resume-latest", short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
+            long: "--resume-latest",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
             help: "Resume the most recent compatible session.",
             repeatable: false,
         },
         Flag {
-            long: "--force-retry-failed", short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
+            long: "--force-retry-failed",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
             help: "Retry a previously failed phase on resume.",
             repeatable: false,
         },
         Flag {
-            long: "--session", short: None, aliases: &[],
+            long: "--session",
+            short: None,
+            aliases: &[],
             arity: Arity::Value,
             value: ValueProvider::Custom(crate::completion::session_name_provider),
             help: "SRD-04 session umbrella (path or name).",
             repeatable: false,
         },
         Flag {
-            long: "--session-name", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::None,
+            long: "--session-name",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
             help: "Override session name.",
             repeatable: false,
         },
         Flag {
-            long: "--session-path", short: None, aliases: &["--session-dir"],
-            arity: Arity::Value, value: ValueProvider::Path,
+            long: "--session-path",
+            short: None,
+            aliases: &["--session-dir"],
+            arity: Arity::Value,
+            value: ValueProvider::Path,
             help: "Override session directory. Env: NBRS_SESSION_PATH \
                    (legacy SESSION_DIRECTORY still honoured).",
             repeatable: false,
         },
         Flag {
-            long: "--session-reuse", short: None, aliases: &[],
+            long: "--session-reuse",
+            short: None,
+            aliases: &[],
             arity: Arity::Value,
             value: ValueProvider::Custom(crate::completion::session_reuse_values),
             help: "Reuse policy for the chosen session.",
@@ -931,34 +1003,49 @@ pub fn standard_run_flags() -> Vec<Flag> {
         // those, so declaring them is what stops a documented invocation from being
         // parsed as an unknown flag and ignored.
         Flag {
-            long: "--session-keep", short: None, aliases: &["--sessions-max"],
-            arity: Arity::Value, value: ValueProvider::None,
+            long: "--session-keep",
+            short: None,
+            aliases: &["--sessions-max"],
+            arity: Arity::Value,
+            value: ValueProvider::None,
             help: "How many sessions to keep (0 disables count-based purge). \
                    Env: NBRS_SESSION_KEEP.",
             repeatable: false,
         },
         Flag {
-            long: "--session-shelflife", short: None, aliases: &["--sessions-shelflife"],
-            arity: Arity::Value, value: ValueProvider::None,
+            long: "--session-shelflife",
+            short: None,
+            aliases: &["--sessions-shelflife"],
+            arity: Arity::Value,
+            value: ValueProvider::None,
             help: "Age past which sessions are purged, e.g. 2w (0 disables). \
                    Env: NBRS_SESSION_SHELFLIFE.",
             repeatable: false,
         },
         Flag {
-            long: "--resume", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::Path,
+            long: "--resume",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Path,
             help: "Resume from a specific session.",
             repeatable: false,
         },
         Flag {
-            long: "--polydat-lib", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::Path,
+            long: "--polydat-lib",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Path,
             help: "GK library path override.",
             repeatable: false,
         },
         Flag {
-            long: "--readout", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::None,
+            long: "--readout",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
             help: "Readout-binding override.",
             repeatable: true,
         },
@@ -968,34 +1055,47 @@ pub fn standard_run_flags() -> Vec<Flag> {
         // path is instead taken as the scenario positional and the log lands at
         // its default location. Bool advertises only what works.
         Flag {
-            long: "--metrics-log", short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
+            long: "--metrics-log",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
             help: "Also write metrics to one JSONL file for outside observers \
                    (`=<path>`; bare ⇒ <session>/metrics.jsonl). The session db \
                    is written regardless.",
             repeatable: false,
         },
         Flag {
-            long: "--per-instance-metrics", short: None, aliases: &[],
-            arity: Arity::Bool, value: ValueProvider::None,
+            long: "--per-instance-metrics",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
             help: "Also write one file per (metric, label-tuple).",
             repeatable: false,
         },
         Flag {
-            long: "--report-openmetrics-to", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::None,
+            long: "--report-openmetrics-to",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
             help: "Push metrics to an OpenMetrics/Prometheus endpoint URL.",
             repeatable: false,
         },
         Flag {
-            long: "--kernel-opt", short: None, aliases: &[],
+            long: "--kernel-opt",
+            short: None,
+            aliases: &[],
             arity: Arity::Value,
             value: ValueProvider::Custom(crate::completion::static_kernel_opt),
             help: "Polydat kernel optimisation level (release|diagnostic).",
             repeatable: false,
         },
         Flag {
-            long: "--jit", short: None, aliases: &[],
+            long: "--jit",
+            short: None,
+            aliases: &[],
             arity: Arity::Value,
             value: ValueProvider::Custom(crate::completion::static_jit),
             help: "SRD-105 session engine mix (off|auto|force).",
@@ -1020,7 +1120,8 @@ mod flag_declaration_tests {
     /// Long flags read by the scanned files that legitimately belong to a
     /// command other than `run`, or to no command at all. Each needs a reason.
     fn exempt(flag: &str) -> bool {
-        matches!(flag,
+        matches!(
+            flag,
             // Declared on the report/plot commands' own completion nodes.
             "--db" | "--body" | "--body-file" | "--csv-also" | "--report"
             // Internal: rewritten into argv by `plot`/`replay`, never typed.
@@ -1047,37 +1148,49 @@ mod flag_declaration_tests {
 
         for rel in SCANNED {
             let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), rel);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("scan {path}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("scan {path}: {e}"));
 
             for (n, line) in src.lines().enumerate() {
                 let code = line.trim_start();
                 // Skip doc/line comments: a flag NAMED in prose is not a read.
-                if code.starts_with("//") { continue; }
+                if code.starts_with("//") {
+                    continue;
+                }
                 // Only lines that actually test argv against a literal.
                 let is_read = code.contains("resolve_flag(")
                     || code.contains("strip_prefix(\"--")
                     || code.contains("== \"--")
                     || code.contains("starts_with(\"--");
-                if !is_read { continue; }
+                if !is_read {
+                    continue;
+                }
 
                 for tok in code.split("\"--").skip(1) {
                     let name: String = tok
                         .chars()
                         .take_while(|c| c.is_ascii_lowercase() || *c == '-')
                         .collect();
-                    if name.is_empty() { continue; }
+                    if name.is_empty() {
+                        continue;
+                    }
                     let flag = format!("--{name}");
-                    if exempt(&flag) || declared.contains(&flag.as_str()) { continue; }
-                    undeclared.push((flag, format!("{}:{}", rel.trim_start_matches("/../"), n + 1)));
+                    if exempt(&flag) || declared.contains(&flag.as_str()) {
+                        continue;
+                    }
+                    undeclared.push((
+                        flag,
+                        format!("{}:{}", rel.trim_start_matches("/../"), n + 1),
+                    ));
                 }
             }
         }
 
-        assert!(undeclared.is_empty(),
+        assert!(
+            undeclared.is_empty(),
             "flags read from argv but not declared in a command spec — they \
              will not appear in --help or completion. Declare them in \
-             standard_run_flags(), or add an `exempt()` reason: {undeclared:?}");
+             standard_run_flags(), or add an `exempt()` reason: {undeclared:?}"
+        );
     }
 
     /// Aliases must be DECLARED, not just parsed: the walker validates against
@@ -1087,9 +1200,11 @@ mod flag_declaration_tests {
     fn documented_aliases_are_declared_in_the_spec() {
         let declared = declared();
         for alias in ["--sessions-max", "--sessions-shelflife", "--session-dir"] {
-            assert!(declared.contains(&alias),
+            assert!(
+                declared.contains(&alias),
                 "{alias} is accepted by the parser and named in the user guide, \
-                 so it must appear in the spec");
+                 so it must appear in the spec"
+            );
         }
     }
 

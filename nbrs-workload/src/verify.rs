@@ -56,8 +56,15 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_TIMEOUT_SECS: u64 = 90;
 
 /// Keywords recognized inside a `verify:` directive map (vs. case names).
-const DIRECTIVE_KEYS: &[&str] =
-    &["run", "expect", "expect-fail", "expect_fail", "requires", "timeout", "case"];
+const DIRECTIVE_KEYS: &[&str] = &[
+    "run",
+    "expect",
+    "expect-fail",
+    "expect_fail",
+    "requires",
+    "timeout",
+    "case",
+];
 
 /// One verification case: an invocation plus the regexes its output must match.
 pub struct VerifyCase {
@@ -131,7 +138,9 @@ fn parse_directives(src: &str) -> Result<VerifyPlan, String> {
 
     for raw in src.lines() {
         let line = raw.trim_start();
-        let Some(rest) = line.strip_prefix("#@") else { continue };
+        let Some(rest) = line.strip_prefix("#@") else {
+            continue;
+        };
         let rest = rest.trim();
         let (kw, val) = match rest.split_once(char::is_whitespace) {
             Some((k, v)) => (k.trim_end_matches(':'), v.trim()),
@@ -151,12 +160,12 @@ fn parse_directives(src: &str) -> Result<VerifyPlan, String> {
                 cur = Some(VerifyCase::new(val));
             }
             "run" => case!().run_args = val.split_whitespace().map(String::from).collect(),
-            "again" => case!().again.push(
-                val.split_whitespace().map(String::from).collect()),
+            "again" => case!()
+                .again
+                .push(val.split_whitespace().map(String::from).collect()),
             "session" => match val {
                 "cwd" => case!().session_cwd = true,
-                other => return Err(format!(
-                    "unknown `#@ session {other}` (only `cwd`)")),
+                other => return Err(format!("unknown `#@ session {other}` (only `cwd`)")),
             },
             "expect" => case!().expects.push(compile(val)?),
             "expect-fail" | "expect_fail" => case!().expect_fails.push(compile(val)?),
@@ -190,9 +199,9 @@ fn merge_verify_block(src: &str, plan: &mut VerifyPlan) -> Result<(), String> {
             }
         }
         serde_yaml::Value::Mapping(m) => {
-            let all_directives = m.keys().all(|k| {
-                k.as_str().is_some_and(|s| DIRECTIVE_KEYS.contains(&s))
-            });
+            let all_directives = m
+                .keys()
+                .all(|k| k.as_str().is_some_and(|s| DIRECTIVE_KEYS.contains(&s)));
             if all_directives {
                 // A single directive map — either a file-level `requires` skip
                 // or one unnamed case.
@@ -270,7 +279,13 @@ pub enum Outcome {
 /// `workload_ref` is whatever goes after `workload=` — an absolute file path
 /// or a bundled catalog name; the subprocess resolves it exactly as a normal
 /// `nbrs run` would.
-pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, case: &VerifyCase) -> Result<(), String> {
+pub fn run_case(
+    binary: &Path,
+    workload_ref: &str,
+    sandbox: &Path,
+    label: &str,
+    case: &VerifyCase,
+) -> Result<(), String> {
     let safe_label = label.replace(['/', ' ', ':'], "_");
     let session = sandbox.join(format!("session-{safe_label}"));
     // Case independence for cwd-session cases: each gets a
@@ -283,8 +298,7 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
     let workdir: &Path = if case.session_cwd {
         case_cwd = sandbox.join(format!("cwd-{safe_label}"));
         let _ = std::fs::remove_dir_all(&case_cwd);
-        std::fs::create_dir_all(&case_cwd)
-            .map_err(|e| format!("create case cwd: {e}"))?;
+        std::fs::create_dir_all(&case_cwd).map_err(|e| format!("create case cwd: {e}"))?;
         &case_cwd
     } else {
         let _ = std::fs::remove_dir_all(&session);
@@ -326,17 +340,14 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
             let _ = err_pipe.read_to_end(&mut buf);
             buf
         });
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(case.timeout);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(case.timeout);
         let (status, timed_out) = loop {
-            if let Some(st) = child.try_wait()
-                .map_err(|e| format!("wait failed: {e}"))? {
+            if let Some(st) = child.try_wait().map_err(|e| format!("wait failed: {e}"))? {
                 break (st, false);
             }
             if std::time::Instant::now() >= deadline {
                 let _ = child.kill();
-                let st = child.wait()
-                    .map_err(|e| format!("wait failed: {e}"))?;
+                let st = child.wait().map_err(|e| format!("wait failed: {e}"))?;
                 break (st, true);
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
@@ -357,7 +368,9 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
             return Err(format!(
                 "invocation {} of {} failed before the `again` steps                  completed:
 {combined}",
-                i + 1, case.again.len() + 1));
+                i + 1,
+                case.again.len() + 1
+            ));
         }
         let (c, s, to) = invoke(extra)?;
         combined.push_str(&c);
@@ -397,7 +410,9 @@ pub fn check_case_output(
         }
         for re in &case.expect_fails {
             if !re.is_match(combined) {
-                return Err(format!("expect-fail /{re}/ did not match the failure output"));
+                return Err(format!(
+                    "expect-fail /{re}/ did not match the failure output"
+                ));
             }
         }
     }
@@ -484,12 +499,24 @@ pub fn verify_source(
 /// Verify one workload file: read it, then run it by its absolute path. The
 /// file is read relative to *this* process's cwd, but the run reference is made
 /// absolute because each case is launched from a sandbox cwd.
-pub fn verify_file(binary: &Path, label_root: &str, workload: &Path, sandbox: &Path) -> Vec<(String, Outcome)> {
+pub fn verify_file(
+    binary: &Path,
+    label_root: &str,
+    workload: &Path,
+    sandbox: &Path,
+) -> Vec<(String, Outcome)> {
     let src = match std::fs::read_to_string(workload) {
         Ok(s) => s,
-        Err(e) => return vec![(label_root.to_string(), Outcome::Fail(format!("read error: {e}")))],
+        Err(e) => {
+            return vec![(
+                label_root.to_string(),
+                Outcome::Fail(format!("read error: {e}")),
+            )];
+        }
     };
-    let abs = workload.canonicalize().unwrap_or_else(|_| workload.to_path_buf());
+    let abs = workload
+        .canonicalize()
+        .unwrap_or_else(|_| workload.to_path_buf());
     verify_source(binary, label_root, &abs.to_string_lossy(), &src, sandbox)
 }
 
@@ -599,7 +626,11 @@ pub enum CheckProgress {
     /// A workload began running.
     Started { label: String },
     /// A workload finished, with its wall-clock and aggregate status.
-    Finished { label: String, elapsed: Duration, status: CheckStatus },
+    Finished {
+        label: String,
+        elapsed: Duration,
+        status: CheckStatus,
+    },
 }
 
 /// A progress handler. `&`-shared across verification worker threads.
@@ -664,28 +695,44 @@ pub fn verify_path(
     );
     std::thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(|| loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(f) = files.get(i) else { break };
-                let label = f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
-                // Run the file (a sequence of cases) outside the lock, then
-                // fold its outcomes under a single lock acquisition.
-                progress(CheckProgress::Started { label: label.clone() });
-                let start = Instant::now();
-                let outcomes = verify_file(binary, &label, f, sandbox);
-                let elapsed = start.elapsed();
-                let status = aggregate_status(&outcomes);
-                let mut g = acc.lock().unwrap();
-                for (lbl, outcome) in outcomes {
-                    match outcome {
-                        Outcome::Pass => g.passed += 1,
-                        Outcome::Skip(r) => g.skipped.push(format!("{lbl}: {r}")),
-                        Outcome::Fail(m) => g.failures.push(m),
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(f) = files.get(i) else { break };
+                    let label = f
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    // Run the file (a sequence of cases) outside the lock, then
+                    // fold its outcomes under a single lock acquisition.
+                    progress(CheckProgress::Started {
+                        label: label.clone(),
+                    });
+                    let start = Instant::now();
+                    let outcomes = verify_file(binary, &label, f, sandbox);
+                    let elapsed = start.elapsed();
+                    let status = aggregate_status(&outcomes);
+                    let mut g = acc.lock().unwrap();
+                    for (lbl, outcome) in outcomes {
+                        match outcome {
+                            Outcome::Pass => g.passed += 1,
+                            Outcome::Skip(r) => g.skipped.push(format!("{lbl}: {r}")),
+                            Outcome::Fail(m) => g.failures.push(m),
+                        }
                     }
+                    g.timings.push(WorkloadTiming {
+                        label: label.clone(),
+                        elapsed,
+                        status,
+                    });
+                    drop(g);
+                    progress(CheckProgress::Finished {
+                        label,
+                        elapsed,
+                        status,
+                    });
                 }
-                g.timings.push(WorkloadTiming { label: label.clone(), elapsed, status });
-                drop(g);
-                progress(CheckProgress::Finished { label, elapsed, status });
             });
         }
     });
@@ -722,7 +769,9 @@ pub fn verify_target(
             .to_string(),
         _ => target.to_string(),
     };
-    progress(CheckProgress::Started { label: label.clone() });
+    progress(CheckProgress::Started {
+        label: label.clone(),
+    });
     let start = Instant::now();
     let cases: Vec<(String, Outcome)> = match resolve_ref(target) {
         Some(WorkloadSource::File(path)) => verify_file(binary, &label, &path, sandbox),
@@ -748,8 +797,16 @@ pub fn verify_target(
             Outcome::Fail(m) => sum.failures.push(m),
         }
     }
-    sum.timings.push(WorkloadTiming { label: label.clone(), elapsed, status });
-    progress(CheckProgress::Finished { label, elapsed, status });
+    sum.timings.push(WorkloadTiming {
+        label: label.clone(),
+        elapsed,
+        status,
+    });
+    progress(CheckProgress::Finished {
+        label,
+        elapsed,
+        status,
+    });
     sum
 }
 
@@ -765,7 +822,9 @@ pub fn collect_workload_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -784,9 +843,13 @@ mod rules_required_tests {
     /// documentation regression, so the check must fail rather than skip.
     #[test]
     fn examples_require_rules() {
-        assert!(requires_verification_rules("/repo/examples/optimizer/control.yaml"));
+        assert!(requires_verification_rules(
+            "/repo/examples/optimizer/control.yaml"
+        ));
         assert!(requires_verification_rules("examples/w.yaml"));
-        assert!(requires_verification_rules("/repo/examples/modules/module_test.yaml"));
+        assert!(requires_verification_rules(
+            "/repo/examples/modules/module_test.yaml"
+        ));
     }
 
     /// Everywhere else rules are optional: adapter and operational workloads
@@ -794,7 +857,8 @@ mod rules_required_tests {
     #[test]
     fn other_locations_do_not_require_rules() {
         assert!(!requires_verification_rules(
-            "/repo/adapters/cql/workloads/compaction_demo_derived.yaml"));
+            "/repo/adapters/cql/workloads/compaction_demo_derived.yaml"
+        ));
         assert!(!requires_verification_rules("/tmp/scratch.yaml"));
         assert!(!requires_verification_rules("some_catalog_name"));
     }
@@ -803,9 +867,13 @@ mod rules_required_tests {
     /// merely starts with "examples" is not the examples tree.
     #[test]
     fn matches_path_components_not_substrings() {
-        assert!(!requires_verification_rules("/home/me/examples-scratch/w.yaml"));
+        assert!(!requires_verification_rules(
+            "/home/me/examples-scratch/w.yaml"
+        ));
         assert!(!requires_verification_rules("/home/me/myexamples/w.yaml"));
-        assert!(requires_verification_rules("/home/me/examples/scratch/w.yaml"));
+        assert!(requires_verification_rules(
+            "/home/me/examples/scratch/w.yaml"
+        ));
     }
 }
 
@@ -817,8 +885,10 @@ mod tests {
     fn comment_and_yaml_forms_are_equivalent() {
         let comment = "ops: { a: { raw: x } }\n#@ run cycles=3\n#@ expect 0 failed\n";
         let single = "ops: { a: { raw: x } }\nverify: { run: cycles=3, expect: \"0 failed\" }\n";
-        let listed = "ops: { a: { raw: x } }\nverify:\n  - { run: cycles=3, expect: \"0 failed\" }\n";
-        let named = "ops: { a: { raw: x } }\nverify:\n  smoke: { run: cycles=3, expect: \"0 failed\" }\n";
+        let listed =
+            "ops: { a: { raw: x } }\nverify:\n  - { run: cycles=3, expect: \"0 failed\" }\n";
+        let named =
+            "ops: { a: { raw: x } }\nverify:\n  smoke: { run: cycles=3, expect: \"0 failed\" }\n";
         for src in [comment, single, listed, named] {
             let p = VerifyPlan::parse(src).expect("parse");
             assert_eq!(p.cases.len(), 1, "one case for: {src}");
@@ -832,7 +902,10 @@ mod tests {
         let src = "verify:\n  alpha: { run: scenario=a, expect: \"x\" }\n  beta: { expect: [\"y\", \"z\"] }\n";
         let p = VerifyPlan::parse(src).unwrap();
         let names: Vec<&str> = p.cases.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"alpha") && names.contains(&"beta"), "names: {names:?}");
+        assert!(
+            names.contains(&"alpha") && names.contains(&"beta"),
+            "names: {names:?}"
+        );
         let beta = p.cases.iter().find(|c| c.name == "beta").unwrap();
         assert_eq!(beta.expects.len(), 2);
     }
@@ -849,7 +922,10 @@ mod tests {
         let src = "#@ case fromcomment\n#@   expect a\nverify:\n  fromblock: { expect: b }\n";
         let p = VerifyPlan::parse(src).unwrap();
         let names: Vec<&str> = p.cases.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"fromcomment") && names.contains(&"fromblock"), "{names:?}");
+        assert!(
+            names.contains(&"fromcomment") && names.contains(&"fromblock"),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -861,7 +937,10 @@ mod tests {
         std::fs::write(&file, "ops: { a: { raw: x } }\n").unwrap();
         match resolve_ref(file.to_str().unwrap()) {
             Some(WorkloadSource::File(p)) => assert!(p.is_absolute(), "absolute: {p:?}"),
-            other => panic!("expected File, got {}", matches!(other, Some(WorkloadSource::Catalog { .. })) as i32),
+            other => panic!(
+                "expected File, got {}",
+                matches!(other, Some(WorkloadSource::Catalog { .. })) as i32
+            ),
         }
         // A name that is neither a file nor (in this test process) a bundled
         // workload resolves to nothing — the CLI reports it as not found.

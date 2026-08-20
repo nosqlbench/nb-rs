@@ -52,12 +52,17 @@ impl ScyllaRawDispenser {
         stmt_template: String,
         modifiers: ModifierChain<Statement>,
     ) -> Self {
-        Self { session, consistency, stmt_template, modifiers, canonical_kernel }
+        Self {
+            session,
+            consistency,
+            stmt_template,
+            modifiers,
+            canonical_kernel,
+        }
     }
 }
 
 impl OpDispenser for ScyllaRawDispenser {
-
     fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
@@ -65,7 +70,9 @@ impl OpDispenser for ScyllaRawDispenser {
         &'a self,
         _cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         let wires = ctx.wires;
         Box::pin(async move {
             let text = nbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires)
@@ -78,12 +85,13 @@ impl OpDispenser for ScyllaRawDispenser {
             // the user didn't bind any per-op field.
             self.modifiers.apply(&mut stmt);
 
-            let result = self.session.query_unpaged(stmt, ()).await
-                .map_err(|e| op_error(
+            let result = self.session.query_unpaged(stmt, ()).await.map_err(|e| {
+                op_error(
                     "cql_error",
                     format_cql_error(&e.to_string(), &text),
                     crate::common::cql_error_is_retryable(&e.to_string()),
-                ))?;
+                )
+            })?;
 
             let body = ScyllaResultBody::from_query_result(result);
             let body_box: Option<Box<dyn ResultBody>> = if body.element_count() > 0 {

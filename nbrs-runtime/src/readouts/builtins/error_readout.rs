@@ -44,8 +44,12 @@ use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 pub struct ErrorReadout;
 
 impl Readout for ErrorReadout {
-    fn name(&self) -> &'static str { "error_readout" }
-    fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+    fn name(&self) -> &'static str {
+        "error_readout"
+    }
+    fn accepts(&self) -> &'static [SubjectKind] {
+        &[SubjectKind::Phase]
+    }
 
     fn render(
         &self,
@@ -73,17 +77,16 @@ impl Readout for ErrorReadout {
         // Recovered-error detail still lives in the persisted
         // `phase_errors` rows (`nbrs replay`).
         let failed_ops = ctx.errors().saturating_sub(ctx.retries());
-        let phase_failed = failed_ops > 0
-            || ctx.outcome().is_failure();
+        let phase_failed = failed_ops > 0 || ctx.outcome().is_failure();
         if !phase_failed {
             return 0;
         }
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact(ctx, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled(ctx, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded(ctx, out),
+            (Lod::Compact, ContentMode::Value) => render_compact(ctx, out),
+            (Lod::Labeled, ContentMode::Value) => render_labeled(ctx, out),
+            (Lod::Expanded, ContentMode::Value) => render_expanded(ctx, out),
             // Explanation handled above; kept for match exhaustiveness.
-            (_,             ContentMode::Explanation) => render_explanation(out),
+            (_, ContentMode::Explanation) => render_explanation(out),
         }
     }
 }
@@ -103,12 +106,15 @@ fn total_and_captured(ctx: &dyn ReadoutContext) -> (u64, u64) {
 
 fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let color = ctx.use_color();
-    let red   = if color { "\x1b[31m" } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let red = if color { "\x1b[31m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let (total, _) = total_and_captured(ctx);
     let mut tmp = String::with_capacity(32);
-    let _ = write!(&mut tmp, "{dim}({reset}{red}errors:{total}{reset}{dim}){reset}");
+    let _ = write!(
+        &mut tmp,
+        "{dim}({reset}{red}errors:{total}{reset}{dim}){reset}"
+    );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
     len
@@ -146,16 +152,17 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     // bound after `phase_outcome` in the `on_phase_end` slot.
     let errors = ctx.outcome_errors();
     let color = ctx.use_color();
-    let red   = if color { "\x1b[31m" } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let red = if color { "\x1b[31m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let indent = ctx.depth_indent();
     let first = errors.first().expect("checked non-empty by caller");
     let (total, captured) = total_and_captured(ctx);
     let continuation = format!("{indent}    ");
     let msg = indent_continuations(&first.message, &continuation);
     let mut tmp = String::with_capacity(96 + msg.len());
-    let _ = write!(&mut tmp,
+    let _ = write!(
+        &mut tmp,
         "{indent}  {red}errors:{reset} {red}[{class}]{reset} {msg}",
         class = first.class,
     );
@@ -173,8 +180,10 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
         } else {
             String::new()
         };
-        let _ = write!(&mut tmp,
-            "\n{indent}  {dim}(+{more} more{cap_note} — see Expanded LOD or `nbrs replay`){reset}");
+        let _ = write!(
+            &mut tmp,
+            "\n{indent}  {dim}(+{more} more{cap_note} — see Expanded LOD or `nbrs replay`){reset}"
+        );
     }
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -184,9 +193,9 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
 fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let errors = ctx.outcome_errors();
     let color = ctx.use_color();
-    let red   = if color { "\x1b[31m" } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let red = if color { "\x1b[31m" } else { "" };
+    let dim = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let indent = ctx.depth_indent();
     let msg_continuation = format!("{indent}    ");
     let detail_continuation = format!("{indent}      ");
@@ -201,38 +210,41 @@ fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize 
     } else {
         format!("{total}")
     };
-    let _ = write!(&mut tmp, "{indent}  {red}errors{reset} {dim}({header}){reset}:");
+    let _ = write!(
+        &mut tmp,
+        "{indent}  {red}errors{reset} {dim}({header}){reset}:"
+    );
     for e in errors {
         let msg = indent_continuations(&e.message, &msg_continuation);
-        let _ = write!(&mut tmp,
+        let _ = write!(
+            &mut tmp,
             "\n{indent}  {red}[{class}]{reset} {msg}",
-            class = e.class);
+            class = e.class
+        );
         if let Some(c) = e.cycle {
-            let _ = write!(&mut tmp,
-                "\n{indent}    {dim}cycle:{reset} {c}");
+            let _ = write!(&mut tmp, "\n{indent}    {dim}cycle:{reset} {c}");
         }
         if let Some(op) = &e.op_name {
-            let _ = write!(&mut tmp,
-                "\n{indent}    {dim}op:{reset} {op}");
+            let _ = write!(&mut tmp, "\n{indent}    {dim}op:{reset} {op}");
         }
         if let Some(t) = &e.op_template {
             let t = indent_continuations(t, &detail_continuation);
-            let _ = write!(&mut tmp,
-                "\n{indent}    {dim}op-template:{reset} {t}");
+            let _ = write!(&mut tmp, "\n{indent}    {dim}op-template:{reset} {t}");
         }
         if let Some(r) = &e.op_resolved {
             let r = indent_continuations(r, &detail_continuation);
-            let _ = write!(&mut tmp,
-                "\n{indent}    {dim}op-resolved:{reset} {r}");
+            let _ = write!(&mut tmp, "\n{indent}    {dim}op-resolved:{reset} {r}");
         }
     }
     if captured < total {
         // The capture buffer (PHASE_ERROR_CAPTURE_CAP) filled before
         // all errors arrived — surface the shortfall so the listed
         // set isn't mistaken for the whole story.
-        let _ = write!(&mut tmp,
+        let _ = write!(
+            &mut tmp,
             "\n{indent}  {dim}(+{} more occurred — not captured (buffer cap)){reset}",
-            total - captured);
+            total - captured
+        );
     }
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -251,8 +263,8 @@ fn render_explanation(out: &mut dyn ReadoutBuf) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::readouts::buf::StringBuf;
     use crate::phase_outcome::PhaseErrorDetail;
+    use crate::readouts::buf::StringBuf;
 
     #[derive(Default)]
     struct TestCtx {
@@ -273,22 +285,54 @@ mod tests {
     }
 
     impl ReadoutContext for TestCtx {
-        fn subject_name(&self) -> &str { "" }
-        fn subject_seq(&self) -> Option<(usize, usize)> { None }
-        fn subject_labels(&self) -> &str { "" }
-        fn cycles_completed(&self) -> u64 { 0 }
-        fn cycles_total(&self) -> u64 { 0 }
-        fn ops_ok(&self) -> u64 { 0 }
-        fn errors(&self) -> u64 { self.total_errors }
-        fn retries(&self) -> u64 { self.retries }
-        fn concurrency(&self) -> usize { 0 }
-        fn elapsed_secs(&self) -> f64 { 0.0 }
-        fn consumed(&self) -> u64 { 0 }
-        fn status_metric_chips(&self) -> String { String::new() }
-        fn depth_indent(&self) -> &str { &self.indent }
-        fn use_color(&self) -> bool { self.color }
-        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
-        fn outcome_errors(&self) -> &[PhaseErrorDetail] { &self.errors }
+        fn subject_name(&self) -> &str {
+            ""
+        }
+        fn subject_seq(&self) -> Option<(usize, usize)> {
+            None
+        }
+        fn subject_labels(&self) -> &str {
+            ""
+        }
+        fn cycles_completed(&self) -> u64 {
+            0
+        }
+        fn cycles_total(&self) -> u64 {
+            0
+        }
+        fn ops_ok(&self) -> u64 {
+            0
+        }
+        fn errors(&self) -> u64 {
+            self.total_errors
+        }
+        fn retries(&self) -> u64 {
+            self.retries
+        }
+        fn concurrency(&self) -> usize {
+            0
+        }
+        fn elapsed_secs(&self) -> f64 {
+            0.0
+        }
+        fn consumed(&self) -> u64 {
+            0
+        }
+        fn status_metric_chips(&self) -> String {
+            String::new()
+        }
+        fn depth_indent(&self) -> &str {
+            &self.indent
+        }
+        fn use_color(&self) -> bool {
+            self.color
+        }
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::PhaseEnd
+        }
+        fn outcome_errors(&self) -> &[PhaseErrorDetail] {
+            &self.errors
+        }
         fn outcome(&self) -> crate::phase_outcome::Outcome {
             if self.failed {
                 crate::phase_outcome::Outcome::failed()
@@ -314,7 +358,13 @@ mod tests {
     fn render(ctx: &TestCtx, lod: Lod) -> String {
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
-        ErrorReadout.render(ctx, lod, ContentMode::Value, &ReadoutOptions::new(), &mut buf);
+        ErrorReadout.render(
+            ctx,
+            lod,
+            ContentMode::Value,
+            &ReadoutOptions::new(),
+            &mut buf,
+        );
         s
     }
 
@@ -334,20 +384,30 @@ mod tests {
         // counters on the summary line carry the info, and an error
         // block would make a successful phase look failed.
         let captured: Vec<_> = (0..64)
-            .map(|i| err("WriteTimeout", "timed out", Some(i))).collect();
+            .map(|i| err("WriteTimeout", "timed out", Some(i)))
+            .collect();
         let ctx = TestCtx {
             errors: captured,
             total_errors: 200,
-            retries: 200,   // failed_ops = 200 - 200 = 0
-            failed: false,  // phase completed
+            retries: 200,  // failed_ops = 200 - 200 = 0
+            failed: false, // phase completed
             ..Default::default()
         };
-        assert_eq!(render(&ctx, Lod::Compact), "",
-            "no chip for fully-recovered errors");
-        assert_eq!(render(&ctx, Lod::Labeled), "",
-            "no block for fully-recovered errors");
-        assert_eq!(render(&ctx, Lod::Expanded), "",
-            "no block for fully-recovered errors");
+        assert_eq!(
+            render(&ctx, Lod::Compact),
+            "",
+            "no chip for fully-recovered errors"
+        );
+        assert_eq!(
+            render(&ctx, Lod::Labeled),
+            "",
+            "no block for fully-recovered errors"
+        );
+        assert_eq!(
+            render(&ctx, Lod::Expanded),
+            "",
+            "no block for fully-recovered errors"
+        );
     }
 
     #[test]
@@ -356,11 +416,17 @@ mod tests {
         // → the block renders (real failures occurred).
         let captured: Vec<_> = (0..64).map(|i| err("X", "e", Some(i))).collect();
         let ctx = TestCtx {
-            errors: captured, total_errors: 200, retries: 195,
-            failed: false, ..Default::default()
+            errors: captured,
+            total_errors: 200,
+            retries: 195,
+            failed: false,
+            ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("errors:"), "5 ops failed → block must render: {out:?}");
+        assert!(
+            out.contains("errors:"),
+            "5 ops failed → block must render: {out:?}"
+        );
     }
 
     #[test]
@@ -370,13 +436,16 @@ mod tests {
         // non-op-counted error) — the block must still render.
         let ctx = TestCtx {
             errors: vec![err("StopErr", "fatal", Some(0))],
-            total_errors: 1, retries: 1,  // failed_ops = 0
-            failed: true,                  // but the phase stopped
+            total_errors: 1,
+            retries: 1,   // failed_ops = 0
+            failed: true, // but the phase stopped
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("StopErr"),
-            "failed phase must render the block regardless of count math: {out:?}");
+        assert!(
+            out.contains("StopErr"),
+            "failed phase must render the block regardless of count math: {out:?}"
+        );
     }
 
     #[test]
@@ -408,8 +477,10 @@ mod tests {
         // dispatcher inserts the separator between bound
         // readouts. A leading `\n` here would double up to
         // `\n\n` (visible blank row) above the error block.
-        assert!(!out.starts_with('\n'),
-            "no leading newline — binder owns the separator: {out:?}");
+        assert!(
+            !out.starts_with('\n'),
+            "no leading newline — binder owns the separator: {out:?}"
+        );
         assert!(out.contains("[CqlParseError]"));
         assert!(out.contains("syntax"));
         assert!(out.contains("+2 more"));
@@ -421,48 +492,85 @@ mod tests {
         // the TRUE remainder (199), note the captured count (64),
         // point at a real source, and NOT claim session.log.
         let captured: Vec<_> = (0..64)
-            .map(|i| err("WriteTimeout", "timed out", Some(i))).collect();
-        let ctx = TestCtx { errors: captured, total_errors: 200, ..Default::default() };
+            .map(|i| err("WriteTimeout", "timed out", Some(i)))
+            .collect();
+        let ctx = TestCtx {
+            errors: captured,
+            total_errors: 200,
+            ..Default::default()
+        };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains("+199 more"),
-            "tail must report the true remainder (200-1): {out:?}");
-        assert!(out.contains("64 captured"),
-            "tail must note how many were captured: {out:?}");
-        assert!(out.contains("nbrs replay") || out.contains("Expanded LOD"),
-            "tail must point at a source that actually holds the detail: {out:?}");
-        assert!(!out.contains("session.log"),
-            "tail must not point at session.log — errors aren't recorded there: {out:?}");
+        assert!(
+            out.contains("+199 more"),
+            "tail must report the true remainder (200-1): {out:?}"
+        );
+        assert!(
+            out.contains("64 captured"),
+            "tail must note how many were captured: {out:?}"
+        );
+        assert!(
+            out.contains("nbrs replay") || out.contains("Expanded LOD"),
+            "tail must point at a source that actually holds the detail: {out:?}"
+        );
+        assert!(
+            !out.contains("session.log"),
+            "tail must not point at session.log — errors aren't recorded there: {out:?}"
+        );
     }
 
     #[test]
     fn compact_uses_true_total_not_capped_buffer() {
         let captured: Vec<_> = (0..64).map(|i| err("X", "e", Some(i))).collect();
-        let ctx = TestCtx { errors: captured, total_errors: 200, ..Default::default() };
+        let ctx = TestCtx {
+            errors: captured,
+            total_errors: 200,
+            ..Default::default()
+        };
         let out = render(&ctx, Lod::Compact);
-        assert!(out.contains("errors:200"),
-            "compact chip must show the true total, not the capped buffer length: {out:?}");
+        assert!(
+            out.contains("errors:200"),
+            "compact chip must show the true total, not the capped buffer length: {out:?}"
+        );
     }
 
     #[test]
     fn expanded_header_shows_captured_of_total_when_capped() {
         let captured: Vec<_> = (0..64).map(|i| err("X", "e", Some(i))).collect();
-        let ctx = TestCtx { errors: captured, total_errors: 200, ..Default::default() };
+        let ctx = TestCtx {
+            errors: captured,
+            total_errors: 200,
+            ..Default::default()
+        };
         let out = render(&ctx, Lod::Expanded);
-        assert!(out.contains("64 of 200 captured"),
-            "expanded header must show captured/total when capped: {out:?}");
-        assert!(out.contains("not captured"),
-            "expanded must note the uncaptured remainder: {out:?}");
+        assert!(
+            out.contains("64 of 200 captured"),
+            "expanded header must show captured/total when capped: {out:?}"
+        );
+        assert!(
+            out.contains("not captured"),
+            "expanded must note the uncaptured remainder: {out:?}"
+        );
     }
 
     #[test]
     fn labeled_all_captured_omits_cap_note() {
         // total == captured → no "; N captured" note, just "+N more".
-        let captured: Vec<_> = vec![err("X", "a", Some(0)), err("X", "b", Some(1)), err("X", "c", Some(2))];
-        let ctx = TestCtx { errors: captured, total_errors: 3, ..Default::default() };
+        let captured: Vec<_> = vec![
+            err("X", "a", Some(0)),
+            err("X", "b", Some(1)),
+            err("X", "c", Some(2)),
+        ];
+        let ctx = TestCtx {
+            errors: captured,
+            total_errors: 3,
+            ..Default::default()
+        };
         let out = render(&ctx, Lod::Labeled);
         assert!(out.contains("+2 more"), "true remainder: {out:?}");
-        assert!(!out.contains("captured"),
-            "no cap note when everything was captured: {out:?}");
+        assert!(
+            !out.contains("captured"),
+            "no cap note when everything was captured: {out:?}"
+        );
     }
 
     #[test]
@@ -481,10 +589,7 @@ mod tests {
     #[test]
     fn expanded_lists_every_error_with_cycle() {
         let ctx = TestCtx {
-            errors: vec![
-                err("A", "first", Some(0)),
-                err("B", "second", Some(5)),
-            ],
+            errors: vec![err("A", "first", Some(0)), err("B", "second", Some(5))],
             failed: true,
             ..Default::default()
         };
@@ -520,7 +625,7 @@ mod tests {
                      (?, ?, ?)";
         let ctx = TestCtx {
             errors: vec![err("cql_error", multi, None)],
-            indent: "                ".into(),  // 16-space depth indent
+            indent: "                ".into(), // 16-space depth indent
             failed: true,
             ..Default::default()
         };
@@ -530,7 +635,9 @@ mod tests {
         // depth indent — never column 0, never < indent.
         let depth = "                "; // matches ctx.indent
         for (i, line) in out.split('\n').enumerate() {
-            if i == 0 || line.is_empty() { continue; }
+            if i == 0 || line.is_empty() {
+                continue;
+            }
             assert!(
                 line.starts_with(depth),
                 "line {i} broke indent at column 0: {line:?}"
@@ -550,7 +657,9 @@ mod tests {
         let out = render(&ctx, Lod::Expanded);
         let depth = "      ";
         for (i, line) in out.split('\n').enumerate() {
-            if i == 0 || line.is_empty() { continue; }
+            if i == 0 || line.is_empty() {
+                continue;
+            }
             assert!(
                 line.starts_with(depth),
                 "line {i} broke indent at column 0: {line:?}"

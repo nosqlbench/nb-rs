@@ -30,12 +30,20 @@ pub fn print_usage() {
     eprintln!("  nbrs summary --name <NAME>   Render the stored summary <NAME>");
     eprintln!("  nbrs summary '*'             Ad-hoc all-metrics report");
     eprintln!("  nbrs summary --name <NAME> --create '<spec>'  Persist + render");
-    eprintln!("  nbrs describe wiring functions [-v]  List wiring functions (verbose: + signatures, types, associativity)");
+    eprintln!(
+        "  nbrs describe wiring functions [-v]  List wiring functions (verbose: + signatures, types, associativity)"
+    );
     eprintln!("  nbrs describe wiring functions-md    Dump all functions to markdown file");
     eprintln!("  nbrs describe wiring stdlib          List standard library modules");
-    eprintln!("  nbrs describe wiring dag <file>      Render a wiring source file as DOT/Mermaid/SVG");
-    eprintln!("  nbrs bench wiring <expr>    Benchmark a wiring expression at all compilation levels");
-    eprintln!("  nbrs wiring visualize <expr> Evaluate a wiring expression and plot outputs to terminal");
+    eprintln!(
+        "  nbrs describe wiring dag <file>      Render a wiring source file as DOT/Mermaid/SVG"
+    );
+    eprintln!(
+        "  nbrs bench wiring <expr>    Benchmark a wiring expression at all compilation levels"
+    );
+    eprintln!(
+        "  nbrs wiring visualize <expr> Evaluate a wiring expression and plot outputs to terminal"
+    );
     eprintln!("  nbrs wiring visualize <file> Plot a wiring file's outputs to the terminal");
     eprintln!("  nbrs web [bind=0.0.0.0] [port=8080]  Start the web dashboard");
     eprintln!("  nbrs web --daemon             Start web dashboard in the background");
@@ -89,9 +97,7 @@ pub fn resolve_workload_path(name: &str) -> Option<String> {
     if let Ok(adapters_dir) = std::fs::read_dir("adapters") {
         for entry in adapters_dir.flatten() {
             for ext in &["", ".yaml", ".yml"] {
-                let path = entry.path()
-                    .join("workloads")
-                    .join(format!("{name}{ext}"));
+                let path = entry.path().join("workloads").join(format!("{name}{ext}"));
                 if path.exists() {
                     return path.to_str().map(String::from);
                 }
@@ -116,7 +122,8 @@ pub fn parse_bind_address(raw: &str, port_override: Option<&str>) -> (String, u1
     let default_port = 8080u16;
 
     let without_scheme = raw
-        .strip_prefix("http://").or_else(|| raw.strip_prefix("https://"))
+        .strip_prefix("http://")
+        .or_else(|| raw.strip_prefix("https://"))
         .unwrap_or(raw);
 
     let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
@@ -137,7 +144,11 @@ pub fn parse_bind_address(raw: &str, port_override: Option<&str>) -> (String, u1
         .or(embedded_port)
         .unwrap_or(default_port);
 
-    let host = if host.is_empty() { "0.0.0.0".to_string() } else { host };
+    let host = if host.is_empty() {
+        "0.0.0.0".to_string()
+    } else {
+        host
+    };
     (host, port)
 }
 

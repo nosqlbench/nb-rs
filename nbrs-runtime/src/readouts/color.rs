@@ -57,14 +57,14 @@ impl StyleName {
     /// Map an uppercase identifier to a `StyleName`.
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
-            "ERROR"    => StyleName::Error,
-            "WARN"     => StyleName::Warn,
-            "INFO"     => StyleName::Info,
-            "OK"       => StyleName::Ok,
-            "HEADER"   => StyleName::Header,
-            "SUBHEAD"  => StyleName::Subhead,
+            "ERROR" => StyleName::Error,
+            "WARN" => StyleName::Warn,
+            "INFO" => StyleName::Info,
+            "OK" => StyleName::Ok,
+            "HEADER" => StyleName::Header,
+            "SUBHEAD" => StyleName::Subhead,
             "EMPHASIS" => StyleName::Emphasis,
-            "MUTED"    => StyleName::Muted,
+            "MUTED" => StyleName::Muted,
             _ => return None,
         })
     }
@@ -79,27 +79,25 @@ impl StyleName {
             // used by SRD-46 plot rendering. Mapping picked
             // for consistent semantic emphasis across
             // surfaces.
-            (Palette::Wong, StyleName::Error)    => ColorSpec::Rgb(214,  40,  40),
-            (Palette::Wong, StyleName::Warn)     => ColorSpec::Rgb(247, 201,  72),
-            (Palette::Wong, StyleName::Info)     => ColorSpec::Rgb( 77, 201, 246),
-            (Palette::Wong, StyleName::Ok)       => ColorSpec::Rgb(122, 193,  66),
-            (Palette::Wong, StyleName::Header)   => ColorSpec::Rgb(255, 255, 255),
-            (Palette::Wong, StyleName::Subhead)  => ColorSpec::Rgb(180, 180, 180),
+            (Palette::Wong, StyleName::Error) => ColorSpec::Rgb(214, 40, 40),
+            (Palette::Wong, StyleName::Warn) => ColorSpec::Rgb(247, 201, 72),
+            (Palette::Wong, StyleName::Info) => ColorSpec::Rgb(77, 201, 246),
+            (Palette::Wong, StyleName::Ok) => ColorSpec::Rgb(122, 193, 66),
+            (Palette::Wong, StyleName::Header) => ColorSpec::Rgb(255, 255, 255),
+            (Palette::Wong, StyleName::Subhead) => ColorSpec::Rgb(180, 180, 180),
             (Palette::Wong, StyleName::Emphasis) => ColorSpec::Bright("WHITE"),
-            (Palette::Wong, StyleName::Muted)    => ColorSpec::Dim,
+            (Palette::Wong, StyleName::Muted) => ColorSpec::Dim,
         }
     }
 }
 
 /// Active palette. Default is `Wong` (colorblind-safe);
 /// matches the palette name SRD-46 reports default to.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Palette {
     #[default]
     Wong,
 }
-
 
 impl ColorSpec {
     /// Parse a token like `RED`, `BRIGHT_GREEN`,
@@ -112,9 +110,10 @@ impl ColorSpec {
         }
         // Try `BRIGHT_<NAME>` first.
         if let Some(name) = token.strip_prefix("BRIGHT_")
-            && direct_color_lookup(name).is_some() {
-                return Some(ColorSpec::Bright(direct_color_canon(name)?));
-            }
+            && direct_color_lookup(name).is_some()
+        {
+            return Some(ColorSpec::Bright(direct_color_canon(name)?));
+        }
         if direct_color_lookup(token).is_some() {
             return Some(ColorSpec::Direct(direct_color_canon(token)?));
         }
@@ -127,7 +126,9 @@ impl ColorSpec {
     /// Emit the ANSI SGR escape that begins this colour.
     /// Empty string when colour is disabled at the surface.
     pub fn ansi_open(&self, palette: Palette, color_enabled: bool) -> String {
-        if !color_enabled { return String::new(); }
+        if !color_enabled {
+            return String::new();
+        }
         match self {
             ColorSpec::Direct(name) => {
                 format!("\x1b[{}m", direct_color_lookup(name).unwrap_or(0))
@@ -142,9 +143,7 @@ impl ColorSpec {
             ColorSpec::Rgb(r, g, b) => {
                 format!("\x1b[38;2;{r};{g};{b}m")
             }
-            ColorSpec::Style(s) => {
-                s.resolve(palette).ansi_open(palette, color_enabled)
-            }
+            ColorSpec::Style(s) => s.resolve(palette).ansi_open(palette, color_enabled),
             ColorSpec::Dim => "\x1b[2m".to_string(),
         }
     }
@@ -160,28 +159,28 @@ impl ColorSpec {
 /// colours; bright variants are `base + 60`.
 fn direct_color_lookup(name: &str) -> Option<u8> {
     Some(match name {
-        "BLACK"   => 30,
-        "RED"     => 31,
-        "GREEN"   => 32,
-        "YELLOW"  => 33,
-        "BLUE"    => 34,
+        "BLACK" => 30,
+        "RED" => 31,
+        "GREEN" => 32,
+        "YELLOW" => 33,
+        "BLUE" => 34,
         "MAGENTA" => 35,
-        "CYAN"    => 36,
-        "WHITE"   => 37,
+        "CYAN" => 36,
+        "WHITE" => 37,
         _ => return None,
     })
 }
 
 fn direct_color_canon(name: &str) -> Option<&'static str> {
     Some(match name {
-        "BLACK"   => "BLACK",
-        "RED"     => "RED",
-        "GREEN"   => "GREEN",
-        "YELLOW"  => "YELLOW",
-        "BLUE"    => "BLUE",
+        "BLACK" => "BLACK",
+        "RED" => "RED",
+        "GREEN" => "GREEN",
+        "YELLOW" => "YELLOW",
+        "BLUE" => "BLUE",
         "MAGENTA" => "MAGENTA",
-        "CYAN"    => "CYAN",
-        "WHITE"   => "WHITE",
+        "CYAN" => "CYAN",
+        "WHITE" => "WHITE",
         _ => return None,
     })
 }
@@ -213,17 +212,24 @@ mod tests {
 
     #[test]
     fn parses_direct_color_names() {
-        assert_eq!(ColorSpec::parse("RED"),    Some(ColorSpec::Direct("RED")));
-        assert_eq!(ColorSpec::parse("YELLOW"), Some(ColorSpec::Direct("YELLOW")));
-        assert_eq!(ColorSpec::parse("BLACK"),  Some(ColorSpec::Direct("BLACK")));
+        assert_eq!(ColorSpec::parse("RED"), Some(ColorSpec::Direct("RED")));
+        assert_eq!(
+            ColorSpec::parse("YELLOW"),
+            Some(ColorSpec::Direct("YELLOW"))
+        );
+        assert_eq!(ColorSpec::parse("BLACK"), Some(ColorSpec::Direct("BLACK")));
     }
 
     #[test]
     fn parses_bright_variants() {
-        assert_eq!(ColorSpec::parse("BRIGHT_RED"),
-            Some(ColorSpec::Bright("RED")));
-        assert_eq!(ColorSpec::parse("BRIGHT_WHITE"),
-            Some(ColorSpec::Bright("WHITE")));
+        assert_eq!(
+            ColorSpec::parse("BRIGHT_RED"),
+            Some(ColorSpec::Bright("RED"))
+        );
+        assert_eq!(
+            ColorSpec::parse("BRIGHT_WHITE"),
+            Some(ColorSpec::Bright("WHITE"))
+        );
     }
 
     #[test]
@@ -233,18 +239,26 @@ mod tests {
 
     #[test]
     fn parses_hex_long_and_short() {
-        assert_eq!(ColorSpec::parse("#7AC166"),
-            Some(ColorSpec::Rgb(0x7A, 0xC1, 0x66)));
-        assert_eq!(ColorSpec::parse("#FFF"),
-            Some(ColorSpec::Rgb(0xFF, 0xFF, 0xFF)));
+        assert_eq!(
+            ColorSpec::parse("#7AC166"),
+            Some(ColorSpec::Rgb(0x7A, 0xC1, 0x66))
+        );
+        assert_eq!(
+            ColorSpec::parse("#FFF"),
+            Some(ColorSpec::Rgb(0xFF, 0xFF, 0xFF))
+        );
     }
 
     #[test]
     fn parses_style_names() {
-        assert_eq!(ColorSpec::parse("ERROR"),
-            Some(ColorSpec::Style(StyleName::Error)));
-        assert_eq!(ColorSpec::parse("INFO"),
-            Some(ColorSpec::Style(StyleName::Info)));
+        assert_eq!(
+            ColorSpec::parse("ERROR"),
+            Some(ColorSpec::Style(StyleName::Error))
+        );
+        assert_eq!(
+            ColorSpec::parse("INFO"),
+            Some(ColorSpec::Style(StyleName::Info))
+        );
     }
 
     #[test]
@@ -268,18 +282,12 @@ mod tests {
             ColorSpec::Rgb(0x7A, 0xC1, 0x66).ansi_open(Palette::Wong, true),
             "\x1b[38;2;122;193;102m",
         );
-        assert_eq!(
-            ColorSpec::Dim.ansi_open(Palette::Wong, true),
-            "\x1b[2m",
-        );
+        assert_eq!(ColorSpec::Dim.ansi_open(Palette::Wong, true), "\x1b[2m",);
     }
 
     #[test]
     fn ansi_disabled_emits_nothing() {
-        assert_eq!(
-            ColorSpec::Direct("RED").ansi_open(Palette::Wong, false),
-            "",
-        );
+        assert_eq!(ColorSpec::Direct("RED").ansi_open(Palette::Wong, false), "",);
         assert_eq!(ColorSpec::Direct("RED").ansi_close(false), "");
     }
 

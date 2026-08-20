@@ -19,7 +19,9 @@ use std::process::Command;
 
 const WORKLOAD: &str = "examples/workloads/iteration/comprehension_coverage.yaml";
 
-struct SessionDir { path: PathBuf }
+struct SessionDir {
+    path: PathBuf,
+}
 
 impl SessionDir {
     fn new() -> Self {
@@ -28,16 +30,22 @@ impl SessionDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let parent = std::env::temp_dir()
-            .join(format!("nbrs-comprehension-coverage-{pid}-{nanos}"));
+        let parent =
+            std::env::temp_dir().join(format!("nbrs-comprehension-coverage-{pid}-{nanos}"));
         std::fs::create_dir_all(&parent).expect("create session parent");
-        Self { path: parent.join("session") }
+        Self {
+            path: parent.join("session"),
+        }
     }
-    fn parent(&self) -> &Path { self.path.parent().unwrap() }
+    fn parent(&self) -> &Path {
+        self.path.parent().unwrap()
+    }
 }
 
 impl Drop for SessionDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(self.parent()); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.parent());
+    }
 }
 
 fn run_scenario(scenario: &str) -> (String, String, bool) {
@@ -46,7 +54,8 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     cmd.current_dir(workspace_root)
         .arg("run")
-        .arg("--session-path").arg(&session.path)
+        .arg("--session-path")
+        .arg(&session.path)
         .arg(format!("workload={WORKLOAD}"))
         .arg(format!("scenario={scenario}"));
     let out = cmd.output().expect("run nbrs");
@@ -56,7 +65,8 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
 }
 
 fn lines_with_prefix(stdout: &str, prefix: &str) -> Vec<String> {
-    stdout.lines()
+    stdout
+        .lines()
         .filter(|l| l.starts_with(prefix))
         .map(|l| l.to_string())
         .collect()
@@ -76,11 +86,10 @@ fn sorted_lines_with_prefix(stdout: &str, prefix: &str) -> Vec<String> {
 fn comprehension_form_single_var() {
     let (stdout, stderr, ok) = run_scenario("form_single_var");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/x "), vec![
-        "cmp/x x=1",
-        "cmp/x x=2",
-        "cmp/x x=3",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/x "),
+        vec!["cmp/x x=1", "cmp/x x=2", "cmp/x x=3",]
+    );
 }
 
 #[test]
@@ -88,11 +97,10 @@ fn comprehension_form_for_keyword_synonym() {
     // `for_each:` and `for:` produce identical comprehensions.
     let (stdout, stderr, ok) = run_scenario("form_for_keyword_synonym");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/x "), vec![
-        "cmp/x x=1",
-        "cmp/x x=2",
-        "cmp/x x=3",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/x "),
+        vec!["cmp/x x=1", "cmp/x x=2", "cmp/x x=3",]
+    );
 }
 
 #[test]
@@ -100,14 +108,17 @@ fn comprehension_form_inline_cartesian() {
     // 3 × 2 = 6 tuples.
     let (stdout, stderr, ok) = run_scenario("form_inline_cartesian");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/xy "), vec![
-        "cmp/xy x=1 y=a",
-        "cmp/xy x=1 y=b",
-        "cmp/xy x=2 y=a",
-        "cmp/xy x=2 y=b",
-        "cmp/xy x=3 y=a",
-        "cmp/xy x=3 y=b",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/xy "),
+        vec![
+            "cmp/xy x=1 y=a",
+            "cmp/xy x=1 y=b",
+            "cmp/xy x=2 y=a",
+            "cmp/xy x=2 y=b",
+            "cmp/xy x=3 y=a",
+            "cmp/xy x=3 y=b",
+        ]
+    );
 }
 
 #[test]
@@ -131,11 +142,10 @@ fn comprehension_form_repeated_var_union() {
     // Repeated `x` → union of 3 single-tuple sub-spaces.
     let (stdout, stderr, ok) = run_scenario("form_repeated_var_union");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/x "), vec![
-        "cmp/x x=1",
-        "cmp/x x=2",
-        "cmp/x x=3",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/x "),
+        vec!["cmp/x x=1", "cmp/x x=2", "cmp/x x=3",]
+    );
 }
 
 #[test]
@@ -148,10 +158,14 @@ fn comprehension_form_subspace_union() {
     let lines = sorted_lines_with_prefix(&stdout, "cmp/xy ");
     assert_eq!(lines.len(), 6);
     for line in &lines {
-        let is_subspace1 = line.contains("x=10 y=a") || line.contains("x=10 y=b") || line.contains("x=10 y=c");
-        let is_subspace2 = line.contains("x=100 y=d") || line.contains("x=100 y=e") || line.contains("x=100 y=f");
-        assert!(is_subspace1 || is_subspace2,
-            "line not in either sub-space: {line}");
+        let is_subspace1 =
+            line.contains("x=10 y=a") || line.contains("x=10 y=b") || line.contains("x=10 y=c");
+        let is_subspace2 =
+            line.contains("x=100 y=d") || line.contains("x=100 y=e") || line.contains("x=100 y=f");
+        assert!(
+            is_subspace1 || is_subspace2,
+            "line not in either sub-space: {line}"
+        );
     }
 }
 
@@ -166,12 +180,15 @@ fn comprehension_where_cartesian_filter() {
     //   skip: (10,100)=1000, (100,10)=1000, (100,50)=5000, (100,100)=10000
     let (stdout, stderr, ok) = run_scenario("where_cartesian_filter");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/kl "), vec![
-        "cmp/kl k=10 limit=1",
-        "cmp/kl k=10 limit=10",
-        "cmp/kl k=10 limit=50",
-        "cmp/kl k=100 limit=1",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/kl "),
+        vec![
+            "cmp/kl k=10 limit=1",
+            "cmp/kl k=10 limit=10",
+            "cmp/kl k=10 limit=50",
+            "cmp/kl k=100 limit=1",
+        ]
+    );
 }
 
 #[test]
@@ -181,12 +198,10 @@ fn comprehension_where_union_filter() {
     //   sub-space 2: (10), (20), (30) — all kept
     let (stdout, stderr, ok) = run_scenario("where_union_filter");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/k "), vec![
-        "cmp/k k=10",
-        "cmp/k k=20",
-        "cmp/k k=3",
-        "cmp/k k=30",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/k "),
+        vec!["cmp/k k=10", "cmp/k k=20", "cmp/k k=3", "cmp/k k=30",]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -198,12 +213,10 @@ fn comprehension_range_half_open() {
     // 1..5 → 1, 2, 3, 4 (4 values).
     let (stdout, stderr, ok) = run_scenario("range_half_open");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=2",
-        "cmp/n n=3",
-        "cmp/n n=4",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec!["cmp/n n=1", "cmp/n n=2", "cmp/n n=3", "cmp/n n=4",]
+    );
 }
 
 #[test]
@@ -211,13 +224,16 @@ fn comprehension_range_inclusive() {
     // 1..=5 → 1, 2, 3, 4, 5 (5 values).
     let (stdout, stderr, ok) = run_scenario("range_inclusive");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=2",
-        "cmp/n n=3",
-        "cmp/n n=4",
-        "cmp/n n=5",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec![
+            "cmp/n n=1",
+            "cmp/n n=2",
+            "cmp/n n=3",
+            "cmp/n n=4",
+            "cmp/n n=5",
+        ]
+    );
 }
 
 #[test]
@@ -225,13 +241,16 @@ fn comprehension_range_with_step() {
     // 1..10..2 → 1, 3, 5, 7, 9.
     let (stdout, stderr, ok) = run_scenario("range_with_step");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=3",
-        "cmp/n n=5",
-        "cmp/n n=7",
-        "cmp/n n=9",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec![
+            "cmp/n n=1",
+            "cmp/n n=3",
+            "cmp/n n=5",
+            "cmp/n n=7",
+            "cmp/n n=9",
+        ]
+    );
 }
 
 #[test]
@@ -239,13 +258,16 @@ fn comprehension_range_inclusive_with_step() {
     // 1..=10..2 → 1, 3, 5, 7, 9 (10 isn't reached by step from 1).
     let (stdout, stderr, ok) = run_scenario("range_inclusive_with_step");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=3",
-        "cmp/n n=5",
-        "cmp/n n=7",
-        "cmp/n n=9",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec![
+            "cmp/n n=1",
+            "cmp/n n=3",
+            "cmp/n n=5",
+            "cmp/n n=7",
+            "cmp/n n=9",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -260,7 +282,8 @@ fn comprehension_gen_fib_count() {
     let lines = lines_with_prefix(&stdout, "cmp/n ");
     assert_eq!(lines.len(), 7);
     // Sum of first 7 Fibonacci = 1+1+2+3+5+8+13 = 33.
-    let sum: u64 = lines.iter()
+    let sum: u64 = lines
+        .iter()
         .filter_map(|l| l.strip_prefix("cmp/n n="))
         .filter_map(|s| s.parse::<u64>().ok())
         .sum();
@@ -272,14 +295,17 @@ fn comprehension_gen_pow2_count() {
     // pow2(6) → 1, 2, 4, 8, 16, 32.
     let (stdout, stderr, ok) = run_scenario("gen_pow2_count");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=16",
-        "cmp/n n=2",
-        "cmp/n n=32",
-        "cmp/n n=4",
-        "cmp/n n=8",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec![
+            "cmp/n n=1",
+            "cmp/n n=16",
+            "cmp/n n=2",
+            "cmp/n n=32",
+            "cmp/n n=4",
+            "cmp/n n=8",
+        ]
+    );
 }
 
 #[test]
@@ -318,13 +344,16 @@ fn comprehension_setop_union() {
     // [1,2,3] | [3,4,5] → 1, 2, 3, 4, 5 (5 distinct).
     let (stdout, stderr, ok) = run_scenario("setop_union");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=2",
-        "cmp/n n=3",
-        "cmp/n n=4",
-        "cmp/n n=5",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec![
+            "cmp/n n=1",
+            "cmp/n n=2",
+            "cmp/n n=3",
+            "cmp/n n=4",
+            "cmp/n n=5",
+        ]
+    );
 }
 
 #[test]
@@ -332,10 +361,10 @@ fn comprehension_setop_intersect() {
     // [1,2,3] & [2,3,4] → 2, 3.
     let (stdout, stderr, ok) = run_scenario("setop_intersect");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=2",
-        "cmp/n n=3",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec!["cmp/n n=2", "cmp/n n=3",]
+    );
 }
 
 #[test]
@@ -343,10 +372,10 @@ fn comprehension_setop_difference() {
     // [1,2,3,4] - [2,4] → 1, 3.
     let (stdout, stderr, ok) = run_scenario("setop_difference");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=3",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec!["cmp/n n=1", "cmp/n n=3",]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -360,13 +389,16 @@ fn comprehension_order_lex_with_truncation() {
     // 5 truncated phases — truncation is expected, so we
     // assert on the line content rather than exit status.
     let (stdout, _stderr, _ok) = run_scenario("order_lex_with_truncation");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/n "), vec![
-        "cmp/n n=1",
-        "cmp/n n=2",
-        "cmp/n n=3",
-        "cmp/n n=4",
-        "cmp/n n=5",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/n "),
+        vec![
+            "cmp/n n=1",
+            "cmp/n n=2",
+            "cmp/n n=3",
+            "cmp/n n=4",
+            "cmp/n n=5",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -379,11 +411,10 @@ fn comprehension_tuple_lhs_zip_strict() {
     //   (a=1, b=10), (a=2, b=20), (a=3, b=30).
     let (stdout, stderr, ok) = run_scenario("tuple_lhs_zip_strict");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/ab "), vec![
-        "cmp/ab a=1 b=10",
-        "cmp/ab a=2 b=20",
-        "cmp/ab a=3 b=30",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/ab "),
+        vec!["cmp/ab a=1 b=10", "cmp/ab a=2 b=20", "cmp/ab a=3 b=30",]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -405,13 +436,16 @@ fn comprehension_cursor_all_with_where() {
     //   0, 10, 20, 30, 40.
     let (stdout, stderr, ok) = run_scenario("cursor_all_with_where");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/xval "), vec![
-        "cmp/xval xval=0",
-        "cmp/xval xval=10",
-        "cmp/xval xval=20",
-        "cmp/xval xval=30",
-        "cmp/xval xval=40",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/xval "),
+        vec![
+            "cmp/xval xval=0",
+            "cmp/xval xval=10",
+            "cmp/xval xval=20",
+            "cmp/xval xval=30",
+            "cmp/xval xval=40",
+        ]
+    );
 }
 
 #[test]
@@ -420,13 +454,16 @@ fn comprehension_cursor_all_with_lex_truncate() {
     // 50 ordinals. Truncation produces a non-zero exit status
     // (warning about un-run phases); we assert on content only.
     let (stdout, _stderr, _ok) = run_scenario("cursor_all_with_lex_truncate");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/xval "), vec![
-        "cmp/xval xval=0",
-        "cmp/xval xval=1",
-        "cmp/xval xval=2",
-        "cmp/xval xval=3",
-        "cmp/xval xval=4",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/xval "),
+        vec![
+            "cmp/xval xval=0",
+            "cmp/xval xval=1",
+            "cmp/xval xval=2",
+            "cmp/xval xval=3",
+            "cmp/xval xval=4",
+        ]
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -441,11 +478,14 @@ fn comprehension_dependent_clauses() {
     // Total: 5 tuples.
     let (stdout, stderr, ok) = run_scenario("dependent_clauses");
     assert!(ok, "scenario failed: {stderr}");
-    assert_eq!(sorted_lines_with_prefix(&stdout, "cmp/kl "), vec![
-        "cmp/kl k=1 limit=1",
-        "cmp/kl k=1 limit=2",
-        "cmp/kl k=10 limit=10",
-        "cmp/kl k=10 limit=20",
-        "cmp/kl k=10 limit=30",
-    ]);
+    assert_eq!(
+        sorted_lines_with_prefix(&stdout, "cmp/kl "),
+        vec![
+            "cmp/kl k=1 limit=1",
+            "cmp/kl k=1 limit=2",
+            "cmp/kl k=10 limit=10",
+            "cmp/kl k=10 limit=20",
+            "cmp/kl k=10 limit=30",
+        ]
+    );
 }

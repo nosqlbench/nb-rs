@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwapOption;
 
-use crate::observer::{colorize_log_line, LogLevel};
+use crate::observer::{LogLevel, colorize_log_line};
 
 /// The single conduit for the one user terminal. Exactly one impl is
 /// installed per run via [`install`]; producers submit to a bucket and
@@ -117,17 +117,26 @@ impl CaptureChannel {
 
     /// Every op-output line submitted so far, in submission order.
     pub fn op_lines(&self) -> Vec<String> {
-        self.op_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.op_lines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Every log-bucket line submitted so far, in submission order.
     pub fn log_lines(&self) -> Vec<(LogLevel, String)> {
-        self.log_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.log_lines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Every raster-bucket frame submitted so far, in submission order.
     pub fn raster_frames(&self) -> Vec<String> {
-        self.raster_frames.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.raster_frames
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -268,7 +277,10 @@ mod tests {
         let ch = CaptureChannel::new();
         ch.raster("frame-a");
         ch.raster("frame-b");
-        assert_eq!(ch.raster_frames(), vec!["frame-a".to_string(), "frame-b".to_string()]);
+        assert_eq!(
+            ch.raster_frames(),
+            vec!["frame-a".to_string(), "frame-b".to_string()]
+        );
     }
 
     #[test]

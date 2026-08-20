@@ -60,8 +60,8 @@
 //! never fires (the two are mutually exclusive by construction).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Shared session-stop flag. Initialized lazily on first read or
 /// the call to [`install_signal_handler`].
@@ -82,7 +82,8 @@ fn flag() -> &'static Arc<AtomicBool> {
 /// flag applies — behavior is identical to before the seam (axiom A1).
 #[inline]
 pub fn stop_requested() -> bool {
-    let global = SESSION_STOP.get()
+    let global = SESSION_STOP
+        .get()
         .map(|f| f.load(Ordering::Relaxed))
         .unwrap_or(false);
     let local = crate::execution_context::current_stop()
@@ -184,12 +185,9 @@ impl ShutdownOrigin {
     /// escalates the ladder regardless of what first advanced it.
     fn lead(self) -> &'static str {
         match self {
-            ShutdownOrigin::CtrlC =>
-                "session: graceful shutdown requested (Ctrl-C).",
-            ShutdownOrigin::Term =>
-                "session: graceful shutdown requested (SIGTERM).",
-            ShutdownOrigin::StopAction =>
-                "session: shutdown requested by stop action `abort`.",
+            ShutdownOrigin::CtrlC => "session: graceful shutdown requested (Ctrl-C).",
+            ShutdownOrigin::Term => "session: graceful shutdown requested (SIGTERM).",
+            ShutdownOrigin::StopAction => "session: shutdown requested by stop action `abort`.",
         }
     }
 
@@ -351,7 +349,8 @@ static GRACEFUL_STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 /// True once a stop condition has gracefully halted the walk.
 #[inline]
 pub fn graceful_stop_requested() -> bool {
-    GRACEFUL_STOP.get()
+    GRACEFUL_STOP
+        .get()
         .map(|f| f.load(Ordering::Relaxed))
         .unwrap_or(false)
 }
@@ -359,7 +358,8 @@ pub fn graceful_stop_requested() -> bool {
 /// Record that a stop condition gracefully halted the remaining walk
 /// (SRD-83 workload shell). Idempotent.
 pub fn request_graceful_stop() {
-    GRACEFUL_STOP.get_or_init(|| Arc::new(AtomicBool::new(false)))
+    GRACEFUL_STOP
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
         .store(true, Ordering::Relaxed);
 }
 
@@ -386,7 +386,8 @@ static FAULT_STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 /// True once a `fail`-effect stop condition has halted the walk.
 #[inline]
 pub fn fault_stop_requested() -> bool {
-    FAULT_STOP.get()
+    FAULT_STOP
+        .get()
         .map(|f| f.load(Ordering::Relaxed))
         .unwrap_or(false)
 }
@@ -394,7 +395,8 @@ pub fn fault_stop_requested() -> bool {
 /// Record that a `fail`-effect stop condition halted the remaining walk
 /// (SRD-82 Part 4, `StopCause::Fault`). Idempotent.
 pub fn request_fault_stop() {
-    FAULT_STOP.get_or_init(|| Arc::new(AtomicBool::new(false)))
+    FAULT_STOP
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
         .store(true, Ordering::Relaxed);
 }
 
@@ -436,7 +438,11 @@ impl StopView {
         walk: Option<Arc<AtomicBool>>,
         daemon: Option<Arc<AtomicBool>>,
     ) -> Self {
-        Self { activity, walk, daemon }
+        Self {
+            activity,
+            walk,
+            daemon,
+        }
     }
 
     #[inline]
@@ -711,8 +717,7 @@ pub fn spawn_signal_dispatcher() {}
 /// global to be clear). Tests acquire this lock and clear the flag
 /// before asserting.
 #[cfg(test)]
-pub(crate) static STOP_GLOBAL_TEST_LOCK: std::sync::Mutex<()> =
-    std::sync::Mutex::new(());
+pub(crate) static STOP_GLOBAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Test-only: reset the process-global stop flag to unset. Paired
 /// with [`STOP_GLOBAL_TEST_LOCK`] so global-flag tests don't leak
@@ -740,7 +745,9 @@ mod tests {
         // Serialize with the other global-flag test and reset the
         // process-global flag around the assertions so this test
         // neither sees nor leaks a stale stop.
-        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STOP_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_session_stop_for_test();
         assert!(!stop_requested());
         request_stop();
@@ -754,21 +761,35 @@ mod tests {
     /// the CALLER's decision, with its own terminal hygiene).
     #[test]
     fn ladder_advances_one_rung_per_escalation_and_holds_at_cancel() {
-        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STOP_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_session_stop_for_test();
         reset_shutdown_ladder_for_test();
 
         assert_eq!(shutdown_level(), 0);
         assert!(!cancel_ops_requested());
 
-        assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 1, "first rung: graceful");
+        assert_eq!(
+            escalate_shutdown(ShutdownOrigin::CtrlC),
+            1,
+            "first rung: graceful"
+        );
         assert!(stop_requested(), "graceful rung sets the session stop");
         assert!(!cancel_ops_requested());
 
-        assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 2, "second rung: cancel ops");
+        assert_eq!(
+            escalate_shutdown(ShutdownOrigin::CtrlC),
+            2,
+            "second rung: cancel ops"
+        );
         assert!(cancel_ops_requested());
 
-        assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 2, "ladder holds at cancel");
+        assert_eq!(
+            escalate_shutdown(ShutdownOrigin::CtrlC),
+            2,
+            "ladder holds at cancel"
+        );
         assert!(cancel_ops_requested());
 
         clear_session_stop_for_test();
@@ -781,15 +802,20 @@ mod tests {
     /// without the cooperative-drain wait.
     #[test]
     fn abort_jumps_straight_to_cancel_rung() {
-        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STOP_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_session_stop_for_test();
         reset_shutdown_ladder_for_test();
 
         assert_eq!(shutdown_level(), 0);
         assert!(!stop_requested());
 
-        assert_eq!(abort_shutdown(ShutdownOrigin::StopAction), 2,
-            "abort skips the graceful rung and lands on cancel-ops");
+        assert_eq!(
+            abort_shutdown(ShutdownOrigin::StopAction),
+            2,
+            "abort skips the graceful rung and lands on cancel-ops"
+        );
         assert!(cancel_ops_requested(), "in-flight ops cancel immediately");
         assert!(stop_requested(), "abort also raises the session stop");
 
@@ -805,17 +831,18 @@ mod tests {
     /// NOT resolve for the graceful rung alone.
     #[tokio::test]
     async fn ops_cancelled_resolves_at_cancel_rung_only() {
-        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STOP_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_session_stop_for_test();
         reset_shutdown_ladder_for_test();
 
         // Graceful rung alone must NOT resolve the cancel future.
         let mut rx = subscribe_shutdown();
         escalate_shutdown(ShutdownOrigin::CtrlC); // → 1
-        let pending = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            ops_cancelled(&mut rx),
-        ).await;
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(50), ops_cancelled(&mut rx))
+                .await;
         assert!(pending.is_err(), "graceful rung must not cancel ops");
 
         // Cancel rung resolves it — and resolves immediately for a
@@ -824,12 +851,16 @@ mod tests {
         tokio::time::timeout(
             std::time::Duration::from_millis(200),
             ops_cancelled(&mut rx),
-        ).await.expect("cancel rung resolves the in-flight race");
+        )
+        .await
+        .expect("cancel rung resolves the in-flight race");
         let mut late = subscribe_shutdown();
         tokio::time::timeout(
             std::time::Duration::from_millis(200),
             ops_cancelled(&mut late),
-        ).await.expect("already-cancelled resolves immediately");
+        )
+        .await
+        .expect("already-cancelled resolves immediately");
 
         clear_session_stop_for_test();
         reset_shutdown_ladder_for_test();
@@ -853,10 +884,14 @@ mod tests {
 
         // Armed, below the cancel rung: one rung per signal, with
         // the origin carrying the trigger name.
-        assert_eq!(dispatch_decision(libc::SIGINT, true, 0),
-            Escalate(ShutdownOrigin::CtrlC));
-        assert_eq!(dispatch_decision(libc::SIGTERM, true, 1),
-            Escalate(ShutdownOrigin::Term));
+        assert_eq!(
+            dispatch_decision(libc::SIGINT, true, 0),
+            Escalate(ShutdownOrigin::CtrlC)
+        );
+        assert_eq!(
+            dispatch_decision(libc::SIGTERM, true, 1),
+            Escalate(ShutdownOrigin::Term)
+        );
 
         // Armed, at/past the cancel rung: the hard floor, exit code
         // by the signal that delivered the final blow.

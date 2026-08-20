@@ -80,11 +80,12 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         // Single-brace expressions detected by bind point parser
         for bp in crate::bindpoints::extract_bind_points(&seg.template) {
             if let crate::bindpoints::BindPoint::InlineDefinition(expr) = bp
-                && !expr_index.contains_key(&expr) {
-                    let idx = inline_exprs.len();
-                    expr_index.insert(expr.clone(), idx);
-                    inline_exprs.push(expr);
-                }
+                && !expr_index.contains_key(&expr)
+            {
+                let idx = inline_exprs.len();
+                expr_index.insert(expr.clone(), idx);
+                inline_exprs.push(expr);
+            }
         }
     }
 
@@ -232,7 +233,8 @@ fn build_polydat_candidate(op_template: &str) -> String {
 /// `const x` → `x`), skipping the `input` line and internal
 /// `__`-prefixed wraps.
 pub(crate) fn binding_wire_names(source: &str) -> Vec<String> {
-    source.lines()
+    source
+        .lines()
         .filter_map(|line| {
             let line = line.trim();
             if line.starts_with("input ") || !line.contains(":=") {
@@ -242,7 +244,10 @@ pub(crate) fn binding_wire_names(source: &str) -> Vec<String> {
             let name = lhs.split_whitespace().last()?;
             let is_ident = !name.is_empty()
                 && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                && name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_');
+                && name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_');
             if is_ident && !name.starts_with("__") {
                 Some(name.to_string())
             } else {
@@ -279,13 +284,23 @@ fn split_top_level_semicolons(s: &str) -> Vec<String> {
     let mut depth = 0i32;
     for c in s.chars() {
         match c {
-            '{' => { depth += 1; cur.push(c); }
-            '}' => { depth = (depth - 1).max(0); cur.push(c); }
-            ';' if depth == 0 => { out.push(std::mem::take(&mut cur)); }
+            '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            '}' => {
+                depth = (depth - 1).max(0);
+                cur.push(c);
+            }
+            ';' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
             _ => cur.push(c),
         }
     }
-    if !cur.trim().is_empty() { out.push(cur); }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
     out
 }
 
@@ -338,13 +353,15 @@ fn parse_segment(s: &str) -> OpSegment {
     if let Some(colon_pos) = s.find(':') {
         let prefix = &s[..colon_pos];
         // Only treat as ratio if prefix is all digits.
-        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())
-            && let Ok(ratio) = prefix.parse::<u64>() {
-                return OpSegment {
-                    template: s[colon_pos + 1..].trim().to_string(),
-                    ratio,
-                };
-            }
+        if !prefix.is_empty()
+            && prefix.chars().all(|c| c.is_ascii_digit())
+            && let Ok(ratio) = prefix.parse::<u64>()
+        {
+            return OpSegment {
+                template: s[colon_pos + 1..].trim().to_string(),
+                ratio,
+            };
+        }
     }
     OpSegment {
         template: s.to_string(),
@@ -416,8 +433,15 @@ fn rewrite_single_brace_exprs(template: &str, expr_index: &HashMap<String, usize
             let mut depth = 1u32;
             let mut j = start;
             while j < chars.len() {
-                if chars[j] == '{' { depth += 1; }
-                if chars[j] == '}' { depth -= 1; if depth == 0 { break; } }
+                if chars[j] == '{' {
+                    depth += 1;
+                }
+                if chars[j] == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
                 j += 1;
             }
             if j < chars.len() {
@@ -531,8 +555,9 @@ mod tests {
     #[test]
     fn multiple_inline_bindings() {
         let w = synthesize_inline_workload(
-            "id={{mod(hash(cycle), 100000)}} name={{number_to_words(cycle)}}"
-        ).unwrap();
+            "id={{mod(hash(cycle), 100000)}} name={{number_to_words(cycle)}}",
+        )
+        .unwrap();
         assert_eq!(w.ops.len(), 1);
         let stmt = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         assert_eq!(stmt, "id={__inline_0} name={__inline_1}");
@@ -549,8 +574,8 @@ mod tests {
     fn bindings_block_op_becomes_polydat_fields() {
         // A valid Polydat bindings block → one op whose fields are the
         // bound wire names, each resolved via `{name}`.
-        let w = synthesize_inline_workload(
-            "x := cos(to_f64(cycle)); y := sin(to_f64(cycle))").unwrap();
+        let w =
+            synthesize_inline_workload("x := cos(to_f64(cycle)); y := sin(to_f64(cycle))").unwrap();
         assert_eq!(w.ops.len(), 1);
         let keys: std::collections::BTreeSet<&str> =
             w.ops[0].op.keys().map(|s| s.as_str()).collect();
@@ -564,8 +589,11 @@ mod tests {
     fn bare_polydat_expr_becomes_out_field() {
         let w = synthesize_inline_workload("cos(to_f64(cycle))").unwrap();
         assert_eq!(w.ops.len(), 1);
-        assert!(w.ops[0].op.contains_key("out"),
-            "fields: {:?}", w.ops[0].op.keys().collect::<Vec<_>>());
+        assert!(
+            w.ops[0].op.contains_key("out"),
+            "fields: {:?}",
+            w.ops[0].op.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -593,8 +621,10 @@ mod tests {
         let src = build_polydat_candidate("a := 1; sin(cycle)");
         assert!(src.contains("a := 1"));
         assert!(src.contains("out := sin(cycle)")); // bare last → out
-        assert_eq!(binding_wire_names("input cycle: u64\nt := 1\n__expr_0 := 2\nx := 3\n"),
-                   vec!["t".to_string(), "x".to_string()]); // skips input + __
+        assert_eq!(
+            binding_wire_names("input cycle: u64\nt := 1\n__expr_0 := 2\nx := 3\n"),
+            vec!["t".to_string(), "x".to_string()]
+        ); // skips input + __
     }
 
     #[test]
@@ -644,10 +674,7 @@ mod tests {
     fn ratio_prefix() {
         let w = synthesize_inline_workload("3:read {{cycle}};1:write {{cycle}}").unwrap();
         assert_eq!(w.ops.len(), 2);
-        assert_eq!(
-            w.ops[0].params.get("ratio").unwrap().as_u64().unwrap(),
-            3
-        );
+        assert_eq!(w.ops[0].params.get("ratio").unwrap().as_u64().unwrap(), 3);
         // ratio=1 is the default, so it's not stored explicitly.
         assert!(!w.ops[1].params.contains_key("ratio"));
     }
@@ -660,9 +687,7 @@ mod tests {
 
     #[test]
     fn duplicate_expressions_share_output() {
-        let w = synthesize_inline_workload(
-            "a={{hash(cycle)}};b={{hash(cycle)}}"
-        ).unwrap();
+        let w = synthesize_inline_workload("a={{hash(cycle)}};b={{hash(cycle)}}").unwrap();
         // Both ops should reference the same __inline_0.
         let stmt0 = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         let stmt1 = w.ops[1].op.get("stmt").unwrap().as_str().unwrap();
@@ -686,9 +711,7 @@ mod tests {
 
     #[test]
     fn mixed_reference_and_inline() {
-        let w = synthesize_inline_workload(
-            "id={{mod(hash(cycle), 1000)}} raw={cycle}"
-        ).unwrap();
+        let w = synthesize_inline_workload("id={{mod(hash(cycle), 1000)}} raw={cycle}").unwrap();
         let stmt = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         assert_eq!(stmt, "id={__inline_0} raw={cycle}");
     }

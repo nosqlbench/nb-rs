@@ -27,8 +27,8 @@
 
 use std::sync::Arc;
 
-use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
+use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 use nbrs_rate::{RateLimiter, RateSpec};
 
@@ -37,7 +37,9 @@ pub const NAME: WrapperName = WrapperName::new("rate");
 
 /// Trigger: op declares a `rate:` field.
 fn triggers(s: WrapperSubject) -> bool {
-    let Some(template) = s.op() else { return false; };
+    let Some(template) = s.op() else {
+        return false;
+    };
     template.rate.is_some()
 }
 
@@ -69,16 +71,15 @@ pub fn parse_rate_spec(s: &str) -> Result<f64, String> {
     if s.is_empty() {
         return Err("rate: spec is empty".into());
     }
-    let (num_str, divisor): (&str, f64) =
-        if let Some(rest) = s.strip_suffix("/s") {
-            (rest.trim(), 1.0)
-        } else if let Some(rest) = s.strip_suffix("/m") {
-            (rest.trim(), 60.0)
-        } else if let Some(rest) = s.strip_suffix("/h") {
-            (rest.trim(), 3600.0)
-        } else {
-            (s, 1.0)
-        };
+    let (num_str, divisor): (&str, f64) = if let Some(rest) = s.strip_suffix("/s") {
+        (rest.trim(), 1.0)
+    } else if let Some(rest) = s.strip_suffix("/m") {
+        (rest.trim(), 60.0)
+    } else if let Some(rest) = s.strip_suffix("/h") {
+        (rest.trim(), 3600.0)
+    } else {
+        (s, 1.0)
+    };
     if num_str.is_empty() {
         return Err(format!("rate: spec `{s}` has empty numeric part"));
     }
@@ -121,7 +122,9 @@ impl OpDispenser for OpRateWrapper {
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let _wait = self.limiter.acquire().await;
             self.inner.execute(cycle, ctx).await

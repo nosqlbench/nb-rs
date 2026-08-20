@@ -103,43 +103,228 @@ pub struct AggregateOp {
 /// Whenever you add an arm to `parser::is_aggr_func`, add the
 /// corresponding entry here with the right [`EvalSupport`].
 pub const AGGREGATE_OPS: &[AggregateOp] = &[
-    AggregateOp { name: "any",            takes_param: false, support: EvalSupport::ParserOnly,    summary: "first matching series per group" },
-    AggregateOp { name: "avg",            takes_param: false, support: EvalSupport::ParserAndEval, summary: "arithmetic mean" },
-    AggregateOp { name: "bottomk",        takes_param: true,  support: EvalSupport::ParserAndEval, summary: "bottom K series" },
-    AggregateOp { name: "bottomk_avg",    takes_param: true,  support: EvalSupport::ParserOnly,    summary: "bottom K by average" },
-    AggregateOp { name: "bottomk_max",    takes_param: true,  support: EvalSupport::ParserOnly,    summary: "bottom K by maximum" },
-    AggregateOp { name: "bottomk_median", takes_param: true,  support: EvalSupport::ParserOnly,    summary: "bottom K by median" },
-    AggregateOp { name: "bottomk_last",   takes_param: true,  support: EvalSupport::ParserOnly,    summary: "bottom K by last value" },
-    AggregateOp { name: "bottomk_min",    takes_param: true,  support: EvalSupport::ParserOnly,    summary: "bottom K by minimum" },
-    AggregateOp { name: "count",          takes_param: false, support: EvalSupport::ParserAndEval, summary: "number of series" },
-    AggregateOp { name: "count_values",   takes_param: true,  support: EvalSupport::ParserOnly,    summary: "count series by value" },
-    AggregateOp { name: "distinct",       takes_param: false, support: EvalSupport::ParserOnly,    summary: "distinct values per group" },
-    AggregateOp { name: "geomean",        takes_param: false, support: EvalSupport::ParserOnly,    summary: "geometric mean" },
-    AggregateOp { name: "group",          takes_param: false, support: EvalSupport::ParserAndEval, summary: "constant 1 per group" },
-    AggregateOp { name: "histogram",      takes_param: false, support: EvalSupport::ParserOnly,    summary: "histogram of group values" },
-    AggregateOp { name: "limitk",         takes_param: true,  support: EvalSupport::ParserOnly,    summary: "first K series" },
-    AggregateOp { name: "mad",            takes_param: false, support: EvalSupport::ParserOnly,    summary: "median absolute deviation" },
-    AggregateOp { name: "max",            takes_param: false, support: EvalSupport::ParserAndEval, summary: "maximum value" },
-    AggregateOp { name: "median",         takes_param: false, support: EvalSupport::ParserOnly,    summary: "median value" },
-    AggregateOp { name: "min",            takes_param: false, support: EvalSupport::ParserAndEval, summary: "minimum value" },
-    AggregateOp { name: "mode",           takes_param: false, support: EvalSupport::ParserOnly,    summary: "mode (most frequent value)" },
-    AggregateOp { name: "outliers_iqr",   takes_param: false, support: EvalSupport::ParserOnly,    summary: "IQR outliers" },
-    AggregateOp { name: "outliers_mad",   takes_param: true,  support: EvalSupport::ParserOnly,    summary: "MAD outliers" },
-    AggregateOp { name: "outliersk",      takes_param: true,  support: EvalSupport::ParserOnly,    summary: "top K outlier series" },
-    AggregateOp { name: "quantile",       takes_param: true,  support: EvalSupport::ParserAndEval, summary: "φ-quantile" },
-    AggregateOp { name: "quantiles",      takes_param: true,  support: EvalSupport::ParserOnly,    summary: "multiple φ-quantiles into labels" },
-    AggregateOp { name: "share",          takes_param: false, support: EvalSupport::ParserOnly,    summary: "fractional share per group" },
-    AggregateOp { name: "stddev",         takes_param: false, support: EvalSupport::ParserAndEval, summary: "standard deviation" },
-    AggregateOp { name: "stdvar",         takes_param: false, support: EvalSupport::ParserAndEval, summary: "variance" },
-    AggregateOp { name: "sum",            takes_param: false, support: EvalSupport::ParserAndEval, summary: "sum" },
-    AggregateOp { name: "sum2",           takes_param: false, support: EvalSupport::ParserOnly,    summary: "sum of squares" },
-    AggregateOp { name: "topk",           takes_param: true,  support: EvalSupport::ParserAndEval, summary: "top K series" },
-    AggregateOp { name: "topk_avg",       takes_param: true,  support: EvalSupport::ParserOnly,    summary: "top K by average" },
-    AggregateOp { name: "topk_max",       takes_param: true,  support: EvalSupport::ParserOnly,    summary: "top K by maximum" },
-    AggregateOp { name: "topk_median",    takes_param: true,  support: EvalSupport::ParserOnly,    summary: "top K by median" },
-    AggregateOp { name: "topk_last",      takes_param: true,  support: EvalSupport::ParserOnly,    summary: "top K by last value" },
-    AggregateOp { name: "topk_min",       takes_param: true,  support: EvalSupport::ParserOnly,    summary: "top K by minimum" },
-    AggregateOp { name: "zscore",         takes_param: false, support: EvalSupport::ParserOnly,    summary: "z-score per group" },
+    AggregateOp {
+        name: "any",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "first matching series per group",
+    },
+    AggregateOp {
+        name: "avg",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "arithmetic mean",
+    },
+    AggregateOp {
+        name: "bottomk",
+        takes_param: true,
+        support: EvalSupport::ParserAndEval,
+        summary: "bottom K series",
+    },
+    AggregateOp {
+        name: "bottomk_avg",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "bottom K by average",
+    },
+    AggregateOp {
+        name: "bottomk_max",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "bottom K by maximum",
+    },
+    AggregateOp {
+        name: "bottomk_median",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "bottom K by median",
+    },
+    AggregateOp {
+        name: "bottomk_last",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "bottom K by last value",
+    },
+    AggregateOp {
+        name: "bottomk_min",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "bottom K by minimum",
+    },
+    AggregateOp {
+        name: "count",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "number of series",
+    },
+    AggregateOp {
+        name: "count_values",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "count series by value",
+    },
+    AggregateOp {
+        name: "distinct",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "distinct values per group",
+    },
+    AggregateOp {
+        name: "geomean",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "geometric mean",
+    },
+    AggregateOp {
+        name: "group",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "constant 1 per group",
+    },
+    AggregateOp {
+        name: "histogram",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "histogram of group values",
+    },
+    AggregateOp {
+        name: "limitk",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "first K series",
+    },
+    AggregateOp {
+        name: "mad",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "median absolute deviation",
+    },
+    AggregateOp {
+        name: "max",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "maximum value",
+    },
+    AggregateOp {
+        name: "median",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "median value",
+    },
+    AggregateOp {
+        name: "min",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "minimum value",
+    },
+    AggregateOp {
+        name: "mode",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "mode (most frequent value)",
+    },
+    AggregateOp {
+        name: "outliers_iqr",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "IQR outliers",
+    },
+    AggregateOp {
+        name: "outliers_mad",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "MAD outliers",
+    },
+    AggregateOp {
+        name: "outliersk",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "top K outlier series",
+    },
+    AggregateOp {
+        name: "quantile",
+        takes_param: true,
+        support: EvalSupport::ParserAndEval,
+        summary: "φ-quantile",
+    },
+    AggregateOp {
+        name: "quantiles",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "multiple φ-quantiles into labels",
+    },
+    AggregateOp {
+        name: "share",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "fractional share per group",
+    },
+    AggregateOp {
+        name: "stddev",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "standard deviation",
+    },
+    AggregateOp {
+        name: "stdvar",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "variance",
+    },
+    AggregateOp {
+        name: "sum",
+        takes_param: false,
+        support: EvalSupport::ParserAndEval,
+        summary: "sum",
+    },
+    AggregateOp {
+        name: "sum2",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "sum of squares",
+    },
+    AggregateOp {
+        name: "topk",
+        takes_param: true,
+        support: EvalSupport::ParserAndEval,
+        summary: "top K series",
+    },
+    AggregateOp {
+        name: "topk_avg",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "top K by average",
+    },
+    AggregateOp {
+        name: "topk_max",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "top K by maximum",
+    },
+    AggregateOp {
+        name: "topk_median",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "top K by median",
+    },
+    AggregateOp {
+        name: "topk_last",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "top K by last value",
+    },
+    AggregateOp {
+        name: "topk_min",
+        takes_param: true,
+        support: EvalSupport::ParserOnly,
+        summary: "top K by minimum",
+    },
+    AggregateOp {
+        name: "zscore",
+        takes_param: false,
+        support: EvalSupport::ParserOnly,
+        summary: "z-score per group",
+    },
 ];
 
 // =====================================================================
@@ -160,22 +345,86 @@ pub struct RollupFunction {
 /// supports. Mirrors `eval::RollupFn::from_name` plus the
 /// `quantile_over_time` parameterised rollup.
 pub const ROLLUP_FUNCTIONS: &[RollupFunction] = &[
-    RollupFunction { name: "avg_over_time",      support: EvalSupport::ParserAndEval, summary: "average value over the range" },
-    RollupFunction { name: "count_over_time",    support: EvalSupport::ParserAndEval, summary: "number of samples in the range" },
-    RollupFunction { name: "delta",              support: EvalSupport::ParserAndEval, summary: "difference: last − first sample (gauges)" },
-    RollupFunction { name: "first_over_time",    support: EvalSupport::ParserAndEval, summary: "first sample in the range" },
-    RollupFunction { name: "increase",           support: EvalSupport::ParserAndEval, summary: "counter increase over the range" },
-    RollupFunction { name: "last_over_time",     support: EvalSupport::ParserAndEval, summary: "last sample in the range" },
-    RollupFunction { name: "max_over_time",      support: EvalSupport::ParserAndEval, summary: "maximum value over the range" },
-    RollupFunction { name: "min_over_time",      support: EvalSupport::ParserAndEval, summary: "minimum value over the range" },
-    RollupFunction { name: "quantile_over_time", support: EvalSupport::ParserAndEval, summary: "φ-quantile over the range (param + range)" },
-    RollupFunction { name: "rate",               support: EvalSupport::ParserAndEval, summary: "per-second rate over the range" },
-    RollupFunction { name: "stddev_over_time",   support: EvalSupport::ParserAndEval, summary: "standard deviation over the range" },
-    RollupFunction { name: "stdvar_over_time",   support: EvalSupport::ParserAndEval, summary: "variance over the range" },
-    RollupFunction { name: "sum_over_time",      support: EvalSupport::ParserAndEval, summary: "sum of samples over the range" },
-    RollupFunction { name: "tfirst_over_time",   support: EvalSupport::ParserAndEval, summary: "Unix seconds of the first sample in the range" },
-    RollupFunction { name: "tlast_change_over_time",  support: EvalSupport::ParserAndEval, summary: "Unix seconds of the last value CHANGE in the range" },
-    RollupFunction { name: "tlast_over_time",    support: EvalSupport::ParserAndEval, summary: "Unix seconds of the last sample in the range" },
+    RollupFunction {
+        name: "avg_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "average value over the range",
+    },
+    RollupFunction {
+        name: "count_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "number of samples in the range",
+    },
+    RollupFunction {
+        name: "delta",
+        support: EvalSupport::ParserAndEval,
+        summary: "difference: last − first sample (gauges)",
+    },
+    RollupFunction {
+        name: "first_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "first sample in the range",
+    },
+    RollupFunction {
+        name: "increase",
+        support: EvalSupport::ParserAndEval,
+        summary: "counter increase over the range",
+    },
+    RollupFunction {
+        name: "last_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "last sample in the range",
+    },
+    RollupFunction {
+        name: "max_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "maximum value over the range",
+    },
+    RollupFunction {
+        name: "min_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "minimum value over the range",
+    },
+    RollupFunction {
+        name: "quantile_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "φ-quantile over the range (param + range)",
+    },
+    RollupFunction {
+        name: "rate",
+        support: EvalSupport::ParserAndEval,
+        summary: "per-second rate over the range",
+    },
+    RollupFunction {
+        name: "stddev_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "standard deviation over the range",
+    },
+    RollupFunction {
+        name: "stdvar_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "variance over the range",
+    },
+    RollupFunction {
+        name: "sum_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "sum of samples over the range",
+    },
+    RollupFunction {
+        name: "tfirst_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "Unix seconds of the first sample in the range",
+    },
+    RollupFunction {
+        name: "tlast_change_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "Unix seconds of the last value CHANGE in the range",
+    },
+    RollupFunction {
+        name: "tlast_over_time",
+        support: EvalSupport::ParserAndEval,
+        summary: "Unix seconds of the last sample in the range",
+    },
 ];
 
 // =====================================================================
@@ -201,24 +450,86 @@ pub enum BinaryOpKind {
 }
 
 pub const BINARY_OPS: &[BinaryOpInfo] = &[
-    BinaryOpInfo { op: "+",      kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "-",      kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "*",      kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "/",      kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "%",      kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "^",      kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "atan2",  kind: BinaryOpKind::Arithmetic, support: EvalSupport::ParserOnly },
-
-    BinaryOpInfo { op: "==", kind: BinaryOpKind::Comparison, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "!=", kind: BinaryOpKind::Comparison, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: ">",  kind: BinaryOpKind::Comparison, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: ">=", kind: BinaryOpKind::Comparison, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "<",  kind: BinaryOpKind::Comparison, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "<=", kind: BinaryOpKind::Comparison, support: EvalSupport::ParserAndEval },
-
-    BinaryOpInfo { op: "and",    kind: BinaryOpKind::LogicSet, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "or",     kind: BinaryOpKind::LogicSet, support: EvalSupport::ParserAndEval },
-    BinaryOpInfo { op: "unless", kind: BinaryOpKind::LogicSet, support: EvalSupport::ParserAndEval },
+    BinaryOpInfo {
+        op: "+",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "-",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "*",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "/",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "%",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "^",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "atan2",
+        kind: BinaryOpKind::Arithmetic,
+        support: EvalSupport::ParserOnly,
+    },
+    BinaryOpInfo {
+        op: "==",
+        kind: BinaryOpKind::Comparison,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "!=",
+        kind: BinaryOpKind::Comparison,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: ">",
+        kind: BinaryOpKind::Comparison,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: ">=",
+        kind: BinaryOpKind::Comparison,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "<",
+        kind: BinaryOpKind::Comparison,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "<=",
+        kind: BinaryOpKind::Comparison,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "and",
+        kind: BinaryOpKind::LogicSet,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "or",
+        kind: BinaryOpKind::LogicSet,
+        support: EvalSupport::ParserAndEval,
+    },
+    BinaryOpInfo {
+        op: "unless",
+        kind: BinaryOpKind::LogicSet,
+        support: EvalSupport::ParserAndEval,
+    },
 ];
 
 // =====================================================================
@@ -241,73 +552,197 @@ pub const BINARY_OPS: &[BinaryOpInfo] = &[
 /// currently doesn't implement. 67 entries (80 in spec
 /// minus the 13 in [`ROLLUP_FUNCTIONS`]).
 pub const EXTRA_ROLLUP_FUNCTIONS_SPEC: &[&str] = &[
-    "absent_over_time", "aggr_over_time", "ascent_over_time",
-    "changes", "changes_prometheus",
-    "count_eq_over_time", "count_gt_over_time", "count_le_over_time",
-    "count_ne_over_time", "count_values_over_time",
-    "decreases_over_time", "default_rollup", "delta_prometheus",
-    "deriv", "deriv_fast", "descent_over_time", "distinct_over_time",
-    "duration_over_time", "geomean_over_time", "histogram_over_time",
-    "hoeffding_bound_lower", "hoeffding_bound_upper", "holt_winters",
-    "idelta", "ideriv", "increase_prometheus", "increase_pure",
-    "increases_over_time", "integrate", "irate", "lag", "lifetime",
-    "mad_over_time", "median_over_time", "mode_over_time",
-    "outlier_iqr_over_time", "predict_linear", "present_over_time",
-    "quantiles_over_time", "range_over_time", "rate_over_sum",
-    "rate_prometheus", "resets", "rollup", "rollup_candlestick",
-    "rollup_delta", "rollup_deriv", "rollup_increase", "rollup_rate",
-    "rollup_scrape_interval", "scrape_interval",
-    "share_eq_over_time", "share_gt_over_time", "share_le_over_time",
-    "stale_samples_over_time", "sum2_over_time",
-    "sum_eq_over_time", "sum_gt_over_time", "sum_le_over_time",
-    "timestamp", "timestamp_with_name",
-    "tmax_over_time", "tmin_over_time", "zscore_over_time",
+    "absent_over_time",
+    "aggr_over_time",
+    "ascent_over_time",
+    "changes",
+    "changes_prometheus",
+    "count_eq_over_time",
+    "count_gt_over_time",
+    "count_le_over_time",
+    "count_ne_over_time",
+    "count_values_over_time",
+    "decreases_over_time",
+    "default_rollup",
+    "delta_prometheus",
+    "deriv",
+    "deriv_fast",
+    "descent_over_time",
+    "distinct_over_time",
+    "duration_over_time",
+    "geomean_over_time",
+    "histogram_over_time",
+    "hoeffding_bound_lower",
+    "hoeffding_bound_upper",
+    "holt_winters",
+    "idelta",
+    "ideriv",
+    "increase_prometheus",
+    "increase_pure",
+    "increases_over_time",
+    "integrate",
+    "irate",
+    "lag",
+    "lifetime",
+    "mad_over_time",
+    "median_over_time",
+    "mode_over_time",
+    "outlier_iqr_over_time",
+    "predict_linear",
+    "present_over_time",
+    "quantiles_over_time",
+    "range_over_time",
+    "rate_over_sum",
+    "rate_prometheus",
+    "resets",
+    "rollup",
+    "rollup_candlestick",
+    "rollup_delta",
+    "rollup_deriv",
+    "rollup_increase",
+    "rollup_rate",
+    "rollup_scrape_interval",
+    "scrape_interval",
+    "share_eq_over_time",
+    "share_gt_over_time",
+    "share_le_over_time",
+    "stale_samples_over_time",
+    "sum2_over_time",
+    "sum_eq_over_time",
+    "sum_gt_over_time",
+    "sum_le_over_time",
+    "timestamp",
+    "timestamp_with_name",
+    "tmax_over_time",
+    "tmin_over_time",
+    "zscore_over_time",
 ];
 
 /// Transform functions per `links/specs/MetricsQL.md`
 /// §"Transform functions". 93 entries; all currently
 /// ParserOnly (evaluator NYI).
 pub const TRANSFORM_FUNCTIONS_SPEC: &[&str] = &[
-    "abs", "absent", "acos", "acosh", "asin", "asinh", "atan", "atanh",
-    "bitmap_and", "bitmap_or", "bitmap_xor",
-    "buckets_limit", "ceil", "clamp", "clamp_max", "clamp_min",
-    "cos", "cosh",
-    "day_of_month", "day_of_week", "day_of_year", "days_in_month",
-    "deg", "drop_empty_series", "end", "exp", "floor",
-    "histogram_avg", "histogram_fraction", "histogram_quantile",
-    "histogram_quantiles", "histogram_share",
-    "histogram_stddev", "histogram_stdvar",
-    "hour", "interpolate", "keep_last_value", "keep_next_value",
-    "limit_offset", "ln", "log10", "log2", "minute", "month",
-    "now", "pi", "prometheus_buckets", "rad",
-    "rand", "rand_exponential", "rand_normal",
-    "range_avg", "range_first", "range_last",
-    "range_linear_regression", "range_mad",
-    "range_max", "range_median", "range_min", "range_normalize",
-    "range_quantile", "range_stddev", "range_stdvar", "range_sum",
-    "range_trim_outliers", "range_trim_spikes", "range_trim_zscore",
-    "range_zscore", "remove_resets", "round", "ru",
-    "running_avg", "running_max", "running_min", "running_sum",
-    "scalar", "sgn", "sin", "sinh",
-    "smooth_exponential", "sort", "sort_desc", "sqrt",
-    "start", "step", "tan", "tanh",
-    "time", "timezone_offset", "ttf",
-    "union", "vector", "year",
+    "abs",
+    "absent",
+    "acos",
+    "acosh",
+    "asin",
+    "asinh",
+    "atan",
+    "atanh",
+    "bitmap_and",
+    "bitmap_or",
+    "bitmap_xor",
+    "buckets_limit",
+    "ceil",
+    "clamp",
+    "clamp_max",
+    "clamp_min",
+    "cos",
+    "cosh",
+    "day_of_month",
+    "day_of_week",
+    "day_of_year",
+    "days_in_month",
+    "deg",
+    "drop_empty_series",
+    "end",
+    "exp",
+    "floor",
+    "histogram_avg",
+    "histogram_fraction",
+    "histogram_quantile",
+    "histogram_quantiles",
+    "histogram_share",
+    "histogram_stddev",
+    "histogram_stdvar",
+    "hour",
+    "interpolate",
+    "keep_last_value",
+    "keep_next_value",
+    "limit_offset",
+    "ln",
+    "log10",
+    "log2",
+    "minute",
+    "month",
+    "now",
+    "pi",
+    "prometheus_buckets",
+    "rad",
+    "rand",
+    "rand_exponential",
+    "rand_normal",
+    "range_avg",
+    "range_first",
+    "range_last",
+    "range_linear_regression",
+    "range_mad",
+    "range_max",
+    "range_median",
+    "range_min",
+    "range_normalize",
+    "range_quantile",
+    "range_stddev",
+    "range_stdvar",
+    "range_sum",
+    "range_trim_outliers",
+    "range_trim_spikes",
+    "range_trim_zscore",
+    "range_zscore",
+    "remove_resets",
+    "round",
+    "ru",
+    "running_avg",
+    "running_max",
+    "running_min",
+    "running_sum",
+    "scalar",
+    "sgn",
+    "sin",
+    "sinh",
+    "smooth_exponential",
+    "sort",
+    "sort_desc",
+    "sqrt",
+    "start",
+    "step",
+    "tan",
+    "tanh",
+    "time",
+    "timezone_offset",
+    "ttf",
+    "union",
+    "vector",
+    "year",
 ];
 
 /// Label-manipulation functions per
 /// `links/specs/MetricsQL.md`. 22 entries; all currently
 /// ParserOnly.
 pub const LABEL_FUNCTIONS_SPEC: &[&str] = &[
-    "alias", "drop_common_labels",
-    "label_copy", "label_del", "label_graphite_group",
-    "label_join", "label_keep", "label_lowercase",
-    "label_map", "label_match", "label_mismatch",
-    "label_move", "label_replace", "label_set",
-    "label_transform", "label_uppercase", "label_value",
+    "alias",
+    "drop_common_labels",
+    "label_copy",
+    "label_del",
+    "label_graphite_group",
+    "label_join",
+    "label_keep",
+    "label_lowercase",
+    "label_map",
+    "label_match",
+    "label_mismatch",
+    "label_move",
+    "label_replace",
+    "label_set",
+    "label_transform",
+    "label_uppercase",
+    "label_value",
     "labels_equal",
-    "sort_by_label", "sort_by_label_desc",
-    "sort_by_label_numeric", "sort_by_label_numeric_desc",
+    "sort_by_label",
+    "sort_by_label_desc",
+    "sort_by_label_numeric",
+    "sort_by_label_numeric_desc",
 ];
 
 // =====================================================================
@@ -363,11 +798,9 @@ pub fn rollup_function_by_name(name: &str) -> Option<&'static RollupFunction> {
 /// All aggregation-operator names matching `prefix`.
 /// `evaluable_only=true` filters to entries the evaluator
 /// runs (drops [`EvalSupport::ParserOnly`]).
-pub fn aggregate_op_names_starting_with(
-    prefix: &str,
-    evaluable_only: bool,
-) -> Vec<&'static str> {
-    AGGREGATE_OPS.iter()
+pub fn aggregate_op_names_starting_with(prefix: &str, evaluable_only: bool) -> Vec<&'static str> {
+    AGGREGATE_OPS
+        .iter()
         .filter(|a| a.name.starts_with(prefix))
         .filter(|a| !evaluable_only || a.support.evaluable())
         .map(|a| a.name)
@@ -379,7 +812,8 @@ pub fn rollup_function_names_starting_with(
     prefix: &str,
     evaluable_only: bool,
 ) -> Vec<&'static str> {
-    ROLLUP_FUNCTIONS.iter()
+    ROLLUP_FUNCTIONS
+        .iter()
         .filter(|f| f.name.starts_with(prefix))
         .filter(|f| !evaluable_only || f.support.evaluable())
         .map(|f| f.name)
@@ -394,19 +828,28 @@ pub fn rollup_function_names_starting_with(
 /// `evaluable_only=true` filters the bulk parser-only lists
 /// (transforms, labels, extra rollups) out — leaving only
 /// names with [`EvalSupport::ParserAndEval`] coverage.
-pub fn callable_names_starting_with(
-    prefix: &str,
-    evaluable_only: bool,
-) -> Vec<&'static str> {
+pub fn callable_names_starting_with(prefix: &str, evaluable_only: bool) -> Vec<&'static str> {
     let mut out = aggregate_op_names_starting_with(prefix, evaluable_only);
     out.extend(rollup_function_names_starting_with(prefix, evaluable_only));
     if !evaluable_only {
-        out.extend(EXTRA_ROLLUP_FUNCTIONS_SPEC.iter()
-            .filter(|n| n.starts_with(prefix)).copied());
-        out.extend(TRANSFORM_FUNCTIONS_SPEC.iter()
-            .filter(|n| n.starts_with(prefix)).copied());
-        out.extend(LABEL_FUNCTIONS_SPEC.iter()
-            .filter(|n| n.starts_with(prefix)).copied());
+        out.extend(
+            EXTRA_ROLLUP_FUNCTIONS_SPEC
+                .iter()
+                .filter(|n| n.starts_with(prefix))
+                .copied(),
+        );
+        out.extend(
+            TRANSFORM_FUNCTIONS_SPEC
+                .iter()
+                .filter(|n| n.starts_with(prefix))
+                .copied(),
+        );
+        out.extend(
+            LABEL_FUNCTIONS_SPEC
+                .iter()
+                .filter(|n| n.starts_with(prefix))
+                .copied(),
+        );
     }
     out.sort();
     out.dedup();
@@ -427,13 +870,22 @@ pub fn is_known_callable(name: &str) -> bool {
 /// Total count of distinct callable names recognised across
 /// the parser corpus. Used by the parity doc-test.
 pub fn known_callable_count() -> usize {
-    let mut all: std::collections::HashSet<&'static str> =
-        std::collections::HashSet::new();
-    for a in AGGREGATE_OPS { all.insert(a.name); }
-    for r in ROLLUP_FUNCTIONS { all.insert(r.name); }
-    for n in EXTRA_ROLLUP_FUNCTIONS_SPEC { all.insert(n); }
-    for n in TRANSFORM_FUNCTIONS_SPEC { all.insert(n); }
-    for n in LABEL_FUNCTIONS_SPEC { all.insert(n); }
+    let mut all: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+    for a in AGGREGATE_OPS {
+        all.insert(a.name);
+    }
+    for r in ROLLUP_FUNCTIONS {
+        all.insert(r.name);
+    }
+    for n in EXTRA_ROLLUP_FUNCTIONS_SPEC {
+        all.insert(n);
+    }
+    for n in TRANSFORM_FUNCTIONS_SPEC {
+        all.insert(n);
+    }
+    for n in LABEL_FUNCTIONS_SPEC {
+        all.insert(n);
+    }
     all.len()
 }
 
@@ -491,12 +943,16 @@ mod tests {
         // structurally: the registry has no ParserOnly rollups
         // (every entry is ParserAndEval).
         for f in ROLLUP_FUNCTIONS {
-            assert_eq!(f.support, EvalSupport::ParserAndEval,
+            assert_eq!(
+                f.support,
+                EvalSupport::ParserAndEval,
                 "rollup '{}' marked {:?}; the registry's invariant is \
                  'every rollup matches the evaluator dispatch.' Add a \
                  ParserOnly variant only after the evaluator drops support, \
                  or add the eval handler before listing the name.",
-                f.name, f.support);
+                f.name,
+                f.support
+            );
         }
     }
 
@@ -505,14 +961,17 @@ mod tests {
         // The evaluator handles a known subset: sum / avg /
         // min / max / count / group / stddev / stdvar +
         // topk / bottomk / quantile.
-        for required_eval in
-            ["sum", "avg", "min", "max", "count", "group",
-             "stddev", "stdvar", "topk", "bottomk", "quantile"]
-        {
+        for required_eval in [
+            "sum", "avg", "min", "max", "count", "group", "stddev", "stdvar", "topk", "bottomk",
+            "quantile",
+        ] {
             let entry = aggregate_op_by_name(required_eval)
                 .unwrap_or_else(|| panic!("missing aggregate '{required_eval}'"));
-            assert_eq!(entry.support, EvalSupport::ParserAndEval,
-                "aggregate '{required_eval}' should be ParserAndEval");
+            assert_eq!(
+                entry.support,
+                EvalSupport::ParserAndEval,
+                "aggregate '{required_eval}' should be ParserAndEval"
+            );
         }
     }
 
@@ -520,14 +979,24 @@ mod tests {
     fn rollup_registry_includes_full_evaluator_dispatch() {
         // Mirror eval::RollupFn::from_name verbatim.
         for required in [
-            "rate", "increase", "delta",
-            "sum_over_time", "avg_over_time", "min_over_time",
-            "max_over_time", "count_over_time", "last_over_time",
-            "first_over_time", "stddev_over_time", "stdvar_over_time",
+            "rate",
+            "increase",
+            "delta",
+            "sum_over_time",
+            "avg_over_time",
+            "min_over_time",
+            "max_over_time",
+            "count_over_time",
+            "last_over_time",
+            "first_over_time",
+            "stddev_over_time",
+            "stdvar_over_time",
             "quantile_over_time",
         ] {
-            assert!(rollup_function_by_name(required).is_some(),
-                "rollup registry missing '{required}' (evaluator handles it)");
+            assert!(
+                rollup_function_by_name(required).is_some(),
+                "rollup registry missing '{required}' (evaluator handles it)"
+            );
         }
     }
 
@@ -537,14 +1006,20 @@ mod tests {
         // bottomk, quantile.
         for required in ["topk", "bottomk", "quantile"] {
             let entry = aggregate_op_by_name(required).unwrap();
-            assert!(entry.takes_param,
-                "aggregate '{required}' should take a leading param");
+            assert!(
+                entry.takes_param,
+                "aggregate '{required}' should take a leading param"
+            );
         }
         // Non-parameterised that the evaluator runs.
-        for non_param in ["sum", "avg", "min", "max", "count", "group", "stddev", "stdvar"] {
+        for non_param in [
+            "sum", "avg", "min", "max", "count", "group", "stddev", "stdvar",
+        ] {
             let entry = aggregate_op_by_name(non_param).unwrap();
-            assert!(!entry.takes_param,
-                "aggregate '{non_param}' should NOT take a param");
+            assert!(
+                !entry.takes_param,
+                "aggregate '{non_param}' should NOT take a param"
+            );
         }
     }
 
@@ -552,8 +1027,7 @@ mod tests {
     fn aggregate_registry_names_unique() {
         let mut seen = std::collections::HashSet::new();
         for a in AGGREGATE_OPS {
-            assert!(seen.insert(a.name),
-                "duplicate aggregate '{}'", a.name);
+            assert!(seen.insert(a.name), "duplicate aggregate '{}'", a.name);
         }
     }
 
@@ -561,8 +1035,7 @@ mod tests {
     fn rollup_registry_names_unique() {
         let mut seen = std::collections::HashSet::new();
         for f in ROLLUP_FUNCTIONS {
-            assert!(seen.insert(f.name),
-                "duplicate rollup '{}'", f.name);
+            assert!(seen.insert(f.name), "duplicate rollup '{}'", f.name);
         }
     }
 
@@ -584,22 +1057,30 @@ mod tests {
         assert!(all.contains(&"any"));
         assert!(all.contains(&"avg"));
         assert!(all.contains(&"avg_over_time"));
-        assert!(!evaluable.contains(&"any"),
-            "evaluable-only filter should drop ParserOnly entries");
+        assert!(
+            !evaluable.contains(&"any"),
+            "evaluable-only filter should drop ParserOnly entries"
+        );
         assert!(evaluable.contains(&"avg"));
         assert!(evaluable.contains(&"avg_over_time"));
     }
 
     #[test]
     fn binary_op_table_covers_arithmetic_comparison_set_and_atan2() {
-        let arith: usize = BINARY_OPS.iter()
-            .filter(|b| b.kind == BinaryOpKind::Arithmetic).count();
+        let arith: usize = BINARY_OPS
+            .iter()
+            .filter(|b| b.kind == BinaryOpKind::Arithmetic)
+            .count();
         assert!(arith >= 7, "arith should include + - * / % ^ atan2");
-        let cmp: usize = BINARY_OPS.iter()
-            .filter(|b| b.kind == BinaryOpKind::Comparison).count();
+        let cmp: usize = BINARY_OPS
+            .iter()
+            .filter(|b| b.kind == BinaryOpKind::Comparison)
+            .count();
         assert_eq!(cmp, 6, "== != > >= < <=");
-        let set: usize = BINARY_OPS.iter()
-            .filter(|b| b.kind == BinaryOpKind::LogicSet).count();
+        let set: usize = BINARY_OPS
+            .iter()
+            .filter(|b| b.kind == BinaryOpKind::LogicSet)
+            .count();
         assert_eq!(set, 3, "and / or / unless");
     }
 
@@ -617,8 +1098,10 @@ mod tests {
     #[test]
     fn matcher_ops_cover_all_four_canonical_forms() {
         for required in ["=", "!=", "=~", "!~"] {
-            assert!(MATCHER_OPS.contains(&required),
-                "missing matcher op '{required}'");
+            assert!(
+                MATCHER_OPS.contains(&required),
+                "missing matcher op '{required}'"
+            );
         }
     }
 
@@ -634,16 +1117,16 @@ mod tests {
     fn parser_corpus_counts_match_spec() {
         // links/specs/MetricsQL.md as of the 2026-05-05 audit:
         // aggregates 37, rollups 80, transforms 93, labels 22.
-        assert_eq!(AGGREGATE_OPS.len(), 37,
-            "aggregates: spec=37");
+        assert_eq!(AGGREGATE_OPS.len(), 37, "aggregates: spec=37");
         assert_eq!(
             ROLLUP_FUNCTIONS.len() + EXTRA_ROLLUP_FUNCTIONS_SPEC.len(),
-            80, "rollups: spec=80 (eval={} + parser-only={})",
-            ROLLUP_FUNCTIONS.len(), EXTRA_ROLLUP_FUNCTIONS_SPEC.len());
-        assert_eq!(TRANSFORM_FUNCTIONS_SPEC.len(), 93,
-            "transforms: spec=93");
-        assert_eq!(LABEL_FUNCTIONS_SPEC.len(), 22,
-            "labels: spec=22");
+            80,
+            "rollups: spec=80 (eval={} + parser-only={})",
+            ROLLUP_FUNCTIONS.len(),
+            EXTRA_ROLLUP_FUNCTIONS_SPEC.len()
+        );
+        assert_eq!(TRANSFORM_FUNCTIONS_SPEC.len(), 93, "transforms: spec=93");
+        assert_eq!(LABEL_FUNCTIONS_SPEC.len(), 22, "labels: spec=22");
     }
 
     #[test]
@@ -656,8 +1139,7 @@ mod tests {
         ] {
             let mut seen = std::collections::HashSet::new();
             for n in list {
-                assert!(seen.insert(n),
-                    "duplicate '{}' in {label}", n);
+                assert!(seen.insert(n), "duplicate '{}' in {label}", n);
             }
         }
         // No name appears in both the structured rollup list
@@ -665,9 +1147,12 @@ mod tests {
         // ROLLUP_FUNCTIONS and EXTRA_ROLLUP_FUNCTIONS_SPEC
         // would create double-counting in completion).
         for r in ROLLUP_FUNCTIONS {
-            assert!(!EXTRA_ROLLUP_FUNCTIONS_SPEC.contains(&r.name),
+            assert!(
+                !EXTRA_ROLLUP_FUNCTIONS_SPEC.contains(&r.name),
                 "'{}' appears in both structured rollups and \
-                 EXTRA_ROLLUP_FUNCTIONS_SPEC", r.name);
+                 EXTRA_ROLLUP_FUNCTIONS_SPEC",
+                r.name
+            );
         }
     }
 
@@ -693,14 +1178,19 @@ mod tests {
         // 'rang' covers 18 transform functions all starting
         // with 'range_*'. Without `evaluable_only`, all show.
         let unfiltered = callable_names_starting_with("range_", false);
-        assert!(unfiltered.len() >= 16,
+        assert!(
+            unfiltered.len() >= 16,
             "expected 16+ range_* transforms, got {} ({:?})",
-            unfiltered.len(), unfiltered);
+            unfiltered.len(),
+            unfiltered
+        );
         // With `evaluable_only=true` they all disappear (none
         // are evaluator-supported).
         let filtered = callable_names_starting_with("range_", true);
-        assert!(filtered.is_empty(),
-            "evaluable_only should drop all parser-only entries: {filtered:?}");
+        assert!(
+            filtered.is_empty(),
+            "evaluable_only should drop all parser-only entries: {filtered:?}"
+        );
     }
 
     #[test]

@@ -56,7 +56,10 @@ impl ProfileGuard {
     /// Start profiling if `profiler=flamegraph` or `profiler=perf` is set.
     /// Output files go in `session_dir` if provided, otherwise current directory.
     /// Returns `None` if profiling is not requested or not available.
-    pub fn maybe_start(params: &HashMap<String, String>, session_dir: Option<&std::path::Path>) -> Option<Self> {
+    pub fn maybe_start(
+        params: &HashMap<String, String>,
+        session_dir: Option<&std::path::Path>,
+    ) -> Option<Self> {
         // Always announce the profiler decision at startup —
         // `(none)` and `off` are quietly handled, but the line
         // tells the operator the runner *saw* (or didn't see)
@@ -73,25 +76,33 @@ impl ProfileGuard {
                 // banner. The actionable hint (`profiler=perf`
                 // / `profiler=flamegraph`) belongs in the
                 // CLI help text, not every quiet startup.
-                crate::observer::log(crate::observer::LogLevel::Debug,
+                crate::observer::log(
+                    crate::observer::LogLevel::Debug,
                     "profiler: off (pass `profiler=perf` or \
-                     `profiler=flamegraph` to enable)");
+                     `profiler=flamegraph` to enable)",
+                );
                 None
             }
             Some("off") | Some("none") | Some("") => {
                 // Explicit-off — the operator typed
                 // `profiler=off`, so they already know.
                 // Debug-level confirmation is enough.
-                crate::observer::log(crate::observer::LogLevel::Debug,
-                    "profiler: off (explicitly disabled)");
+                crate::observer::log(
+                    crate::observer::LogLevel::Debug,
+                    "profiler: off (explicitly disabled)",
+                );
                 None
             }
             Some("flamegraph") => Self::start_pprof(session_dir),
             Some("perf") => Self::start_perf(session_dir, params),
             Some(other) => {
-                crate::observer::log(crate::observer::LogLevel::Warn,
-                    &format!("profiler: unknown mode '{other}'; \
-                              expected 'perf', 'flamegraph', or 'off'"));
+                crate::observer::log(
+                    crate::observer::LogLevel::Warn,
+                    &format!(
+                        "profiler: unknown mode '{other}'; \
+                              expected 'perf', 'flamegraph', or 'off'"
+                    ),
+                );
                 None
             }
         }
@@ -101,9 +112,11 @@ impl ProfileGuard {
         #[cfg(not(feature = "flamegraph"))]
         {
             let _ = session_dir;
-            crate::observer::log(crate::observer::LogLevel::Warn,
+            crate::observer::log(
+                crate::observer::LogLevel::Warn,
                 "profiler=flamegraph requested but the 'flamegraph' feature is not enabled. \
-                 Rebuild with: cargo build --features flamegraph");
+                 Rebuild with: cargo build --features flamegraph",
+            );
             None
         }
 
@@ -120,17 +133,25 @@ impl ProfileGuard {
                         Some(d) => d.join("flamegraph.svg").to_string_lossy().into_owned(),
                         None => format!("flamegraph-{ts}.svg"),
                     };
-                    crate::observer::log(crate::observer::LogLevel::Info,
-                        &format!("profiler: pprof started (997 Hz, Rust frames only), output → {output_path}"));
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        &format!(
+                            "profiler: pprof started (997 Hz, Rust frames only), output → {output_path}"
+                        ),
+                    );
                     Some(Self {
                         mode: Some(ProfileMode::Pprof { guard, output_path }),
                     })
                 }
                 Err(e) => {
-                    crate::observer::log(crate::observer::LogLevel::Warn,
-                        &format!("failed to start pprof profiler: {e}"));
-                    crate::observer::log(crate::observer::LogLevel::Warn,
-                        "  (requires Linux perf_event_open; try: echo 1 > /proc/sys/kernel/perf_event_paranoid)");
+                    crate::observer::log(
+                        crate::observer::LogLevel::Warn,
+                        &format!("failed to start pprof profiler: {e}"),
+                    );
+                    crate::observer::log(
+                        crate::observer::LogLevel::Warn,
+                        "  (requires Linux perf_event_open; try: echo 1 > /proc/sys/kernel/perf_event_paranoid)",
+                    );
                     None
                 }
             }
@@ -142,14 +163,16 @@ impl ProfileGuard {
         params: &HashMap<String, String>,
     ) -> Option<Self> {
         // Check that perf is available
-        let perf_check = std::process::Command::new("perf")
-            .arg("version")
-            .output();
+        let perf_check = std::process::Command::new("perf").arg("version").output();
         if perf_check.is_err() || !perf_check.as_ref().unwrap().status.success() {
-            crate::observer::log(crate::observer::LogLevel::Warn,
-                "profiler=perf requested but `perf` is not available.");
-            crate::observer::log(crate::observer::LogLevel::Warn,
-                "  Install with: sudo apt install linux-tools-$(uname -r)");
+            crate::observer::log(
+                crate::observer::LogLevel::Warn,
+                "profiler=perf requested but `perf` is not available.",
+            );
+            crate::observer::log(
+                crate::observer::LogLevel::Warn,
+                "  Install with: sudo apt install linux-tools-$(uname -r)",
+            );
             return None;
         }
 
@@ -162,18 +185,23 @@ impl ProfileGuard {
         // 5–10× slower per sample on debug-info-rich binaries.
         // `lbr` uses the CPU's Last Branch Record — lowest
         // overhead during capture, limited stack depth.
-        let callgraph = params.get("profiler_callgraph")
-            .map(|s| s.as_str()).unwrap_or("fp");
+        let callgraph = params
+            .get("profiler_callgraph")
+            .map(|s| s.as_str())
+            .unwrap_or("fp");
         let callgraph_args: &[&str] = match callgraph {
-            "fp"    => &["--call-graph", "fp"],
+            "fp" => &["--call-graph", "fp"],
             "dwarf" => &["--call-graph", "dwarf,16384"],
-            "lbr"   => &["--call-graph", "lbr"],
+            "lbr" => &["--call-graph", "lbr"],
             other => {
-                crate::observer::log(crate::observer::LogLevel::Warn,
+                crate::observer::log(
+                    crate::observer::LogLevel::Warn,
                     &format!(
                         "profiler_callgraph='{other}' is not recognized; \
                          expected 'fp' (default), 'dwarf', or 'lbr'. \
-                         Falling back to 'fp'."));
+                         Falling back to 'fp'."
+                    ),
+                );
                 &["--call-graph", "fp"]
             }
         };
@@ -200,9 +228,7 @@ impl ProfileGuard {
         let mut perf_args: Vec<&str> = vec!["record", "-g"];
         perf_args.extend_from_slice(callgraph_args);
         let pid_str = pid.to_string();
-        perf_args.extend_from_slice(&[
-            "-F", "997", "-p", &pid_str, "-o", &perf_data,
-        ]);
+        perf_args.extend_from_slice(&["-F", "997", "-p", &pid_str, "-o", &perf_data]);
         let result = std::process::Command::new("perf")
             .args(&perf_args)
             .stdin(std::process::Stdio::null())
@@ -213,8 +239,10 @@ impl ProfileGuard {
         let mut child = match result {
             Ok(c) => c,
             Err(e) => {
-                crate::observer::log(crate::observer::LogLevel::Warn,
-                    &format!("profiler: failed to start perf record: {e}"));
+                crate::observer::log(
+                    crate::observer::LogLevel::Warn,
+                    &format!("profiler: failed to start perf record: {e}"),
+                );
                 return None;
             }
         };
@@ -230,10 +258,11 @@ impl ProfileGuard {
                     for line in reader.lines() {
                         let Ok(line) = line else { break };
                         let trimmed = line.trim_end();
-                        if trimmed.is_empty() { continue; }
+                        if trimmed.is_empty() {
+                            continue;
+                        }
                         let level = classify_perf_line(trimmed);
-                        crate::observer::log(level,
-                            &format!("perf: {trimmed}"));
+                        crate::observer::log(level, &format!("perf: {trimmed}"));
                     }
                 })
                 .ok()
@@ -251,23 +280,33 @@ impl ProfileGuard {
         if let Ok(Some(status)) = child.try_wait() {
             // Give the pump a moment to drain the rest of stderr.
             std::thread::sleep(std::time::Duration::from_millis(100));
-            crate::observer::log(crate::observer::LogLevel::Warn,
+            crate::observer::log(
+                crate::observer::LogLevel::Warn,
                 &format!(
                     "profiler: perf record exited immediately ({status}). \
                      No flamegraph will be produced — see the perf: \
                      lines above for the reason. Common causes: paranoid \
                      level too high (`sudo sysctl -w kernel.perf_event_paranoid=1`), \
-                     or perf not built with -p PID support."));
-            if let Some(h) = stderr_pump { let _ = h.join(); }
+                     or perf not built with -p PID support."
+                ),
+            );
+            if let Some(h) = stderr_pump {
+                let _ = h.join();
+            }
             return None;
         }
 
-        crate::observer::log(crate::observer::LogLevel::Info,
-            &format!("profiler: perf record attached (997 Hz, callgraph={callgraph}), \
-                      output → {output_path}"));
+        crate::observer::log(
+            crate::observer::LogLevel::Info,
+            &format!(
+                "profiler: perf record attached (997 Hz, callgraph={callgraph}), \
+                      output → {output_path}"
+            ),
+        );
         Some(Self {
             mode: Some(ProfileMode::Perf {
-                perf_data, output_path,
+                perf_data,
+                output_path,
                 child: Some(child),
                 stderr_pump,
             }),
@@ -280,36 +319,48 @@ impl ProfileGuard {
     /// SIGINT (or a runner that returns early via `?`) still
     /// produces the flamegraph as long as Drop runs.
     pub fn finish(&mut self) {
-        let Some(mode) = self.mode.take() else { return; };
+        let Some(mode) = self.mode.take() else {
+            return;
+        };
         match mode {
             #[cfg(feature = "flamegraph")]
-            ProfileMode::Pprof { guard, output_path } => {
-                match guard.report().build() {
-                    Ok(report) => {
-                        match std::fs::File::create(&output_path) {
-                            Ok(file) => {
-                                if let Err(e) = report.flamegraph(file) {
-                                    crate::observer::log(crate::observer::LogLevel::Warn,
-                                        &format!("profiler: failed to write flamegraph: {e}"));
-                                } else {
-                                    crate::observer::log(crate::observer::LogLevel::Info,
-                                        &format!("profiler: wrote {output_path}"));
-                                    if let Some(name) = std::path::Path::new(&output_path)
-                                        .file_name().and_then(|n| n.to_str())
-                                    {
-                                        crate::session::Session::link_artifact(name);
-                                    }
-                                }
+            ProfileMode::Pprof { guard, output_path } => match guard.report().build() {
+                Ok(report) => match std::fs::File::create(&output_path) {
+                    Ok(file) => {
+                        if let Err(e) = report.flamegraph(file) {
+                            crate::observer::log(
+                                crate::observer::LogLevel::Warn,
+                                &format!("profiler: failed to write flamegraph: {e}"),
+                            );
+                        } else {
+                            crate::observer::log(
+                                crate::observer::LogLevel::Info,
+                                &format!("profiler: wrote {output_path}"),
+                            );
+                            if let Some(name) = std::path::Path::new(&output_path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                            {
+                                crate::session::Session::link_artifact(name);
                             }
-                            Err(e) => crate::observer::log(crate::observer::LogLevel::Warn,
-                                &format!("profiler: failed to create {output_path}: {e}")),
                         }
                     }
-                    Err(e) => crate::observer::log(crate::observer::LogLevel::Warn,
-                        &format!("profiler: failed to build report: {e}")),
-                }
-            }
-            ProfileMode::Perf { perf_data, output_path, child, stderr_pump } => {
+                    Err(e) => crate::observer::log(
+                        crate::observer::LogLevel::Warn,
+                        &format!("profiler: failed to create {output_path}: {e}"),
+                    ),
+                },
+                Err(e) => crate::observer::log(
+                    crate::observer::LogLevel::Warn,
+                    &format!("profiler: failed to build report: {e}"),
+                ),
+            },
+            ProfileMode::Perf {
+                perf_data,
+                output_path,
+                child,
+                stderr_pump,
+            } => {
                 // Stop perf cleanly. We held the Child handle
                 // expressly so we can signal *this* process by
                 // PID — no `pkill -f` regex chase, no risk of
@@ -335,8 +386,10 @@ impl ProfileGuard {
                         // before we read it.
                         match c.wait() {
                             Ok(_status) => {}
-                            Err(e) => crate::observer::log(crate::observer::LogLevel::Warn,
-                                &format!("profiler: perf record wait failed: {e}")),
+                            Err(e) => crate::observer::log(
+                                crate::observer::LogLevel::Warn,
+                                &format!("profiler: perf record wait failed: {e}"),
+                            ),
                         }
                     } else {
                         // Errno is in the global; the child may
@@ -350,13 +403,19 @@ impl ProfileGuard {
                 // (like `[ perf record: Captured and wrote …]`)
                 // appears in the log before profiler progress
                 // messages.
-                if let Some(h) = stderr_pump { let _ = h.join(); }
+                if let Some(h) = stderr_pump {
+                    let _ = h.join();
+                }
 
                 if !std::path::Path::new(&perf_data).exists() {
-                    crate::observer::log(crate::observer::LogLevel::Warn,
-                        &format!("profiler: perf.data not found at {perf_data} \
+                    crate::observer::log(
+                        crate::observer::LogLevel::Warn,
+                        &format!(
+                            "profiler: perf.data not found at {perf_data} \
                                   — perf record may have failed; check the \
-                                  perf: log lines above"));
+                                  perf: log lines above"
+                        ),
+                    );
                     return;
                 }
 
@@ -368,37 +427,47 @@ impl ProfileGuard {
                     .unwrap_or(false);
 
                 if has_inferno {
-                    let perf_data_size = std::fs::metadata(&perf_data)
-                        .map(|m| m.len()).unwrap_or(0);
+                    let perf_data_size =
+                        std::fs::metadata(&perf_data).map(|m| m.len()).unwrap_or(0);
                     let mb = perf_data_size as f64 / (1024.0 * 1024.0);
-                    crate::observer::log(crate::observer::LogLevel::Info,
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
                         &format!(
                             "profiler: post-processing {perf_data} ({mb:.1} MB) with \
                              inferno — perf script + collapse can take 30s–2min on \
-                             dwarf call-graphs. Stages will log as they complete."));
+                             dwarf call-graphs. Stages will log as they complete."
+                        ),
+                    );
 
                     // Stage 1: `perf script` reads perf.data and emits text.
                     // This is usually the longest single stage.
                     let t0 = std::time::Instant::now();
-                    crate::observer::log(crate::observer::LogLevel::Info,
-                        "profiler: stage 1/3: running `perf script` (decoding perf.data)...");
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        "profiler: stage 1/3: running `perf script` (decoding perf.data)...",
+                    );
                     let script = std::process::Command::new("perf")
                         .args(["script", "-i", &perf_data])
                         .output();
 
                     if let Ok(script_output) = script {
-                        let script_lines = script_output.stdout
-                            .iter().filter(|&&b| b == b'\n').count();
-                        crate::observer::log(crate::observer::LogLevel::Info,
+                        let script_lines =
+                            script_output.stdout.iter().filter(|&&b| b == b'\n').count();
+                        crate::observer::log(
+                            crate::observer::LogLevel::Info,
                             &format!(
                                 "profiler:   `perf script` done in {:.1}s ({script_lines} lines)",
-                                t0.elapsed().as_secs_f64()));
+                                t0.elapsed().as_secs_f64()
+                            ),
+                        );
 
                         // Stage 2: collapse — parses every line, builds the
                         // folded stack format. CPU-bound, single-threaded.
                         let t1 = std::time::Instant::now();
-                        crate::observer::log(crate::observer::LogLevel::Info,
-                            "profiler: stage 2/3: running `inferno-collapse-perf`...");
+                        crate::observer::log(
+                            crate::observer::LogLevel::Info,
+                            "profiler: stage 2/3: running `inferno-collapse-perf`...",
+                        );
                         let collapse = std::process::Command::new("inferno-collapse-perf")
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
@@ -410,13 +479,18 @@ impl ProfileGuard {
                                 let _ = stdin.write_all(&script_output.stdout);
                             }
                             if let Ok(collapsed) = collapse_proc.wait_with_output() {
-                                crate::observer::log(crate::observer::LogLevel::Info,
+                                crate::observer::log(
+                                    crate::observer::LogLevel::Info,
                                     &format!(
                                         "profiler:   collapse done in {:.1}s",
-                                        t1.elapsed().as_secs_f64()));
+                                        t1.elapsed().as_secs_f64()
+                                    ),
+                                );
                                 let t2 = std::time::Instant::now();
-                                crate::observer::log(crate::observer::LogLevel::Info,
-                                    "profiler: stage 3/3: rendering `inferno-flamegraph` SVG...");
+                                crate::observer::log(
+                                    crate::observer::LogLevel::Info,
+                                    "profiler: stage 3/3: rendering `inferno-flamegraph` SVG...",
+                                );
                                 // 1) Flamegraph SVG (the visual).
                                 let flamegraph = std::process::Command::new("inferno-flamegraph")
                                     .stdin(std::process::Stdio::piped())
@@ -428,16 +502,25 @@ impl ProfileGuard {
                                         let _ = stdin.write_all(&collapsed.stdout);
                                     }
                                     if let Ok(svg_output) = fg_proc.wait_with_output() {
-                                        if let Err(e) = std::fs::write(&output_path, &svg_output.stdout) {
-                                            crate::observer::log(crate::observer::LogLevel::Warn,
-                                                &format!("profiler: failed to write {output_path}: {e}"));
+                                        if let Err(e) =
+                                            std::fs::write(&output_path, &svg_output.stdout)
+                                        {
+                                            crate::observer::log(
+                                                crate::observer::LogLevel::Warn,
+                                                &format!(
+                                                    "profiler: failed to write {output_path}: {e}"
+                                                ),
+                                            );
                                         } else {
                                             let size_kb = svg_output.stdout.len() / 1024;
-                                            crate::observer::log(crate::observer::LogLevel::Info,
+                                            crate::observer::log(
+                                                crate::observer::LogLevel::Info,
                                                 &format!(
                                                     "profiler:   wrote {output_path} ({size_kb} KB) \
                                                      in {:.1}s",
-                                                    t2.elapsed().as_secs_f64()));
+                                                    t2.elapsed().as_secs_f64()
+                                                ),
+                                            );
                                             // Convenience symlink only after the
                                             // write succeeded — Session::new
                                             // intentionally doesn't pre-create
@@ -445,7 +528,8 @@ impl ProfileGuard {
                                             // never dangle when a run skips
                                             // profiling.
                                             if let Some(name) = std::path::Path::new(&output_path)
-                                                .file_name().and_then(|n| n.to_str())
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
                                             {
                                                 crate::session::Session::link_artifact(name);
                                             }
@@ -456,35 +540,52 @@ impl ProfileGuard {
                                 // 2) Markdown summary (top-N tables) — same
                                 // folded input, parsed in-process. Companion
                                 // file alongside the SVG, swap .svg → .md.
-                                let md_path = output_path.trim_end_matches(".svg")
-                                    .to_string() + ".md";
+                                let md_path =
+                                    output_path.trim_end_matches(".svg").to_string() + ".md";
                                 let md = summarize_folded(&collapsed.stdout, 20);
                                 match std::fs::write(&md_path, md.as_bytes()) {
                                     Ok(()) => {
-                                        crate::observer::log(crate::observer::LogLevel::Info,
-                                            &format!("profiler: wrote {md_path} (top-20 self/inclusive)"));
+                                        crate::observer::log(
+                                            crate::observer::LogLevel::Info,
+                                            &format!(
+                                                "profiler: wrote {md_path} (top-20 self/inclusive)"
+                                            ),
+                                        );
                                         if let Some(name) = std::path::Path::new(&md_path)
-                                            .file_name().and_then(|n| n.to_str())
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
                                         {
                                             crate::session::Session::link_artifact(name);
                                         }
                                     }
-                                    Err(e) => crate::observer::log(crate::observer::LogLevel::Warn,
-                                        &format!("profiler: failed to write {md_path}: {e}")),
+                                    Err(e) => crate::observer::log(
+                                        crate::observer::LogLevel::Warn,
+                                        &format!("profiler: failed to write {md_path}: {e}"),
+                                    ),
                                 }
                             }
                         }
                     }
                 } else {
                     // No inferno — leave perf.data for manual processing
-                    crate::observer::log(crate::observer::LogLevel::Info,
-                        &format!("profiler: perf data saved to {perf_data}"));
-                    crate::observer::log(crate::observer::LogLevel::Info,
-                        "  To generate flamegraph manually:");
-                    crate::observer::log(crate::observer::LogLevel::Info,
-                        &format!("    perf script -i {perf_data} | inferno-collapse-perf | inferno-flamegraph > {output_path}"));
-                    crate::observer::log(crate::observer::LogLevel::Info,
-                        "  Install inferno: cargo install inferno");
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        &format!("profiler: perf data saved to {perf_data}"),
+                    );
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        "  To generate flamegraph manually:",
+                    );
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        &format!(
+                            "    perf script -i {perf_data} | inferno-collapse-perf | inferno-flamegraph > {output_path}"
+                        ),
+                    );
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        "  Install inferno: cargo install inferno",
+                    );
                 }
 
                 // Clean up perf.data (it can be large)
@@ -535,7 +636,7 @@ fn summarize_folded(folded: &[u8], top_n: usize) -> String {
         Err(_) => return "(profiler: folded output was not valid UTF-8)\n".into(),
     };
 
-    let mut self_counts:      HashMap<&str, u64> = HashMap::new();
+    let mut self_counts: HashMap<&str, u64> = HashMap::new();
     let mut inclusive_counts: HashMap<&str, u64> = HashMap::new();
     let mut total_samples: u64 = 0;
 
@@ -544,10 +645,16 @@ fn summarize_folded(folded: &[u8], top_n: usize) -> String {
         // count is whitespace-separated from the stack and is the
         // last token; parse from the right.
         let line = line.trim_end();
-        if line.is_empty() { continue; }
-        let Some(sp) = line.rfind(' ') else { continue; };
+        if line.is_empty() {
+            continue;
+        }
+        let Some(sp) = line.rfind(' ') else {
+            continue;
+        };
         let (stack, count_str) = (&line[..sp], &line[sp + 1..]);
-        let Ok(count) = count_str.parse::<u64>() else { continue; };
+        let Ok(count) = count_str.parse::<u64>() else {
+            continue;
+        };
         total_samples = total_samples.saturating_add(count);
 
         // Inclusive: every distinct frame in the stack (deduped).
@@ -588,16 +695,25 @@ fn summarize_folded(folded: &[u8], top_n: usize) -> String {
     out.push_str("|--:|--------:|:------|\n");
     for (frame, count) in &self_ranked {
         let pct = 100.0 * (*count as f64) / (total_samples as f64);
-        out.push_str(&format!("| {pct:.2} | {count} | `{}` |\n", md_escape(frame)));
+        out.push_str(&format!(
+            "| {pct:.2} | {count} | `{}` |\n",
+            md_escape(frame)
+        ));
     }
     out.push('\n');
 
-    out.push_str(&format!("## Top {} by inclusive time\n\n", incl_ranked.len()));
+    out.push_str(&format!(
+        "## Top {} by inclusive time\n\n",
+        incl_ranked.len()
+    ));
     out.push_str("| % | samples | frame |\n");
     out.push_str("|--:|--------:|:------|\n");
     for (frame, count) in &incl_ranked {
         let pct = 100.0 * (*count as f64) / (total_samples as f64);
-        out.push_str(&format!("| {pct:.2} | {count} | `{}` |\n", md_escape(frame)));
+        out.push_str(&format!(
+            "| {pct:.2} | {count} | `{}` |\n",
+            md_escape(frame)
+        ));
     }
     out.push('\n');
 
@@ -617,8 +733,15 @@ fn md_escape(s: &str) -> String {
 fn classify_perf_line(line: &str) -> crate::observer::LogLevel {
     let lc = line.to_ascii_lowercase();
     let warn_markers = [
-        "error", "fail", "denied", "no permission", "paranoid",
-        "cannot", "unable to", "not found", "warning",
+        "error",
+        "fail",
+        "denied",
+        "no permission",
+        "paranoid",
+        "cannot",
+        "unable to",
+        "not found",
+        "warning",
     ];
     if warn_markers.iter().any(|m| lc.contains(m)) {
         crate::observer::LogLevel::Warn
@@ -654,8 +777,14 @@ mod tests {
         assert!(md.contains("`f`"));
         // Inclusive time leader: `a` (10+20+30 = 60).
         let incl_section = md.split("## Top").nth(2).expect("two sections");
-        let a_line = incl_section.lines().find(|l| l.contains("`a`")).expect("`a` row");
-        assert!(a_line.contains("60"), "`a` inclusive count should be 60: {a_line}");
+        let a_line = incl_section
+            .lines()
+            .find(|l| l.contains("`a`"))
+            .expect("`a` row");
+        assert!(
+            a_line.contains("60"),
+            "`a` inclusive count should be 60: {a_line}"
+        );
     }
 
     #[test]

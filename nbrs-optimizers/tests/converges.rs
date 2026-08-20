@@ -8,29 +8,36 @@
 //! "win" by starting at the optimum.
 
 use nbrs_optimizers::testmodels::{
-    branin, rastrigin, rosenbrock, sphere, Minimize, NoisyFidelity, BRANIN_MIN,
+    BRANIN_MIN, Minimize, NoisyFidelity, branin, rastrigin, rosenbrock, sphere,
 };
-use nbrs_optimizers::{by_name, Axis, Budget, Objective, OptimizerParams, Report, SearchSpace, StopReason};
+use nbrs_optimizers::{
+    Axis, Budget, Objective, OptimizerParams, Report, SearchSpace, StopReason, by_name,
+};
 
 /// A `dims`-D continuous box `[lo, hi]^dims` with axes `x0..`.
 fn cont(dims: usize, lo: f64, hi: f64) -> SearchSpace {
-    SearchSpace::new((0..dims).map(|i| Axis::continuous(format!("x{i}"), lo, hi)).collect())
+    SearchSpace::new(
+        (0..dims)
+            .map(|i| Axis::continuous(format!("x{i}"), lo, hi))
+            .collect(),
+    )
 }
 
 fn solve(name: &str, space: &SearchSpace, obj: &mut dyn Objective, evals: usize) -> Report {
     let mut opt = by_name(name, &OptimizerParams::new()).expect("optimizer is registered");
     let r = opt.optimize(space, obj, &Budget::seeded(evals, 0xC0FFEE));
     assert_eq!(opt.name(), name);
-    assert!(r.evals <= evals, "{name} overran budget: {} > {evals}", r.evals);
+    assert!(
+        r.evals <= evals,
+        "{name} overran budget: {} > {evals}",
+        r.evals
+    );
     r
 }
 
 /// Shift a minimization function so its optimum is at `target` (interior,
 /// not the box centre).
-fn shifted(
-    base: fn(&[f64]) -> f64,
-    target: Vec<f64>,
-) -> impl FnMut(&[f64]) -> f64 {
+fn shifted(base: fn(&[f64]) -> f64, target: Vec<f64>) -> impl FnMut(&[f64]) -> f64 {
     move |x: &[f64]| {
         let shifted: Vec<f64> = x.iter().zip(&target).map(|(v, t)| v - t).collect();
         base(&shifted)
@@ -90,7 +97,11 @@ fn methods_make_progress_on_rosenbrock() {
         let space = cont(2, -2.0, 2.0);
         let mut obj = Minimize::new(rosenbrock);
         let r = solve(name, &space, &mut obj, 800);
-        assert!(r.best_value > bar, "{name}: rosenbrock best_value {} (< {bar})", r.best_value);
+        assert!(
+            r.best_value > bar,
+            "{name}: rosenbrock best_value {} (< {bar})",
+            r.best_value
+        );
     }
 }
 
@@ -103,7 +114,11 @@ fn cmaes_handles_multimodal_rastrigin() {
     let r = solve("cmaes", &space, &mut obj, 1500);
     // Rastrigin is a field of local minima; reaching within ~3 of the
     // global bowl is a real result for a 2-D budgeted search.
-    assert!(r.best_value > -3.0, "cmaes: rastrigin best_value {}", r.best_value);
+    assert!(
+        r.best_value > -3.0,
+        "cmaes: rastrigin best_value {}",
+        r.best_value
+    );
 }
 
 // ── Branin: the canonical Bayesian-optimization benchmark ─────────────
@@ -140,9 +155,17 @@ fn sweep_and_traversal_enumerate_and_find_grid_optimum() {
         ]);
         let mut obj = Minimize::new(sphere);
         let r = solve(name, &space, &mut obj, 100);
-        assert_eq!(r.stop, StopReason::Converged, "{name} should exhaust the grid");
+        assert_eq!(
+            r.stop,
+            StopReason::Converged,
+            "{name} should exhaust the grid"
+        );
         assert_eq!(r.evals, 25, "{name} should evaluate the full 5x5 grid");
-        assert!(r.best_value > -1e-9, "{name}: grid optimum value {}", r.best_value);
+        assert!(
+            r.best_value > -1e-9,
+            "{name}: grid optimum value {}",
+            r.best_value
+        );
         assert_eq!(r.best, vec![0.0, 0.0], "{name}: best grid cell");
     }
 }
@@ -175,8 +198,14 @@ fn traversal_varies_expensive_axis_least_often() {
     // x (expensive) should change 2 times across 6 visits; y every step.
     let x_changes = order.windows(2).filter(|w| w[0].0 != w[1].0).count();
     let y_changes = order.windows(2).filter(|w| w[0].1 != w[1].1).count();
-    assert_eq!(x_changes, 2, "expensive axis x should change least: {order:?}");
-    assert!(y_changes >= x_changes, "cheap axis y should change at least as often");
+    assert_eq!(
+        x_changes, 2,
+        "expensive axis x should change least: {order:?}"
+    );
+    assert!(
+        y_changes >= x_changes,
+        "cheap axis y should change at least as often"
+    );
 }
 
 // ── Centroid screening: rank the high-impact axis first ───────────────
@@ -208,7 +237,11 @@ fn hyperband_finds_good_region_under_noise() {
     let r = solve("hyperband", &space, &mut obj, 600);
     // Random-search-quality on a 2-D box: getting within ~distance 1.6
     // of the origin (value > -2.5) is a fair bar.
-    assert!(r.best_value > -2.5, "hyperband: best_value {}", r.best_value);
+    assert!(
+        r.best_value > -2.5,
+        "hyperband: best_value {}",
+        r.best_value
+    );
     assert!(r.best_value.is_finite());
 }
 

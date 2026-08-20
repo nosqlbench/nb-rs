@@ -7,11 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-
 use nbrs_metrics::instruments::counter::Counter;
 use nbrs_metrics::instruments::histogram::Histogram;
+use nbrs_metrics::instruments::outcome::{MetricDetail, MetricDetailConfig, OutcomeInstrument};
 use nbrs_metrics::instruments::timer::Timer;
-use nbrs_metrics::instruments::outcome::{OutcomeInstrument, MetricDetail, MetricDetailConfig};
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::snapshot::MetricSet;
 use nbrs_rate::RateLimiter;
@@ -112,9 +111,8 @@ pub struct ActivityConfig {
     /// scrollback can reproduce the line later. `None`
     /// means snapshot capture is skipped (no session db
     /// — short test fixtures, in-memory sessions).
-    pub snapshot_writer: Option<
-        Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
-    >,
+    pub snapshot_writer:
+        Option<Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>>,
     /// Session-level dryrun mode (`silent` / `emit` / `json`),
     /// or `None` for a normal run.
     ///
@@ -293,7 +291,8 @@ pub struct ActivityMetrics {
     /// after executor setup so the progress thread can read live
     /// relevancy aggregates (recall-over-last-N, all-time mean) without
     /// draining the precision accumulators.
-    validation_metrics: std::sync::Mutex<Option<Arc<Vec<Arc<crate::validation::ValidationMetrics>>>>>,
+    validation_metrics:
+        std::sync::Mutex<Option<Arc<Vec<Arc<crate::validation::ValidationMetrics>>>>>,
 }
 
 /// Resolve the SRD-91 op-outcome detail config from the single
@@ -350,14 +349,28 @@ impl ActivityMetrics {
         // Outcome instruments choose counter-vs-timer per family (global
         // default + override), SRD-91. Default is Timers, preserving the
         // historical always-on latency distributions.
-        let outcome = |name: &str| OutcomeInstrument::new(
-            labels.with("name", name), sigdigs, detail.for_family(name),
-        );
+        let outcome = |name: &str| {
+            OutcomeInstrument::new(labels.with("name", name), sigdigs, detail.for_family(name))
+        };
         Self {
-            service_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_servicetime"), sigdigs)),
-            wait_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_waittime"), sigdigs)),
-            response_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_responsetime"), sigdigs)),
-            tries_histogram: Arc::new(nbrs_metrics::instruments::histogram::Histogram::with_sigdigs(labels.with("name", "tries"), sigdigs)),
+            service_time: Arc::new(Timer::with_sigdigs(
+                labels.with("name", "cycles_servicetime"),
+                sigdigs,
+            )),
+            wait_time: Arc::new(Timer::with_sigdigs(
+                labels.with("name", "cycles_waittime"),
+                sigdigs,
+            )),
+            response_time: Arc::new(Timer::with_sigdigs(
+                labels.with("name", "cycles_responsetime"),
+                sigdigs,
+            )),
+            tries_histogram: Arc::new(
+                nbrs_metrics::instruments::histogram::Histogram::with_sigdigs(
+                    labels.with("name", "tries"),
+                    sigdigs,
+                ),
+            ),
             cycles_total: Arc::new(Counter::new(labels.with("name", "cycles_total"))),
             skips_total: Arc::new(Counter::new(labels.with("name", "skips_total"))),
             attempt_total: Arc::new(Counter::new(labels.with("name", "attempt_total"))),
@@ -368,7 +381,9 @@ impl ActivityMetrics {
             result_failure: outcome("result_failure"),
             errors_total: Arc::new(Counter::new(labels.with("name", "errors_total"))),
             stanzas_total: Arc::new(Counter::new(labels.with("name", "stanzas_total"))),
-            daemon_cancelled_total: Arc::new(Counter::new(labels.with("name", "daemon_cancelled_total"))),
+            daemon_cancelled_total: Arc::new(Counter::new(
+                labels.with("name", "daemon_cancelled_total"),
+            )),
             daemon_errors_total: Arc::new(Counter::new(labels.with("name", "daemon_errors_total"))),
             ops_started: std::sync::atomic::AtomicU64::new(0),
             ops_finished: std::sync::atomic::AtomicU64::new(0),
@@ -415,14 +430,8 @@ impl ActivityMetrics {
             "cycles_responsetime",
             InstrumentRef::Timer(self.response_time.clone()),
         )?;
-        component.register_instrument(
-            "result_success",
-            self.result_success.instrument_ref(),
-        )?;
-        component.register_instrument(
-            "result_failure",
-            self.result_failure.instrument_ref(),
-        )?;
+        component.register_instrument("result_success", self.result_success.instrument_ref())?;
+        component.register_instrument("result_failure", self.result_failure.instrument_ref())?;
         component.register_instrument(
             "result_total",
             InstrumentRef::Counter(self.result_total.clone()),
@@ -443,14 +452,8 @@ impl ActivityMetrics {
             "attempt_total",
             InstrumentRef::Counter(self.attempt_total.clone()),
         )?;
-        component.register_instrument(
-            "attempt_success",
-            self.attempt_success.instrument_ref(),
-        )?;
-        component.register_instrument(
-            "attempt_failure",
-            self.attempt_failure.instrument_ref(),
-        )?;
+        component.register_instrument("attempt_success", self.attempt_success.instrument_ref())?;
+        component.register_instrument("attempt_failure", self.attempt_failure.instrument_ref())?;
         component.register_instrument(
             "stanzas_total",
             InstrumentRef::Counter(self.stanzas_total.clone()),
@@ -476,14 +479,10 @@ impl ActivityMetrics {
             InstrumentRef::Histogram(self.tries_histogram.clone()),
         )?;
 
-        component.set_dynamic_capture(Arc::new(
-            ActivityMetricsDynamic {
-                metrics: self.clone(),
-                prev_counters: std::sync::Mutex::new(
-                    std::collections::HashMap::new(),
-                ),
-            },
-        ));
+        component.set_dynamic_capture(Arc::new(ActivityMetricsDynamic {
+            metrics: self.clone(),
+            prev_counters: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }));
         Ok(())
     }
 
@@ -525,7 +524,8 @@ impl ActivityMetrics {
     /// The derived phase-progress override as a fraction in
     /// `[0.0, 1.0]`, or `None` when no producer has published one.
     pub fn progress_override(&self) -> Option<f64> {
-        let ppm = self.progress_override_ppm
+        let ppm = self
+            .progress_override_ppm
             .load(std::sync::atomic::Ordering::Relaxed);
         (ppm != u64::MAX).then(|| (ppm.min(1_000_000)) as f64 / 1_000_000.0)
     }
@@ -534,7 +534,8 @@ impl ActivityMetrics {
     /// `None` when unset (no producer, or a producer that publishes
     /// the fraction only).
     pub fn progress_override_elapsed_secs(&self) -> Option<f64> {
-        let ms = self.progress_override_elapsed_ms
+        let ms = self
+            .progress_override_elapsed_ms
             .load(std::sync::atomic::Ordering::Relaxed);
         (ms != u64::MAX).then(|| ms as f64 / 1000.0)
     }
@@ -549,26 +550,33 @@ impl ActivityMetrics {
     /// messages their WHAT (which error families drove the counters)
     /// without a metrics query.
     pub fn top_error_types(&self, n: usize) -> String {
-        let map = self.error_type_counts.lock().unwrap_or_else(|e| e.into_inner());
-        let mut v: Vec<(String, u64)> = map.iter()
+        let map = self
+            .error_type_counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut v: Vec<(String, u64)> = map
+            .iter()
             .map(|(k, c)| (k.clone(), c.get()))
             .filter(|(_, c)| *c > 0)
             .collect();
         v.sort_by(|a, b| b.1.cmp(&a.1));
         v.truncate(n);
-        v.iter().map(|(k, c)| format!("{k}={c}"))
-            .collect::<Vec<_>>().join(", ")
+        v.iter()
+            .map(|(k, c)| format!("{k}={c}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn count_error_type(&self, error_name: &str) {
-        let mut map = self.error_type_counts.lock()
+        let mut map = self
+            .error_type_counts
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let counter = map.entry(error_name.to_string())
-            .or_insert_with(|| {
-                Arc::new(Counter::new(
-                    self.labels.with("name", format!("errors.{error_name}")),
-                ))
-            });
+        let counter = map.entry(error_name.to_string()).or_insert_with(|| {
+            Arc::new(Counter::new(
+                self.labels.with("name", format!("errors.{error_name}")),
+            ))
+        });
         counter.inc();
     }
 
@@ -624,7 +632,9 @@ impl ActivityMetrics {
         let (n, lbl) = split_name_label(self.tries_histogram.labels());
         snap.insert_histogram(n, lbl, tries_snap, now);
 
-        let error_counts = self.error_type_counts.lock()
+        let error_counts = self
+            .error_type_counts
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         for counter in error_counts.values() {
             let (n, lbl) = split_name_label(counter.labels());
@@ -641,11 +651,11 @@ impl ActivityMetrics {
 
     /// Register the per-template validation metrics so the progress
     /// thread can read live relevancy aggregates.
-    pub fn set_validation_metrics(
-        &self,
-        vms: Arc<Vec<Arc<crate::validation::ValidationMetrics>>>,
-    ) {
-        *self.validation_metrics.lock().unwrap_or_else(|e| e.into_inner()) = Some(vms);
+    pub fn set_validation_metrics(&self, vms: Arc<Vec<Arc<crate::validation::ValidationMetrics>>>) {
+        *self
+            .validation_metrics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(vms);
     }
 
     /// Snapshot live relevancy aggregates from every registered
@@ -654,11 +664,12 @@ impl ActivityMetrics {
     pub fn collect_relevancy_live(&self) -> Vec<crate::validation::RelevancyLive> {
         let mut out = Vec::new();
         if let Ok(guard) = self.validation_metrics.lock()
-            && let Some(ref vms) = *guard {
-                for vm in vms.iter() {
-                    out.extend(vm.live_snapshot());
-                }
+            && let Some(ref vms) = *guard
+        {
+            for vm in vms.iter() {
+                out.extend(vm.live_snapshot());
             }
+        }
         out
     }
 
@@ -695,18 +706,21 @@ impl ActivityMetrics {
             if live.total_count == 0 {
                 continue;
             }
-            candidates.push((
-                live.name,
-                format!("{:.2}%", live.total_mean * 100.0),
-            ));
+            candidates.push((live.name, format!("{:.2}%", live.total_mean * 100.0)));
         }
         let snap = self.service_time.peek_snapshot();
         let h = &snap.histogram;
         if !h.is_empty() {
             let fmt = nbrs_metrics::reporters::summary::format_duration;
-            candidates.push(("latency_p50".to_string(),  fmt(h.value_at_quantile(0.50) as f64)));
-            candidates.push(("latency_p99".to_string(),  fmt(h.value_at_quantile(0.99) as f64)));
-            candidates.push(("latency_max".to_string(),  fmt(h.max() as f64)));
+            candidates.push((
+                "latency_p50".to_string(),
+                fmt(h.value_at_quantile(0.50) as f64),
+            ));
+            candidates.push((
+                "latency_p99".to_string(),
+                fmt(h.value_at_quantile(0.99) as f64),
+            ));
+            candidates.push(("latency_max".to_string(), fmt(h.max() as f64)));
             candidates.push(("latency_mean".to_string(), fmt(h.mean())));
         }
         // KEY-METRIC accent: `status_metrics:` selection is the
@@ -716,7 +730,7 @@ impl ActivityMetrics {
         // it reads first among the dim bookkeeping counters.
         let color = crate::observer::use_color();
         let accent = if color { "\x1b[1;95m" } else { "" };
-        let reset  = if color { "\x1b[0m" } else { "" };
+        let reset = if color { "\x1b[0m" } else { "" };
         let mut out: Vec<String> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for pat in patterns {
@@ -730,8 +744,6 @@ impl ActivityMetrics {
         }
         out
     }
-
-
 
     /// The PRIMARY key metric as a raw numeric sample: the first
     /// `status_metrics:` pattern's first match, in the same
@@ -757,9 +769,15 @@ impl ActivityMetrics {
         let h = &snap.histogram;
         if !h.is_empty() {
             let ms = |n: f64| n / 1e6;
-            candidates.push(("latency_p50".to_string(),  ms(h.value_at_quantile(0.50) as f64)));
-            candidates.push(("latency_p99".to_string(),  ms(h.value_at_quantile(0.99) as f64)));
-            candidates.push(("latency_max".to_string(),  ms(h.max() as f64)));
+            candidates.push((
+                "latency_p50".to_string(),
+                ms(h.value_at_quantile(0.50) as f64),
+            ));
+            candidates.push((
+                "latency_p99".to_string(),
+                ms(h.value_at_quantile(0.99) as f64),
+            ));
+            candidates.push(("latency_max".to_string(), ms(h.max() as f64)));
             candidates.push(("latency_mean".to_string(), ms(h.mean())));
         }
         for pat in patterns {
@@ -776,16 +794,16 @@ impl ActivityMetrics {
     pub fn collect_status_counters(&self) -> Vec<(String, u64)> {
         let mut counters = Vec::new();
         if let Ok(guard) = self.dispensers.lock()
-            && let Some(ref disps) = *guard {
-                for disp in disps.iter() {
-                    for (name, total) in disp.status_counters() {
-                        counters.push((name.to_string(), total));
-                    }
+            && let Some(ref disps) = *guard
+        {
+            for disp in disps.iter() {
+                for (name, total) in disp.status_counters() {
+                    counters.push((name.to_string(), total));
                 }
             }
+        }
         counters
     }
-
 }
 
 /// Map a canonical status-chip metric name to its short display
@@ -796,9 +814,9 @@ impl ActivityMetrics {
 /// passthrough for any name without a shortcut.
 fn chip_display_label(name: &str) -> &str {
     match name {
-        "latency_p50"  => "P50",
-        "latency_p99"  => "P99",
-        "latency_max"  => "Pmax",
+        "latency_p50" => "P50",
+        "latency_p99" => "P99",
+        "latency_max" => "Pmax",
         "latency_mean" => "Pmean",
         other => other,
     }
@@ -826,12 +844,7 @@ struct ActivityMetricsDynamic {
 }
 
 impl nbrs_metrics::component::DynamicCapture for ActivityMetricsDynamic {
-    fn capture_into(
-        &self,
-        out: &mut MetricSet,
-        now: Instant,
-        drain: bool,
-    ) {
+    fn capture_into(&self, out: &mut MetricSet, now: Instant, drain: bool) {
         use nbrs_metrics::snapshot::{MetricType, MetricValue, split_name_label};
 
         // Per-error-type counters.
@@ -839,19 +852,19 @@ impl nbrs_metrics::component::DynamicCapture for ActivityMetricsDynamic {
         //   baseline so cascade coalesce sums across intervals
         //   without inflation.
         // - drain=false (peek path): emit absolute totals.
-        let error_counts = self.metrics.error_type_counts.lock()
+        let error_counts = self
+            .metrics
+            .error_type_counts
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         if drain {
-            let mut prev = self.prev_counters.lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut prev = self.prev_counters.lock().unwrap_or_else(|e| e.into_inner());
             for counter in error_counts.values() {
                 let (name, lbl) = split_name_label(counter.labels());
                 let current = counter.get();
                 let key = counter.labels().identity_hash();
                 let previous = prev.insert(key, current).unwrap_or(0);
-                out.insert_counter(
-                    name, lbl, current.saturating_sub(previous), now,
-                );
+                out.insert_counter(name, lbl, current.saturating_sub(previous), now);
             }
         } else {
             for counter in error_counts.values() {
@@ -863,7 +876,10 @@ impl nbrs_metrics::component::DynamicCapture for ActivityMetricsDynamic {
         // Adapter-specific metrics from each registered dispenser.
         // Passthrough — the adapter decides delta vs. absolute
         // semantics for its own metrics.
-        if let Some(ref disps) = *self.metrics.dispensers.lock()
+        if let Some(ref disps) = *self
+            .metrics
+            .dispensers
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
         {
             for dispenser in disps.iter() {
@@ -1075,8 +1091,7 @@ pub struct PhasePollContext {
 }
 
 /// SRD-75 `on_timeout` policy — see [`PhasePollContext::on_timeout`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PhasePollTimeoutPolicy {
     /// Phase fails; scenario walker's error-routing policy
     /// decides downstream behaviour.
@@ -1088,7 +1103,6 @@ pub enum PhasePollTimeoutPolicy {
     /// terminates the whole run.
     Abort,
 }
-
 
 /// Invoke [`DriverAdapter::declare_controls`] for each unique adapter
 /// instance against the given parent component, deduping by
@@ -1115,19 +1129,22 @@ pub fn declare_adapter_controls(
     let mut seen: Vec<*const dyn DriverAdapter> = Vec::new();
     for adapter in adapters.values() {
         let ptr = Arc::as_ptr(adapter);
-        if seen.contains(&ptr) { continue; }
+        if seen.contains(&ptr) {
+            continue;
+        }
         seen.push(ptr);
         adapter.declare_controls(component);
     }
 }
 
 impl Activity {
-    pub fn new(
-        config: ActivityConfig,
-        parent_labels: &Labels,
-        op_sequence: OpSequence,
-    ) -> Self {
-        Self::with_params(config, parent_labels, op_sequence, std::collections::HashMap::new())
+    pub fn new(config: ActivityConfig, parent_labels: &Labels, op_sequence: OpSequence) -> Self {
+        Self::with_params(
+            config,
+            parent_labels,
+            op_sequence,
+            std::collections::HashMap::new(),
+        )
     }
 
     pub fn with_params(
@@ -1140,15 +1157,17 @@ impl Activity {
         // standalone (un-shared) policy from the config. The real
         // execution path resolves the shared instance from the parent
         // policy and passes it to `with_params_and_sigdigs`.
-        let error_policy = crate::error_policy::ErrorPolicy::standalone(
-            crate::error_policy::PolicyConfig::new(
+        let error_policy =
+            crate::error_policy::ErrorPolicy::standalone(crate::error_policy::PolicyConfig::new(
                 config.error_spec.clone(),
                 config.error_rate_max,
-            ),
-        );
+            ));
         let metric_detail = metric_detail_from_params(&params);
         Self::with_params_and_sigdigs(
-            config, parent_labels, op_sequence, params,
+            config,
+            parent_labels,
+            op_sequence,
+            params,
             nbrs_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS,
             error_policy,
             // This shim is the no-phase-kernel path (tests / library use);
@@ -1180,14 +1199,21 @@ impl Activity {
         // resolved by the caller from the run's effective params (the
         // executor passes the CLI-overlaid set; the library shim derives
         // from its own params). Default: timers.
-        let metrics = Arc::new(ActivityMetrics::with_sigdigs(&labels, sigdigs, metric_detail));
+        let metrics = Arc::new(ActivityMetrics::with_sigdigs(
+            &labels,
+            sigdigs,
+            metric_detail,
+        ));
         // All phases go through sources. cycles: N desugars to range(0, N).
         // Named cursors in Polydat provide their own factory via config.source_factory.
-        let source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory> = config.source_factory
-            .clone()
-            .unwrap_or_else(|| Arc::new(
-                polydat::iteration::source::RangeSourceFactory::named("cycles", 0, config.cycles)
-            ));
+        let source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory> =
+            config.source_factory.clone().unwrap_or_else(|| {
+                Arc::new(polydat::iteration::source::RangeSourceFactory::named(
+                    "cycles",
+                    0,
+                    config.cycles,
+                ))
+            });
 
         Self {
             config,
@@ -1223,7 +1249,8 @@ impl Activity {
     /// tripped. `false` when no walk-stop flag is wired (tests / shim).
     #[inline]
     pub fn walk_stop_requested(&self) -> bool {
-        self.walk_stop.as_ref()
+        self.walk_stop
+            .as_ref()
             .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
     }
 
@@ -1233,7 +1260,8 @@ impl Activity {
     /// this to exit. `false` for a foreground phase (no flag wired).
     #[inline]
     pub fn daemon_stop_requested(&self) -> bool {
-        self.daemon_stop.as_ref()
+        self.daemon_stop
+            .as_ref()
             .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
     }
 
@@ -1304,8 +1332,11 @@ impl Activity {
         // live knob can't drift. The instance-specific appliers (fiber-pool
         // resize, rate limiter) are registered later in `run_with_adapters`.
         let concurrency_control = CONCURRENCY.build_u32(self.config.concurrency as u32);
-        component.read().unwrap_or_else(|e| e.into_inner())
-            .controls().declare(concurrency_control);
+        component
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .controls()
+            .declare(concurrency_control);
 
         // Declare a `rate` control whenever the activity config has a rate
         // set. Its reified gauge projects ops/sec so metric sinks and the
@@ -1315,8 +1346,11 @@ impl Activity {
         // the limiter exists (see `run_with_adapters`).
         if let Some(rate) = self.config.rate {
             let rate_control = RATE.build_rate(rate);
-            component.read().unwrap_or_else(|e| e.into_inner())
-                .controls().declare(rate_control);
+            component
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .controls()
+                .declare(rate_control);
         }
         // Register every static instrument owned by ActivityMetrics
         // on this component so the cadence reporter's tree walk
@@ -1325,7 +1359,8 @@ impl Activity {
         // panic so the issue surfaces during init.
         {
             let mut guard = component.write().unwrap_or_else(|e| e.into_inner());
-            self.metrics.register_on(&mut guard)
+            self.metrics
+                .register_on(&mut guard)
                 .expect("ActivityMetrics::register_on failed on a fresh activity component");
         }
         self.component = Some(component);
@@ -1383,44 +1418,49 @@ impl Activity {
         // session config, NOT from any adapter substitution.
         let dryrun_mode: Option<String> = activity.config.dry_run_mode.clone();
         let templates_owned: Vec<nbrs_workload::model::ParsedOp>;
-        let templates: &[nbrs_workload::model::ParsedOp] = if let Some(mode) = dryrun_mode.as_deref() {
-            templates_owned = activity.op_sequence.templates().iter()
-                .map(|t| {
-                    let mut clone = t.clone();
-                    clone.params.insert(
-                        "dryrun".into(),
-                        serde_json::Value::String(mode.to_string()),
-                    );
-                    // dryrun=fields also forces the fields wrapper
-                    // on so the rendered op text reaches stdout
-                    // even though DRYRUN short-circuits the
-                    // adapter call. The fields wrapper is composed
-                    // OUTER of dryrun (see
-                    // wrapper_resolver::DEFAULT_ORDER), so its
-                    // pre-execute render runs first; the
-                    // subsequent DRYRUN short-circuit suppresses
-                    // the real adapter call.
-                    if mode == "fields" {
-                        clone.params.insert(
-                            "fields".into(),
-                            serde_json::Value::Bool(true),
-                        );
-                    }
-                    clone
-                })
-                .collect();
-            // The user passed `dryrun=<mode>` on the CLI — they
-            // already know what they asked for. Keep the
-            // marker-injection record at Debug so step-through /
-            // session-log audits can still find it without
-            // narrating it back on stderr every phase.
-            crate::diag!(crate::observer::LogLevel::Debug,
-                "dryrun={mode}: injected marker into {n} op template(s)",
-                mode = mode, n = templates_owned.len());
-            &templates_owned[..]
-        } else {
-            activity.op_sequence.templates()
-        };
+        let templates: &[nbrs_workload::model::ParsedOp] =
+            if let Some(mode) = dryrun_mode.as_deref() {
+                templates_owned = activity
+                    .op_sequence
+                    .templates()
+                    .iter()
+                    .map(|t| {
+                        let mut clone = t.clone();
+                        clone
+                            .params
+                            .insert("dryrun".into(), serde_json::Value::String(mode.to_string()));
+                        // dryrun=fields also forces the fields wrapper
+                        // on so the rendered op text reaches stdout
+                        // even though DRYRUN short-circuits the
+                        // adapter call. The fields wrapper is composed
+                        // OUTER of dryrun (see
+                        // wrapper_resolver::DEFAULT_ORDER), so its
+                        // pre-execute render runs first; the
+                        // subsequent DRYRUN short-circuit suppresses
+                        // the real adapter call.
+                        if mode == "fields" {
+                            clone
+                                .params
+                                .insert("fields".into(), serde_json::Value::Bool(true));
+                        }
+                        clone
+                    })
+                    .collect();
+                // The user passed `dryrun=<mode>` on the CLI — they
+                // already know what they asked for. Keep the
+                // marker-injection record at Debug so step-through /
+                // session-log audits can still find it without
+                // narrating it back on stderr every phase.
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "dryrun={mode}: injected marker into {n} op template(s)",
+                    mode = mode,
+                    n = templates_owned.len()
+                );
+                &templates_owned[..]
+            } else {
+                activity.op_sequence.templates()
+            };
 
         // Validate all bind points are resolvable before execution
         let program_for_op = |name: &str| op_builder.program_for_op(name);
@@ -1450,8 +1490,7 @@ impl Activity {
         // default-order tiebreaker. Both are built once
         // here and reused for every op template in this
         // activity.
-        let wrapper_registry =
-            crate::wrapper_registry::WrapperRegistry::from_inventory();
+        let wrapper_registry = crate::wrapper_registry::WrapperRegistry::from_inventory();
         // SRD-32a Push 3 — CLI `--wrap-default-order` replaces
         // the resolver's built-in tiebreaker. When unset, the
         // resolver builds with its DEFAULT_ORDER. The CLI list
@@ -1460,21 +1499,20 @@ impl Activity {
         let wrapper_resolver = match &activity.wrap_default_order {
             Some(order) => {
                 let names: Vec<&str> = order.iter().map(|s| s.as_str()).collect();
-                crate::wrapper_resolver::WrapperResolver::from_names(
-                    &names, &wrapper_registry,
-                )
+                crate::wrapper_resolver::WrapperResolver::from_names(&names, &wrapper_registry)
             }
-            None => crate::wrapper_resolver::WrapperResolver
-                ::with_default_order(&wrapper_registry),
+            None => crate::wrapper_resolver::WrapperResolver::with_default_order(&wrapper_registry),
         };
         let wrapper_resolver = match wrapper_resolver {
             Ok(r) => r,
             Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Error,
+                crate::diag!(
+                    crate::observer::LogLevel::Error,
                     "error: wrapper default-order is inconsistent with the \
                      registered wrapper graph: {e}. CLI `--wrap-default-order` \
                      and the built-in default both must satisfy every \
-                     registered constraint.");
+                     registered constraint."
+                );
                 return true;
             }
         };
@@ -1493,8 +1531,9 @@ impl Activity {
         // sees one dimensional cell per dispenser, surviving
         // for the run's duration. Held here to keep the Arc
         // alive.
-        let mut dispenser_components: Vec<std::sync::Arc<std::sync::RwLock<
-            nbrs_metrics::component::Component>>> = Vec::new();
+        let mut dispenser_components: Vec<
+            std::sync::Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
+        > = Vec::new();
         // Per-template wrapper pull plan. Wrapper-side reads
         // (validation, conditional, throttle) go through this
         // `PullPlan` against the firing fiber's state — see
@@ -1505,7 +1544,9 @@ impl Activity {
         let mut pull_plans_per_template: Vec<crate::fixture::PullPlan> = Vec::new();
         for template in templates {
             // Resolve adapter: per-template override or default
-            let adapter_name = template.params.get("adapter")
+            let adapter_name = template
+                .params
+                .get("adapter")
                 .and_then(|v| v.as_str())
                 .or_else(|| template.params.get("driver").and_then(|v| v.as_str()))
                 .unwrap_or(default_adapter);
@@ -1513,13 +1554,22 @@ impl Activity {
                 Some(a) => a,
                 None => {
                     let available = adapters.keys().cloned().collect::<Vec<_>>().join(", ");
-                    crate::diag!(crate::observer::LogLevel::Error, "error: unknown adapter '{adapter_name}' for op '{}' (available: {available})", template.name);
+                    crate::diag!(
+                        crate::observer::LogLevel::Error,
+                        "error: unknown adapter '{adapter_name}' for op '{}' (available: {available})",
+                        template.name
+                    );
                     return true; // signal stop — cannot proceed without the adapter
                 }
             };
 
             if template.params.contains_key("batch") {
-                crate::diag!(crate::observer::LogLevel::Debug, "[activity] op '{}' has batch param: {:?}", template.name, template.params.get("batch"));
+                crate::diag!(
+                    crate::observer::LogLevel::Debug,
+                    "[activity] op '{}' has batch param: {:?}",
+                    template.name,
+                    template.params.get("batch")
+                );
             }
             // SRD 30 §"Core-first field processing": if the adapter
             // declares its known op fields, every key in
@@ -1530,15 +1580,19 @@ impl Activity {
             // core directive — fail loudly rather than silently
             // dropping the field.
             if let Some(known) = adapter.known_op_fields() {
-                let unknown: Vec<&String> = template.op.keys()
+                let unknown: Vec<&String> = template
+                    .op
+                    .keys()
                     .filter(|k| !known.contains(&k.as_str()))
                     .collect();
                 if !unknown.is_empty() {
-                    let list = unknown.iter()
+                    let list = unknown
+                        .iter()
                         .map(|s| s.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    crate::diag!(crate::observer::LogLevel::Error,
+                    crate::diag!(
+                        crate::observer::LogLevel::Error,
                         "error: adapter '{}' does not recognize op fields [{list}] on op '{}'; known fields: [{}]",
                         adapter.name(),
                         template.name,
@@ -1581,7 +1635,9 @@ impl Activity {
                 // (3) a CLI param blast-merged into every op's params at
                 // parse time, (4) an adapter-declared extra, or (5) a
                 // workload-level param.
-                let unknown_params: Vec<&String> = template.params.keys()
+                let unknown_params: Vec<&String> = template
+                    .params
+                    .keys()
                     .filter(|k| {
                         !crate::validation::CORE_OP_PARAMS.contains(&k.as_str())
                             && !wrapper_registry.owns_field(k)
@@ -1591,13 +1647,18 @@ impl Activity {
                     })
                     .collect();
                 if !unknown_params.is_empty() {
-                    let list = unknown_params.iter()
+                    let list = unknown_params
+                        .iter()
                         .map(|s| s.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let wrapper_vocab = wrapper_registry.all_owned_fields()
-                        .into_iter().collect::<Vec<_>>().join(", ");
-                    crate::diag!(crate::observer::LogLevel::Error,
+                    let wrapper_vocab = wrapper_registry
+                        .all_owned_fields()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    crate::diag!(
+                        crate::observer::LogLevel::Error,
                         "error: op '{}' has unknown params keys [{list}] — \
                          not a core op param, not a wrapper field, not \
                          declared by adapter '{}', and not a workload-level \
@@ -1645,19 +1706,20 @@ impl Activity {
             // need a separate "where does this field live"
             // helper.
             {
-                let violations = wrapper_registry.misplaced_fields(
-                    crate::wrapper_registry::WrapperSubject::Op(template),
-                );
+                let violations = wrapper_registry
+                    .misplaced_fields(crate::wrapper_registry::WrapperSubject::Op(template));
                 if !violations.is_empty() {
                     for (wrapper, field) in &violations {
-                        crate::diag!(crate::observer::LogLevel::Error,
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
                             "error: op '{}': field `{field}` is owned by wrapper \
                              `{wrapper}`, but the trigger condition for `{wrapper}` \
                              is not satisfied (no trigger field set on this op). \
                              Either remove `{field}` or add the wrapper's trigger \
                              field. SRD-32a §\"Field ownership and parse-time \
                              validation\".",
-                            template.name);
+                            template.name
+                        );
                     }
                     return true; // stop — misconfiguration
                 }
@@ -1672,7 +1734,10 @@ impl Activity {
             // surfaces any violation as `Err`. No
             // outside-the-dispenser-init phase for binders; the
             // map_op return signals the result.
-            match adapter.map_op(template, op_builder.canonical_kernel_for_op(&template.name)).await {
+            match adapter
+                .map_op(template, op_builder.canonical_kernel_for_op(&template.name))
+                .await
+            {
                 Ok(d) => {
                     let raw: Arc<dyn OpDispenser> = Arc::from(d);
 
@@ -1708,29 +1773,35 @@ impl Activity {
                     //   2. Else workload-root `activity.wrappers_override`.
                     //   3. Else the resolver's default-order tiebreaker.
                     // Per-op shadows root entirely (no merge).
-                    let per_op_override = template.wrappers.as_ref()
+                    let per_op_override = template
+                        .wrappers
+                        .as_ref()
                         .filter(|c| !c.order.is_empty())
                         .map(|c| c.order.clone());
-                    let effective_override = per_op_override
-                        .or_else(|| activity.wrappers_override.clone());
+                    let effective_override =
+                        per_op_override.or_else(|| activity.wrappers_override.clone());
                     let plan = match effective_override {
                         Some(order) => {
-                            let order_strs: Vec<&str> = order.iter()
-                                .map(|s| s.as_str()).collect();
+                            let order_strs: Vec<&str> = order.iter().map(|s| s.as_str()).collect();
                             wrapper_resolver.resolve_with_order(
                                 crate::wrapper_registry::WrapperSubject::Op(template),
-                                &wrapper_registry, &order_strs)
+                                &wrapper_registry,
+                                &order_strs,
+                            )
                         }
                         None => wrapper_resolver.resolve(
                             crate::wrapper_registry::WrapperSubject::Op(template),
-                            &wrapper_registry),
+                            &wrapper_registry,
+                        ),
                     };
                     let plan = match plan {
                         Ok(p) => p,
                         Err(e) => {
-                            crate::diag!(crate::observer::LogLevel::Error,
+                            crate::diag!(
+                                crate::observer::LogLevel::Error,
                                 "error: op '{}': wrapper resolution failed: {e}",
-                                template.name);
+                                template.name
+                            );
                             return true;
                         }
                     };
@@ -1745,9 +1816,10 @@ impl Activity {
                     let assignments: Vec<(crate::wrapper_registry::WrapperName, String)> = plan
                         .iter_innermost_first()
                         .filter_map(|reg| {
-                            (reg.describe_assignment)(
-                                crate::wrapper_registry::WrapperSubject::Op(template)
-                            ).map(|s| (reg.name, s))
+                            (reg.describe_assignment)(crate::wrapper_registry::WrapperSubject::Op(
+                                template,
+                            ))
+                            .map(|s| (reg.name, s))
                         })
                         .collect();
                     if !assignments.is_empty() {
@@ -1757,11 +1829,13 @@ impl Activity {
                         // `nbrs describe` renders the same stack on
                         // demand (see nbrs/src/describe.rs); session.log
                         // still captures this for postmortem.
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "op '{}' wrappers (innermost → outermost):", template.name);
+                        crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "op '{}' wrappers (innermost → outermost):",
+                            template.name
+                        );
                         for (i, (_, line)) in assignments.iter().enumerate() {
-                            crate::diag!(crate::observer::LogLevel::Debug,
-                                "  {}. {}", i + 1, line);
+                            crate::diag!(crate::observer::LogLevel::Debug, "  {}. {}", i + 1, line);
                         }
                     }
 
@@ -1773,16 +1847,16 @@ impl Activity {
                     // same spec); no override inherits the phase policy by
                     // reference. The policy drives the OUTERMOST error-handler
                     // wrapper placed after the plan cascade below.
-                    let op_error_policy = match template.params.get("errors")
-                        .and_then(|v| v.as_str())
-                    {
-                        Some(spec) => activity.error_policy.resolve_child(Some(
-                            crate::error_policy::PolicyConfig::new(
-                                spec, activity.config.error_rate_max,
-                            ),
-                        )),
-                        None => activity.error_policy.clone(),
-                    };
+                    let op_error_policy =
+                        match template.params.get("errors").and_then(|v| v.as_str()) {
+                            Some(spec) => activity.error_policy.resolve_child(Some(
+                                crate::error_policy::PolicyConfig::new(
+                                    spec,
+                                    activity.config.error_rate_max,
+                                ),
+                            )),
+                            None => activity.error_policy.clone(),
+                        };
 
                     // Tries wrapper — CONDITIONAL innermost wrapper (SRD-82
                     // Part 3b): `tries:` is its sigil, the TOTAL attempts the
@@ -1806,23 +1880,32 @@ impl Activity {
                     // from the map. Falls back to the phase/root `tries`, an
                     // in-scope `tries` wire, then an `errors:` retry-verb
                     // budget.
-                    let op_tries: Option<u32> = template.params.get("tries")
+                    let op_tries: Option<u32> = template
+                        .params
+                        .get("tries")
                         .and_then(|v| match v {
                             serde_json::Value::Number(n) => n.as_u64().map(|n| n as u32),
                             serde_json::Value::String(s) => s.trim().parse::<u32>().ok(),
-                            serde_json::Value::Object(m) => m.get("count")
-                                .and_then(|c| c.as_u64()).map(|n| n as u32),
+                            serde_json::Value::Object(m) => {
+                                m.get("count").and_then(|c| c.as_u64()).map(|n| n as u32)
+                            }
                             _ => None,
                         })
                         .or(activity.config.tries)
-                        .or_else(|| raw.canonical_kernel()
-                            .and_then(|k| k.lookup("tries"))
-                            .and_then(|v| match v {
-                                polydat::ast::Value::U64(n) => Some(n as u32),
-                                _ => None,
-                            }))
-                        .or_else(|| op_error_policy.router.retry_verb_budget()
-                            .map(|additional| additional.saturating_add(1)));
+                        .or_else(|| {
+                            raw.canonical_kernel()
+                                .and_then(|k| k.lookup("tries"))
+                                .and_then(|v| match v {
+                                    polydat::ast::Value::U64(n) => Some(n as u32),
+                                    _ => None,
+                                })
+                        })
+                        .or_else(|| {
+                            op_error_policy
+                                .router
+                                .retry_verb_budget()
+                                .map(|additional| additional.saturating_add(1))
+                        });
                     let has_tries_wrapper = matches!(op_tries, Some(n) if n != 1);
                     // Retry pacing (compaction-demo diagnosis: an immediate
                     // `continue` retry loop hammers a dying server). Resolve
@@ -1837,44 +1920,78 @@ impl Activity {
                             serde_json::Value::Number(n) => n.as_u64().map(|n| n.to_string()),
                             serde_json::Value::String(s) => Some(s.clone()),
                             _ => None,
-                        }.and_then(|s| crate::timeval::parse_time_ms(&s).ok())
+                        }
+                        .and_then(|s| crate::timeval::parse_time_ms(&s).ok())
                     };
                     let mut backoff_base_ms: u64 = 100;
                     let mut backoff_max_ms: u64 = 10_000;
                     let mut backoff_ratio: f64 = 2.0;
                     // (3) phase-level map backoff
                     if let Some(bo) = activity.config.tries_backoff.as_ref() {
-                        if let Some(r) = bo.ratio { backoff_ratio = r; }
-                        if let Some(m) = bo.min.as_deref()
-                            .and_then(|s| crate::timeval::parse_time_ms(s).ok()) { backoff_base_ms = m; }
-                        if let Some(m) = bo.max.as_deref()
-                            .and_then(|s| crate::timeval::parse_time_ms(s).ok()) { backoff_max_ms = m; }
+                        if let Some(r) = bo.ratio {
+                            backoff_ratio = r;
+                        }
+                        if let Some(m) = bo
+                            .min
+                            .as_deref()
+                            .and_then(|s| crate::timeval::parse_time_ms(s).ok())
+                        {
+                            backoff_base_ms = m;
+                        }
+                        if let Some(m) = bo
+                            .max
+                            .as_deref()
+                            .and_then(|s| crate::timeval::parse_time_ms(s).ok())
+                        {
+                            backoff_max_ms = m;
+                        }
                     }
                     // (1)/(2) op-level: the `tries:` map backoff wins; absent
                     // that, the standalone `retry_backoff*` params.
-                    let op_map_backoff = template.params.get("tries")
+                    let op_map_backoff = template
+                        .params
+                        .get("tries")
                         .and_then(|v| v.as_object())
                         .and_then(|m| m.get("backoff"))
                         .and_then(|v| v.as_object());
                     if let Some(bo) = op_map_backoff {
-                        if let Some(r) = bo.get("ratio").and_then(|v| v.as_f64()) { backoff_ratio = r; }
-                        if let Some(m) = bo.get("min").and_then(&json_to_ms) { backoff_base_ms = m; }
-                        if let Some(m) = bo.get("max").and_then(&json_to_ms) { backoff_max_ms = m; }
-                    } else {
-                        if let Some(m) = template.params.get("retry_backoff").and_then(&json_to_ms) {
+                        if let Some(r) = bo.get("ratio").and_then(|v| v.as_f64()) {
+                            backoff_ratio = r;
+                        }
+                        if let Some(m) = bo.get("min").and_then(&json_to_ms) {
                             backoff_base_ms = m;
                         }
-                        if let Some(m) = template.params.get("retry_backoff_max").and_then(&json_to_ms) {
+                        if let Some(m) = bo.get("max").and_then(&json_to_ms) {
                             backoff_max_ms = m;
                         }
-                        if let Some(r) = template.params.get("retry_backoff_ratio").and_then(|v| v.as_f64()) {
+                    } else {
+                        if let Some(m) = template.params.get("retry_backoff").and_then(&json_to_ms)
+                        {
+                            backoff_base_ms = m;
+                        }
+                        if let Some(m) = template
+                            .params
+                            .get("retry_backoff_max")
+                            .and_then(&json_to_ms)
+                        {
+                            backoff_max_ms = m;
+                        }
+                        if let Some(r) = template
+                            .params
+                            .get("retry_backoff_ratio")
+                            .and_then(|v| v.as_f64())
+                        {
                             backoff_ratio = r;
                         }
                     }
                     let raw = match op_tries {
                         Some(n) if n != 1 => crate::wrappers::TriesDispenser::wrap(
-                            raw, n, activity.metrics.clone(),
-                            backoff_base_ms, backoff_max_ms, backoff_ratio,
+                            raw,
+                            n,
+                            activity.metrics.clone(),
+                            backoff_base_ms,
+                            backoff_max_ms,
+                            backoff_ratio,
                             activity.stop_view(),
                         ),
                         _ => raw,
@@ -1883,23 +2000,31 @@ impl Activity {
                     // Wrap with traversal. Traversal does not read Polydat
                     // values; no fixture registration needed. Always present per
                     // the registry's always-true trigger.
-                    let mut current: Arc<dyn OpDispenser> = crate::wrappers::TraversingDispenser::wrap(
-                        raw, template, traversal_stats.clone(),
-                    );
+                    let mut current: Arc<dyn OpDispenser> =
+                        crate::wrappers::TraversingDispenser::wrap(
+                            raw,
+                            template,
+                            traversal_stats.clone(),
+                        );
                     // Late-bound handoff from the metrics arm (outside poll in
                     // the cascade, so it runs AFTER the poll arm below) to the
                     // poll dispenser: the op's compiled gauge slots, re-published
                     // per poll iteration so drains feed the store live.
-                    let poll_iteration_gauges: Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>> =
-                        Arc::new(arc_swap::ArcSwapOption::empty());
+                    let poll_iteration_gauges: Arc<
+                        arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>,
+                    > = Arc::new(arc_swap::ArcSwapOption::empty());
 
                     // Apply each remaining wrapper in plan order.
                     // Skip `traverse`; it's already constructed.
                     for reg in plan.iter_innermost_first() {
-                        if reg.name == crate::wrappers::traverse::NAME { continue; }
+                        if reg.name == crate::wrappers::traverse::NAME {
+                            continue;
+                        }
                         let stop = match reg.name {
                             crate::wrappers::delay::NAME => {
-                                let spec = template.delay.as_ref()
+                                let spec = template
+                                    .delay
+                                    .as_ref()
                                     .expect("delay triggered → delay set");
                                 let trim = |s: &str| -> String {
                                     let t = s.trim();
@@ -1912,10 +2037,15 @@ impl Activity {
                                     nbrs_workload::model::DelaySpec::Before(name) => {
                                         let name = trim(name);
                                         crate::wrappers::DelayDispenser::wrap(
-                                            current.clone(), &name, &mut fx,
+                                            current.clone(),
+                                            &name,
+                                            &mut fx,
                                         )
                                     }
-                                    nbrs_workload::model::DelaySpec::BeforeAfter { before, after } => {
+                                    nbrs_workload::model::DelaySpec::BeforeAfter {
+                                        before,
+                                        after,
+                                    } => {
                                         let before = before.as_deref().map(trim);
                                         let after = after.as_deref().map(trim);
                                         crate::wrappers::DelayDispenser::wrap_before_after(
@@ -1927,26 +2057,41 @@ impl Activity {
                                     }
                                 };
                                 match wrap_result {
-                                    Ok(d) => { current = d; false }
+                                    Ok(d) => {
+                                        current = d;
+                                        false
+                                    }
                                     Err(e) => {
-                                        crate::diag!(crate::observer::LogLevel::Error,
-                                            "error: op '{}': {e}", template.name);
+                                        crate::diag!(
+                                            crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}",
+                                            template.name
+                                        );
                                         true
                                     }
                                 }
                             }
                             crate::validation::WRAPPER_NAME => {
                                 match crate::validation::ValidatingDispenser::wrap(
-                                    current.clone(), template, &activity.labels, Some(&program), &mut fx,
+                                    current.clone(),
+                                    template,
+                                    &activity.labels,
+                                    Some(&program),
+                                    &mut fx,
                                 ) {
                                     Ok((d, vm)) => {
-                                        if let Some(vm) = vm { validation_metrics.push(vm); }
+                                        if let Some(vm) = vm {
+                                            validation_metrics.push(vm);
+                                        }
                                         current = d;
                                         false
                                     }
                                     Err(e) => {
-                                        crate::diag!(crate::observer::LogLevel::Error,
-                                            "error: op '{}': {e}", template.name);
+                                        crate::diag!(
+                                            crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}",
+                                            template.name
+                                        );
                                         true
                                     }
                                 }
@@ -1966,14 +2111,20 @@ impl Activity {
                                 let cfg = poll_val.and_then(|v| v.as_object());
                                 let get_u64 = |k: &str, default: u64| -> u64 {
                                     cfg.and_then(|m| m.get(k))
-                                        .and_then(|v| v.as_u64()
-                                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+                                        .and_then(|v| {
+                                            v.as_u64().or_else(|| {
+                                                v.as_str().and_then(|s| s.parse::<u64>().ok())
+                                            })
+                                        })
                                         .unwrap_or(default)
                                 };
                                 let get_u32 = |k: &str, default: u32| -> u32 {
                                     cfg.and_then(|m| m.get(k))
-                                        .and_then(|v| v.as_u64().map(|n| n as u32)
-                                            .or_else(|| v.as_str().and_then(|s| s.parse::<u32>().ok())))
+                                        .and_then(|v| {
+                                            v.as_u64().map(|n| n as u32).or_else(|| {
+                                                v.as_str().and_then(|s| s.parse::<u32>().ok())
+                                            })
+                                        })
                                         .unwrap_or(default)
                                 };
                                 let get_str = |k: &str| -> Option<String> {
@@ -2044,23 +2195,46 @@ impl Activity {
                                     .and_then(|v| v.as_str())
                                     .is_some_and(|s| !s.trim().is_empty());
                                 let (each_gutter, _) = crate::wrappers::gutter::parse_specs(
-                                    template.params.get("gutter"));
+                                    template.params.get("gutter"),
+                                );
                                 let (d, _pm) = crate::wrappers::PollingDispenser::wrap_with_status(
-                                    current.clone(), interval, timeout, max_error_retries, metric_name, min_rows, max_rows, json_path.clone(),
-                                    each_memo, Some(activity.memo.clone()),
-                                    progress_template, Some(activity.metrics.clone()),
-                                    each_gutter, Some(activity.gutter.clone()),
+                                    current.clone(),
+                                    interval,
+                                    timeout,
+                                    max_error_retries,
+                                    metric_name,
+                                    min_rows,
+                                    max_rows,
+                                    json_path.clone(),
+                                    each_memo,
+                                    Some(activity.memo.clone()),
+                                    progress_template,
+                                    Some(activity.metrics.clone()),
+                                    each_gutter,
+                                    Some(activity.gutter.clone()),
                                     Some(poll_iteration_gauges.clone()),
                                     on_done.clone(),
                                     until,
                                     activity.stop_view(),
                                 );
-                                crate::diag!(crate::observer::LogLevel::Debug,
+                                crate::diag!(
+                                    crate::observer::LogLevel::Debug,
                                     "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, done_on={}, json_path={:?}, on_done={:?})",
-                                    template.name, interval, timeout, max_error_retries,
-                                    if until { "until-predicate".to_string() } else { format!("rows=[{min_rows}..={max_rows}]") },
+                                    template.name,
+                                    interval,
+                                    timeout,
+                                    max_error_retries,
+                                    if until {
+                                        "until-predicate".to_string()
+                                    } else {
+                                        format!("rows=[{min_rows}..={max_rows}]")
+                                    },
                                     json_path,
-                                    on_done.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>());
+                                    on_done
+                                        .iter()
+                                        .map(|(k, v)| format!("{k}={v}"))
+                                        .collect::<Vec<_>>()
+                                );
                                 current = d;
                                 false
                             }
@@ -2070,19 +2244,31 @@ impl Activity {
                                 // the recent fix that pulls polling
                                 // inside `if`. Resolver order
                                 // mirrors that.
-                                let cond = template.condition.as_deref()
+                                let cond = template
+                                    .condition
+                                    .as_deref()
                                     .expect("if triggered → condition set");
-                                let cond_name = cond.trim()
+                                let cond_name = cond
+                                    .trim()
                                     .strip_prefix('{')
                                     .and_then(|s| s.strip_suffix('}'))
                                     .unwrap_or(cond.trim());
                                 match crate::wrappers::ConditionalDispenser::wrap(
-                                    current.clone(), cond_name, activity.metrics.clone(), &mut fx,
+                                    current.clone(),
+                                    cond_name,
+                                    activity.metrics.clone(),
+                                    &mut fx,
                                 ) {
-                                    Ok(d) => { current = d; false }
+                                    Ok(d) => {
+                                        current = d;
+                                        false
+                                    }
                                     Err(e) => {
-                                        crate::diag!(crate::observer::LogLevel::Error,
-                                            "error: op '{}': {e}", template.name);
+                                        crate::diag!(
+                                            crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}",
+                                            template.name
+                                        );
                                         true
                                     }
                                 }
@@ -2101,10 +2287,16 @@ impl Activity {
                                     activity.stop_view(),
                                     &mut fx,
                                 ) {
-                                    Ok(d) => { current = d; false }
+                                    Ok(d) => {
+                                        current = d;
+                                        false
+                                    }
                                     Err(e) => {
-                                        crate::diag!(crate::observer::LogLevel::Error,
-                                            "error: op '{}': {e}", template.name);
+                                        crate::diag!(
+                                            crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}",
+                                            template.name
+                                        );
                                         true
                                     }
                                 }
@@ -2115,15 +2307,22 @@ impl Activity {
                                 // every other op's per-op limiter.
                                 // Each instance owns its own
                                 // RateLimiter.
-                                let rate_spec = template.rate.as_deref()
-                                    .expect("rate triggered → rate set");
+                                let rate_spec =
+                                    template.rate.as_deref().expect("rate triggered → rate set");
                                 match crate::wrappers::OpRateWrapper::wrap(
-                                    current.clone(), rate_spec,
+                                    current.clone(),
+                                    rate_spec,
                                 ) {
-                                    Ok(d) => { current = d; false }
+                                    Ok(d) => {
+                                        current = d;
+                                        false
+                                    }
                                     Err(e) => {
-                                        crate::diag!(crate::observer::LogLevel::Error,
-                                            "error: op '{}': {e}", template.name);
+                                        crate::diag!(
+                                            crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}",
+                                            template.name
+                                        );
                                         true
                                     }
                                 }
@@ -2137,13 +2336,16 @@ impl Activity {
                                 // enough that a deterministic
                                 // alphabetical sort keeps the printed
                                 // output stable across runs.
-                                let mut op_fields: Vec<(String, serde_json::Value)> = template.op
+                                let mut op_fields: Vec<(String, serde_json::Value)> = template
+                                    .op
                                     .iter()
                                     .map(|(k, v)| (k.clone(), v.clone()))
                                     .collect();
                                 op_fields.sort_by(|a, b| a.0.cmp(&b.0));
                                 current = crate::wrappers::FieldsDispenser::wrap_with_op_fields(
-                                    current.clone(), &template.name, op_fields,
+                                    current.clone(),
+                                    &template.name,
+                                    op_fields,
                                 );
                                 false
                             }
@@ -2159,8 +2361,7 @@ impl Activity {
                                 current = crate::wrappers::ResultDispenser::wrap(
                                     current.clone(),
                                     template.result.as_ref(),
-                                    template.abstract_interface.as_ref()
-                                        .map(|i| &i.results),
+                                    template.abstract_interface.as_ref().map(|i| &i.results),
                                 );
                                 false
                             }
@@ -2173,20 +2374,26 @@ impl Activity {
                                 // and child ops collide cleanly on
                                 // their `op=` label.
                                 let labels = nbrs_metrics::labels::Labels::of("op", &template.name);
-                                let dispenser_component = std::sync::Arc::new(std::sync::RwLock::new(
-                                    nbrs_metrics::component::Component::new(
-                                        labels, std::collections::HashMap::new(),
-                                    )
-                                ));
+                                let dispenser_component =
+                                    std::sync::Arc::new(std::sync::RwLock::new(
+                                        nbrs_metrics::component::Component::new(
+                                            labels,
+                                            std::collections::HashMap::new(),
+                                        ),
+                                    ));
                                 if let Some(parent) = activity.component.as_ref() {
                                     nbrs_metrics::component::attach(parent, &dispenser_component);
                                 }
                                 let wrap_result = {
-                                    let mut guard = dispenser_component.write()
+                                    let mut guard = dispenser_component
+                                        .write()
                                         .unwrap_or_else(|e| e.into_inner());
                                     crate::wrappers::MetricsDispenser::wrap_with_slots(
-                                        current.clone(), &template.metrics, &mut guard,
-                                        &dispenser_component, &mut fx,
+                                        current.clone(),
+                                        &template.metrics,
+                                        &mut guard,
+                                        &dispenser_component,
+                                        &mut fx,
                                     )
                                 };
                                 match wrap_result {
@@ -2202,14 +2409,19 @@ impl Activity {
                                         dispenser_component
                                             .write()
                                             .unwrap_or_else(|e| e.into_inner())
-                                            .set_state(nbrs_metrics::component::ComponentState::Running);
+                                            .set_state(
+                                                nbrs_metrics::component::ComponentState::Running,
+                                            );
                                         dispenser_components.push(dispenser_component);
                                         current = d;
                                         false
                                     }
                                     Err(e) => {
-                                        crate::diag!(crate::observer::LogLevel::Error,
-                                            "error: op '{}': {e}", template.name);
+                                        crate::diag!(
+                                            crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}",
+                                            template.name
+                                        );
                                         true
                                     }
                                 }
@@ -2253,10 +2465,12 @@ impl Activity {
                                         (Some(s.clone()), Some(s.clone()))
                                     }
                                     Some(serde_json::Value::Object(obj)) => {
-                                        let b = obj.get("before")
+                                        let b = obj
+                                            .get("before")
                                             .and_then(|v| v.as_str())
                                             .map(String::from);
-                                        let a = obj.get("after")
+                                        let a = obj
+                                            .get("after")
                                             .and_then(|v| v.as_str())
                                             .map(String::from);
                                         (b, a)
@@ -2264,10 +2478,12 @@ impl Activity {
                                     _ => (None, None),
                                 };
                                 if before.is_none() && after.is_none() {
-                                    crate::diag!(crate::observer::LogLevel::Warn,
+                                    crate::diag!(
+                                        crate::observer::LogLevel::Warn,
                                         "op '{}': memo: requires at least one of \
                                          `before` / `after` (or a string shorthand)",
-                                        template.name);
+                                        template.name
+                                    );
                                     false
                                 } else {
                                     current = crate::wrappers::MemoDispenser::wrap(
@@ -2285,12 +2501,15 @@ impl Activity {
                                 // map), wrap with the activity's shared
                                 // gutter slot.
                                 let (during, fin) = crate::wrappers::gutter::parse_specs(
-                                    template.params.get("gutter"));
+                                    template.params.get("gutter"),
+                                );
                                 if during.is_none() && fin.is_none() {
-                                    crate::diag!(crate::observer::LogLevel::Warn,
+                                    crate::diag!(
+                                        crate::observer::LogLevel::Warn,
                                         "op '{}': gutter: requires a layout string, one of \
                                          `bar:` / `spark:` / `text:`, or a `final:` form",
-                                        template.name);
+                                        template.name
+                                    );
                                     false
                                 } else {
                                     if let Some((kind, tmpl)) = &during {
@@ -2320,13 +2539,17 @@ impl Activity {
                                 current = crate::wrappers::ReadoutDispenser::wrap_with_measure(
                                     current.clone(),
                                     template.name.clone(),
-                                    template.params.get("measure")
+                                    template
+                                        .params
+                                        .get("measure")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string()),
                                 );
-                                crate::diag!(crate::observer::LogLevel::Debug,
+                                crate::diag!(
+                                    crate::observer::LogLevel::Debug,
                                     "  op '{}': readout visible (op-level status line)",
-                                    template.name);
+                                    template.name
+                                );
                                 false
                             }
                             crate::wrappers::errors::NAME => {
@@ -2344,14 +2567,19 @@ impl Activity {
                                 false
                             }
                             other => {
-                                crate::diag!(crate::observer::LogLevel::Error,
+                                crate::diag!(
+                                    crate::observer::LogLevel::Error,
                                     "error: op '{}': resolver returned wrapper `{}` \
                                      with no dispatch handler in the cascade",
-                                    template.name, other);
+                                    template.name,
+                                    other
+                                );
                                 true
                             }
                         };
-                        if stop { return true; }
+                        if stop {
+                            return true;
+                        }
                     }
 
                     // Dryrun short-circuit: when the session is in
@@ -2399,7 +2627,11 @@ impl Activity {
                     pull_plans_per_template.push(fx.seal());
                 }
                 Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Error, "error: adapter.map_op failed for '{}': {e}", template.name);
+                    crate::diag!(
+                        crate::observer::LogLevel::Error,
+                        "error: adapter.map_op failed for '{}': {e}",
+                        template.name
+                    );
                     return true;
                 }
             }
@@ -2416,25 +2648,30 @@ impl Activity {
         // pipeline is healthy — return cleanly without spawning
         // the fiber pool or the progress thread.
         if activity.config.stop_after_dispenser_init {
-            crate::diag!(crate::observer::LogLevel::Info,
+            crate::diag!(
+                crate::observer::LogLevel::Info,
                 "dryrun=dispenser: {} op-template dispenser(s) constructed; \
                  stopping before cycle execution",
-                dispensers.len());
+                dispensers.len()
+            );
             return false;
         }
 
         let validation_metrics = Arc::new(validation_metrics);
         // Share the validation-metrics handle with ActivityMetrics so
         // the progress thread (below) can read live relevancy aggregates.
-        activity.metrics.set_validation_metrics(validation_metrics.clone());
+        activity
+            .metrics
+            .set_validation_metrics(validation_metrics.clone());
 
         // Single activity-level rate limiter. One ops-per-sec
         // ceiling gates every fiber; there is no separate
         // stanza-rate mechanism. Activities with no `rate`
         // configured skip construction cleanly.
-        let rate_limiter = activity.config.rate.map(|r| {
-            Arc::new(RateLimiter::start(nbrs_rate::RateSpec::new(r)))
-        });
+        let rate_limiter = activity
+            .config
+            .rate
+            .map(|r| Arc::new(RateLimiter::start(nbrs_rate::RateSpec::new(r))));
 
         // Register the [`RateLimiterApplier`] against the
         // already-declared `rate` control if both the control
@@ -2442,16 +2679,14 @@ impl Activity {
         // [`Self::attach_component`] — this step only wires the
         // applier so a runtime write actually reconfigures the
         // running limiter.
-        if let (Some(ac), Some(rl)) = (
-            activity.component.as_ref(), rate_limiter.as_ref(),
-        ) {
-            let existing: Option<nbrs_metrics::controls::Control<nbrs_rate::RateSpec>> =
-                ac.read().unwrap_or_else(|e| e.into_inner())
-                    .controls().get("rate");
+        if let (Some(ac), Some(rl)) = (activity.component.as_ref(), rate_limiter.as_ref()) {
+            let existing: Option<nbrs_metrics::controls::Control<nbrs_rate::RateSpec>> = ac
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .controls()
+                .get("rate");
             if let Some(ctl) = existing {
-                ctl.register_applier(
-                    nbrs_rate::RateLimiterApplier::new(Arc::clone(rl)),
-                );
+                ctl.register_applier(nbrs_rate::RateLimiterApplier::new(Arc::clone(rl)));
             }
         }
 
@@ -2465,12 +2700,13 @@ impl Activity {
         // per-phase-clear-wipes-peers bug. The phase-scoped values below
         // still feed the phase-END readout + outcome line.
         let activity_name = activity.config.name.clone();
-        let suppress_progress = adapters.values()
-            .any(|a| a.name() == "plotter");
+        let suppress_progress = adapters.values().any(|a| a.name() == "plotter");
         let start_time = Instant::now();
         // Use source extent for progress (data-driven), not cycles
         let source_for_progress = activity.source_factory.clone();
-        let total_extent = source_for_progress.global_extent().unwrap_or(activity.config.cycles);
+        let total_extent = source_for_progress
+            .global_extent()
+            .unwrap_or(activity.config.cycles);
         // One Arc<str> shared by every fiber in this phase. The
         // Polydat runtime-context `phase()` node clones this per read
         // instead of per fiber, keeping the per-cycle cost O(1).
@@ -2502,7 +2738,9 @@ impl Activity {
             // SRD-89 — snapshot this phase's controls ONCE (walk-up from the
             // phase component), shared lock-free across all of the phase's
             // fibers. Carries live handles, so servo retargets are observed.
-            let phase_controls_outer = activity.component.as_ref()
+            let phase_controls_outer = activity
+                .component
+                .as_ref()
                 .map(crate::polydat_nodes::runtime_context::snapshot_controls)
                 .unwrap_or_else(crate::polydat_nodes::runtime_context::empty_controls);
             Box::new(move |stop: crate::fiber_pool::StopFlag| {
@@ -2538,10 +2776,16 @@ impl Activity {
                         phase_controls,
                         async move {
                             executor_task(
-                                activity, dispensers, pull_plans,
-                                op_builder, rate_limiter, stop,
-                                daemon_pool, phase_arc_for_exec,
-                            ).await;
+                                activity,
+                                dispensers,
+                                pull_plans,
+                                op_builder,
+                                rate_limiter,
+                                stop,
+                                daemon_pool,
+                                phase_arc_for_exec,
+                            )
+                            .await;
                         },
                     );
                     let result = std::panic::AssertUnwindSafe(body).catch_unwind().await;
@@ -2560,13 +2804,17 @@ impl Activity {
                             let _ = activity_name_for_log;
                         }
                         Err(panic_payload) => {
-                        let msg = panic_payload
-                            .downcast_ref::<&'static str>().map(|s| (*s).to_string())
-                            .or_else(|| panic_payload.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "<non-string panic payload>".into());
-                        crate::diag!(crate::observer::LogLevel::Error,
-                            "fiber panic in activity '{}': {}",
-                            activity_name_for_log, msg);
+                            let msg = panic_payload
+                                .downcast_ref::<&'static str>()
+                                .map(|s| (*s).to_string())
+                                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "<non-string panic payload>".into());
+                            crate::diag!(
+                                crate::observer::LogLevel::Error,
+                                "fiber panic in activity '{}': {}",
+                                activity_name_for_log,
+                                msg
+                            );
                             // A panic is a first-class failure:
                             // give the run a headline cause
                             // (stop_reason) and a structured
@@ -2582,7 +2830,8 @@ impl Activity {
                                 // text lands in phase_errors below.
                                 let first = msg.lines().next().unwrap_or(&msg);
                                 *slot = Some(format!(
-                                    "[panic] fiber panic in activity '{activity_name_for_log}': {first}"));
+                                    "[panic] fiber panic in activity '{activity_name_for_log}': {first}"
+                                ));
                             }
                             if let Ok(mut errs) = activity_for_panic.phase_errors.lock() {
                                 errs.push(crate::phase_outcome::PhaseErrorDetail {
@@ -2594,7 +2843,8 @@ impl Activity {
                                     op_resolved: None,
                                     at_nanos: std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_nanos() as u64).unwrap_or(0),
+                                        .map(|d| d.as_nanos() as u64)
+                                        .unwrap_or(0),
                                     retryable: false,
                                 });
                             }
@@ -2603,7 +2853,9 @@ impl Activity {
                             // went wrong; the run will terminate at
                             // the next coordination point rather
                             // than continuing in a half-broken state.
-                            activity_for_panic.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                            activity_for_panic
+                                .stop_flag
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 }))
@@ -2619,13 +2871,15 @@ impl Activity {
         // directly) we skip registration — the pool still
         // operates, just without the runtime control surface.
         if let Some(ac) = activity.component.as_ref() {
-            let existing: Option<nbrs_metrics::controls::Control<u32>> =
-                ac.read().unwrap_or_else(|e| e.into_inner())
-                    .controls().get("concurrency");
+            let existing: Option<nbrs_metrics::controls::Control<u32>> = ac
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .controls()
+                .get("concurrency");
             if let Some(ctl) = existing {
-                ctl.register_applier(
-                    crate::fiber_pool::ConcurrencyApplier::new(fiber_pool.clone()),
-                );
+                ctl.register_applier(crate::fiber_pool::ConcurrencyApplier::new(
+                    fiber_pool.clone(),
+                ));
             }
         }
 
@@ -2662,9 +2916,11 @@ impl Activity {
                 // bug; dryrun is where it should be rejected. At runtime,
                 // log loudly and run with no stop conditions rather than
                 // abort the phase on a synthesis error.
-                crate::diag!(crate::observer::LogLevel::Error,
+                crate::diag!(
+                    crate::observer::LogLevel::Error,
                     "activity '{}': stop-condition compile failed: {e}",
-                    activity.config.name);
+                    activity.config.name
+                );
                 crate::stop_conditions::StopConditionSet::empty()
             }),
             None => crate::stop_conditions::StopConditionSet::empty(),
@@ -2672,7 +2928,9 @@ impl Activity {
         loop {
             fiber_pool.reap_finished();
             let n = fiber_pool.tracked_count();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             // Periodic stall detection. A real stall means
             // *neither* signal of progress has moved:
             //   - `tracked_count` only changes when a fiber
@@ -2727,7 +2985,9 @@ impl Activity {
                     attempt_failure,
                     ..Default::default()
                 };
-                if let Some((outcome, reason, target, cancel_ops)) = stop_conditions.evaluate(&state) {
+                if let Some((outcome, reason, target, cancel_ops)) =
+                    stop_conditions.evaluate(&state)
+                {
                     policy_tripped = true;
                     // SRD-83 Part 5 — honour the condition's effect. A
                     // `fail` effect records a phase error (the phase ends
@@ -2759,9 +3019,14 @@ impl Activity {
                         format!(" — top errors: {top_errs}")
                     };
                     if outcome.is_failure() {
-                        let msg = format!("stop condition tripped in {where_part} — actual: {actual}{what_part} — failing phase");
-                        crate::diag!(crate::observer::LogLevel::Error,
-                            "activity '{}': {reason} — {msg}", activity.config.name);
+                        let msg = format!(
+                            "stop condition tripped in {where_part} — actual: {actual}{what_part} — failing phase"
+                        );
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
+                            "activity '{}': {reason} — {msg}",
+                            activity.config.name
+                        );
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2784,14 +3049,20 @@ impl Activity {
                                 op_resolved: None,
                                 at_nanos: std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_nanos() as u64).unwrap_or(0),
+                                    .map(|d| d.as_nanos() as u64)
+                                    .unwrap_or(0),
                                 retryable: false,
                             });
                         }
                     } else {
-                        let msg = format!("stop condition tripped in {where_part} — actual: {actual}{what_part} — stopping phase");
-                        crate::diag!(crate::observer::LogLevel::Warn,
-                            "activity '{}': {reason} — {msg}", activity.config.name);
+                        let msg = format!(
+                            "stop condition tripped in {where_part} — actual: {actual}{what_part} — stopping phase"
+                        );
+                        crate::diag!(
+                            crate::observer::LogLevel::Warn,
+                            "activity '{}': {reason} — {msg}",
+                            activity.config.name
+                        );
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2841,8 +3112,7 @@ impl Activity {
                             // must halt only its own scenario, not the session.
                             // `abort` (cancel_ops) is handled below and
                             // supersedes this cooperative global stop.
-                            if matches!(target,
-                                crate::stop_conditions::StopScope::Workload)
+                            if matches!(target, crate::stop_conditions::StopScope::Workload)
                                 && !cancel_ops
                             {
                                 crate::session_signals::request_stop();
@@ -2862,7 +3132,8 @@ impl Activity {
                     // shutdown). Not a force-exit — a further Ctrl-C is.
                     if cancel_ops {
                         crate::session_signals::abort_shutdown(
-                            crate::session_signals::ShutdownOrigin::StopAction);
+                            crate::session_signals::ShutdownOrigin::StopAction,
+                        );
                     }
                 }
             }
@@ -2876,12 +3147,15 @@ impl Activity {
                 // count changes we re-emit at debug so a stuck
                 // run's session.log shows the slope (or lack of it)
                 // without flooding when drain is fast.
-                if count_changed && (last_logged_count.saturating_sub(n) >= 10
-                    || (n < 10 && n != last_logged_count))
+                if count_changed
+                    && (last_logged_count.saturating_sub(n) >= 10
+                        || (n < 10 && n != last_logged_count))
                 {
-                    crate::diag!(crate::observer::LogLevel::Debug,
+                    crate::diag!(
+                        crate::observer::LogLevel::Debug,
                         "activity '{}': fiber drain at {n} (from {last_logged_count})",
-                        activity.config.name);
+                        activity.config.name
+                    );
                     last_logged_count = n;
                 }
             } else if stuck_since.elapsed() > std::time::Duration::from_secs(30) {
@@ -2895,30 +3169,35 @@ impl Activity {
                 // session.log timeline still records the slope,
                 // but don't surface a Warn that operators read as
                 // "something's wrong."
-                let started = activity.metrics.ops_started
-                    .load(Ordering::Relaxed);
-                let finished = activity.metrics.ops_finished
-                    .load(Ordering::Relaxed);
+                let started = activity.metrics.ops_started.load(Ordering::Relaxed);
+                let finished = activity.metrics.ops_finished.load(Ordering::Relaxed);
                 let in_flight = started.saturating_sub(finished);
                 if in_flight > 0 {
-                    crate::diag!(crate::observer::LogLevel::Debug,
+                    crate::diag!(
+                        crate::observer::LogLevel::Debug,
                         "activity '{}': {n} fiber(s), {in_flight} op(s) in flight, \
                          {cycles} cycles completed, no fiber-count or cycle-count \
                          change for 30s (long-running op in progress)",
-                        activity.config.name);
+                        activity.config.name
+                    );
                 } else {
-                    crate::diag!(crate::observer::LogLevel::Warn,
+                    crate::diag!(
+                        crate::observer::LogLevel::Warn,
                         "activity '{}': {n} fibers running, {cycles} cycles completed, \
                          no ops in flight, no progress for 30s — likely blocked on \
                          lock or IO",
-                        activity.config.name);
+                        activity.config.name
+                    );
                 }
                 stuck_since = std::time::Instant::now();
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "activity '{}': all fibers drained", activity.config.name);
+        crate::diag!(
+            crate::observer::LogLevel::Debug,
+            "activity '{}': all fibers drained",
+            activity.config.name
+        );
 
         // Daemon-pool drain. Cycle-pool reached zero (cursor
         // exhausted or stop signal honoured); now signal each
@@ -2931,27 +3210,37 @@ impl Activity {
         // phase-stopping errors via the existing stop_flag +
         // stop_reason channel that cycle-pool errors use.
         if !daemon_pool.is_empty() {
-            crate::diag!(crate::observer::LogLevel::Debug,
+            crate::diag!(
+                crate::observer::LogLevel::Debug,
                 "activity '{}': draining {} daemon(s)",
-                activity.config.name, daemon_pool.len());
+                activity.config.name,
+                daemon_pool.len()
+            );
             let outcomes = daemon_pool.shutdown().await;
             for (op_name, exit) in &outcomes {
                 match exit {
                     crate::daemon_pool::DaemonExit::Completed => {
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "daemon op '{op_name}': completed");
+                        crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "daemon op '{op_name}': completed"
+                        );
                     }
                     crate::daemon_pool::DaemonExit::Cancelled => {
                         activity.metrics.daemon_cancelled_total.inc();
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "daemon op '{op_name}': cancelled at phase exit");
+                        crate::diag!(
+                            crate::observer::LogLevel::Debug,
+                            "daemon op '{op_name}': cancelled at phase exit"
+                        );
                     }
                     crate::daemon_pool::DaemonExit::Errored(e) => {
                         activity.metrics.daemon_errors_total.inc();
                         let inner = e.error();
-                        crate::diag!(crate::observer::LogLevel::Error,
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
                             "daemon op '{op_name}' errored: [{}] {}",
-                            inner.error_name, inner.message);
+                            inner.error_name,
+                            inner.message
+                        );
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2963,9 +3252,11 @@ impl Activity {
                     }
                     crate::daemon_pool::DaemonExit::TimedOut => {
                         activity.metrics.daemon_errors_total.inc();
-                        crate::diag!(crate::observer::LogLevel::Error,
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
                             "daemon op '{op_name}': did not acknowledge stop \
-                             within grace window — phase fails");
+                             within grace window — phase fails"
+                        );
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2978,14 +3269,14 @@ impl Activity {
                     }
                     crate::daemon_pool::DaemonExit::Panicked(msg) => {
                         activity.metrics.daemon_errors_total.inc();
-                        crate::diag!(crate::observer::LogLevel::Error,
-                            "daemon op '{op_name}' panicked: {msg}");
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
+                            "daemon op '{op_name}' panicked: {msg}"
+                        );
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
-                            *slot = Some(format!(
-                                "[daemon_panic] daemon op '{op_name}': {msg}",
-                            ));
+                            *slot = Some(format!("[daemon_panic] daemon op '{op_name}': {msg}",));
                         }
                     }
                 }
@@ -3004,9 +3295,7 @@ impl Activity {
         // `phase 'X' complete (Ns)` line. Honors the live
         // `suppress_status_line` flag (TUI takes over rendering)
         // and the global `suppress_progress` (e.g. CI / `--quiet`).
-        if !suppress_progress
-            && !activity.config.suppress_status_line.load(Ordering::Relaxed)
-        {
+        if !suppress_progress && !activity.config.suppress_status_line.load(Ordering::Relaxed) {
             // Counter snapshots — the readout recomputes
             // pct / rate / ok_pct from these primitives, so
             // we don't pre-format them here. Retries are
@@ -3024,9 +3313,13 @@ impl Activity {
             let successes = activity.metrics.result_success.count();
             let errors = activity.metrics.errors_total.get();
             let elapsed = start_time.elapsed().as_secs_f64();
-            let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
-                activity.metrics.skips_total.get());
-            let retries = activity.metrics.attempt_failure.count()
+            let failed_ops = ops_completed
+                .saturating_sub(successes)
+                .saturating_sub(activity.metrics.skips_total.get());
+            let retries = activity
+                .metrics
+                .attempt_failure
+                .count()
                 .saturating_sub(failed_ops);
             // Concurrency (fiber count) — the `c:N` tail mirrors
             // the live progress line so a completed phase reads
@@ -3036,7 +3329,8 @@ impl Activity {
             // inline progress line, glob-matched against the
             // declared `status_metrics: [...]`. Empty list ⇒ no
             // metrics tail; nothing is presumed to be present.
-            let relevancy_str: String = activity.metrics
+            let relevancy_str: String = activity
+                .metrics
                 .collect_status_values(&activity.config.status_metrics)
                 .concat();
             // SRD-100 P2 — no explicit status clear here. The consumer
@@ -3050,7 +3344,10 @@ impl Activity {
             // is now `phase_outcome.render()` driven by an
             // `ActivityReadoutContext` snapshot of the values
             // gathered above. Output is byte-equivalent.
-            let phase_name_bare = activity.config.name.split_once(" (")
+            let phase_name_bare = activity
+                .config
+                .name
+                .split_once(" (")
                 .map(|(n, _)| n.to_string())
                 .unwrap_or_else(|| activity.config.name.clone());
             // Phase-end: re-read the source's final extent.
@@ -3058,7 +3355,8 @@ impl Activity {
             // `total_extent`; for extending cursors it's the
             // last grown value before the policy declined
             // further extension.
-            let final_extent = source_for_progress.global_extent()
+            let final_extent = source_for_progress
+                .global_extent()
                 .unwrap_or(activity.config.cycles);
             // SRD-76 — the activity-level binder fire happens
             // BEFORE the executor records its formal Failed /
@@ -3074,10 +3372,12 @@ impl Activity {
             } else {
                 crate::phase_outcome::Outcome::completed()
             };
-            let outcome_errors: Vec<crate::phase_outcome::PhaseErrorDetail> =
-                activity.phase_errors.lock().ok()
-                    .map(|g| g.clone())
-                    .unwrap_or_default();
+            let outcome_errors: Vec<crate::phase_outcome::PhaseErrorDetail> = activity
+                .phase_errors
+                .lock()
+                .ok()
+                .map(|g| g.clone())
+                .unwrap_or_default();
             let ctx = crate::readout_context::ActivityReadoutContext {
                 phase_name: phase_name_bare,
                 phase_seq: activity.config.phase_seq,
@@ -3124,14 +3424,14 @@ impl Activity {
                 // get a synthesized `range(0, cycles)` factory, so gate on
                 // the config Option, not the resolved factory, to keep them
                 // on the op-denominated `cycles:` chip.
-                let (final_rows_consumed, final_rows_total) =
-                    match &activity.config.source_factory {
-                        Some(_) => (
-                            activity.source_factory.global_consumed(),
-                            activity.source_factory.global_extent().unwrap_or(0),
-                        ),
-                        None => (0, 0),
-                    };
+                let (final_rows_consumed, final_rows_total) = match &activity.config.source_factory
+                {
+                    Some(_) => (
+                        activity.source_factory.global_consumed(),
+                        activity.source_factory.global_extent().unwrap_or(0),
+                    ),
+                    None => (0, 0),
+                };
                 let final_ctx = crate::readout_context::build_inline_refresh_context(
                     &activity.metrics,
                     &activity.config.name,
@@ -3140,7 +3440,7 @@ impl Activity {
                     final_rows_consumed,
                     final_rows_total,
                     elapsed,
-                    u64::MAX,  // sentinel: spinner frame doesn't matter at end-of-phase
+                    u64::MAX, // sentinel: spinner frame doesn't matter at end-of-phase
                     &activity.config.status_metrics,
                     activity.memo.as_ref(),
                     final_seq,
@@ -3151,9 +3451,7 @@ impl Activity {
                 let phase_status_default = {
                     let readout = crate::readouts::Registry::lookup("phase_status")
                         .expect("phase_status registered");
-                    crate::readouts::BakedBody::from_single(
-                        readout, crate::readouts::Lod::Labeled,
-                    )
+                    crate::readouts::BakedBody::from_single(readout, crate::readouts::Lod::Labeled)
                 };
                 if let Ok(mut binder) = crate::readouts::binder::build_event_binder_with_cli(
                     &activity.config.readouts,
@@ -3191,11 +3489,14 @@ impl Activity {
             // per-cycle template here would run it against a
             // degenerate end-of-phase context.
             {
-                let fin = activity.gutter_final_spec.lock().ok()
+                let fin = activity
+                    .gutter_final_spec
+                    .lock()
+                    .ok()
                     .and_then(|g| g.clone());
                 if let Some((kind, tmpl)) = fin {
-                    if let Some(final_spec) = evaluate_final_gutter(
-                        &activity, op_builder.source_kernel(), kind, &tmpl)
+                    if let Some(final_spec) =
+                        evaluate_final_gutter(&activity, op_builder.source_kernel(), kind, &tmpl)
                     {
                         activity.gutter.store(Some(Arc::new(final_spec)));
                     }
@@ -3247,8 +3548,10 @@ impl Activity {
                     sink.take()
                 }
                 Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Error,
-                        "readouts: failed to bind on_phase_end — {e}");
+                    crate::diag!(
+                        crate::observer::LogLevel::Error,
+                        "readouts: failed to bind on_phase_end — {e}"
+                    );
                     String::new()
                 }
             };
@@ -3262,7 +3565,9 @@ impl Activity {
                     activity.config.snapshot_writer.as_ref(),
                     crate::lifecycle::EventType::PhaseEnd.slot_name(),
                     ctx.subject_exec_id(),
-                    crate::lifecycle::EventType::PhaseEnd.subject_kind().as_str(),
+                    crate::lifecycle::EventType::PhaseEnd
+                        .subject_kind()
+                        .as_str(),
                     &ctx.subject_id(),
                     "binder",
                     crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
@@ -3277,13 +3582,18 @@ impl Activity {
             // `⊘ gated off` form instead.
             let fully_skipped = {
                 let skips = activity.metrics.skips_total.get();
-                skips > 0 && ops_completed > 0 && skips >= ops_completed
-                    && successes == 0 && errors == 0
+                skips > 0
+                    && ops_completed > 0
+                    && skips >= ops_completed
+                    && successes == 0
+                    && errors == 0
             };
-            let elide_skipped = fully_skipped && matches!(
-                crate::observer::skipped_phase_display(),
-                crate::observer::SkippedPhaseDisplay::Elide
-                | crate::observer::SkippedPhaseDisplay::Prune);
+            let elide_skipped = fully_skipped
+                && matches!(
+                    crate::observer::skipped_phase_display(),
+                    crate::observer::SkippedPhaseDisplay::Elide
+                        | crate::observer::SkippedPhaseDisplay::Prune
+                );
             if !rendered.is_empty() && !elide_skipped {
                 // SRD-81 push 1: the per-phase ✓ outcome is a typed
                 // `PhaseOutcome` projection, not a generic diagnostic.
@@ -3349,7 +3659,11 @@ impl Activity {
                             crate::observer::LogCategory::PhaseDetail,
                             &format!(
                                 "{depth_indent}{bold}{name}{reset}: mean={:.2}% {dim}p50={:.2}% p99={:.2}% min={:.2}% max={:.2}% (n={n}){reset}",
-                                mean * 100.0, p50 * 100.0, p99 * 100.0, min * 100.0, max * 100.0,
+                                mean * 100.0,
+                                p50 * 100.0,
+                                p99 * 100.0,
+                                min * 100.0,
+                                max * 100.0,
                             ),
                         );
                         // Pick up `k`/`r` from the F64Stats's
@@ -3386,7 +3700,13 @@ impl Activity {
                                 ),
                             );
                         }
-                        for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
+                        for (stat, val) in [
+                            ("mean", mean),
+                            ("p50", p50),
+                            ("p99", p99),
+                            ("min", min),
+                            ("max", max),
+                        ] {
                             let mut gauge_labels = activity_labels.with("n", n.to_string());
                             if let Some(k) = &k_label {
                                 gauge_labels = gauge_labels.with("k", k);
@@ -3439,14 +3759,19 @@ impl Activity {
             // out and route only when failed > 0.
             if total_failed > 0 {
                 let depth_indent = crate::scene_tree::running_phase_indent();
-                crate::diag!(crate::observer::LogLevel::Warn,
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
                     "{depth_indent}validation: {} passed, {} FAILED",
-                    total_passed, total_failed
+                    total_passed,
+                    total_failed
                 );
             }
 
             if !final_snapshot.is_empty() {
-                activity.validation_frame.lock().unwrap_or_else(|e| e.into_inner())
+                activity
+                    .validation_frame
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .replace(final_snapshot);
             }
         }
@@ -3541,7 +3866,10 @@ async fn daemon_dispatch(
     };
     let service_nanos = started.elapsed().as_nanos() as u64;
     activity.metrics.cycles_total.inc();
-    activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
+    activity
+        .metrics
+        .ops_finished
+        .fetch_add(1, Ordering::Relaxed);
     activity.metrics.service_time.record(service_nanos);
     activity.metrics.response_time.record(service_nanos);
     // SRD-91 op-outcome taxonomy for daemon dispatch. The `attempt_*`
@@ -3565,9 +3893,12 @@ async fn daemon_dispatch(
         }
         _ => {}
     }
-    crate::diag!(crate::observer::LogLevel::Debug,
+    crate::diag!(
+        crate::observer::LogLevel::Debug,
         "daemon op '{op_name}' exit={} elapsed_ms={:.0}",
-        exit.label(), service_nanos as f64 / 1_000_000.0);
+        exit.label(),
+        service_nanos as f64 / 1_000_000.0
+    );
     exit
 }
 
@@ -3585,9 +3916,7 @@ async fn poll_daemon_stop(
     activity_stop: &Arc<std::sync::atomic::AtomicBool>,
 ) {
     loop {
-        if daemon_stop.load(Ordering::Acquire)
-            || activity_stop.load(Ordering::Acquire)
-        {
+        if daemon_stop.load(Ordering::Acquire) || activity_stop.load(Ordering::Acquire) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3673,16 +4002,17 @@ async fn executor_task(
     // `reserve(stanza_stride)` (per-stanza, not per-cycle → zero per-cycle
     // overhead), yielding an ordinal `Range`; `render` is the per-ordinal fetch.
     // The level selects `CursorReserve` — this very FiberPool loop.
-    use crate::child_source::{select_drive, Child, ChildSource, CursorSource, Drive};
-    let mut source = CursorSource::new(
-        activity.source_factory.create_reader(),
-        stanza_stride,
-    );
+    use crate::child_source::{Child, ChildSource, CursorSource, Drive, select_drive};
+    let mut source = CursorSource::new(activity.source_factory.create_reader(), stanza_stride);
     debug_assert_eq!(select_drive(source.realizability()), Drive::CursorReserve);
 
     loop {
-        if activity.stopped() { break; }                              // SRD-92 Step 0: one stop view
-        if fiber_stop.load(std::sync::atomic::Ordering::Acquire) { break; }  // per-fiber scale-down (distinct)
+        if activity.stopped() {
+            break;
+        } // SRD-92 Step 0: one stop view
+        if fiber_stop.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        } // per-fiber scale-down (distinct)
 
         // Phase 1: RESERVE — CAS on shared cursor, instantaneous.
         // Acquires one stanza's worth of ordinals. This is the only
@@ -3741,26 +4071,30 @@ async fn executor_task(
                     // grace window (one poll interval) an unresolved
                     // selector is a hard `poll_require` failure —
                     // loud and immediate, never a mystery hang.
-                    let unresolved: Vec<&String> = pp.require.iter()
-                        .filter(|s| !nbrs_metrics::polydat_nodes
-                            ::metric_selector_resolves(s))
+                    let unresolved: Vec<&String> = pp
+                        .require
+                        .iter()
+                        .filter(|s| !nbrs_metrics::polydat_nodes::metric_selector_resolves(s))
                         .collect();
-                    if !unresolved.is_empty()
-                        && std::time::Instant::now() >= pp.require_grace
-                    {
-                        let names = unresolved.iter()
+                    if !unresolved.is_empty() && std::time::Instant::now() >= pp.require_grace {
+                        let names = unresolved
+                            .iter()
                             .map(|s| format!("'{s}'"))
-                            .collect::<Vec<_>>().join(", ");
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         let formatted_reason = format!(
                             "[poll_require] poll `require:` selector(s) {names} \
                              resolved to no registered instrument within the \
                              grace window — the gate's `until:` would read 0.0 \
                              for them. Check the family name and labels (e.g. \
                              phase=<name>), and that the producing phase is \
-                             running. SRD-75 (C5).");
-                        crate::diag!(crate::observer::LogLevel::Error,
+                             running. SRD-75 (C5)."
+                        );
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
                             "activity '{}': {formatted_reason}",
-                            activity.config.name);
+                            activity.config.name
+                        );
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -3781,8 +4115,9 @@ async fn executor_task(
                                 retryable: false,
                             });
                         }
-                        activity.stop_flag.store(true,
-                            std::sync::atomic::Ordering::Relaxed);
+                        activity
+                            .stop_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
                     let requires_ok = unresolved.is_empty();
@@ -3800,8 +4135,9 @@ async fn executor_task(
                     let satisfied = requires_ok && {
                         let wires = crate::wires::CycleWires::new(fiber.main_kernel_mut());
                         match crate::wrappers::condition::holds(
-                            &wires, crate::wrappers::condition::UNTIL_BINDING)
-                        {
+                            &wires,
+                            crate::wrappers::condition::UNTIL_BINDING,
+                        ) {
                             Some(v) => v,
                             // Unresolved is a wiring fault, not a false
                             // predicate. Keep waiting rather than silently
@@ -3834,9 +4170,10 @@ async fn executor_task(
                         // that the whole run is terminating, not
                         // just this phase.
                         let invalidation_note = match pp.on_timeout {
-                            PhasePollTimeoutPolicy::Abort =>
+                            PhasePollTimeoutPolicy::Abort => {
                                 " — `on_timeout: abort` declared by the workload; \
-                                 requesting session stop (the whole run terminates)",
+                                 requesting session stop (the whole run terminates)"
+                            }
                             PhasePollTimeoutPolicy::Error => "",
                         };
                         let formatted_reason = format!(
@@ -3875,8 +4212,9 @@ async fn executor_task(
                                 retryable: false,
                             });
                         }
-                        activity.stop_flag.store(true,
-                            std::sync::atomic::Ordering::Relaxed);
+                        activity
+                            .stop_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                         // SRD-75 `on_timeout: abort` —
                         // workload-author declares that an
                         // unsatisfied predicate makes the whole
@@ -3889,9 +4227,7 @@ async fn executor_task(
                         // returns Err for the normal stop-flag
                         // path; the session signal is the
                         // CROSS-PHASE escalation.
-                        if matches!(pp.on_timeout,
-                            PhasePollTimeoutPolicy::Abort)
-                        {
+                        if matches!(pp.on_timeout, PhasePollTimeoutPolicy::Abort) {
                             crate::diag!(
                                 crate::observer::LogLevel::Error,
                                 "phase-poll: `on_timeout: abort` triggered after \
@@ -3913,17 +4249,16 @@ async fn executor_task(
                                  rewind_for_poll(); phase-poll requires a \
                                  rewindable source (RangeSourceFactory or \
                                  ExtendingRangeSourceFactory). SRD-75."
-                                .to_string(),
+                                    .to_string(),
                             );
                         }
-                        activity.stop_flag.store(true,
-                            std::sync::atomic::Ordering::Relaxed);
+                        activity
+                            .stop_flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
-                    source = CursorSource::new(
-                        activity.source_factory.create_reader(),
-                        stanza_stride,
-                    );
+                    source =
+                        CursorSource::new(activity.source_factory.create_reader(), stanza_stride);
                     continue;
                 }
                 break; // source exhausted (standard path)
@@ -3961,7 +4296,9 @@ async fn executor_task(
         for (pos, cycle, run_len) in
             crate::child_source::StanzaRuns::new(range.clone(), &per_pos_rows)
         {
-            if activity.stopped() { break; }   // SRD-92 Step 0: one stop view
+            if activity.stopped() {
+                break;
+            } // SRD-92 Step 0: one stop view
 
             // Mark op as active from render through result join.
             // "Active" means this fiber is working on an op — resolving
@@ -3997,7 +4334,9 @@ async fn executor_task(
             // on to the next stanza op as soon as the spawn
             // returns (Ok or Err).
             if !template.daemon.is_disabled() {
-                let cap = template.daemon.max_fibers()
+                let cap = template
+                    .daemon
+                    .max_fibers()
                     .expect("non-disabled daemon has cap");
                 let cancel_grace = template
                     .daemon_cancel_grace_ms
@@ -4008,9 +4347,8 @@ async fn executor_task(
                 let op_builder_d = op_builder.clone();
                 let phase_arc_d = phase_name_arc.clone();
                 let op_name_d = template.name.clone();
-                let spawn_result = daemon_pool.try_spawn(
-                    op_name_d.clone(), cap, cancel_grace,
-                    move |stop| {
+                let spawn_result =
+                    daemon_pool.try_spawn(op_name_d.clone(), cap, cancel_grace, move |stop| {
                         let activity = activity_d;
                         let dispensers = dispensers_d;
                         let pull_plans = pull_plans_d;
@@ -4019,9 +4357,13 @@ async fn executor_task(
                         let op_name = op_name_d;
                         async move {
                             use futures::FutureExt as _;
-                            let phase_controls = activity.component.as_ref()
+                            let phase_controls = activity
+                                .component
+                                .as_ref()
                                 .map(crate::polydat_nodes::runtime_context::snapshot_controls)
-                                .unwrap_or_else(crate::polydat_nodes::runtime_context::empty_controls);
+                                .unwrap_or_else(
+                                    crate::polydat_nodes::runtime_context::empty_controls,
+                                );
                             let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                                 phase_arc,
                                 phase_controls,
@@ -4043,16 +4385,18 @@ async fn executor_task(
                                         .map(|s| (*s).to_string())
                                         .or_else(|| payload.downcast_ref::<String>().cloned())
                                         .unwrap_or_else(|| "<non-string panic payload>".into());
-                                    crate::diag!(crate::observer::LogLevel::Error,
-                                        "daemon op '{op_name}' panicked: {msg}");
-                                    activity.stop_flag.store(
-                                        true, std::sync::atomic::Ordering::Relaxed);
+                                    crate::diag!(
+                                        crate::observer::LogLevel::Error,
+                                        "daemon op '{op_name}' panicked: {msg}"
+                                    );
+                                    activity
+                                        .stop_flag
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                     crate::daemon_pool::DaemonExit::Panicked(msg)
                                 }
                             }
                         }
-                    },
-                );
+                    });
                 match spawn_result {
                     Ok(()) => {
                         // Dispatch succeeded — the daemon fiber
@@ -4072,15 +4416,16 @@ async fn executor_task(
                         continue;
                     }
                     Err(msg) => {
-                        crate::diag!(crate::observer::LogLevel::Error,
-                            "daemon op '{}' spawn failed: {msg}", template.name);
-                        activity.stop_flag.store(
-                            true, Ordering::Release);
+                        crate::diag!(
+                            crate::observer::LogLevel::Error,
+                            "daemon op '{}' spawn failed: {msg}",
+                            template.name
+                        );
+                        activity.stop_flag.store(true, Ordering::Release);
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
-                            *slot = Some(format!(
-                                "daemon op '{}' spawn: {msg}", template.name));
+                            *slot = Some(format!("daemon op '{}' spawn: {msg}", template.name));
                         }
                         return;
                     }
@@ -4108,10 +4453,7 @@ async fn executor_task(
             // that kernel's state. Flattened op-templates fall
             // through to the main kernel (the workload program)
             // — same call site, the lookup is idempotent.
-            let pulls = fiber.resolve_pulls_for_idx(
-                template_idx,
-                &pull_plans[template_idx],
-            );
+            let pulls = fiber.resolve_pulls_for_idx(template_idx, &pull_plans[template_idx]);
             let dispenser = &dispensers[template_idx];
             // SRD-68 invariant I-2: cycle-time reads against the
             // firing dispenser's per-fiber kernel slot, exposed
@@ -4156,9 +4498,8 @@ async fn executor_task(
             // failure): keep the fiber alive, mark the phase stopped.
             let outcome: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> = {
                 use futures::FutureExt as _;
-                let op_fut = std::panic::AssertUnwindSafe(
-                    dispenser.execute(cycle, &exec_ctx),
-                ).catch_unwind();
+                let op_fut = std::panic::AssertUnwindSafe(dispenser.execute(cycle, &exec_ctx))
+                    .catch_unwind();
                 // Race the whole op stack against the shutdown ladder's
                 // CANCEL rung. `biased` polls the op first, so the cancel
                 // branch costs one extra poll per dispatch on the happy
@@ -4177,7 +4518,8 @@ async fn executor_task(
                         crate::adapter::AdapterError {
                             error_name: "cancelled".into(),
                             message: "in-flight op cancelled by shutdown \
-                                      escalation (Ctrl-C)".into(),
+                                      escalation (Ctrl-C)"
+                                .into(),
                             retryable: false,
                         },
                     )),
@@ -4234,7 +4576,10 @@ async fn executor_task(
                 activity.metrics.result_total.inc();
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);
-                activity.metrics.response_time.record(service_nanos + wait_nanos);
+                activity
+                    .metrics
+                    .response_time
+                    .record(service_nanos + wait_nanos);
                 // `tries_histogram` is recorded by the TriesDispenser (it owns
                 // the attempt count).
                 if success {
@@ -4257,9 +4602,7 @@ async fn executor_task(
                     //    workload bug — every cycle would repeat it —
                     //    so it stops the phase with the write-site
                     //    diagnostic (same treatment as the panic arm).
-                    if let Err(e) = fiber
-                        .commit_op_template_write_throughs_for_idx(template_idx)
-                    {
+                    if let Err(e) = fiber.commit_op_template_write_throughs_for_idx(template_idx) {
                         activity.metrics.errors_total.inc();
                         activity.metrics.count_error_type("type_mismatch");
                         activity.stop_flag.store(true, Ordering::Relaxed);
@@ -4285,7 +4628,10 @@ async fn executor_task(
             }
 
             // Op fully processed — render, execute, and metrics all done.
-            activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
+            activity
+                .metrics
+                .ops_finished
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -4308,14 +4654,17 @@ pub fn terminal_cols() -> Option<usize> {
         ws_xpixel: u16,
         ws_ypixel: u16,
     }
-    let mut ws = WinSize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    let mut ws = WinSize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     // SAFETY: `libc::ioctl` is FFI; `TIOCGWINSZ` writes into the
     // out-parameter which we own (pinned on the stack for the
     // duration of the call). Failure is signalled by negative
     // return — we ignore the actual errno.
-    let rc: c_int = unsafe {
-        libc::ioctl(2, libc::TIOCGWINSZ, &mut ws as *mut _)
-    };
+    let rc: c_int = unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws as *mut _) };
     if rc < 0 || ws.ws_col == 0 {
         return None;
     }
@@ -4401,8 +4750,7 @@ fn evaluate_final_gutter(
     // Wires pass: a fresh wired subscope (cells attach via the
     // sanctioned materialize path) gives template names their live
     // end-of-phase values.
-    let sub = polydat::kernel::PolydatKernel::for_iteration(
-        source_kernel, source_kernel, &[]);
+    let sub = polydat::kernel::PolydatKernel::for_iteration(source_kernel, source_kernel, &[]);
     let rendered = match Arc::try_unwrap(sub) {
         Ok(mut k) => {
             let wires = crate::wires::CycleWires::new(&mut k);
@@ -4448,13 +4796,18 @@ fn evaluate_final_gutter(
     match kind {
         GutterKind::Labeled => {
             let (name, value) = text.split_once('\u{1f}').unwrap_or(("", text.as_str()));
-            Some(GutterSpec::Labeled { name: name.to_string(), value: value.to_string() })
+            Some(GutterSpec::Labeled {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
         }
         GutterKind::Text => Some(GutterSpec::Text(text)),
-        GutterKind::Bar => text.trim().parse::<f64>().ok()
+        GutterKind::Bar => text
+            .trim()
+            .parse::<f64>()
+            .ok()
             .map(|v| GutterSpec::Bar(v.clamp(0.0, 1.0))),
-        GutterKind::Spark => text.trim().parse::<f64>().ok()
-            .map(GutterSpec::Spark),
+        GutterKind::Spark => text.trim().parse::<f64>().ok().map(GutterSpec::Spark),
     }
 }
 
@@ -4469,8 +4822,7 @@ fn glob_match_bytes(pat: &[u8], s: &[u8]) -> bool {
         (Some(b'*'), _) => {
             // zero-or-more: try consuming nothing OR consume one
             // char of input and re-attempt.
-            glob_match_bytes(&pat[1..], s)
-                || (!s.is_empty() && glob_match_bytes(pat, &s[1..]))
+            glob_match_bytes(&pat[1..], s) || (!s.is_empty() && glob_match_bytes(pat, &s[1..]))
         }
         (Some(b'?'), Some(_)) => glob_match_bytes(&pat[1..], &s[1..]),
         (Some(p), Some(c)) if p == c => glob_match_bytes(&pat[1..], &s[1..]),
@@ -4493,7 +4845,9 @@ fn glob_match_bytes(pat: &[u8], s: &[u8]) -> bool {
 /// sequence, so we never emit a half-broken `\x1b[3` to the
 /// terminal.
 pub fn truncate_to_width(s: &str, max_cols: usize) -> String {
-    if max_cols == 0 { return String::new(); }
+    if max_cols == 0 {
+        return String::new();
+    }
     let bytes = s.as_bytes();
     let mut visible = 0usize;
     let mut byte_pos = 0usize; // last clean truncation point
@@ -4503,7 +4857,9 @@ pub fn truncate_to_width(s: &str, max_cols: usize) -> String {
             // SGR escape: walk until the final byte (`m`,
             // `K`, `J`, etc.) so we don't truncate mid-escape.
             for (_, ch) in chars.by_ref() {
-                if ch.is_ascii_alphabetic() { break; }
+                if ch.is_ascii_alphabetic() {
+                    break;
+                }
             }
             // byte_pos doesn't advance — escape costs no
             // visible columns, and the next plain char's
@@ -4522,7 +4878,7 @@ pub fn truncate_to_width(s: &str, max_cols: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{OpResult, AdapterError, ExecutionError};
+    use crate::adapter::{AdapterError, ExecutionError, OpResult};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -4544,14 +4900,16 @@ mod tests {
         for _ in 0..10 {
             m.service_time.record(5_000_000);
         }
-        let (name, val) = m.collect_status_primary(&["latency_p50".into()])
+        let (name, val) = m
+            .collect_status_primary(&["latency_p50".into()])
             .expect("p50 measurable");
         assert_eq!(name, "latency_p50");
         assert!((val - 5.0).abs() < 0.5, "p50 ≈ 5 ms, got {val}");
 
         // Glob: first pattern's FIRST candidate wins (p50 precedes
         // p99 in candidate order).
-        let (name, _) = m.collect_status_primary(&["latency_*".into()])
+        let (name, _) = m
+            .collect_status_primary(&["latency_*".into()])
             .expect("glob matches");
         assert_eq!(name, "latency_p50");
 
@@ -4567,19 +4925,30 @@ mod tests {
     impl CountingDriverAdapter {
         fn new() -> (Self, Arc<AtomicU64>) {
             let count = Arc::new(AtomicU64::new(0));
-            (Self { count: count.clone() }, count)
+            (
+                Self {
+                    count: count.clone(),
+                },
+                count,
+            )
         }
     }
 
     impl DriverAdapter for CountingDriverAdapter {
-        fn name(&self) -> &str { "counting" }
+        fn name(&self) -> &str {
+            "counting"
+        }
         fn map_op<'a>(
             &'a self,
             _template: &'a nbrs_workload::model::ParsedOp,
             _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+        > {
             Box::pin(async move {
-                Ok(Box::new(CountingDispenser { count: self.count.clone() }) as Box<dyn OpDispenser>)
+                Ok(Box::new(CountingDispenser {
+                    count: self.count.clone(),
+                }) as Box<dyn OpDispenser>)
             })
         }
     }
@@ -4589,10 +4958,20 @@ mod tests {
     }
 
     impl OpDispenser for CountingDispenser {
-        fn execute<'a>(&'a self, _cycle: u64, _ctx: &'a crate::fixture::ExecCtx<'a>)
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        fn execute<'a>(
+            &'a self,
+            _cycle: u64,
+            _ctx: &'a crate::fixture::ExecCtx<'a>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             self.count.fetch_add(1, Ordering::Relaxed);
-            Box::pin(async { Ok(OpResult { body: None, skipped: false }) })
+            Box::pin(async {
+                Ok(OpResult {
+                    body: None,
+                    skipped: false,
+                })
+            })
         }
     }
 
@@ -4605,20 +4984,27 @@ mod tests {
     impl FailThenSucceedDriverAdapter {
         fn new(fail_count: u64) -> (Self, Arc<AtomicU64>) {
             let total = Arc::new(AtomicU64::new(0));
-            (Self {
-                fails_remaining: Arc::new(AtomicU64::new(fail_count)),
-                total_calls: total.clone(),
-            }, total)
+            (
+                Self {
+                    fails_remaining: Arc::new(AtomicU64::new(fail_count)),
+                    total_calls: total.clone(),
+                },
+                total,
+            )
         }
     }
 
     impl DriverAdapter for FailThenSucceedDriverAdapter {
-        fn name(&self) -> &str { "fail-then-succeed" }
+        fn name(&self) -> &str {
+            "fail-then-succeed"
+        }
         fn map_op<'a>(
             &'a self,
             _template: &'a nbrs_workload::model::ParsedOp,
             _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 Ok(Box::new(FailThenSucceedDispenser {
                     fails_remaining: self.fails_remaining.clone(),
@@ -4634,8 +5020,13 @@ mod tests {
     }
 
     impl OpDispenser for FailThenSucceedDispenser {
-        fn execute<'a>(&'a self, _cycle: u64, _ctx: &'a crate::fixture::ExecCtx<'a>)
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        fn execute<'a>(
+            &'a self,
+            _cycle: u64,
+            _ctx: &'a crate::fixture::ExecCtx<'a>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
+        > {
             self.total_calls.fetch_add(1, Ordering::Relaxed);
             let remaining = self.fails_remaining.fetch_sub(1, Ordering::Relaxed);
             Box::pin(async move {
@@ -4646,7 +5037,10 @@ mod tests {
                         retryable: true,
                     }))
                 } else {
-                    Ok(OpResult { body: None, skipped: false })
+                    Ok(OpResult {
+                        body: None,
+                        skipped: false,
+                    })
                 }
             })
         }
@@ -4657,7 +5051,11 @@ mod tests {
         use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::identity::Identity;
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
+        asm.add_node(
+            "id",
+            Box::new(Identity::new(polydat::ast::PortType::U64)),
+            vec![WireRef::input("cycle")],
+        );
         asm.add_output("id", WireRef::node("id"));
         asm.compile().unwrap()
     }
@@ -4675,7 +5073,12 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         assert_eq!(count.load(Ordering::Relaxed), 100);
     }
@@ -4689,7 +5092,8 @@ mod tests {
         // kill attempt 3). Serialize with them, same discipline as
         // every global-flag test.
         let _signals = crate::session_signals::STOP_GLOBAL_TEST_LOCK
-            .lock().unwrap_or_else(|e| e.into_inner());
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let config = ActivityConfig {
             name: "retrytest".into(),
             cycles: 1,
@@ -4705,7 +5109,12 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, total_calls) = FailThenSucceedDriverAdapter::new(2);
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         assert_eq!(total_calls.load(Ordering::Relaxed), 3);
     }
@@ -4729,14 +5138,19 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(
-            Arc::new(adapter),
-            Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
-        ).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         // Daemon dispatched + ran exactly once (cycles=1).
-        assert_eq!(count.load(Ordering::Relaxed), 1,
-            "daemon op should have run via dispatch-time spawn");
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "daemon op should have run via dispatch-time spawn"
+        );
     }
 
     #[tokio::test]
@@ -4761,10 +5175,12 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s2"), seq);
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(
-            Arc::new(adapter),
-            Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
-        ).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
         // No assertion on count — the load-bearing behaviour is
         // that the activity terminates cleanly even when caps
         // bite. Without the cap, this test would hang or panic.
@@ -4785,7 +5201,12 @@ mod tests {
         let shared_metrics = activity.shared_metrics();
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         assert_eq!(shared_metrics.cycles_total.get(), 50);
         let frame = shared_metrics.capture(std::time::Duration::from_secs(1));
@@ -4804,9 +5225,10 @@ mod tests {
         use nbrs_metrics::snapshot::MetricValue;
 
         let metrics = Arc::new(ActivityMetrics::new(&Labels::of("session", "s1")));
-        let component = Arc::new(std::sync::RwLock::new(
-            Component::new(Labels::of("activity", "t"), HashMap::new()),
-        ));
+        let component = Arc::new(std::sync::RwLock::new(Component::new(
+            Labels::of("activity", "t"),
+            HashMap::new(),
+        )));
         {
             let mut g = component.write().unwrap();
             g.set_state(nbrs_metrics::component::ComponentState::Running);
@@ -4814,40 +5236,65 @@ mod tests {
         }
 
         // Seed two error-type counters with different totals.
-        for _ in 0..3 { metrics.count_error_type("net"); }
-        for _ in 0..7 { metrics.count_error_type("timeout"); }
+        for _ in 0..3 {
+            metrics.count_error_type("net");
+        }
+        for _ in 0..7 {
+            metrics.count_error_type("timeout");
+        }
 
         // First capture_delta — totals=3 and 7 are the deltas.
-        let snap1 = component.read().unwrap()
+        let snap1 = component
+            .read()
+            .unwrap()
             .capture_delta(std::time::Duration::from_secs(1));
         let net1 = read_counter(&snap1, "errors.net");
-        let to1  = read_counter(&snap1, "errors.timeout");
+        let to1 = read_counter(&snap1, "errors.timeout");
         assert_eq!(net1, 3, "first delta for net should be 3, got {net1}");
-        assert_eq!(to1, 7,  "first delta for timeout should be 7, got {to1}");
+        assert_eq!(to1, 7, "first delta for timeout should be 7, got {to1}");
 
         // Drive the per-error-type counters further.
-        for _ in 0..2 { metrics.count_error_type("net"); }
-        for _ in 0..1 { metrics.count_error_type("timeout"); }
+        for _ in 0..2 {
+            metrics.count_error_type("net");
+        }
+        for _ in 0..1 {
+            metrics.count_error_type("timeout");
+        }
 
         // Second capture_delta — should report only the new deltas
         // (2 and 1), NOT the absolute totals (5 and 8).
-        let snap2 = component.read().unwrap()
+        let snap2 = component
+            .read()
+            .unwrap()
             .capture_delta(std::time::Duration::from_secs(1));
         let net2 = read_counter(&snap2, "errors.net");
-        let to2  = read_counter(&snap2, "errors.timeout");
-        assert_eq!(net2, 2, "second delta for net should be 2 (new only), got {net2}");
-        assert_eq!(to2, 1,  "second delta for timeout should be 1 (new only), got {to2}");
+        let to2 = read_counter(&snap2, "errors.timeout");
+        assert_eq!(
+            net2, 2,
+            "second delta for net should be 2 (new only), got {net2}"
+        );
+        assert_eq!(
+            to2, 1,
+            "second delta for timeout should be 1 (new only), got {to2}"
+        );
 
         // capture_current (drain=false) should still report absolutes.
         let cur = component.read().unwrap().capture_current();
         let net_abs = read_counter(&cur, "errors.net");
-        let to_abs  = read_counter(&cur, "errors.timeout");
-        assert_eq!(net_abs, 5, "current should be absolute total 5, got {net_abs}");
-        assert_eq!(to_abs, 8,  "current should be absolute total 8, got {to_abs}");
+        let to_abs = read_counter(&cur, "errors.timeout");
+        assert_eq!(
+            net_abs, 5,
+            "current should be absolute total 5, got {net_abs}"
+        );
+        assert_eq!(
+            to_abs, 8,
+            "current should be absolute total 8, got {to_abs}"
+        );
 
         fn read_counter(snap: &nbrs_metrics::snapshot::MetricSet, family: &str) -> u64 {
-            let f = snap.family(family).unwrap_or_else(||
-                panic!("family {family:?} missing from snapshot"));
+            let f = snap
+                .family(family)
+                .unwrap_or_else(|| panic!("family {family:?} missing from snapshot"));
             let m = f.metrics().next().expect("at least one metric");
             match m.point().unwrap().value() {
                 MetricValue::Counter(c) => c.cumulative,
@@ -4870,7 +5317,12 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         assert_eq!(count.load(Ordering::Relaxed), 10);
     }
@@ -4891,7 +5343,12 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         assert_eq!(count.load(Ordering::Relaxed), 12);
     }
@@ -4911,22 +5368,28 @@ mod tests {
         };
         let ops = vec![nbrs_workload::model::ParsedOp::simple("op1", "test")];
         let seq = OpSequence::uniform(ops);
-        let mut activity = Activity::new(
-            config, &L::of("session", "s_rate"), seq,
-        );
+        let mut activity = Activity::new(config, &L::of("session", "s_rate"), seq);
         let component = Arc::new(RwLock::new(Component::new(
-            L::of("session", "s_rate"), std::collections::HashMap::new(),
+            L::of("session", "s_rate"),
+            std::collections::HashMap::new(),
         )));
         activity.attach_component(component.clone());
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         // After the activity runs, the rate control is on the
         // component and reports the configured target via its
         // reified gauge.
         let guard = component.read().unwrap();
-        let erased = guard.controls().get_erased("rate")
+        let erased = guard
+            .controls()
+            .get_erased("rate")
             .expect("rate control should be declared when rate is set");
         assert!(erased.accepts_f64_writes());
         assert_eq!(erased.gauge_f64(), Some(2500.0));
@@ -4947,16 +5410,20 @@ mod tests {
         };
         let ops = vec![nbrs_workload::model::ParsedOp::simple("op1", "test")];
         let seq = OpSequence::uniform(ops);
-        let mut activity = Activity::new(
-            config, &L::of("session", "s_nr"), seq,
-        );
+        let mut activity = Activity::new(config, &L::of("session", "s_nr"), seq);
         let component = Arc::new(RwLock::new(Component::new(
-            L::of("session", "s_nr"), std::collections::HashMap::new(),
+            L::of("session", "s_nr"),
+            std::collections::HashMap::new(),
         )));
         activity.attach_component(component.clone());
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         let guard = component.read().unwrap();
         assert!(
@@ -4985,11 +5452,10 @@ mod tests {
         };
         let ops = vec![nbrs_workload::model::ParsedOp::simple("op1", "test")];
         let seq = OpSequence::uniform(ops);
-        let mut activity = Activity::new(
-            config, &L::of("session", "s_live"), seq,
-        );
+        let mut activity = Activity::new(config, &L::of("session", "s_live"), seq);
         let component = Arc::new(RwLock::new(Component::new(
-            L::of("session", "s_live"), std::collections::HashMap::new(),
+            L::of("session", "s_live"),
+            std::collections::HashMap::new(),
         )));
         activity.attach_component(component.clone());
 
@@ -5000,13 +5466,13 @@ mod tests {
             for _ in 0..50 {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 let ctl: Option<nbrs_metrics::controls::Control<nbrs_rate::RateSpec>> =
-                    component_for_writer.read().unwrap()
-                        .controls().get("rate");
+                    component_for_writer.read().unwrap().controls().get("rate");
                 if let Some(c) = ctl {
                     // Only attempt once the applier is registered.
                     if c.applier_count() > 0 {
-                        c.set(nbrs_rate::RateSpec::new(10_000.0),
-                              ControlOrigin::Test).await.ok();
+                        c.set(nbrs_rate::RateSpec::new(10_000.0), ControlOrigin::Test)
+                            .await
+                            .ok();
                         return;
                     }
                 }
@@ -5014,7 +5480,12 @@ mod tests {
         });
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
         let _ = writer.await;
 
         let guard = component.read().unwrap();
@@ -5041,21 +5512,27 @@ mod tests {
         };
         let ops = vec![nbrs_workload::model::ParsedOp::simple("op1", "test")];
         let seq = OpSequence::uniform(ops);
-        let mut activity = Activity::new(
-            config, &L::of("session", "s_decl"), seq,
-        );
+        let mut activity = Activity::new(config, &L::of("session", "s_decl"), seq);
         let component = Arc::new(RwLock::new(Component::new(
-            L::of("session", "s_decl"), std::collections::HashMap::new(),
+            L::of("session", "s_decl"),
+            std::collections::HashMap::new(),
         )));
         activity.attach_component(component.clone());
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
+        activity
+            .run_with_driver(
+                Arc::new(adapter),
+                Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+            )
+            .await;
 
         // After run completes the control is still on the
         // component (structural declaration survives execution).
         let guard = component.read().unwrap();
-        let erased = guard.controls().get_erased("concurrency")
+        let erased = guard
+            .controls()
+            .get_erased("concurrency")
             .expect("concurrency control should be declared on attached component");
         assert_eq!(erased.value_string(), "3");
         assert!(erased.accepts_f64_writes());

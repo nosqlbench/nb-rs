@@ -61,7 +61,8 @@ pub fn parse_format_spec(s: &str) -> Result<FormatSpec, String> {
     if s.starts_with('%') {
         return Err(format!(
             "printf-style '{s}' not accepted; use Excel-style \
-             hash patterns like '#.##' or '0.000'"));
+             hash patterns like '#.##' or '0.000'"
+        ));
     }
 
     // Validate every character is `#`, `0`, or `.`. One `.` max.
@@ -71,14 +72,16 @@ pub fn parse_format_spec(s: &str) -> Result<FormatSpec, String> {
             '#' | '0' => {}
             '.' => {
                 if dot_seen {
-                    return Err(format!(
-                        "format '{s}': multiple '.' separators"));
+                    return Err(format!("format '{s}': multiple '.' separators"));
                 }
                 dot_seen = true;
             }
-            other => return Err(format!(
-                "format '{s}': unexpected '{other}' \
-                 (only '#', '0', '.' accepted)")),
+            other => {
+                return Err(format!(
+                    "format '{s}': unexpected '{other}' \
+                 (only '#', '0', '.' accepted)"
+                ));
+            }
         }
     }
 
@@ -93,11 +96,13 @@ pub fn parse_format_spec(s: &str) -> Result<FormatSpec, String> {
     // Allow `"."` (no integer placeholders) only if there are
     // decimal placeholders — `""` and `"."` are degenerate.
     if integer_places == 0 && decimal_places == 0 {
-        return Err(format!(
-            "format '{s}': no placeholders found"));
+        return Err(format!("format '{s}': no placeholders found"));
     }
 
-    Ok(FormatSpec { integer_places, decimal_places })
+    Ok(FormatSpec {
+        integer_places,
+        decimal_places,
+    })
 }
 
 #[cfg(test)]
@@ -106,22 +111,52 @@ mod tests {
 
     #[test]
     fn parse_basic_decimal_patterns() {
-        assert_eq!(parse_format_spec("#.##").unwrap(),
-            FormatSpec { integer_places: 1, decimal_places: 2 });
-        assert_eq!(parse_format_spec("##.###").unwrap(),
-            FormatSpec { integer_places: 2, decimal_places: 3 });
-        assert_eq!(parse_format_spec("0.000").unwrap(),
-            FormatSpec { integer_places: 1, decimal_places: 3 });
+        assert_eq!(
+            parse_format_spec("#.##").unwrap(),
+            FormatSpec {
+                integer_places: 1,
+                decimal_places: 2
+            }
+        );
+        assert_eq!(
+            parse_format_spec("##.###").unwrap(),
+            FormatSpec {
+                integer_places: 2,
+                decimal_places: 3
+            }
+        );
+        assert_eq!(
+            parse_format_spec("0.000").unwrap(),
+            FormatSpec {
+                integer_places: 1,
+                decimal_places: 3
+            }
+        );
     }
 
     #[test]
     fn parse_integer_only() {
-        assert_eq!(parse_format_spec("#").unwrap(),
-            FormatSpec { integer_places: 1, decimal_places: 0 });
-        assert_eq!(parse_format_spec("0").unwrap(),
-            FormatSpec { integer_places: 1, decimal_places: 0 });
-        assert_eq!(parse_format_spec("###").unwrap(),
-            FormatSpec { integer_places: 3, decimal_places: 0 });
+        assert_eq!(
+            parse_format_spec("#").unwrap(),
+            FormatSpec {
+                integer_places: 1,
+                decimal_places: 0
+            }
+        );
+        assert_eq!(
+            parse_format_spec("0").unwrap(),
+            FormatSpec {
+                integer_places: 1,
+                decimal_places: 0
+            }
+        );
+        assert_eq!(
+            parse_format_spec("###").unwrap(),
+            FormatSpec {
+                integer_places: 3,
+                decimal_places: 0
+            }
+        );
     }
 
     #[test]
@@ -148,10 +183,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_chars() {
-        assert!(parse_format_spec("#,###").is_err());      // comma
-        assert!(parse_format_spec("0.0%").is_err());       // percent
-        assert!(parse_format_spec("0.0e2").is_err());      // sci-notation
-        assert!(parse_format_spec("$0.00").is_err());      // currency
+        assert!(parse_format_spec("#,###").is_err()); // comma
+        assert!(parse_format_spec("0.0%").is_err()); // percent
+        assert!(parse_format_spec("0.0e2").is_err()); // sci-notation
+        assert!(parse_format_spec("$0.00").is_err()); // currency
     }
 
     #[test]
@@ -170,7 +205,7 @@ mod tests {
         let two = parse_format_spec("#.##").unwrap();
         assert_eq!(two.apply(1.0), 1.0);
         assert_eq!(two.apply(1.234), 1.23);
-        assert_eq!(two.apply(1.235), 1.24);   // round half up
+        assert_eq!(two.apply(1.235), 1.24); // round half up
         assert_eq!(two.apply(1.999), 2.0);
 
         let three = parse_format_spec("0.000").unwrap();

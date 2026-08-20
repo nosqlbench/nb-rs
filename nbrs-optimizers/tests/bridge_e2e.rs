@@ -36,22 +36,35 @@ fn sweep_through_core_driver_visits_the_grid() {
         core::Axis {
             name: "x".into(),
             kind: core::AxisKind::Discrete {
-                detents: vec![core::AxisValue::Num(-1.0), core::AxisValue::Num(0.0), core::AxisValue::Num(1.0)],
+                detents: vec![
+                    core::AxisValue::Num(-1.0),
+                    core::AxisValue::Num(0.0),
+                    core::AxisValue::Num(1.0),
+                ],
             },
             changeover: core::Changeover::Coordinate,
         },
         core::Axis {
             name: "y".into(),
             kind: core::AxisKind::Discrete {
-                detents: vec![core::AxisValue::Num(-1.0), core::AxisValue::Num(0.0), core::AxisValue::Num(1.0)],
+                detents: vec![
+                    core::AxisValue::Num(-1.0),
+                    core::AxisValue::Num(0.0),
+                    core::AxisValue::Num(1.0),
+                ],
             },
             changeover: core::Changeover::Coordinate,
         },
     ]);
     let opt = core::by_name("sweep", &core::OptimizerParams::new()).expect("sweep is built in");
-    let mut obj = ShiftedSphere { target: vec![0.0, 0.0] };
+    let mut obj = ShiftedSphere {
+        target: vec![0.0, 0.0],
+    };
     let report = opt.optimize(&space, &mut obj, &core::Budget::seeded(100, 0));
     assert_eq!(report.evals, 9, "sweep should visit the full 3x3 grid");
-    assert_eq!(report.best, vec![core::AxisValue::Num(0.0), core::AxisValue::Num(0.0)]);
+    assert_eq!(
+        report.best,
+        vec![core::AxisValue::Num(0.0), core::AxisValue::Num(0.0)]
+    );
     assert_eq!(report.stop, core::StopReason::Converged);
 }

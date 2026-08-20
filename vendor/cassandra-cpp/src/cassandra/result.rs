@@ -208,7 +208,10 @@ impl<'a> Drop for ResultIterator<'a> {
 }
 
 impl LendingIterator for ResultIterator<'_> {
-    type Item<'a> = Row<'a> where Self: 'a;
+    type Item<'a>
+        = Row<'a>
+    where
+        Self: 'a;
 
     fn next(&mut self) -> Option<<Self as LendingIterator>::Item<'_>> {
         unsafe {
