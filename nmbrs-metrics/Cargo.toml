@@ -1,0 +1,63 @@
+[package]
+name = "nmbrs-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Metrics collection and reporting for nmbrs"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+hdrhistogram = "7"
+# `rt` so the cadence reporter can spawn ephemeral per-notification
+# delivery fibers (via a captured runtime Handle) instead of parking a
+# dedicated OS thread per subscriber — SRD-88 §"signaling layer".
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+futures = "0.3"
+# Lock-free metrics consolidation lifecycle (SRD-42):
+# crossbeam-channel for non-blocking command queue from many writers
+# (every phase boundary calls ingest/close_path) to a single owner
+# thread; arc-swap for lock-free atomic snapshot publication so
+# readers (TUI, metrics queries) never block the consolidator.
+crossbeam-channel = "0.5"
+arc-swap = "1"
+# Polydat is published independently; nmbrs-metrics owns the
+# polydat-side metric-reading node registration (formerly
+# `polydat::nodes::metrics`) so polydat itself doesn't take a
+# reverse dep on nmbrs-metrics.
+polydat = "0.2"
+# `inventory` is needed for the polydat-node registration macro
+# (`polydat::register_nodes!`) to emit its `inventory::submit!`
+# block from this crate.
+inventory = "0.3.24"
+rusqlite = { version = "0.31", features = ["bundled", "functions"], optional = true }
+# Used by the query API's label matchers (anchored regex). Core to the
+# `queryapi` module, so non-optional.
+regex = "1"
+reqwest = { version = "0.12", features = ["blocking"], optional = true }
+base64 = { version = "0.22", optional = true }
+# SRD-102 physical thread pools: sched_setscheduler / setpriority /
+# sched_setaffinity for the `timing` pool's realtime + affinity policy
+# (Linux; a logged no-op elsewhere).
+libc = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+victoriametrics = ["dep:reqwest"]
+all-reporters = ["sqlite", "victoriametrics", "dep:base64"]
+
+[[bench]]
+name = "instruments"
+harness = false
+
+[[bench]]
+name = "cadence_layout"
+harness = false

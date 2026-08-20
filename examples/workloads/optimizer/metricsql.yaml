@@ -26,7 +26,7 @@
 # optimum (conc=2) is the LAST coordinate, not the first.
 #
 # Runs standalone:
-#   nbrs run workload=examples/workloads/optimizer_metricsql.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_metricsql.yaml \
 #       --session-path /tmp/opt-mq
 
 description: |
@@ -85,5 +85,5 @@ phases:
         result-capacity: 2
         result-overload: 4
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[

@@ -25,7 +25,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use nbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nmbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use polydat::ast::Value;
 use scylla::client::session::Session;
 use scylla::statement::{
@@ -100,7 +100,7 @@ pub(super) struct ScyllaBatchDispenser {
     /// A batch is a statement too, so these apply to the [`Batch`] itself
     /// (consistency / serial / request timeout / tracing) — the aspects
     /// that govern batch execution, uniform with the single-statement path.
-    modifiers: nbrs_runtime::op_modifier::ModifierChain<Batch>,
+    modifiers: nmbrs_runtime::op_modifier::ModifierChain<Batch>,
     /// Derived ONCE at dispenser init from the batch's inner statements
     /// (uniform template with stride ⇒ one prepared statement): `false` for
     /// counter batches and LWT statements, `true` for plain PK-keyed
@@ -121,7 +121,7 @@ impl ScyllaBatchDispenser {
         max_batch_bytes: Option<u64>,
         batch_type: BatchType,
         consistency: Consistency,
-        modifiers: nbrs_runtime::op_modifier::ModifierChain<Batch>,
+        modifiers: nmbrs_runtime::op_modifier::ModifierChain<Batch>,
         retry_safe: bool,
     ) -> Self {
         Self {
@@ -154,7 +154,7 @@ impl ScyllaBatchDispenser {
         row_value_sets: &[Vec<Value>],
     ) -> Result<Option<Box<dyn ResultBody>>, ExecutionError> {
         let col_specs = self.prepared.get_variable_col_specs();
-        let mut rows: Vec<Vec<binders::NbrsCell<'_>>> = Vec::with_capacity(row_value_sets.len());
+        let mut rows: Vec<Vec<binders::NmbrsCell<'_>>> = Vec::with_capacity(row_value_sets.len());
         for values in row_value_sets {
             rows.push(
                 binders::build_row(col_specs, values)
@@ -228,7 +228,7 @@ impl OpDispenser for ScyllaBatchDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
@@ -253,7 +253,7 @@ impl OpDispenser for ScyllaBatchDispenser {
             };
 
             // Materialize all row-value sets up front so any
-            // borrowed-slice NbrsCells stay valid through each
+            // borrowed-slice NmbrsCells stay valid through each
             // `batch()` call.
             let mut all_rows: Vec<Vec<Value>> = Vec::with_capacity(total);
             for row_idx in 0..total {
@@ -284,8 +284,8 @@ impl OpDispenser for ScyllaBatchDispenser {
                         && row_bytes > budget
                         && !self.oversize_warned.swap(true, Ordering::Relaxed)
                     {
-                        nbrs_runtime::diag!(
-                            nbrs_runtime::observer::LogLevel::Warn,
+                        nmbrs_runtime::diag!(
+                            nmbrs_runtime::observer::LogLevel::Warn,
                             "cql batch: a single row (~{row_bytes} B) exceeds \
                              max_batch_size ({budget} B); sending it as a \
                              one-row batch — the server may still reject it",
@@ -302,7 +302,7 @@ impl OpDispenser for ScyllaBatchDispenser {
                 submitted += cur.len();
             }
 
-            // Mirror nbrs batch dispenser's `rows_inserted`
+            // Mirror nmbrs batch dispenser's `rows_inserted`
             // capture — drives the `rows/s` status metric. Lands on
             // the per-fiber kernel via ctx.wires.write.
             let _ = ctx

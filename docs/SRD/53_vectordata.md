@@ -521,7 +521,7 @@ separate node family.
 `vectordata` 0.24 added a default trait method
 `VectorReader::get_slice(index) -> Option<&[T]>` (default
 returns `None`; mmap-backed concrete readers override to
-return `Some(&self.mmap[...])`). nb-rs picks this up via:
+return `Some(&self.mmap[...])`). nmbrs picks this up via:
 
 - `Value::VecF32(SliceArc<f32>)` / `Value::VecI32(SliceArc<i32>)` —
   `SliceArc<T>` is a typed-slice carrier with a type-erased
@@ -544,7 +544,7 @@ return `Some(&self.mmap[...])`). nb-rs picks this up via:
   }
   ```
 
-The CQL binder is already slice-shaped (`NbrsCell::F32Slice(&[f32])`),
+The CQL binder is already slice-shaped (`NmbrsCell::F32Slice(&[f32])`),
 so consuming the new `SliceArc` is a Deref-coercion — no adapter
 change required.
 

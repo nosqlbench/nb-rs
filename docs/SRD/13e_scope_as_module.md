@@ -2,7 +2,7 @@
 
 **Status:** normative (design — not yet implemented)
 **Owner:** polydat (kernel/program API, ScopeModule type),
-  nbrs-runtime (scope-tree walk, OpBuilder/FiberBuilder rewrite,
+  nmbrs-runtime (scope-tree walk, OpBuilder/FiberBuilder rewrite,
   retirement of ad-hoc string-concat synthesisers)
 **Cross-refs:** SRD-11 (GK evaluation lifecycles), SRD-13 (GK
   modules — formal `name(params) -> (outputs) := { body }` form,
@@ -21,7 +21,7 @@
 
 ## What this SRD covers
 
-Today's nbrs runtime treats every sub-scope (phase, op-template,
+Today's nmbrs runtime treats every sub-scope (phase, op-template,
 `for_each`, `do_while`/`do_until`) as a *kernel* with no formal
 contract surface against its parent. The synthesisers
 (`build_scope`, `build_op_template_scope_kernel`,
@@ -587,7 +587,7 @@ prove the legacy phase-merge unmerge preserves behaviour
 ## 6. Out of scope
 
 - **Cross-process module loading.** A `ScopeModule` is a
-  compile-time concept within one nbrs run. Loading a
+  compile-time concept within one nmbrs run. Loading a
   pre-compiled module across processes (relevant for SRD-44
   checkpoint+resume identity) keeps the existing
   `program_hash` / `instance_hash` mechanism. This SRD doesn't

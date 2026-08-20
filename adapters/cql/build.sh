@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build script for the cassandra-cpp engine of nbrs-adapter-cql.
+# Build script for the cassandra-cpp engine of nmbrs-adapter-cql.
 #
 # This script:
 #   1. Builds the Apache Cassandra C++ driver from source in
@@ -7,7 +7,7 @@
 #   2. Extracts the static library and headers into the cql
 #      adapter's per-crate target directory:
 #      adapters/cql/target/sysroot/.
-#   3. Builds nbrs with --features engine-cassandra-cpp,
+#   3. Builds nmbrs with --features engine-cassandra-cpp,
 #      linking statically against the driver.
 #
 # Lifecycle:
@@ -21,11 +21,11 @@
 #
 # Usage:
 #   cd adapters/cql
-#   bash build.sh           # full build (driver + nbrs)
+#   bash build.sh           # full build (driver + nmbrs)
 #   bash build.sh driver    # build only the C++ driver
-#   bash build.sh cargo     # build only nbrs (driver must exist)
-#   bash build.sh install   # cargo install --path nbrs with all engines linked
-#   bash build.sh docker    # build nbrs entirely inside Docker
+#   bash build.sh cargo     # build only nmbrs (driver must exist)
+#   bash build.sh install   # cargo install --path nmbrs with all engines linked
+#   bash build.sh docker    # build nmbrs entirely inside Docker
 #   bash build.sh clean     # `cargo clean` (this crate) + docker rmi
 #
 # Driver build mode (selects how the C++ driver is compiled):
@@ -47,7 +47,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Pre-cargo linker artifacts (C++ driver static lib + header)
-# and the docker-extracted nbrs binary all live under the
+# and the docker-extracted nmbrs binary all live under the
 # adapter-local cargo target/ — see adapters/cql/.cargo/config.toml
 # (`[build] target-dir = "target"`). That makes them part of
 # cargo's lifecycle: `cd adapters/cql && cargo clean` wipes
@@ -58,9 +58,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # either to docker (overwriting copies) or to cargo clean.
 ADAPTER_TARGET="$SCRIPT_DIR/target"
 SYSROOT="$ADAPTER_TARGET/sysroot"
-DOCKER_NBRS="$ADAPTER_TARGET/nbrs"
+DOCKER_NMBRS="$ADAPTER_TARGET/nmbrs"
 DOCKER_CONTEXT="$ADAPTER_TARGET/docker-context"
-DOCKER_IMAGE="nbrs-cql-cpp-driver-builder"
+DOCKER_IMAGE="nmbrs-cql-cpp-driver-builder"
 
 # ─── Build the C++ driver — dispatches on DRIVER_BUILD_MODE ───
 #
@@ -267,7 +267,7 @@ _finalize_sysroot() {
     echo "==> Driver build complete."
 }
 
-# ─── Build nbrs with cargo, using the local sysroot ───
+# ─── Build nmbrs with cargo, using the local sysroot ───
 
 build_cargo() {
     # The driver build (build_driver) deletes all `.so*` files
@@ -281,7 +281,7 @@ build_cargo() {
         exit 1
     fi
 
-    echo "==> Building nbrs --features engine-cassandra-cpp (static linking)..."
+    echo "==> Building nmbrs --features engine-cassandra-cpp (static linking)..."
 
     # Point cassandra-cpp-sys at our sysroot
     export CASSANDRA_SYS_LIB_PATH="$SYSROOT/lib"
@@ -290,9 +290,9 @@ build_cargo() {
 
     cd "$PROJECT_ROOT"
 
-    cargo build --release -p nbrs --no-default-features --features engine-cassandra-cpp
+    cargo build --release -p nmbrs --no-default-features --features engine-cassandra-cpp
 
-    local bin="$PROJECT_ROOT/target/release/nbrs"
+    local bin="$PROJECT_ROOT/target/release/nmbrs"
 
     if [ -f "$bin" ]; then
         echo "==> Built: $bin"
@@ -308,7 +308,7 @@ build_cargo() {
     fi
 }
 
-# ─── cargo install --path nbrs with the cassandra-cpp engine ───
+# ─── cargo install --path nmbrs with the cassandra-cpp engine ───
 
 build_install() {
     if [ ! -f "$SYSROOT/lib/libcassandra_static.a" ] \
@@ -318,7 +318,7 @@ build_install() {
         exit 1
     fi
 
-    echo "==> cargo install --path nbrs --features all-engines..."
+    echo "==> cargo install --path nmbrs --features all-engines..."
 
     # Same sysroot env as build_cargo so the linker picks up the
     # static libcassandra and the cassandra-cpp-sys crate's headers.
@@ -328,16 +328,16 @@ build_install() {
 
     cd "$PROJECT_ROOT"
 
-    # `--path nbrs` from the workspace root. `--locked` keeps the
+    # `--path nmbrs` from the workspace root. `--locked` keeps the
     # install hermetic against drift in Cargo.lock. `--force` lets
     # you re-run after iterating without removing the prior install.
     # `all-engines` links both scylla and cassandra-cpp so the
     # built binary can pick at runtime via `cqldriver=…`.
     cargo install --locked --force \
-        --path nbrs \
+        --path nmbrs \
         --no-default-features --features all-engines
 
-    local cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/nbrs"
+    local cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/nmbrs"
     if [ -x "$cargo_bin" ]; then
         echo "==> Installed: $cargo_bin"
     else
@@ -383,24 +383,24 @@ build_docker() {
     fi
 
     echo "==> Context size: $(du -sh "$DOCKER_CONTEXT" | cut -f1)"
-    echo "==> Building nbrs (cassandra-cpp) entirely in Docker..."
+    echo "==> Building nmbrs (cassandra-cpp) entirely in Docker..."
     docker build \
-        -f "$SCRIPT_DIR/nbrs-cassandra-cpp.Dockerfile" \
-        -t nbrs-cassandra-cpp \
+        -f "$SCRIPT_DIR/nmbrs-cassandra-cpp.Dockerfile" \
+        -t nmbrs-cassandra-cpp \
         "$DOCKER_CONTEXT"
 
-    echo "==> Docker image: nbrs-cassandra-cpp"
-    echo "==> Run: docker run --rm --network host nbrs-cassandra-cpp --help"
+    echo "==> Docker image: nmbrs-cassandra-cpp"
+    echo "==> Run: docker run --rm --network host nmbrs-cassandra-cpp --help"
 
     # Optionally extract the binary
     echo "==> Extracting binary..."
     local cid
-    cid=$(docker create nbrs-cassandra-cpp)
+    cid=$(docker create nmbrs-cassandra-cpp)
     # Extract under the cargo-managed target/ alongside the
     # sysroot — `cargo clean` from this crate cleans it up.
-    docker cp "$cid:/usr/local/bin/nbrs" "$DOCKER_NBRS"
+    docker cp "$cid:/usr/local/bin/nmbrs" "$DOCKER_NMBRS"
     docker rm "$cid" > /dev/null
-    echo "==> Extracted: $DOCKER_NBRS"
+    echo "==> Extracted: $DOCKER_NMBRS"
 }
 
 # ─── Clean ───
@@ -409,7 +409,7 @@ clean() {
     echo "==> Cleaning..."
 
     # All file-system artifacts (sysroot, docker-extracted
-    # nbrs, docker context) live under `adapters/cql/target/`,
+    # nmbrs, docker context) live under `adapters/cql/target/`,
     # which is the per-crate target directory configured in
     # `adapters/cql/.cargo/config.toml`. `cargo clean` from
     # this crate dir owns its lifecycle — no rm in this
@@ -423,7 +423,7 @@ clean() {
 
     # Docker images — defer to docker's own rm.
     if command -v docker >/dev/null 2>&1; then
-        for img in "$DOCKER_IMAGE" nbrs-cassandra-cpp; do
+        for img in "$DOCKER_IMAGE" nmbrs-cassandra-cpp; do
             if docker image inspect "$img" >/dev/null 2>&1; then
                 echo "==> docker rmi $img"
                 docker rmi "$img" || true
@@ -464,8 +464,8 @@ case "${1:-default}" in
         echo ""
         echo "  (default)    Build C++ driver, extract libs, cargo build on host"
         echo "  driver       Build only the C++ driver, extract to target/sysroot/"
-        echo "  cargo        Build only nbrs --features engine-cassandra-cpp (driver must exist)"
-        echo "  install      cargo install --path nbrs --features all-engines (driver must exist)"
+        echo "  cargo        Build only nmbrs --features engine-cassandra-cpp (driver must exist)"
+        echo "  install      cargo install --path nmbrs --features all-engines (driver must exist)"
         echo "  docker       Build everything inside Docker (no host Rust needed)"
         echo "  clean        cargo clean (this crate's target/) + docker rmi"
         echo ""

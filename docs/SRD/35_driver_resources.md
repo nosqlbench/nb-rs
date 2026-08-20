@@ -2,8 +2,8 @@
 
 **Status:** design (not yet implemented)
 **Owner:** runtime / executor + adapters
-**Implementation target:** `nbrs-runtime/src/resource_pool.rs` (new),
-  `nbrs-runtime/src/adapter.rs` (extension), per-adapter
+**Implementation target:** `nmbrs-runtime/src/resource_pool.rs` (new),
+  `nmbrs-runtime/src/adapter.rs` (extension), per-adapter
   driver-instance impls
 **Cross-refs:** SRD-30 (adapter interface), SRD-31 (op pipeline),
   SRD-04 (umbrella options), SRD-19 (component tree),
@@ -278,7 +278,7 @@ Following SRD-04's umbrella pattern:
 
 ```
 --resource-share <kv-list>
-NBRS_RESOURCE_SHARE=<kv-list>
+NMBRS_RESOURCE_SHARE=<kv-list>
 
 --resource-share <policy>            # bare-token: applies to all adapters
 --resource-share 'cql:per-phase,http:shared'
@@ -899,7 +899,7 @@ folded into the body but called out here so readers can see
    specific instance mapping is intentionally *not* fully
    knowable from the pre-map — `can_support_more_load()` is a runtime
    decision the driver owns, not a planner-side projection.
-   `nbrs describe drivers` can show the projected
+   `nmbrs describe drivers` can show the projected
    `(key, policy)` table without trying to predict sibling
    counts.
 5. **Instance-shaping params and shell-shaping params are
@@ -983,7 +983,7 @@ Three pushes, each independently shippable:
 
 ### Push A — pool layer + `PerPhase` default for everyone
 
-- Add `nbrs-runtime::resource_pool` with the new traits, the
+- Add `nmbrs-runtime::resource_pool` with the new traits, the
   multi-generation `Entry` machinery, the pre-map-driven
   refcount walker, and the lifecycle event emitters
   (`attach` / `const.{started,completed,failed}` /
@@ -1063,7 +1063,7 @@ Three pushes, each independently shippable:
   all do it). This SRD is about pooling driver *instances*, not
   pooling connections within an instance.
 - Cross-process sharing (shared memory, daemonised driver
-  pool). nb-rs is single-process; if that ever changes, that
+  pool). nmbrs is single-process; if that ever changes, that
   change subsumes this SRD's pool, not the other way around.
 - Tenancy / quota enforcement on shared instances. A shared
   instance is shared transparently — phases don't compete for

@@ -7,7 +7,7 @@
 //! Internally it has multiple driver implementations
 //! (`scylla` — pure Rust; `cassandra-cpp` — DataStax C++ via
 //! FFI), each registered as a [`DriverImpl`]
-//! (nbrs_runtime::adapter::DriverImpl) under
+//! (nmbrs_runtime::adapter::DriverImpl) under
 //! `adapter = "cql"`. Driver names are *internal* — they're
 //! never user-facing adapter names.
 //!
@@ -15,20 +15,20 @@
 //! [`DriverImpl`]s for `cql`, picks one (user override via
 //! `cqldriver=…`, or default by ascending
 //! [`DriverImpl::default_rank`]), and instantiates it. The
-//! returned [`DriverAdapter`](nbrs_runtime::adapter::DriverAdapter)
+//! returned [`DriverAdapter`](nmbrs_runtime::adapter::DriverAdapter)
 //! reports its name as `"cql"` regardless of which driver
 //! backs it.
 //!
 //! User-facing examples:
 //!
 //! ```text
-//! nbrs run adapter=cql                            # default driver
-//! nbrs run adapter=cql cqldriver=scylla          # force scylla
-//! nbrs run adapter=cql cqldriver=cassandra-cpp   # force cassandra-cpp
+//! nmbrs run adapter=cql                            # default driver
+//! nmbrs run adapter=cql cqldriver=scylla          # force scylla
+//! nmbrs run adapter=cql cqldriver=cassandra-cpp   # force cassandra-cpp
 //! ```
 
-use nbrs_runtime::adapter::{AdapterRegistration, DisplayPreference, instantiate_with_driver};
-use nbrs_runtime::control_catalog::{ControlDesc, ControlValueType, DeclaredWhen};
+use nmbrs_runtime::adapter::{AdapterRegistration, DisplayPreference, instantiate_with_driver};
+use nmbrs_runtime::control_catalog::{ControlDesc, ControlValueType, DeclaredWhen};
 
 /// The workload-param name a user sets to pick a specific CQL
 /// driver, overriding the rank-derived default. Single value
@@ -37,9 +37,9 @@ pub const CQL_DRIVER_PARAM: &str = "cqldriver";
 
 /// SRD-23 — the `cql_trace_rate` dynamic control's capability descriptor.
 /// The single source of truth: the live control declared in
-/// [`declare_controls`](nbrs_runtime::adapter::DriverAdapter::declare_controls)
+/// [`declare_controls`](nmbrs_runtime::adapter::DriverAdapter::declare_controls)
 /// derives its name / range / gauge from this (via [`ControlDesc::build_f64`]),
-/// and `nbrs describe controls` reads it without constructing the adapter.
+/// and `nmbrs describe controls` reads it without constructing the adapter.
 pub const CQL_TRACE_RATE: ControlDesc = ControlDesc {
     name: "cql_trace_rate",
     value_type: ControlValueType::Fraction,
@@ -89,7 +89,7 @@ inventory::submit! {
 /// CQL driver implementations compiled into this binary. Empty
 /// when no driver feature is enabled.
 pub fn default_cql_drivers() -> Vec<&'static str> {
-    nbrs_runtime::adapter::default_drivers("cql")
+    nmbrs_runtime::adapter::default_drivers("cql")
 }
 
 /// Convenience helper for diagnostic surfaces (CLI banner, web

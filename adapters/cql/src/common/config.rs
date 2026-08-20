@@ -133,8 +133,8 @@ impl CqlConfig {
     /// runs both `cassandra-cpp` and `scylla` against the
     /// same cluster gets two independent sessions (one per
     /// driver library).
-    pub fn to_resource_key(&self, driver_name: &str) -> nbrs_runtime::resource_pool::ResourceKey {
-        nbrs_runtime::resource_pool::ResourceKey::new("cql")
+    pub fn to_resource_key(&self, driver_name: &str) -> nmbrs_runtime::resource_pool::ResourceKey {
+        nmbrs_runtime::resource_pool::ResourceKey::new("cql")
             .with("driver", driver_name)
             .with("hosts", &self.hosts)
             .with("port", self.port.to_string())
@@ -211,7 +211,7 @@ impl CqlConfig {
         // matching the per-op `timeout` precedence; per-op `timeout` still
         // overrides this connection default.
         if let Some(v) = params.get("timeout") {
-            config.request_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.request_timeout_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid timeout value '{v}': {e}"))?;
         }
         // `request_timeout` is the explicit peer of `connect_timeout` and the
@@ -219,7 +219,7 @@ impl CqlConfig {
         // legacy shorthand for the same knob). Placed after `timeout` so the
         // explicit name wins when both are set. timeval or bare frac-seconds.
         if let Some(v) = params.get("request_timeout") {
-            config.request_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.request_timeout_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid request_timeout value '{v}': {e}"))?;
         }
         // `connect_timeout` bounds connection ESTABLISHMENT (control + per-host
@@ -227,27 +227,27 @@ impl CqlConfig {
         // the `Connection timeout` control-connection failure class. timeval or
         // bare frac-seconds; driver default 5000ms.
         if let Some(v) = params.get("connect_timeout") {
-            config.connect_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.connect_timeout_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid connect_timeout value '{v}': {e}"))?;
         }
         // Exponential-reconnection policy knobs (cassandra-cpp engine; see the
         // field docs). timeval or bare frac-seconds each.
         if let Some(v) = params.get("reconnect_base_delay") {
-            config.reconnect_base_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.reconnect_base_delay_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid reconnect_base_delay value '{v}': {e}"))?;
             config.reconnect_params_explicit = true;
         }
         if let Some(v) = params.get("reconnect_max_delay") {
-            config.reconnect_max_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.reconnect_max_delay_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid reconnect_max_delay value '{v}': {e}"))?;
             config.reconnect_params_explicit = true;
         }
         if let Some(v) = params.get("heartbeat_interval") {
-            config.heartbeat_interval_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.heartbeat_interval_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid heartbeat_interval value '{v}': {e}"))?;
         }
         if let Some(v) = params.get("connection_idle_timeout") {
-            config.connection_idle_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+            config.connection_idle_timeout_ms = nmbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid connection_idle_timeout value '{v}': {e}"))?;
         }
         if let Some(v) = params.get("trace_rate") {

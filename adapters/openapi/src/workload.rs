@@ -9,7 +9,7 @@
 //! of the URI template.
 
 use crate::spec::{ApiOperation, FieldInfo};
-use nbrs_workload::model::ParsedOp;
+use nmbrs_workload::model::ParsedOp;
 use std::collections::HashMap;
 
 /// Generate ParsedOps from API operations.
@@ -113,7 +113,7 @@ pub fn generate_ops(ops: &[ApiOperation], base_url: &str) -> (Vec<ParsedOp>, Str
             captures: Vec::new(),
             abstract_interface: None,
             interface_bound: false,
-            daemon: nbrs_workload::model::DaemonSpec::Disabled,
+            daemon: nmbrs_workload::model::DaemonSpec::Disabled,
             daemon_cancel_grace_ms: None,
             while_cond: None,
             rate: None,

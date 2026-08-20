@@ -22,7 +22,7 @@
 # 2-server / depth-4 backend (no overloads) for every batch.
 #
 # Runs standalone:
-#   nbrs run workload=examples/workloads/optimizer_hybrid.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_hybrid.yaml \
 #       --session-path /tmp/opt-hybrid
 
 description: |
@@ -75,5 +75,5 @@ phases:
         result-capacity: 2
         result-overload: 4
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[

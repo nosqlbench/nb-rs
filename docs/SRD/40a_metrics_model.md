@@ -5,14 +5,14 @@
 > (entities, relationships, types, formats, naming rules,
 > identity, lookup conventions) shared across:
 >
-> - **`nbrs-metrics::snapshot`** — in-memory recording API
+> - **`nmbrs-metrics::snapshot`** — in-memory recording API
 >   (the cadence pipeline produces these).
 > - **OpenMetrics 1.0** spec (`links/specs/open_metrics_spec.md`,
 >   `links/specs/OpenMetrics.md`).
 > - **MetricsQL** (`links/specs/MetricsQL.md`) — the
 >   query-language overlap (selectors, label semantics).
-> - **`nbrs-metrics::reporters::sqlite`** — durable schema.
-> - **`nbrs-metricsql::catalog`** — read-side catalog trait.
+> - **`nmbrs-metrics::reporters::sqlite`** — durable schema.
+> - **`nmbrs-metricsql::catalog`** — read-side catalog trait.
 
 This SRD consolidates the data-model contract so a single
 read aligns the in-memory shape, the wire/durable shape,
@@ -37,7 +37,7 @@ Cross-refs:
 
 The entire model is six entities. Each cell of the table
 below is the canonical name, the OpenMetrics spec section,
-the Rust type in `nbrs-metrics::snapshot`, and the SQLite
+the Rust type in `nmbrs-metrics::snapshot`, and the SQLite
 storage table.
 
 | Entity        | OpenMetrics §  | Rust type                | SQLite                             |
@@ -102,7 +102,7 @@ support. The Rust model:
 
 ### 2.3 Booleans (OpenMetrics §4.2.1)
 
-Booleans MUST follow `1 == true`, `0 == false`. nbrs follows
+Booleans MUST follow `1 == true`, `0 == false`. nmbrs follows
 this convention everywhere — StateSet stores 0/1 in the
 `mean` column; Info stores `1` in the `count` column.
 
@@ -157,18 +157,18 @@ or OpenMetrics specifies them.
 | Constraint                          | Where enforced              |
 |-------------------------------------|------------------------------|
 | Valid UTF-8                         | At construction (Rust `String`) |
-| Empty label values                  | SHOULD be treated as if the label was not present (spec §4.3). nbrs preserves them on the wire but normalisation passes drop them. |
+| Empty label values                  | SHOULD be treated as if the label was not present (spec §4.3). nmbrs preserves them on the wire but normalisation passes drop them. |
 | Quote / backslash escaping in text format | At exposition (`reporters::openmetrics`) |
 
 ### 3.4 LabelSet identity
 
 Per spec §4.3.2, label names within a LabelSet MUST be
-unique. nbrs's `Labels` type enforces this on construction
+unique. nmbrs's `Labels` type enforces this on construction
 (`with(key, value)` overwrites the prior pair for the same
 key rather than appending).
 
 LabelSet equality is **set-equal**: two sets with the same
-unordered pairs compare equal. nbrs's `Labels::identity_hash`
+unordered pairs compare equal. nmbrs's `Labels::identity_hash`
 sorts pairs before hashing so storage dedup works
 regardless of declaration order.
 
@@ -206,9 +206,9 @@ suffixes:
 | Unknown         | _(empty)_                            |
 
 A MetricFamily name MUST NOT clash with any other family's
-exposition-suffixed name. nbrs writers and readers honour
+exposition-suffixed name. nmbrs writers and readers honour
 this via the `STAT_SUFFIXES` table in
-`nbrs-metrics::queryapi::sqlite` — bare-name lookup tries
+`nmbrs-metrics::queryapi::sqlite` — bare-name lookup tries
 the family name first, then strips known suffixes and
 retries.
 
@@ -238,7 +238,7 @@ Stored on `MetricFamily.help` and `metric_family.help`.
 ### 5.1 The series-identity tuple
 
 The canonical key for "what series is this?" everywhere in
-nbrs:
+nmbrs:
 
 ```text
 (family_name, LabelSet)        — where LabelSet is the set of (key, value) pairs
@@ -258,12 +258,12 @@ matcher-op     = "=" / "!=" / "=~" / "!~"
 ```
 
 A selector compiles to `Vec<Matcher>` (per
-`nbrs-metricsql::eval::Matcher`), and the catalog backend
+`nmbrs-metricsql::eval::Matcher`), and the catalog backend
 resolves it to series + samples via the
 [`MetricCatalog`](49_metricsql_supported_scope.md) trait.
 
 The resolution algorithm (see
-`nbrs-metrics::queryapi::sqlite::SqliteDataSource`):
+`nmbrs-metrics::queryapi::sqlite::SqliteDataSource`):
 
 1. Find the `__name__` matcher; resolve to `family_id`
    (Eq required by current sqlite impl; regex on
@@ -277,7 +277,7 @@ The resolution algorithm (see
 [`MetricCatalog`] surfaces four flavours of lookup,
 matching the OpenMetrics + Prometheus query API:
 
-| nbrs method                             | Equivalent OpenMetrics endpoint      |
+| nmbrs method                             | Equivalent OpenMetrics endpoint      |
 |-----------------------------------------|---------------------------------------|
 | `metric_families()`                     | `/api/v1/metadata`                    |
 | `label_keys(family_filter)`             | `/api/v1/labels` (optionally with `match[]`) |
@@ -290,7 +290,7 @@ the catalog needs to drive autocompletion + dashboards.
 
 ### 5.4 Lookup-friendly storage shapes
 
-| Concern                | nbrs convention                         |
+| Concern                | nmbrs convention                         |
 |------------------------|------------------------------------------|
 | Series-identity hash   | sorted-pair hash on the LabelSet (`Labels::identity_hash`) |
 | Family lookup by name  | indexed in SQLite (`UNIQUE(name, type)` on `metric_family`) |
@@ -299,7 +299,7 @@ the catalog needs to drive autocompletion + dashboards.
 | Exemplar lookup        | `exemplar(instance_id, sample_timestamp_ms)` index |
 
 These indexes are the contract for the
-`nbrs-metrics::queryapi::sqlite::SqliteDataSource` query
+`nmbrs-metrics::queryapi::sqlite::SqliteDataSource` query
 plans. Removing one degrades to full scans.
 
 ---
@@ -361,18 +361,18 @@ ad-hoc `_failed_total_blocked` label name slipped through.
 
 | Layer                    | Test location                                                  |
 |--------------------------|----------------------------------------------------------------|
-| In-memory ↔ in-memory (combine) | `nbrs-metrics/src/snapshot.rs::tests` |
-| In-memory → SQLite       | `nbrs-metrics/src/reporters/sqlite.rs::tests::sqlite_*` |
-| SQLite → catalog         | `nbrs-metricsql/src/adapters/sqlite.rs::tests::catalog_*` |
+| In-memory ↔ in-memory (combine) | `nmbrs-metrics/src/snapshot.rs::tests` |
+| In-memory → SQLite       | `nmbrs-metrics/src/reporters/sqlite.rs::tests::sqlite_*` |
+| SQLite → catalog         | `nmbrs-metricsql/src/adapters/sqlite.rs::tests::catalog_*` |
 | Native types (8 OpenMetrics) | both above, plus `catalog_round_trip_*` per type |
 | Exemplars                | `catalog_exemplars_round_trips` (reader), `write_native_sample_*` + future writer test |
-| Parser corpus            | `nbrs-metricsql/tests/parity.rs` against `parser_round_trip.json` |
+| Parser corpus            | `nmbrs-metricsql/tests/parity.rs` against `parser_round_trip.json` |
 
 ---
 
 ## 8. Gap audit (current state, 2026-05-05)
 
-The columns below answer "is this in nbrs today?" against
+The columns below answer "is this in nmbrs today?" against
 the model defined above.
 
 | Concept                   | In-memory | SQLite | Catalog | Status |
@@ -398,7 +398,7 @@ the model defined above.
 | LabelSet 128-char limit (exemplars) | ✅ `validation::check_exemplar_length` (per §4.7) | ✅ stored permissively | ✅ pass-through; exposition drops violations | covered (recording-side check; exposition is the strict gate) |
 
 All gaps from the prior audit closed. The validation
-helpers live in `nbrs-metrics::validation` with 19 tests
+helpers live in `nmbrs-metrics::validation` with 19 tests
 pinning each rule's coverage; callers decide between
 fail-fast (strict mode) / warn / silent-coerce depending
 on whether they're recording or exposing data.
@@ -410,9 +410,9 @@ on whether they're recording or exposing data.
 When extending the model:
 
 1. **In-memory first.** Add the variant or field on
-   `nbrs-metrics::snapshot`. Combine semantics defined.
+   `nmbrs-metrics::snapshot`. Combine semantics defined.
 2. **Storage second.** Schema migration in
-   `nbrs-metrics::reporters::sqlite::create_schema` —
+   `nmbrs-metrics::reporters::sqlite::create_schema` —
    `IF NOT EXISTS` so existing dbs pick up the change on
    next open.
 3. **Reader third.** Catalog adapter learns the new shape.

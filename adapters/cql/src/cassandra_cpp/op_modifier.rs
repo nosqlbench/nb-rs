@@ -34,7 +34,7 @@
 use std::time::Duration;
 
 use cassandra_cpp as cass;
-use nbrs_runtime::op_modifier::OpFieldModifier;
+use nmbrs_runtime::op_modifier::OpFieldModifier;
 use polydat::ast::Value;
 
 use crate::common::CqlConsistency;

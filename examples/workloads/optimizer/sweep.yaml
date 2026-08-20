@@ -12,7 +12,7 @@
 # an adaptive method (`nelder_mead`, `cmaes`, …) to search without enumerating.
 #
 # Usage (runs standalone):
-#   nbrs run workload=examples/workloads/optimizer_sweep.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_sweep.yaml \
 #       --session-path /tmp/opt-sweep
 #
 # The objective is maximized (score = 0) at ef=3.
@@ -42,5 +42,5 @@ phases:
           stdout: eventlog
         stmt: "probe ef={ef}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[3\]

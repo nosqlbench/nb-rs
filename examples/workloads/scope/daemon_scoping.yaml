@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Daemon-phase scope levels (SRD-82 Part 6).
 #
 # A `daemon: true` phase runs CONCURRENTLY with its foreground siblings,
@@ -29,10 +29,10 @@
 # completes before `verify` starts (its build scope finished), while
 # `heartbeat` outlives `verify` and stops LAST (its scope is the whole
 # `demo`). Watch it three ways:
-#   nbrs run workload=examples/workloads/scope/daemon_scoping.yaml tui=on
+#   nmbrs run workload=examples/workloads/scope/daemon_scoping.yaml tui=on
 #       → the live footer stacks the active phases (the daemon(s) + the
 #         current foreground phase) and drops `probe` before `verify`.
-#   nbrs run ... ; nbrs checkpoint show <session>
+#   nmbrs run ... ; nmbrs checkpoint show <session>
 #       → the scope_enter/exit + phase events in execution order.
 #
 # Why a daemon's stop is scope-local: the executor's `run_scenario_body`
@@ -134,7 +134,7 @@ phases:
       check:
         stmt: "SELECT count(*) FROM demo;"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 # Runs standalone (testkit; no host/dataset). Both daemons must stop
 # cleanly when their scope's foreground completes → the run completes with
 # no failed phases. This is also the only regression guard for daemon

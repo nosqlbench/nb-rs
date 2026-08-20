@@ -102,8 +102,8 @@ scenarios:
 
 The default scenario stays whatever the workload already declares.
 Users running the standard scenario get measured + (when desired)
-synthetic in the same session by chaining: `nbrs run … scenario=
-default && nbrs run … scenario=predict_only`. Both write to the
+synthetic in the same session by chaining: `nmbrs run … scenario=
+default && nmbrs run … scenario=predict_only`. Both write to the
 same `metrics.db` (per SRD-45 session continuity), so the plot
 directive sees both families in one query.
 
@@ -145,9 +145,9 @@ two separate plots stacked in the report.
    - New `pvs_predict` phase block.
    - New `predict_only` scenario.
    - New plot directive in `report:`.
-3. **Smoke test.** `nbrs run workload=… scenario=predict_only`
+3. **Smoke test.** `nmbrs run workload=… scenario=predict_only`
    should populate `optimize_for_factor` rows in `metrics.db`,
-   and `nbrs report plot optimize_for_factor_curves` should
+   and `nmbrs report plot optimize_for_factor_curves` should
    produce a chart with two lines (LATENCY, RECALL) over the
    limit axis.
 
@@ -157,7 +157,7 @@ two separate plots stacked in the report.
 
 Everything above is workload-shaped: the formulas, the phase
 name, the `k_values × k_n_limits[k]` comprehension, the plot
-labels. None of it is normative for nb-rs as a system — it's a
+labels. None of it is normative for nmbrs as a system — it's a
 concrete consumer of SRD-40b's mechanism. The cross-cutting rules
 (schema, wrapper, registration, alignment principle, output-
 channel convention) live in SRD-40b; this memo records *one

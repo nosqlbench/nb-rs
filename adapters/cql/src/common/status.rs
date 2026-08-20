@@ -5,11 +5,11 @@
 //!
 //! Surfaced on the TUI status line and in the post-run summary.
 //! Engine adapters call this from
-//! [`DriverAdapter::default_status_metrics`](nbrs_runtime::adapter::DriverAdapter::default_status_metrics)
+//! [`DriverAdapter::default_status_metrics`](nmbrs_runtime::adapter::DriverAdapter::default_status_metrics)
 //! so every CQL engine displays the same status row regardless
 //! of which driver is active.
 
-use nbrs_runtime::adapter::{StatusMetric, StatusRender};
+use nmbrs_runtime::adapter::{StatusMetric, StatusRender};
 
 /// Status metrics every CQL engine surfaces by default.
 ///

@@ -1,6 +1,6 @@
-# 39: Metrics & Observability — Contract & Axioms (nbrs-metrics)
+# 39: Metrics & Observability — Contract & Axioms (nmbrs-metrics)
 
-Front door for **nbrs-metrics** (layer L2): the component tree, instruments, cadence
+Front door for **nmbrs-metrics** (layer L2): the component tree, instruments, cadence
 reporter, and the read-side query surface. A well-factored crate — almost every module is
 a deliberate public surface. Pillars 1+2 of the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
@@ -35,4 +35,4 @@ a deliberate public surface. Pillars 1+2 of the
 MetricsQL query language is its own crate atop the query API — [SRD 08](08_metricsql.md).
 
 ## See also
-`nbrs-metrics/src/lib.rs`; [SRD 40](40_metrics.md); [SRD 40a](40a_metrics_model.md); [SRD 42](42_windowed_metrics.md).
+`nmbrs-metrics/src/lib.rs`; [SRD 40](40_metrics.md); [SRD 40a](40a_metrics_model.md); [SRD 42](42_windowed_metrics.md).

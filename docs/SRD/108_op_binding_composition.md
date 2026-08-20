@@ -1,8 +1,8 @@
 # SRD-108 — Blueprint/Implementation Op Composition
 
-Status: IMPLEMENTED. Coverage: `nbrs-workload/src/implements.rs`
-unit tests (binder rules), `nbrs/tests/tag_composition.rs` (Part
-A e2e), `nbrs/tests/implements_binding.rs` (Part B e2e — both
+Status: IMPLEMENTED. Coverage: `nmbrs-workload/src/implements.rs`
+unit tests (binder rules), `nmbrs/tests/tag_composition.rs` (Part
+A e2e), `nmbrs/tests/implements_binding.rs` (Part B e2e — both
 invocation forms, unbound-slot load error, target mismatch). Two
 composition forms for binding a **blueprint** — a
 protocol-agnostic workload carrying phases with concurrency,
@@ -139,15 +139,15 @@ The interface types use the polydat DSL type vocabulary (`u64`,
 and *early*; the synthesis check is the *proof*, in the same
 place it has always been.
 
-### Authoring support — `nbrs blueprint`
+### Authoring support — `nmbrs blueprint`
 
 The `blueprint` command umbrella turns the typed interfaces into
 scaffolding for implementation authors:
 
-- `nbrs blueprint list` — bundled workloads carrying unbound
+- `nmbrs blueprint list` — bundled workloads carrying unbound
   `abstract:` slots, with slot counts (candidates are text-scanned
   then actually parsed — no unverified claims).
-- `nbrs blueprint template <blueprint> [<out.yaml>]` — generate an
+- `nmbrs blueprint template <blueprint> [<out.yaml>]` — generate an
   implementation skeleton from the blueprint: `implements:`
   pre-set, the blueprint's declared params listed as reference
   comments, one stub op per abstract slot with its `needs` /
@@ -169,7 +169,7 @@ typed abstract slots) bound by `cql/vector_suite_cql_impl`
 (literal CQL) or a web driver library (`drivers/vendorx`). The
 direct-bound monolith `cql/vector_suite_cql_direct` is kept as
 the testing reference, and
-`nbrs/tests/vector_suite_equivalence.rs` proves the pair
+`nmbrs/tests/vector_suite_equivalence.rs` proves the pair
 model-equivalent to it — same scenario trees, phase scaffolding,
 op bodies, and effective params, modulo only the pair's `connect`
 phase (SRD-109 session establishment).

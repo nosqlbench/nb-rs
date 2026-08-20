@@ -18,7 +18,7 @@ disjoint places:
 2. **`families: HashSet<String>`** — name-only collision
    guard added in SRD-40b §7. Empty for legacy components;
    populated by `register_family` at op-dispenser init.
-3. **`MetricsDispenser` slots** (in `nbrs-runtime::wrappers`)
+3. **`MetricsDispenser` slots** (in `nmbrs-runtime::wrappers`)
    hold the *actual* `Arc<Counter>` / `Arc<ValueGauge>` /
    `Arc<Histogram>` for synthetic metrics, and a sibling
    `MetricsInstrumentSet` shim wraps them as a third copy
@@ -39,7 +39,7 @@ case (justification in §3 below).
 
 ## 1. New types
 
-In `nbrs-metrics/src/component.rs`:
+In `nmbrs-metrics/src/component.rs`:
 
 ```rust
 /// A typed instrument reference owned by a `Component`. The
@@ -95,7 +95,7 @@ Replace with:
 /// captured at registration time and never looks up by name
 /// per cycle. Name lookup (`find_instrument(name)`) is a
 /// linear scan and is **expected to be rare** — used by
-/// diagnostics (`dryrun=op`, `nbrs describe polydat`),
+/// diagnostics (`dryrun=op`, `nmbrs describe polydat`),
 /// introspection tooling, and ad-hoc tests. If we ever find
 /// a hot path that does name lookup per cycle, that's a
 /// design bug in the caller, not a reason to add a HashMap.
@@ -179,7 +179,7 @@ Concretely:
   per tick. The walk is sequential by definition; HashMap
   iteration order isn't useful here.
 - `find_instrument(name)` exists for diagnostics
-  (`dryrun=op` summaries, `nbrs describe polydat` introspection,
+  (`dryrun=op` summaries, `nmbrs describe polydat` introspection,
   ad-hoc test queries). These paths run at most once per
   workload load, not per cycle.
 
@@ -196,7 +196,7 @@ read this section first and reach for pre-binding instead.
 
 ## 4. Cadence reporter migration
 
-Today `nbrs-metrics::cadence_reporter` walks the component
+Today `nmbrs-metrics::cadence_reporter` walks the component
 tree, dispatching `Component.instruments.as_ref().map(|i|
 i.capture_delta(...))`. New:
 
@@ -320,7 +320,7 @@ Drops:
 
 The `MetricInstrument` enum on the wrapper-side that I had
 earlier collapses into the `InstrumentRef` enum from
-`nbrs-metrics`. One enum, used both in the wrapper's slot
+`nmbrs-metrics`. One enum, used both in the wrapper's slot
 and in the component's registry. They share the Arc.
 
 ## 7. Migration steps (phased)
@@ -329,13 +329,13 @@ Each step is independently testable.
 
 | Step | What | Files | LOC est. |
 |---|---|---|---|
-| 1 | Add `InstrumentRef` + `RegisteredInstrument` types | `nbrs-metrics::component` | ~80 |
-| 2 | Add `register_instrument` / `instruments()` / `find_instrument` / `capture_delta` / `capture_current` on `Component` | `nbrs-metrics::component` | ~120 |
-| 3 | Update cadence reporter to call `Component::capture_delta` | `nbrs-metrics::cadence_reporter` | ~20 |
-| 4 | Migrate `ActivityMetrics` to register Arcs on its component | `nbrs-runtime::activity` | ~60 |
+| 1 | Add `InstrumentRef` + `RegisteredInstrument` types | `nmbrs-metrics::component` | ~80 |
+| 2 | Add `register_instrument` / `instruments()` / `find_instrument` / `capture_delta` / `capture_current` on `Component` | `nmbrs-metrics::component` | ~120 |
+| 3 | Update cadence reporter to call `Component::capture_delta` | `nmbrs-metrics::cadence_reporter` | ~20 |
+| 4 | Migrate `ActivityMetrics` to register Arcs on its component | `nmbrs-runtime::activity` | ~60 |
 | 5 | Migrate every other `InstrumentSet` impl (validation metrics, polling metrics, anything else) | various | ~50 |
-| 6 | Retire `InstrumentSet` trait + `set_instruments` / `register_family` / `families` | `nbrs-metrics::component` | -90 |
-| 7 | Simplify `MetricsDispenser`: drop `MetricsInstrumentSet`, use `register_instrument` | `nbrs-runtime::wrappers` | -60 |
+| 6 | Retire `InstrumentSet` trait + `set_instruments` / `register_family` / `families` | `nmbrs-metrics::component` | -90 |
+| 7 | Simplify `MetricsDispenser`: drop `MetricsInstrumentSet`, use `register_instrument` | `nmbrs-runtime::wrappers` | -60 |
 | 8 | Update tests that constructed `MockInstruments` impls of `InstrumentSet` to use the registry | tests across crates | ~40 |
 
 Net: ~+220 LOC added, ~-150 retired, **+70 LOC for a real

@@ -5,7 +5,7 @@
 # (TWCS time-series schema keyed by (machine, sensor) with DESC
 # time clustering, timestamped inserts via USING TIMESTAMP,
 # recent-window reads) are taken from the nosqlbench heritage
-# workload; everything else is native nbrs:
+# workload; everything else is native nmbrs:
 #
 #   - Every knob is a declared param flowing into bindings as a
 #     typed const wire — discoverable via `describe workloads`,

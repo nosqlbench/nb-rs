@@ -152,7 +152,7 @@ realized `[1s, (20s), 5m]` — `20s` is hidden, adjacent ratios are
 `20:1` and `15:1`, both under the cap.
 
 Constant of truth lives at
-`nbrs_metrics::cadence::DEFAULT_MAX_FAN_IN` in the source. CLI
+`nmbrs_metrics::cadence::DEFAULT_MAX_FAN_IN` in the source. CLI
 override surface (`latency-fan-in=`) is reserved but not yet
 exposed — the default constant is the single project-wide value
 until an operator needs the knob.
@@ -586,12 +586,12 @@ The windowed-metrics service has **two intentionally separate
 responsibilities**. They are an effective unit, but the boundary
 between them is deliberate and must not be collapsed:
 
-- **The metrics scheduler** (`nbrs-metrics::scheduler`) is the
+- **The metrics scheduler** (`nmbrs-metrics::scheduler`) is the
   *pacer*. A dedicated thread captures one OpenMetrics-shaped frame
   of the live component tree (`capture_tree`) at the base interval
   and ingests it into the cadence reporter. It owns *when* a frame
   is taken and *what* the tree currently holds.
-- **The cadence reporter** (`nbrs-metrics::cadence_reporter`) is the
+- **The cadence reporter** (`nmbrs-metrics::cadence_reporter`) is the
   *publisher and store*. It is command-driven — it has **no internal
   timer**. That is deliberate, not passivity: being driven by
   ingest commands is what keeps it lock-free on the async hot path.
@@ -913,7 +913,7 @@ when the convention is exercised by `MetricsQuery`):
 
 - `component` — the component path, e.g.
   `session.run-2026-04-22.phase-load`.
-- Standard nb-rs activity/phase labels carry through unchanged.
+- Standard nmbrs activity/phase labels carry through unchanged.
 
 Subtree-filter selection in `MetricsQuery` walks the `LabelSet`s,
 optionally backed by an auxiliary component-path index in the
@@ -1035,7 +1035,7 @@ Each phase is a single change set: every caller of the
 type/path being deleted gets rewritten in the same diff.
 
 6. **Phase 6 — Snapshot data model is the only data model.**
-   `nbrs-metrics/src/snapshot.rs` (the OpenMetrics-shaped
+   `nmbrs-metrics/src/snapshot.rs` (the OpenMetrics-shaped
    `MetricSet`/`MetricFamily`/`Metric`/`MetricPoint` types) is
    the single in-memory representation of metric values. The
    `Sample` enum in `frame.rs` and its consumers are deleted

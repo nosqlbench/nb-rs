@@ -7,9 +7,9 @@
 > with both `StringSink` and `TuiReadoutSink`, both the stateless
 > `DefaultBinder` and the stateful `TuiReadoutBinder` (focus / LOD /
 > overlay), the baked-step compiler, and the `readout_snapshots` sqlite
-> retention table. Code lives in `nbrs-runtime/src/readouts/`
+> retention table. Code lives in `nmbrs-runtime/src/readouts/`
 > (`readout.rs`, `context.rs`, `binder.rs`, `registry.rs`,
-> `snapshot.rs`, `parse.rs`) and `nbrs-tui/src/readout_sink.rs` +
+> `snapshot.rs`, `parse.rs`) and `nmbrs-tui/src/readout_sink.rs` +
 > `readout_panel.rs`. The ONE piece still stubbed is the **Explanation
 > overlay** (§3.2): `ContentMode::Explanation` currently renders zero
 > bytes for all readouts, pending its push.
@@ -731,7 +731,7 @@ Worked example. Three input layers, four slots involved:
 
 ```yaml
 # Layer 1 — built-in defaults (registered in
-#           nbrs-runtime::readouts::registry).
+#           nmbrs-runtime::readouts::registry).
 on_session_start: session_banner
 on_each_start:    scope_header
 on_update:        phase_status
@@ -747,7 +747,7 @@ readouts:
                                 #  every phase end
 
 # Layer 3 — CLI flag (operator override at run time).
-$ nbrs run … --readout=on_phase_end:phase_done_quiet
+$ nmbrs run … --readout=on_phase_end:phase_done_quiet
 ```
 
 Resolution table (closest-wins per §5.0; lower layers
@@ -979,7 +979,7 @@ thing it renders *about*:
   tuple** (one per `on_each_*` cycle); final render at
   `on_each_end`.
 - A `session_banner` / `session_summary` readout's
-  subject is the **session** — the entire nbrs run as a
+  subject is the **session** — the entire nmbrs run as a
   single unit. "Session" here matches SRD-45's session
   definition: one resolved session directory, one
   `metrics.db`, one continuous span from invocation
@@ -1002,7 +1002,7 @@ The most recent render of every readout — keyed by
 session it belongs to — is **retained in the session**
 until the session closes. The retention store lives
 alongside `metrics.db` in the session directory, persists
-across nbrs invocations within the session (resumes,
+across nmbrs invocations within the session (resumes,
 re-renders, post-run inspection), and is dropped on session
 delete.
 
@@ -1036,10 +1036,10 @@ What this enables:
 - **Scrollback in the TUI.** The user pages back through
   completed phases and sees each phase's last live status
   as it stood at completion, not a recomputed view.
-- **`nbrs replay`** (out of scope for first push). Read
+- **`nmbrs replay`** (out of scope for first push). Read
   the snapshot store and reproduce the live display after
   the run.
-- **`nbrs report`** can include the final ✓ summary lines
+- **`nmbrs report`** can include the final ✓ summary lines
   verbatim, identical bytes to what the operator saw.
 
 ### 6.4 Storage shape
@@ -1123,7 +1123,7 @@ pub trait ReadoutSink {
     fn line_break(&mut self);
 }
 
-// As built in `nbrs-runtime/src/readouts/binder.rs` — `literal()` for
+// As built in `nmbrs-runtime/src/readouts/binder.rs` — `literal()` for
 // raw passthrough, `render()` takes an owned `ReadoutHandle`.
 
 pub enum LayoutHint {
@@ -1313,9 +1313,9 @@ A single CLI flag picks the `on_phase` readout for the
 current run:
 
 ```
-nbrs run workload=… --readout=phase_done
-nbrs run workload=… --readout=compact
-nbrs run workload=… --readout="lod:compact phase_done"
+nmbrs run workload=… --readout=phase_done
+nmbrs run workload=… --readout=compact
+nmbrs run workload=… --readout="lod:compact phase_done"
 ```
 
 If the value is a known built-in name, that readout
@@ -1395,7 +1395,7 @@ Push 4 — explanation overlays.*
 
 **Push 1 — `on_phase` only.** Readout trait, registry,
 `ReadoutContext` facade, baked-step renderer. Built-ins:
-`phase_done`. Wire `nbrs-runtime::activity`'s ✓ DONE +
+`phase_done`. Wire `nmbrs-runtime::activity`'s ✓ DONE +
 inline progress lines through the engine. Workload
 `readouts:` parses and validates but only `on_phase` slot
 is wired. Output byte-equivalent to today's.

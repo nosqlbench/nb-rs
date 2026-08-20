@@ -2,7 +2,7 @@
 
 **Status:** normative
 **Owner:** runtime / CLI
-**Implementation:** `nbrs-runtime/src/session.rs::parse_session_kv` (pilot)
+**Implementation:** `nmbrs-runtime/src/session.rs::parse_session_kv` (pilot)
 
 ---
 
@@ -152,24 +152,24 @@ disambiguation signal.
 
 ---
 
-## Rule 7 — Every CLI flag has an `NBRS_`-prefixed env var
+## Rule 7 — Every CLI flag has an `NMBRS_`-prefixed env var
 
-Every config flag in nbrs has an env-var equivalent. The env
+Every config flag in nmbrs has an env-var equivalent. The env
 name is derived from the flag name automatically:
 
 ```
---session            → NBRS_SESSION
---session-name       → NBRS_SESSION_NAME
---session-path       → NBRS_SESSION_PATH
---session-reuse      → NBRS_SESSION_REUSE
---session-keep       → NBRS_SESSION_KEEP
---session-shelflife  → NBRS_SESSION_SHELFLIFE
+--session            → NMBRS_SESSION
+--session-name       → NMBRS_SESSION_NAME
+--session-path       → NMBRS_SESSION_PATH
+--session-reuse      → NMBRS_SESSION_REUSE
+--session-keep       → NMBRS_SESSION_KEEP
+--session-shelflife  → NMBRS_SESSION_SHELFLIFE
 ```
 
 (Strip the leading `--`, replace `-` with `_`, uppercase,
-prepend `NBRS_`.)
+prepend `NMBRS_`.)
 
-**Setting both the CLI flag AND its `NBRS_`-prefixed env var
+**Setting both the CLI flag AND its `NMBRS_`-prefixed env var
 is a hard error.** The runtime exits with status 2 and a
 message naming both inputs. We refuse to silently
 disambiguate — the operator's two inputs are fighting and one
@@ -181,7 +181,7 @@ There's no precedence rule for "which one wins" because
 running.
 
 The implementation lives in
-`nbrs_runtime::session::resolve_flag` and is reusable for
+`nmbrs_runtime::session::resolve_flag` and is reusable for
 every flag site that adopts this pattern.
 
 ---

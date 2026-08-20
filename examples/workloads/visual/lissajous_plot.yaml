@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # lissajous_plot.yaml — Live Lissajous figure
 #
 # Classic oscilloscope pattern: x = sin(a*t), y = sin(b*t + phase)
@@ -31,5 +31,5 @@ ops:
     x: "{x}"
     y: "{y}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

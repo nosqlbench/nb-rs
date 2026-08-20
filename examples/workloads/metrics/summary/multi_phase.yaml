@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Summary Report — Multi-Phase with Mixed Metrics
 #
 # Demonstrates how the summary table adapts to phases that produce
@@ -13,8 +13,8 @@
 # - Row filtering via `filter=<regex>` in the summary DSL
 #
 # Usage:
-#   nbrs run workload=examples/summary_multi_phase.yaml
-#   nbrs run workload=examples/summary_multi_phase.yaml scenario=filtered
+#   nmbrs run workload=examples/summary_multi_phase.yaml
+#   nmbrs run workload=examples/summary_multi_phase.yaml scenario=filtered
 
 params:
   adapter: stdout
@@ -81,5 +81,5 @@ phases:
       query:
         stmt: "SEARCH batch={batch} query={query_id} score={score}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

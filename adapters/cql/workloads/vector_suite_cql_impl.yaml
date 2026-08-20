@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # vector_suite_cql_impl.yaml — the CQL implementation of
 # vector_suite_blueprint.yaml (SRD-108 Part B implementation
 # module).
@@ -10,8 +10,8 @@
 # bindings, relevancy — is the blueprint's, and any attempt to
 # redeclare it here is a load error.
 #
-#   nbrs run workload=cql/vector_suite_cql_impl scenario=search_perf
-#   nbrs run workload=vector_suite_blueprint \
+#   nmbrs run workload=cql/vector_suite_cql_impl scenario=search_perf
+#   nmbrs run workload=vector_suite_blueprint \
 #            impl=cql/vector_suite_cql_impl scenario=search_perf
 
 description: |

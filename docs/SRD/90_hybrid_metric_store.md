@@ -1,4 +1,4 @@
-# 90: Cadence-Aware Hybrid Metric Store    (owning crate: nbrs-metrics; modules: cadence_reporter, queryapi/{mod,live,sqlite,hybrid,sample_view}, scheduler; new traits: MetricSink (write) + MetricAccess (read); tests: cadence_reporter, queryapi/*, nbrs/tests/example_workloads_in_process)
+# 90: Cadence-Aware Hybrid Metric Store    (owning crate: nmbrs-metrics; modules: cadence_reporter, queryapi/{mod,live,sqlite,hybrid,sample_view}, scheduler; new traits: MetricSink (write) + MetricAccess (read); tests: cadence_reporter, queryapi/*, nmbrs/tests/example_workloads_in_process)
 
 Windowed metric reads (`rate(errors_total[400ms])`, `increase(...[W])`, every
 `metricsql_*` reader, the SRD-86 optimizer settle objective) source their data
@@ -52,7 +52,7 @@ timestamps the window needs.
   ticks + partial-flush boundaries) and its subscription fan-out, the SRD-45
   per-session sqlite store (`queryapi/sqlite.rs`), the SRD-89 read-scoping hook
   (`current_read_exec_id`).
-- **Allowed edges:** nbrs-metrics internal; nbrs-runtime installs the backend via
+- **Allowed edges:** nmbrs-metrics internal; nmbrs-runtime installs the backend via
   `install_live_access`. No new cross-crate edge (see SRD-05 Contract Registry).
 
 ## Axioms
@@ -329,7 +329,7 @@ fix that must land first carries no write-path risk.**
    counter windows). Tests: `ring_retains_by_time_not_slot_count`,
    `ring_evicts_windows_past_the_counter_horizon`,
    `distributions_stripped_past_hist_horizon_but_counters_kept` (cadence_reporter);
-   288 nbrs-metrics tests + the full walker green (no regression).
+   288 nmbrs-metrics tests + the full walker green (no regression).
    **Scope note:** this delivers req #2 (sub-window trending) and confirms req #1
    (lock-free), but is — by the §non-goals analysis — **inert for the servo's
    short 400ms window** (the smallest ring already covered it; the servo lever is
@@ -355,7 +355,7 @@ fix that must land first carries no write-path risk.**
    it to its label set (the bespoke post-filter is **deleted**) and the sqlite
    tier to its `exec_id` column (no `CurrentReadExec` selection special-case) —
    one mechanism, both tiers. Tests: 4 hybrid (fast-path / spill-stitch /
-   coverage-skip / cold-only series); 293 nbrs-metrics + full walker green (exec
+   coverage-skip / cold-only series); 293 nmbrs-metrics + full walker green (exec
    scoping intact, no regression). Single-run injects nothing ⇒ A1.
    **Note:** the cold tier opens a WAL read-only connection to the session's own
    `metrics.db`; the spill is rare (fast-path) and the optimizer (400ms) never
@@ -390,7 +390,7 @@ fix that must land first carries no write-path risk.**
 
 ## See also
 
-- crate `nbrs-metrics/src/lib.rs`; modules `cadence_reporter`, `queryapi/*`,
+- crate `nmbrs-metrics/src/lib.rs`; modules `cadence_reporter`, `queryapi/*`,
   `scheduler`, `snapshot`, `component`; tests as named above.
 - **SRD-42** Windowed Metrics — the cadence cascade this builds on (M1 extends the
   smallest tier; A5 preserves the rest).

@@ -130,7 +130,7 @@ state to a standard format:
   where the row count surprised. We get this today only by
   parsing audit.log lines.
 - **schemars (JSON Schema generation) over `PortType`.** Today our
-  `nbrs describe op` already names types per binding. JSON Schema
+  `nmbrs describe op` already names types per binding. JSON Schema
   would add: language-portable type files VSCode / web editors can
   validate against. Worth it only if we expect external tooling
   to author workload YAMLs (today: not the use case).
@@ -148,7 +148,7 @@ state to a standard format:
   web UI). Today the inspector socket carries our own protocol.
 - **CBOR diag tools (`cbor.me`).** Inspect binary snapshots that
   travel via channels (Slack pastes, support tickets) without
-  needing the workload yaml + nbrs binary at the other end.
+  needing the workload yaml + nmbrs binary at the other end.
 
 What this DOESN'T add: nothing about hot-path execution. None of
 these tools operate on live in-flight Polydat state; they all consume
@@ -158,13 +158,13 @@ exports at the boundary.
 
 The reviewer's pushback: our `PortType` enum + DSL grammar
 already implies a schema. Output names + types are derivable from
-the op-template kernel today (we have `nbrs describe op` and a
+the op-template kernel today (we have `nmbrs describe op` and a
 manifest emission path). What does emitting JSON Schema /
 Arrow Schema buy that the implied schema doesn't?
 
 Honest answer: **only what external consumers can read.** Our
 implied schema is consumable by tooling that imports our crates
-or scrapes `nbrs describe`. JSON / Arrow / Avro Schema is
+or scrapes `nmbrs describe`. JSON / Arrow / Avro Schema is
 consumable by:
 
 - IDE schema-validation plugins (VSCode JSON Schema extension)
@@ -182,14 +182,14 @@ consumers" not "schemas are new." We don't gain anything we don't
 already have until a real external consumer asks for one of those
 formats.
 
-**Verdict:** keep this option in mind for `nbrs describe schema
+**Verdict:** keep this option in mind for `nmbrs describe schema
 --format=arrow` as a *future* CLI surface, but it doesn't earn its
 own infrastructure today.
 
 ### 4. Type lattice depth — the genuine win, with performance honesty
 
 Arrow's `DataType` enum is ~30 variants vs our 14 PortTypes. The
-gap that actually matters for nb-rs workloads:
+gap that actually matters for nmbrs workloads:
 
 | Arrow has | We don't | Use case |
 |---|---|---|
@@ -262,7 +262,7 @@ data stack" looks like in practice:
   loads in Python: `pd.read_parquet(...)`, runs `describe()` /
   `value_counts()` for ad-hoc histogram comparisons across runs.
   Implementation: ~200 LOC using the `parquet` crate's writer.
-- **Replay-debug from a CBOR cycle dump.** `nbrs replay
+- **Replay-debug from a CBOR cycle dump.** `nmbrs replay
   --session logs/X --cycle 42` reads the cycle's bound input
   state from a captured CBOR file, replays the op-template
   kernel against it, prints every wire's typed value. Useful
@@ -279,7 +279,7 @@ data stack" looks like in practice:
   dependency.
 - **Cross-language consumers.** A Julia / R analyst reads our
   Parquet outputs through their language's native reader. No
-  nb-rs install needed. Today this requires SQLite-to-CSV
+  nmbrs install needed. Today this requires SQLite-to-CSV
   detour and loses type info.
 
 What this DOESN'T enable: live cross-tool introspection of
@@ -587,7 +587,7 @@ without paying the storage refactor.
 
 ## Recommendation framework
 
-The question reduces to "which dimensions matter most for nb-rs's
+The question reduces to "which dimensions matter most for nmbrs's
 near-term roadmap?"
 
 If the goal is **debuggability and snapshot/replay** → **A + C**:

@@ -40,11 +40,11 @@ the design in its own direction):
   (over-invalidation), a cross-fiber dirty-slot check that
   silently SKIPPED slots ≥64 (under-invalidation — stale reads),
   an unguarded `1u64 << input_idx` in the closure kernels
-  (overflow at >63 inputs), and `nbrs describe` dependency lists
+  (overflow at >63 inputs), and `nmbrs describe` dependency lists
   that mis-rendered inputs >63. The cross-scope resolution also
   moved INTO polydat (`owned_extern_closure` +
   `resolve_externs_through`, mirroring `instance_hash`'s
-  chain-argument shape) — nbrs-runtime's derivation is now pure
+  chain-argument shape) — nmbrs-runtime's derivation is now pure
   composition: polydat projections ∪ textual scan → value
   digests.
 
@@ -58,7 +58,7 @@ That is the safe direction, but it over-invalidates the exact
 workflow the suite exists for:
 
 ```
-nbrs refine workload=cql/vector_suite_cql_impl scenario=traverse \
+nmbrs refine workload=cql/vector_suite_cql_impl scenario=traverse \
      phases='sweep_probe' suite_k=100
 ```
 

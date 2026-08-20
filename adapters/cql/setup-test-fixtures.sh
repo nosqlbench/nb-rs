@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generate a tiny synthetic CQL test-dataset fixture and register it
-# in vectordata's catalog so `nbrs run workload=full_cql_vector.yaml`
+# in vectordata's catalog so `nmbrs run workload=full_cql_vector.yaml`
 # (and other workloads that default to `dataset=example`) can resolve
 # the dataset name without needing a network catalog.
 #
@@ -56,7 +56,7 @@ mv "$FIXTURES/example/dataset.yaml.new" "$FIXTURES/example/dataset.yaml"
 # These are publishing-pipeline artifacts; for local-only fixtures
 # the values are nominal.
 
-echo 's3://nbrs-local/test-data/' > "$FIXTURES/.publish_url"
+echo 's3://nmbrs-local/test-data/' > "$FIXTURES/.publish_url"
 touch "$FIXTURES/example/.publish"
 
 echo "==> Generating catalog files"
@@ -89,7 +89,7 @@ minimal generator does not produce.
 
 Smoke test:
 
-  cargo run -p nbrs -- run \\
+  cargo run -p nmbrs -- run \\
     adapter=cql cqldriver=scylla \\
     workload=adapters/cql/workloads/full_cql_vector.yaml \\
     profile=default table=vec_default optimize_for=RECALL \\

@@ -1,11 +1,11 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # scope_coverage.yaml — Thematic coverage workload for the
 # scope-model / Polydat comprehension / modifier surface (SRD 13c /
 # 13d / 13f / 16 / 18b).
 #
 # Follows the `<theme>_coverage.yaml` pattern: one operator-
 # readable artifact carrying every supported shape on a given
-# axis, paired with a matching `nbrs/tests/<theme>.rs` test
+# axis, paired with a matching `nmbrs/tests/<theme>.rs` test
 # file (`scope.rs` for this one).
 #
 # Each scenario exercises a specific construct (or combination)
@@ -18,7 +18,7 @@
 # default (which chains them all).
 #
 # Run individually:
-#   nbrs run workload=examples/workloads/scope_coverage.yaml \
+#   nmbrs run workload=examples/workloads/scope_coverage.yaml \
 #            scenario=<one of the scenario names below>
 #
 # Constructs exercised:
@@ -174,7 +174,7 @@ scenarios:
     - emit_const
 
   # ── default: chain everything back-to-back so a single
-  # `nbrs run workload=...` exercises the whole matrix ──────
+  # `nmbrs run workload=...` exercises the whole matrix ──────
   default:
     - emit_shared_types
     - emit_const
@@ -296,7 +296,7 @@ phases:
 # deterministically testable end-to-end. They're left as YAML
 # comments so the gap is visible in this file (rather than
 # silently absent from the matrix). The corresponding Rust
-# tests in `nbrs/tests/workload_examples.rs` are also commented
+# tests in `nmbrs/tests/workload_examples.rs` are also commented
 # out with the same rationale, so when these constructs land
 # the test + workload pair flips on together.
 #
@@ -395,6 +395,6 @@ phases:
 # # measurement, not stdout grepping. Round-trip via stdout
 # # alone can't verify this construct.
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=shared_types
 #@ expect completed, 0 failed

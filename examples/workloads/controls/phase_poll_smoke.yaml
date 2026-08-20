@@ -56,7 +56,7 @@ phases:
           before: "polling state"
           after:  "compacted"
 
-# ─── verification (nbrs check / example-walker) ───
+# ─── verification (nmbrs check / example-walker) ───
 # Runs standalone — the predicate is satisfied from synthetic state,
 # so the phase completes cleanly with no failures.
 #@ run cycles=1

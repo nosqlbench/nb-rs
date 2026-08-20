@@ -1,6 +1,6 @@
-# 54: Web UI — Contract & Axioms (nbrs-web)
+# 54: Web UI — Contract & Axioms (nmbrs-web)
 
-Front door for **nbrs-web** (layer L5): the Axum + Askama + htmx dashboard — live metrics,
+Front door for **nmbrs-web** (layer L5): the Axum + Askama + htmx dashboard — live metrics,
 dynamic controls, a Polydat function browser, and a DAG viewer. Pillars 1+2 of the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
@@ -13,7 +13,7 @@ dynamic controls, a Polydat function browser, and a DAG viewer. Pillars 1+2 of t
 **Surface, inbound contract, and allowed edges:** authoritative in
 [SRD 05 §Contract Registry](05_dependency_rules.md). In brief — exports `server` (router
 assembly; embedded + standalone) + `ws` (WebSocket metric fanout); `routes`/`models`/`graph`
-are internal; consumes `nbrs_runtime` + `nbrs_metrics` (the read-side metric/control surface).
+are internal; consumes `nmbrs_runtime` + `nmbrs_metrics` (the read-side metric/control surface).
 
 ## Axioms
 
@@ -29,4 +29,4 @@ Shared concepts: [SRD 23](23_dynamic_controls.md) (controls), [SRD 81](81_event_
 (projection model).
 
 ## See also
-`nbrs-web/src/lib.rs`; [SRD 23](23_dynamic_controls.md); [SRD 81](81_event_sourced_display.md).
+`nmbrs-web/src/lib.rs`; [SRD 23](23_dynamic_controls.md); [SRD 81](81_event_sourced_display.md).

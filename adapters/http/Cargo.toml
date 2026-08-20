@@ -1,9 +1,9 @@
 [package]
-name = "nbrs-adapter-http"
+name = "nmbrs-adapter-http"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "HTTP adapter for nb-rs: executes workload operations as HTTP requests"
+description = "HTTP adapter for nmbrs: executes workload operations as HTTP requests"
 keywords = ["nosqlbench", "workload", "benchmark", "http"]
 categories = ["command-line-utilities", "web-programming::http-client"]
 repository.workspace = true
@@ -11,9 +11,9 @@ homepage.workspace = true
 readme.workspace = true
 
 [dependencies]
-nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1", default-features = false }
+nmbrs-runtime = { path = "../../nmbrs-runtime", version = "0.1.1", default-features = false }
 polydat = "0.2"
-nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
+nmbrs-workload = { path = "../../nmbrs-workload", version = "0.1.1" }
 reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1"
 inventory = "0.3.24"

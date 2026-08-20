@@ -1,6 +1,6 @@
 # op_inline_forms.yaml — how the `op=` CLI shorthand is detected and de-sugared
 #
-# `nbrs run op='<spec>' ...` synthesizes a one-or-more-op workload from
+# `nmbrs run op='<spec>' ...` synthesizes a one-or-more-op workload from
 # a single string. There is ONE detection rule, and no special cases for
 # `name := ...` vs `{...}` vs a bare expression:
 #
@@ -15,12 +15,12 @@
 #   - Text op      → a single `stmt` string with the interpolations inlined.
 #
 # You can see the de-sugared wiring for any of these with `dryrun=wiring`:
-#   nbrs run op='x := cos(to_f64(cycle))' cycles=1 dryrun=wiring
+#   nmbrs run op='x := cos(to_f64(cycle))' cycles=1 dryrun=wiring
 #
 # ----------------------------------------------------------------------
 # FORM 1 — Polydat bindings block (compiles → Polydat op)
 # ----------------------------------------------------------------------
-#   nbrs run op='t := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=120
+#   nmbrs run op='t := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=120
 #
 # De-sugars to:
 #   bindings: |
@@ -37,7 +37,7 @@
 # ----------------------------------------------------------------------
 # FORM 2 — bare Polydat expression (compiles → Polydat op)
 # ----------------------------------------------------------------------
-#   nbrs run op='sin(to_f64(cycle))' cycles=80
+#   nmbrs run op='sin(to_f64(cycle))' cycles=80
 #
 # A bare trailing expression is given an `out :=` so the program has an
 # output. De-sugars to:
@@ -51,7 +51,7 @@
 # ----------------------------------------------------------------------
 # FORM 3 — text template with an inline expression (does NOT compile → text op)
 # ----------------------------------------------------------------------
-#   nbrs run op='key={{hash(cycle)}}' cycles=5
+#   nmbrs run op='key={{hash(cycle)}}' cycles=5
 #
 # `key={{hash(cycle)}}` is not a Polydat program, so it stays a text op.
 # Each `{{expr}}` is lifted into a synthetic `__inline_N` wire and the
@@ -66,7 +66,7 @@
 # ----------------------------------------------------------------------
 # FORM 4 — string composite via references (does NOT compile → text op)
 # ----------------------------------------------------------------------
-#   nbrs run op='id-{cycle}' cycles=5
+#   nmbrs run op='id-{cycle}' cycles=5
 #
 # `{cycle}` is a reference (a wire name), resolved per cycle. The text op
 # is the composite string. De-sugars to:
@@ -79,7 +79,7 @@
 # ----------------------------------------------------------------------
 # FORM 5 — multiple ops with ratio prefixes (text ops, `;`-separated)
 # ----------------------------------------------------------------------
-#   nbrs run op='3:read {{cycle}}; 1:write {{mod(hash(cycle),1000)}}' cycles=8
+#   nmbrs run op='3:read {{cycle}}; 1:write {{mod(hash(cycle),1000)}}' cycles=8
 #
 # Top-level `;` separates ops; an `N:` prefix sets the op ratio. De-sugars to:
 #   bindings: |
@@ -96,9 +96,9 @@
 #
 # ======================================================================
 # Runnable body: the explicit YAML equivalent of FORM 1. Run it with:
-#   nbrs run workload=examples/workloads/getting_started/op_inline_forms.yaml cycles=8 adapter=stdout
+#   nmbrs run workload=examples/workloads/getting_started/op_inline_forms.yaml cycles=8 adapter=stdout
 # and compare to the one-liner:
-#   nbrs run op='t := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=8
+#   nmbrs run op='t := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=8
 # Both produce the same per-cycle x / y fields.
 # ======================================================================
 
@@ -116,5 +116,5 @@ ops:
     x: "{x}"
     y: "{y}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

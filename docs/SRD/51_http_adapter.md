@@ -1,7 +1,7 @@
 # 51: HTTP Adapter
 
 The HTTP adapter sends requests via `reqwest`. Included in the
-core `nbrs` binary.
+core `nmbrs` binary.
 
 ---
 

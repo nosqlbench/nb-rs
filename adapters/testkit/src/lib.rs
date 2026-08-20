@@ -47,11 +47,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
-use nbrs_adapter_stdout::{StdoutConfig, StdoutFormat};
-use nbrs_runtime::adapter::{
+use nmbrs_adapter_stdout::{StdoutConfig, StdoutFormat};
+use nmbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, TextBody,
 };
-use nbrs_workload::model::ParsedOp;
+use nmbrs_workload::model::ParsedOp;
 use xxhash_rust::xxh3;
 
 /// Distinct xxh3 seed for the `panic_rate` injection stream, so injected
@@ -315,20 +315,22 @@ impl OpDispenser for ModelDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
         let wires = ctx.wires;
         Box::pin(async move {
-            let resolved = nbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
-                .map_err(|msg| {
-                    ExecutionError::Op(AdapterError {
-                        error_name: "BindError".into(),
-                        message: msg,
-                        retryable: false,
-                    })
-                })?;
+            let resolved =
+                nmbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires).map_err(
+                    |msg| {
+                        ExecutionError::Op(AdapterError {
+                            error_name: "BindError".into(),
+                            message: msg,
+                            retryable: false,
+                        })
+                    },
+                )?;
             let text = self.format.render(&resolved, ",");
 
             // Write the resolved op (same as stdout). Done before
@@ -344,7 +346,7 @@ impl OpDispenser for ModelDispenser {
                     OutputTarget::Stdout(_)
                 );
                 if to_stdout {
-                    nbrs_runtime::observer::op_output(&text);
+                    nmbrs_runtime::observer::op_output(&text);
                 } else {
                     let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
                     let write_result = if self.newline {
@@ -409,8 +411,8 @@ impl OpDispenser for ModelDispenser {
                 };
                 if self.diagnose {
                     // SRD-87 A1: diagnostics route through the log channel.
-                    nbrs_runtime::diag!(
-                        nbrs_runtime::observer::LogLevel::Info,
+                    nmbrs_runtime::diag!(
+                        nmbrs_runtime::observer::LogLevel::Info,
                         "testkit: OVERLOAD cycle={cycle} {detail} threshold={threshold}"
                     );
                 }
@@ -447,8 +449,8 @@ impl OpDispenser for ModelDispenser {
                 && cycle == threshold
             {
                 if self.diagnose {
-                    nbrs_runtime::diag!(
-                        nbrs_runtime::observer::LogLevel::Info,
+                    nmbrs_runtime::diag!(
+                        nmbrs_runtime::observer::LogLevel::Info,
                         "testkit: ThrowAt cycle={cycle} threshold={threshold}"
                     );
                 }
@@ -467,8 +469,8 @@ impl OpDispenser for ModelDispenser {
                 let p = h as f64 / u64::MAX as f64;
                 if p < self.model_params.error_rate {
                     if self.diagnose {
-                        nbrs_runtime::diag!(
-                            nbrs_runtime::observer::LogLevel::Info,
+                        nmbrs_runtime::diag!(
+                            nmbrs_runtime::observer::LogLevel::Info,
                             "model: ERROR injected (cycle={}, rate={:.2}%)",
                             cycle,
                             self.model_params.error_rate * 100.0
@@ -510,7 +512,8 @@ impl OpDispenser for ModelDispenser {
             // A declared `result:` becomes the op's structured body
             // (so captures / `verify:` can address it); otherwise the
             // body is the rendered op text, exactly like stdout.
-            let body: Box<dyn nbrs_runtime::adapter::ResultBody> = match &self.model_params.result {
+            let body: Box<dyn nmbrs_runtime::adapter::ResultBody> = match &self.model_params.result
+            {
                 Some(ResultDef::Json(v)) => Box::new(JsonBody(v.clone())),
                 None => Box::new(TextBody(text)),
             };
@@ -525,7 +528,10 @@ impl OpDispenser for ModelDispenser {
 /// A per-cycle resolved op field as f64, or `None` if absent / non-numeric.
 /// Used to read the synthetic `result-load` (resolved through the wires each
 /// cycle, so it tracks the live searched coordinate, e.g. `{conc}`).
-fn resolved_field_f64(resolved: &nbrs_runtime::adapter::ResolvedFields, name: &str) -> Option<f64> {
+fn resolved_field_f64(
+    resolved: &nmbrs_runtime::adapter::ResolvedFields,
+    name: &str,
+) -> Option<f64> {
     let idx = resolved.names.iter().position(|n| n == name)?;
     match resolved.values.get(idx)? {
         polydat::ast::Value::F64(f) => Some(*f),
@@ -659,7 +665,7 @@ fn parse_latency(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_runtime::adapter::ResolvedFields;
+    use nmbrs_runtime::adapter::ResolvedFields;
 
     /// Minimal kernel used as the `parent` argument to `map_op`
     /// in tests that don't need a richer Polydat context (SRD-68 Push 2).
@@ -767,7 +773,7 @@ mod tests {
         // Capacity 1, overload 2: exactly 2 ops fit (1 serving + 1
         // queued). A third concurrent op must reject with Overload.
         let adapter = ModelAdapter::new();
-        let mut op = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
+        let mut op = nmbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
         op.params
             .insert("result-latency".into(), serde_json::Value::from("50ms"));
         op.params
@@ -787,8 +793,8 @@ mod tests {
             let d = dispenser.clone();
             let f = fields.clone();
             handles.push(tokio::spawn(async move {
-                let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
-                let ctx = nbrs_runtime::adapter::ExecCtx::new(&f, &pulls);
+                let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
+                let ctx = nmbrs_runtime::adapter::ExecCtx::new(&f, &pulls);
                 d.execute(cycle, &ctx).await
             }));
         }
@@ -810,14 +816,14 @@ mod tests {
     #[tokio::test]
     async fn model_dispenser_basic() {
         let adapter = ModelAdapter::new();
-        let template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
+        let template = nmbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
         );
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_runtime::adapter::ExecCtx::new(&fields, &pulls);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
+        let ctx = nmbrs_runtime::adapter::ExecCtx::new(&fields, &pulls);
         let result = dispenser.execute(0, &ctx).await.unwrap();
         assert!(result.body.is_some());
     }
@@ -857,7 +863,7 @@ mod tests {
         );
 
         let adapter = ModelAdapter::new();
-        let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
+        let mut template = nmbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
         template.params = params;
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
 
@@ -865,8 +871,8 @@ mod tests {
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
         );
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_runtime::adapter::ExecCtx::new(&fields, &pulls);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
+        let ctx = nmbrs_runtime::adapter::ExecCtx::new(&fields, &pulls);
 
         // Cycles below threshold succeed.
         for c in [0u64, 1, 2] {
@@ -899,7 +905,7 @@ mod tests {
 // =========================================================================
 
 inventory::submit! {
-    nbrs_runtime::adapter::AdapterRegistration {
+    nmbrs_runtime::adapter::AdapterRegistration {
         names: || &["testkit"],
         known_params: || &[
             "result-body", "result-load", "result-latency",
@@ -907,13 +913,13 @@ inventory::submit! {
             "result-capacity", "result-overload",
             "result-throw-at", "result-throw-name",
         ],
-        display_preference: |_params| nbrs_runtime::adapter::DisplayPreference::Auto,
+        display_preference: |_params| nmbrs_runtime::adapter::DisplayPreference::Auto,
         supported_controls: || &[],
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig::from_params(&params),
                 diagnose: false,
-            })) as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
+            })) as std::sync::Arc<dyn nmbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -927,10 +933,10 @@ inventory::submit! {
 // adapter's per-call behaviour is configured at
 // construction.
 inventory::submit! {
-    nbrs_runtime::adapter::SharedDriverRegistration {
+    nmbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "testkit",
-        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
+        driver: nmbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nmbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let identity_fields = [
                 "result-body", "result-load", "result-latency",
@@ -938,7 +944,7 @@ inventory::submit! {
                 "result-capacity", "result-overload",
                 "result-throw-at", "result-throw-name",
             ];
-            let mut k = nbrs_runtime::resource_pool::ResourceKey::new("testkit");
+            let mut k = nmbrs_runtime::resource_pool::ResourceKey::new("testkit");
             for field in identity_fields {
                 if let Some(v) = params.get(field) {
                     k = k.with(field, v.clone());

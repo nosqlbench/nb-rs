@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # CQL Compaction Task Visibility Test
 #
 # Demonstrates that the Jolokia `CompactionManager.Compactions`
@@ -24,8 +24,8 @@
 # server's own scheduling — empty list ⇒ no work outstanding.
 #
 # Usage:
-#   nbrs workload=cql_compaction_test.yaml
-#   nbrs workload=cql_compaction_test.yaml dataset=example profile=label_01
+#   nmbrs workload=cql_compaction_test.yaml
+#   nmbrs workload=cql_compaction_test.yaml dataset=example profile=label_01
 
 description: |
   CQL compaction-task visibility test: drives SAI-indexed writes,

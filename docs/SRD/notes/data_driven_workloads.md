@@ -351,7 +351,7 @@ Multiple sources in one graph means multiple independent coordinates. The execut
 
 >> It is markedly different from the nosqlbench approach, where modeling dependent operations, for example, required a numerical alignment of a rigid set of operations and ordinal mappings. This way, data flow and provenance flow naturally through stanzas because the operations are instanced based on entity level scopes.
 
->> It also means, we now have a solution for making the sequence planner less rigid. There is no such requirement that we use a LUT, for example, which aligns via stride to the previous cycles concept. We will still want to iterate over cohesively defined stanzas, but now the unit of dispatch is a source allotment (or a single ordina-data tuple), and any LUT for execution would be at most an internal optimization. We need to redesign the "planner" layer of nbrs to be flexible now and align with sources concepts squarely.
+>> It also means, we now have a solution for making the sequence planner less rigid. There is no such requirement that we use a LUT, for example, which aligns via stride to the previous cycles concept. We will still want to iterate over cohesively defined stanzas, but now the unit of dispatch is a source allotment (or a single ordina-data tuple), and any LUT for execution would be at most an internal optimization. We need to redesign the "planner" layer of nmbrs to be flexible now and align with sources concepts squarely.
 
 ## Stanza Scheduling
 
@@ -399,13 +399,13 @@ All GK-involved API surface — the `source` keyword, `DataSource` trait, source
 - Source combinators (`zip`, `filter`, `sample`)
 - Source projection nodes for the Polydat graph
 
-The runtime crates (nbrs-runtime, adapters) consume these types but don't define them. The Polydat crate maintains sovereignty over the data model — sources are a Polydat concept, not a runtime concept. The runtime asks the Polydat graph "what sources exist?" and "what is their extent?" — the Polydat crate answers authoritatively.
+The runtime crates (nmbrs-runtime, adapters) consume these types but don't define them. The Polydat crate maintains sovereignty over the data model — sources are a Polydat concept, not a runtime concept. The runtime asks the Polydat graph "what sources exist?" and "what is their extent?" — the Polydat crate answers authoritatively.
 
 This means:
 - `polydat` defines `DataSource`, `SourceReader`, source nodes
-- `nbrs-runtime` implements the fiber loop, work-stealing pool, and executor
-- Adapters (nbrs-adapter-cql, etc.) implement batch dispensers that consume from `DataSource`
-- `nbrs-workload` parses the `source` keyword in YAML and passes it to Polydat compilation
+- `nmbrs-runtime` implements the fiber loop, work-stealing pool, and executor
+- Adapters (nmbrs-adapter-cql, etc.) implement batch dispensers that consume from `DataSource`
+- `nmbrs-workload` parses the `source` keyword in YAML and passes it to Polydat compilation
 
 ## Migration Path
 

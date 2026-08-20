@@ -14,7 +14,7 @@
 # label would select, e.g., a consistency level or a named strategy.
 #
 # Runs standalone:
-#   nbrs run workload=examples/workloads/optimizer_categorical.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_categorical.yaml \
 #       --session-path /tmp/opt-categorical
 #
 # The objective is maximized (score = 1) at mode = beta.
@@ -43,5 +43,5 @@ phases:
           stdout: eventlog
         stmt: "probe mode={mode}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[

@@ -1,7 +1,7 @@
 # 24: Component Lookup by Label Predicate
 
 > **Status.** Design committed and shipping in code
-> (`nbrs-metrics/src/selector.rs`: `Selector` grammar, glob
+> (`nmbrs-metrics/src/selector.rs`: `Selector` grammar, glob
 > patterns, and the component-tree lookup helpers
 > `find` / `find_one` / `any` / `count`). Consumed by SRD 23's
 > `ControlTarget` and by the metrics query layer.
@@ -237,12 +237,12 @@ language.
 ## Crate placement
 
 `Selector`, its text-form parser, and the `selector!` macro
-live with `Component` — in `nbrs-metrics::component`'s scope
+live with `Component` — in `nmbrs-metrics::component`'s scope
 (the same crate and module space `Component` itself occupies).
-Every downstream consumer already depends on `nbrs-metrics` for
+Every downstream consumer already depends on `nmbrs-metrics` for
 `Labels`; none of them need a new crate. Metrics selection
 (SRD 42) consolidates onto the same `Selector` type from
-inside `nbrs-metrics` without any circular-dependency concerns.
+inside `nmbrs-metrics` without any circular-dependency concerns.
 
 ---
 

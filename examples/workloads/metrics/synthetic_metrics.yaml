@@ -6,7 +6,7 @@
 #
 #   - User-facing reference: read this file to see how
 #     synthetic metrics declare on op templates.
-#   - Test fixture: `nbrs/tests/workload_examples.rs` runs
+#   - Test fixture: `nmbrs/tests/workload_examples.rs` runs
 #     this workload via `cargo test --workspace` to verify
 #     the end-to-end synthetic-metric publication path.
 #
@@ -27,7 +27,7 @@
 #     observable signal.
 #
 # Usage:
-#   nbrs run workload=examples/workloads/synthetic_metrics.yaml \
+#   nmbrs run workload=examples/workloads/synthetic_metrics.yaml \
 #       --session-path /tmp/synth-demo cycles=12
 #
 #   sqlite3 /tmp/synth-demo/metrics.db \
@@ -135,5 +135,5 @@ scenarios:
 params:
   cycle_count: 6
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

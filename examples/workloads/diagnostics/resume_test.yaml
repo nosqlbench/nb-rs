@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Resumable-workload test fixture (SRD-44; design memo
 # `docs/SRD/history/resumable_test_fixture.md`).
 #
@@ -40,7 +40,7 @@ bindings: |
   # workload identity. Also suppresses the strict-mode
   # non-deterministic warning that the empty-wiring detector
   # would otherwise raise on testkit_side_effect_sequence_next_cycling.
-  volatile threshold := testkit_side_effect_sequence_next_cycling("/tmp/nbrs_resume_test.seq", "10,51,101,999")
+  volatile threshold := testkit_side_effect_sequence_next_cycling("/tmp/nmbrs_resume_test.seq", "10,51,101,999")
   volatile trip := testkit_throw_at(cycle, threshold, "staircase")
 
 phases:
@@ -65,5 +65,5 @@ phases:
       step:
         stmt: "phase3 trip={trip}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
-#@ requires stateful multi-invocation resume fixture — the per-session threshold staircase makes single-run output non-deterministic; covered by nbrs-runtime/tests/checkpoint_resume_e2e.rs
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
+#@ requires stateful multi-invocation resume fixture — the per-session threshold staircase makes single-run output non-deterministic; covered by nmbrs-runtime/tests/checkpoint_resume_e2e.rs

@@ -1,22 +1,22 @@
 # 09: Polydat Contract Surface
 
-The front door between this reference (`docs/SRD`, the nb-rs system) and the
+The front door between this reference (`docs/SRD`, the nmbrs system) and the
 **polydat** substrate. polydat is a standalone, independently extractable crate; its
 *substrate design* lives in `polydat/docs/` (the axiom + mechanism tiers), and this
-document names the **public contract surface** nb-rs consumes from it. It is the
+document names the **public contract surface** nmbrs consumes from it. It is the
 realization of [Pillar 1 (Contract surface)](00b_subsystem_standard.md) for the
 exemplar subsystem.
 
 If you are looking for *how the kernel works* (grammar, scopes, engines, JIT, wire
-materialization), read `polydat/docs/`. If you are looking for *what nb-rs depends on*
+materialization), read `polydat/docs/`. If you are looking for *what nmbrs depends on*
 and *where each polydat-integration SRD's substrate lives*, read here.
 
 ---
 
-## What nb-rs consumes from polydat
+## What nmbrs consumes from polydat
 
-The public boundary, by import frequency across `nbrs-runtime` / `nbrs-workload` /
-`nbrs-metrics` / adapters (see [SRD 05 §Contract Registry](05_dependency_rules.md)):
+The public boundary, by import frequency across `nmbrs-runtime` / `nmbrs-workload` /
+`nmbrs-metrics` / adapters (see [SRD 05 §Contract Registry](05_dependency_rules.md)):
 
 | polydat surface | Role at the boundary |
 |---|---|
@@ -33,24 +33,24 @@ The public boundary, by import frequency across `nbrs-runtime` / `nbrs-workload`
 The **boundary is enforced**: rule **D1** keeps polydat depending only on
 `polydat-derive`; rule **D6** forbids any consumer reaching past this surface into a
 deep internal path (`polydat::compile::jit::…`, `polydat::library::support::…`). See
-[`nbrs/tests/architecture_rules.rs`](../../nbrs/tests/architecture_rules.rs).
+[`nmbrs/tests/architecture_rules.rs`](../../nmbrs/tests/architecture_rules.rs).
 
 ---
 
 ## Where the substrate design lives
 
-The polydat-integration SRDs in this directory are **stubs or reduced nbrs-side
+The polydat-integration SRDs in this directory are **stubs or reduced nmbrs-side
 framing**; the authoritative substrate design is in `polydat/docs/`. Map:
 
-| docs/SRD (nbrs integration) | polydat/docs substrate (authoritative) |
+| docs/SRD (nmbrs integration) | polydat/docs substrate (authoritative) |
 |---|---|
-| [10 Language](10_polydat_language.md) (nbrs-side: unified access surface, reification, op-level bindings) | **`design/polydat_grammar.md`** (definitive surface-language spec+guide; `design/grammar.md` is its formal appendix), `design/language_spec.md`, `design/graph_compiler.md` |
-| [11 Evaluation](11_polydat_evaluation.md) (nbrs-side: FiberBuilder, cursor-driven eval) | `design/evaluation_model.md`, `design/runtime_model.md` |
+| [10 Language](10_polydat_language.md) (nmbrs-side: unified access surface, reification, op-level bindings) | **`design/polydat_grammar.md`** (definitive surface-language spec+guide; `design/grammar.md` is its formal appendix), `design/language_spec.md`, `design/graph_compiler.md` |
+| [11 Evaluation](11_polydat_evaluation.md) (nmbrs-side: FiberBuilder, cursor-driven eval) | `design/evaluation_model.md`, `design/runtime_model.md` |
 | [12 Stdlib](12_polydat_stdlib.md) *(stub)* | `design/library_catalog.md` |
-| [13 Modules](13_polydat_modules.md) (nbrs-side: diagnostic event stream) | `design/module_system.md` |
+| [13 Modules](13_polydat_modules.md) (nmbrs-side: diagnostic event stream) | `design/module_system.md` |
 | [13c Scope Model](13c_polydat_scope_model.md) *(stub)* | `design/scope_model.md` |
-| [13f Wire Materialization](13f_cross_scope_wire_materialization.md) (nbrs-side: synthesizer rule, true-up history) | `design/wire_materialization.md` |
-| [14 Config Expressions](14_polydat_config_expressions.md) (nbrs-side: host param resolution) | `design/expression_engine.md`, `design/grammar.md` |
+| [13f Wire Materialization](13f_cross_scope_wire_materialization.md) (nmbrs-side: synthesizer rule, true-up history) | `design/wire_materialization.md` |
+| [14 Config Expressions](14_polydat_config_expressions.md) (nmbrs-side: host param resolution) | `design/expression_engine.md`, `design/grammar.md` |
 | [16 Engines](16_polydat_engines.md) *(stub)* / [16b JIT](16b_polydat_jit.md) *(stub)* | `design/engines.md`, `design/jit_boundary.md` |
 | [67 Subcontext Construction](67_polydat_subcontext_construction.md) *(stub)* | `design/subcontext_construction.md` |
 | [74 None Propagation](74_none_propagation.md) *(stub)* | `design/none_semantics.md` |

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # polar_rose.yaml — Polar rose curve
 #
 # A rose curve in polar coordinates: r = cos(k * theta)
@@ -8,9 +8,9 @@
 # (r, theta) and converts to Cartesian for display.
 #
 # Usage:
-#   nbrs run workload=examples/workloads/visual/polar_rose.yaml
-#   nbrs run workload=examples/workloads/visual/polar_rose.yaml k=5 cycles=5000
-#   nbrs run workload=examples/workloads/visual/polar_rose.yaml k=2.5 cycles=10000
+#   nmbrs run workload=examples/workloads/visual/polar_rose.yaml
+#   nmbrs run workload=examples/workloads/visual/polar_rose.yaml k=5 cycles=5000
+#   nmbrs run workload=examples/workloads/visual/polar_rose.yaml k=2.5 cycles=10000
 
 params:
   adapter: plotter
@@ -30,5 +30,5 @@ ops:
     r: "{r}"
     theta: "{theta}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

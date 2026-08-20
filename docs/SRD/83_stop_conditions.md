@@ -6,9 +6,9 @@ to do with an individual error; stop conditions decide whether to stop
 a shell based on predicates over its accumulated state. Neither
 subsumes the other.
 
-**Owner:** nbrs-runtime (executor shells, daemon scheduler, the
+**Owner:** nmbrs-runtime (executor shells, daemon scheduler, the
 runtime-state wires), polydat (predicate compilation against shell
-state), nbrs-workload (the `stop_when:` configuration surface).
+state), nmbrs-workload (the `stop_when:` configuration surface).
 
 **Cross-refs:**
 - [SRD-82](82_uniform_execution_shells.md) — Execution shells, the
@@ -90,7 +90,7 @@ a trigger is then `RuntimeState::trips(&mut expr)` — inject the live
 state, read the predicate's truthiness — never an ad-hoc per-trigger
 compile.
 
-> **Implemented 2026-06-09** (`nbrs-runtime::stop_conditions`):
+> **Implemented 2026-06-09** (`nmbrs-runtime::stop_conditions`):
 > `compile_stop_condition(phase_kernel, idx, when) -> ScopedExpr` builds
 > the runtime-state externs as SRD-84 shape-1 `GraphMatter`
 > (`extern_wire::<T: Wire>`, constructed not parsed), binds the
@@ -129,7 +129,7 @@ Derived-in-the-predicate rates:
 
 **Everything beyond the fast path reads through the metric reader
 nodes** — predicates are full polydat, and `metric(...)` /
-`metric_window(...)` (nbrs-metrics polydat nodes, Nondeterministic,
+`metric_window(...)` (nmbrs-metrics polydat nodes, Nondeterministic,
 never folded) reach ANY registered instrument by its own family
 name: `metric('result_failure', 'count') > 3.0` is a valid guard.
 The selection grammar is `"family, key=value, key~substring"` — a
@@ -170,7 +170,7 @@ structural; binding is to the native scope; nothing is inferred.**
 [phase] }`.
 
 > **Implemented 2026-06-09 (phase-level slice).** `ScopeLevel` +
-> `StopConditionSpec.each` (`nbrs-workload::model`); the executor filters
+> `StopConditionSpec.each` (`nmbrs-workload::model`); the executor filters
 > each phase's applicable conditions (`each ∋ {self, phase}`) and binds
 > them — via `StopConditionSet::build_for_phase` — against the phase
 > node's **own** `cached_kernel` (`Activity.phase_kernel`, the structural
@@ -268,7 +268,7 @@ and the phase-end outcome records the chosen axes. A scenario shell's
 fired condition aborts in-flight siblings via the same cooperative path
 (SRD-82 Part 4).
 
-> **Implemented 2026-06-16** (`nbrs-runtime::stop_conditions`,
+> **Implemented 2026-06-16** (`nmbrs-runtime::stop_conditions`,
 > `workload_shell`, `activity`, `executor`). Each `StopCondition` carries
 > an `effect: Outcome`; `StopConditionSet::evaluate` returns
 > `Option<(Outcome, String)>`; `WorkloadShell::record_phase` threads the
@@ -281,7 +281,7 @@ fired condition aborts in-flight siblings via the same cooperative path
 > (phase ends Failed) and a `stop` halts cleanly (phase ends Completed);
 > at the workload shell a `fail` returns `Err` (session exits non-zero)
 > and a `stop` requests the graceful walk-halt. Tested:
-> `stop_conditions` unit set + `nbrs/tests/{stop_conditions,workload_shell_e2e}`.
+> `stop_conditions` unit set + `nmbrs/tests/{stop_conditions,workload_shell_e2e}`.
 >
 > **Completed 2026-08-04 — the phase shell adopts the declared effect.**
 > The trip site latches the condition's Outcome on the activity
@@ -294,7 +294,7 @@ fired condition aborts in-flight siblings via the same cooperative path
 > persisted outcome row, and the checkpoint logs `phase_completed`.
 > Only a `stop_when` trip latches the outcome — an error-router `stop`
 > verb, a walk-stop broadcast, a poll timeout, or Ctrl-C still derive
-> failure. Tested: `nbrs/tests/stop_conditions.rs`
+> failure. Tested: `nmbrs/tests/stop_conditions.rs`
 > `phase_graceful_stop_exits_zero_and_keeps_metrics` over the
 > `phase_graceful_stop` scenario in
 > `examples/workloads/controls/stop_conditions_coverage.yaml`.
@@ -313,7 +313,7 @@ fired condition aborts in-flight siblings via the same cooperative path
 > sqlite `phase_outcomes.reason_class` column denormalizes it for
 > report GROUP BY (legacy dbs read NULL via PRAGMA detection).
 > `PhaseOutcome::protocol_class()` yields the testing-protocol
-> three-way COMPLETED / OUT-OF-RANGE / FAILED (+SKIPPED). `nbrs
+> three-way COMPLETED / OUT-OF-RANGE / FAILED (+SKIPPED). `nmbrs
 > replay --json` emits `reason_class`. Tested:
 > `phase_timeout_is_out_of_range_not_generic_failure`.
 > The optimizer (SRD-86) reconfigures the per-point default so a failed
@@ -336,7 +336,7 @@ ErrorPolicy (SRD-82)         StopConditions (this SRD)
 Reconciling the landed SRD-82 work:
 
 - **The error-rate breach moves out of `ErrorPolicy`.** The
-  `AggregateGuard` (`nbrs-errorhandler/src/aggregate.rs`) is retired;
+  `AggregateGuard` (`nmbrs-errorhandler/src/aggregate.rs`) is retired;
   the breach becomes a default stop condition
   `when: "op_count > 50 && error_rate > 0.1"`, `trigger: settle`,
   `effect: fail`. `ErrorPolicy` keeps only its `router`; its `guard`
@@ -376,7 +376,7 @@ workload on a failed phase" without any `stop_when:` in the workload.
 
 ## Part 8 — Migration
 
-1. **Runtime-state wires.** ✅ DONE (`nbrs-runtime/src/stop_conditions.rs`).
+1. **Runtime-state wires.** ✅ DONE (`nmbrs-runtime/src/stop_conditions.rs`).
    `RuntimeState { op_count, error_count, elapsed_ms, children_* }` +
    `error_rate()` + the `wire::*` name vocabulary +
    `inject_into<D: Dataflow>` (per-wire `find_input` + `set_wire_idx`,

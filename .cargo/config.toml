@@ -4,18 +4,18 @@
 [alias]
 t = "test --release"
 b = "build --release"
-in = "install --path nbrs"
+in = "install --path nmbrs"
 
 # Direct all test temp files to target/test-tmp/ instead of /tmp.
 [env]
 TMPDIR = { value = "target/test-tmp", relative = true }
 # Widen the example-workload sweep's in-process concurrency for workspace
-# test runs. The sweep (nbrs/tests/example_workloads_in_process.rs) reads
+# test runs. The sweep (nmbrs/tests/example_workloads_in_process.rs) reads
 # this and defaults to 10; this box has 64 cores and the examples are
 # grouped for serial isolation where they need it, so the cap — not the
 # work — was the wall time. `force = false` (default): an explicit
-# NBRS_TEST_CONCURRENCY in the environment still wins.
-NBRS_TEST_CONCURRENCY = "24"
+# NMBRS_TEST_CONCURRENCY in the environment still wins.
+NMBRS_TEST_CONCURRENCY = "24"
 # Linker search path for the vendored libcassandra static
 # archive. Built once via `bash adapters/cql/build.sh driver`
 # — Docker pulls the C++ driver source, builds, extracts to
@@ -38,13 +38,13 @@ CASSANDRA_SYS_INCLUDE_PATH = { value = "adapters/cql/target/sysroot/include", re
 # large binaries (~350 MB debug). mold parallelizes across all cores.
 #
 # `force-frame-pointers=yes` keeps `rbp` reserved as the frame-pointer
-# register on x86_64. `nbrs-runtime::profiler` defaults to
+# register on x86_64. `nmbrs-runtime::profiler` defaults to
 # `perf record --call-graph fp` (set via `profiler=perf` on the CLI);
 # without this flag, perf would have to fall back to DWARF call-graphs
 # whose post-processing routes through `addr2line` and is 5–10× slower
 # at flamegraph generation. Cost: one register reserved across the
 # binary — negligible for the workload-driver path. The tradeoff is
-# documented in `nbrs-runtime::profiler` next to the call-graph
+# documented in `nmbrs-runtime::profiler` next to the call-graph
 # selection logic.
 # Linux (x86_64 + aarch64): clang + mold + frame pointers + -lz.
 # Splitting by triple would force the CI matrix to keep two
@@ -86,7 +86,7 @@ opt-level = 2
 
 [profile.release]
 # Line tables only — keeps symbol names + line numbers in the
-# release binary so `profiler=perf` flamegraphs resolve `[nbrs]`
+# release binary so `profiler=perf` flamegraphs resolve `[nmbrs]`
 # frames to real function names without the 4× binary-size
 # blowup of full DWARF (`debug = 2`).
 debug = 1

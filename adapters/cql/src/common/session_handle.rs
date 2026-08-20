@@ -191,8 +191,8 @@ pub fn warn_settings_unavailable(warned: &AtomicBool, driver: &str, detail: &str
     if warned.swap(true, Ordering::Relaxed) {
         return;
     }
-    nbrs_runtime::diag!(
-        nbrs_runtime::observer::LogLevel::Warn,
+    nmbrs_runtime::diag!(
+        nmbrs_runtime::observer::LogLevel::Warn,
         "cql/{driver}: system_views.settings unreadable ({detail}) — \
          byte-bounded batching will treat the server batch limit as unknown; \
          set `max_batch_size` to a literal magnitude to bound batches anyway",
@@ -375,7 +375,7 @@ fn eval_batch_field_expr(
     // `extern cql_session_key: str` makes the key a named `str` input the
     // subscope can inject by value; the nodes are inventory-registered so the
     // expression's `cql_session(...)` / `cql_server_batch_limit(...)` resolve.
-    let output = format!("__nbrs_{label}");
+    let output = format!("__nmbrs_{label}");
     let source = format!("extern cql_session_key: str\n{output} := {expr}\n");
     let program = compile_polydat(&source)
         .map_err(|e| format!("{label} '{expr}': {e}"))?

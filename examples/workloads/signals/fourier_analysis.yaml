@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # fourier_analysis.yaml — FFT analysis of a fractal noise signal
 #
 # Generates a fractal noise signal, analyzes it with fft_analyze
@@ -49,5 +49,5 @@ phases:
       side_by_side:
         stmt: "cycle={cycle} noisy={signal} smooth={smooth}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

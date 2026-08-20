@@ -22,8 +22,8 @@ From then on the operator controls the slice with the `cursor=`
 parameter:
 
 ```
-nbrs run workload=my.yaml cursor=0..1%          # smoke: first 1%
-nbrs run workload=my.yaml cursor=50%..100%      # second half
+nmbrs run workload=my.yaml cursor=0..1%          # smoke: first 1%
+nmbrs run workload=my.yaml cursor=50%..100%      # second half
 ```
 
 Cursors without an `over` clause ignore the parameter entirely —
@@ -149,8 +149,8 @@ Scope a CLI override to specific phases by prefixing the param
 with a phase pattern (bareword, glob, or regex):
 
 ```
-nbrs run workload=my.yaml ann_query.cursor=fib:7      # one phase
-nbrs run workload=my.yaml '*_query.cursor=0..10%'     # every *_query phase
+nmbrs run workload=my.yaml ann_query.cursor=fib:7      # one phase
+nmbrs run workload=my.yaml '*_query.cursor=0..10%'     # every *_query phase
 ```
 
 Resolution order per phase: exact phase name beats glob; two

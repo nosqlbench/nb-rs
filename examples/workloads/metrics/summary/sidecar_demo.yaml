@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Summary Sidecar File Demo
 #
 # This workload has NO summary: field. Instead, the summary config
@@ -13,13 +13,13 @@
 #
 # To test:
 #   # Uses summary.yaml sidecar
-#   nbrs run workload=examples/summary_sidecar_demo.yaml
+#   nmbrs run workload=examples/summary_sidecar_demo.yaml
 #
 #   # CLI override beats the sidecar
-#   nbrs run workload=examples/summary_sidecar_demo.yaml summary="all"
+#   nmbrs run workload=examples/summary_sidecar_demo.yaml summary="all"
 #
 #   # No summary (empty override)
-#   nbrs run workload=examples/summary_sidecar_demo.yaml summary=""
+#   nmbrs run workload=examples/summary_sidecar_demo.yaml summary=""
 
 params:
   adapter: stdout
@@ -49,5 +49,5 @@ phases:
       req:
         stmt: "region={region} req={req_id} endpoint={endpoint}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

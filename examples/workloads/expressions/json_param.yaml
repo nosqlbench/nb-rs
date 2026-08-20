@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # json_param.yaml — minimal repro for JSON-shaped workload param values
 # referenced in op templates (CQL-style replication map, JSON literal,
 # nested maps, etc).
@@ -32,5 +32,5 @@ phases:
       scalar_line:
         stmt: "json_param/scalar_string value={scalar_string}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

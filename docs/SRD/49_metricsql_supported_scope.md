@@ -5,8 +5,8 @@
 > (completion, catalog, prettifier).
 
 This SRD names the **single canonical reference** for what
-nb-rs supports as MetricsQL. Three sources of truth, all
-inside `nbrs-metricsql`, must agree:
+nmbrs supports as MetricsQL. Three sources of truth, all
+inside `nmbrs-metricsql`, must agree:
 
 1. **Parser corpus.** The set of inputs the parser accepts
    and round-trips through prettify. Pinned by the
@@ -41,7 +41,7 @@ Cross-refs:
 ### 1.1 Parser corpus
 
 **Authoritative artefact:**
-`nbrs-metricsql/tests/fixtures/parser_round_trip.json` plus
+`nmbrs-metricsql/tests/fixtures/parser_round_trip.json` plus
 the matching `prettifier_round_trip.json`.
 
 Inputs in these fixtures are guaranteed to:
@@ -55,14 +55,14 @@ fixture entry. Removing support means deleting one (with
 explicit rationale in the commit).
 
 **Aggregate-name surface:** the parser's `is_aggr_func`
-function (`nbrs-metricsql/src/parser.rs`) is the closed list
+function (`nmbrs-metricsql/src/parser.rs`) is the closed list
 of names that take aggregate-modifier syntax (`by` / `without`).
 Editing this list edits the language surface.
 
 ### 1.2 Evaluator dispatch
 
 **Authoritative artefact:** the dispatch enums in
-`nbrs-metricsql/src/eval.rs`:
+`nmbrs-metricsql/src/eval.rs`:
 
 | Enum                            | Names it handles                              |
 |---------------------------------|----------------------------------------------|
@@ -76,7 +76,7 @@ time — they're **parser-supported, evaluator-deferred**.
 
 ### 1.3 Tooling registry
 
-**Authoritative artefact:** `nbrs-metricsql/src/grammar.rs`
+**Authoritative artefact:** `nmbrs-metricsql/src/grammar.rs`
 ([`AGGREGATE_OPS`], [`ROLLUP_FUNCTIONS`], [`BINARY_OPS`],
 modifier constants). Each entry carries:
 - the canonical name as the parser expects it,
@@ -117,7 +117,7 @@ sources:
    widens without a registry update) fails here.
 
 The fixture harnesses
-(`nbrs-metricsql/tests/parity.rs`) close the loop on the
+(`nmbrs-metricsql/tests/parity.rs`) close the loop on the
 parser side: any input the harness exercises is by
 definition in-scope for parsing + round-trip.
 
@@ -139,8 +139,8 @@ Adding support for a new metricsql operation:
    to its category table.
 4. **Tooling fallout** is automatic — the catalog +
    completion plumbing reads the registry, so the new
-   token surfaces in `nbrs report plot --metric <TAB>`,
-   in `nbrs metrics query` autocomplete, etc.
+   token surfaces in `nmbrs report plot --metric <TAB>`,
+   in `nmbrs metrics query` autocomplete, etc.
 
 Reverse order (registry first, evaluator absent) is a
 quality bug: tooling promises the user something the
@@ -252,7 +252,7 @@ External producers (or future internal code paths beyond
 `MetricValue` enum.
 
 The high-level `MetricSet::insert_*` API still covers the
-three types nbrs internally produces; the low-level
+three types nmbrs internally produces; the low-level
 `write_native_sample` covers the rest.
 
 ### 6.3 Round-trip pinning
@@ -262,12 +262,12 @@ storage convention against the catalog reader's
 interpretation:
 
 - Writer side
-  (`nbrs-metrics/src/reporters/sqlite.rs::tests`):
+  (`nmbrs-metrics/src/reporters/sqlite.rs::tests`):
   `write_native_sample_round_trips_*` for histogram + le
   buckets, info, stateset, gaugehistogram, unknown, plus a
   family/instance-dedup test.
 - Reader side
-  (`nbrs-metricsql/src/adapters/sqlite.rs::tests`):
+  (`nmbrs-metricsql/src/adapters/sqlite.rs::tests`):
   `catalog_round_trip_*` for histogram, gaugehistogram,
   info, stateset, summary, plus
   `catalog_default_column_for_type_covers_all_eight_types`

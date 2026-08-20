@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # results_blueprint.yaml — SRD-109 Part 3: the `results:`
 # interface leg. The blueprint declares the typed projection wire
 # its relevancy scoring reads (`actual: keys`); an implementation

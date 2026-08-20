@@ -440,11 +440,11 @@ workload + parsed state.
 ### CLI surface
 
 ```
-nbrs run … --resume <session-id>          # explicit
-nbrs run …                                # auto-detect
-nbrs run … --resume-latest                # auto-resume, no prompt
-nbrs run … --no-prompt                    # always start fresh
-nbrs run … --force-retry-failed --resume … # CLI override (see below)
+nmbrs run … --resume <session-id>          # explicit
+nmbrs run …                                # auto-detect
+nmbrs run … --resume-latest                # auto-resume, no prompt
+nmbrs run … --no-prompt                    # always start fresh
+nmbrs run … --force-retry-failed --resume … # CLI override (see below)
 ```
 
 Auto-detect: if `logs/latest/` has a `checkpoint.json` AND it
@@ -457,7 +457,7 @@ A resumed run **continues into the same `logs/<session>/` dir**.
 The metrics db is appended to, `session.log` is appended to
 with a `--- RESUMED <timestamp> ---` separator, the checkpoint
 file is updated. The session ID does not change. A single
-session can span many `nbrs run` invocations.
+session can span many `nmbrs run` invocations.
 
 ### Phase categories at resume
 
@@ -513,7 +513,7 @@ catches workload-rename / scenario-typo cases early.
 
 ### Concurrent-resume protection
 
-Two `nbrs run --resume <session>` invocations against the same
+Two `nmbrs run --resume <session>` invocations against the same
 session would race the checkpoint file. The runner takes a
 `flock`-style advisory lock on `logs/<session>/checkpoint.json`
 at startup; a second invocation fails fast with a clear "session
@@ -748,7 +748,7 @@ This rule is load-bearing:
    retry caps, `ErrorRouter` cumulative counters all reset per
    invocation. A phase whose `errors:` rule says
    `Timeout:retry,warn` gets a fresh retry budget on every
-   `nbrs run … --resume`.
+   `nmbrs run … --resume`.
 
 3. **Reviewers can't tell which invocation they're reading.**
    Reading a workload's `errors:` block tells you exactly what

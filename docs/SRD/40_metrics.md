@@ -1,6 +1,6 @@
 # 40: Metrics Framework
 
-nbrs-metrics provides labeled instruments with delta-snapshot
+nmbrs-metrics provides labeled instruments with delta-snapshot
 semantics. Reporters consume immutable frames at configurable
 intervals.
 
@@ -92,7 +92,7 @@ Used for: relevancy score means, system metrics.
 ## Summaries
 
 Downstream of the primary instruments above, **summaries**
-(`nbrs_metrics::summaries::*`) are retained, transforming views
+(`nmbrs_metrics::summaries::*`) are retained, transforming views
 of instrument data. A summary sits between a source (a primary
 instrument, a scheduler-emitted snapshot, an observer callback)
 and a reader (usually a display), and holds whatever

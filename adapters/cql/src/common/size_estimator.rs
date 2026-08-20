@@ -127,7 +127,7 @@ pub fn parse_max_batch_bytes(param: Option<&serde_json::Value>) -> Option<u64> {
 
 /// Parse a byte-magnitude string.
 ///
-/// Delegates to [`nbrs_workload::magnitude::parse_magnitude`], which
+/// Delegates to [`nmbrs_workload::magnitude::parse_magnitude`], which
 /// understands single-letter decimal (`k m g t p e`, powers of 1000)
 /// and two-letter binary (`ki mi gi …`, powers of 1024) suffixes.
 /// That parser does **not** recognise the trailing byte-unit marker
@@ -147,9 +147,9 @@ pub fn parse_max_batch_bytes(param: Option<&serde_json::Value>) -> Option<u64> {
 /// first and only a `None` result triggers the byte-marker retry.
 pub fn parse_byte_magnitude(raw: &str) -> Option<u64> {
     let t = raw.trim();
-    let parsed = nbrs_workload::magnitude::parse_magnitude(t).or_else(|| {
+    let parsed = nmbrs_workload::magnitude::parse_magnitude(t).or_else(|| {
         let stripped = t.strip_suffix(['b', 'B'])?;
-        nbrs_workload::magnitude::parse_magnitude(stripped)
+        nmbrs_workload::magnitude::parse_magnitude(stripped)
     })?;
     if parsed.is_finite() && parsed >= 0.0 {
         Some(parsed.round() as u64)
@@ -220,7 +220,7 @@ pub fn characterize_row_size(
     parent: &std::sync::Arc<polydat::kernel::PolydatKernel>,
     bind_names: &[String],
 ) -> u64 {
-    use nbrs_runtime::wires::{CycleWires, WireSource};
+    use nmbrs_runtime::wires::{CycleWires, WireSource};
     // `for_iteration` returns a fresh, uniquely-owned Arc (refcount 1),
     // so `try_unwrap` yields the owned, mutable kernel we position at 0.
     let probe = polydat::kernel::PolydatKernel::for_iteration(parent, parent, &[]);

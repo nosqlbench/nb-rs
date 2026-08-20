@@ -14,7 +14,7 @@ general.
 ## Problem
 
 A benchmarking suite is run many times against the same target while
-an operator iterates on one section at a time. Today every `nbrs run`
+an operator iterates on one section at a time. Today every `nmbrs run`
 starts a fresh session and re-executes everything the selected
 scenario names — including multi-hour data loads that are upstream
 prerequisites and fully idempotent. Avoiding that rework must not
@@ -45,7 +45,7 @@ path of least resistance, loudly announced.
 | "Did the phase change?" oracle | composed provenance hash on `PhaseOutcome` (`phase_hash` column; formula in Part 1); `refine --scope=changed` | SRD-77 §Phase fingerprint, `checkpoint::compose_phase_hash` |
 | Skip-eligibility declaration | `checkpoint:` phase field (`idempotent`, `hashed`, `verify`) | SRD-44 §Forms |
 | Resume skip machinery | `ResumePlan` / `ResumeAction`, consulted by the executor before dispatch | `checkpoint::resume` |
-| Session re-attachment + skip set from prior outcomes | `nbrs refine`, `refine_plan` (skip set + next `exec_id` from `phase_outcomes` rows) | SRD-77, `refine_plan` |
+| Session re-attachment + skip set from prior outcomes | `nmbrs refine`, `refine_plan` (skip set + next `exec_id` from `phase_outcomes` rows) | SRD-77, `refine_plan` |
 | Session selection (design) | flag trio `--new-session` / `--resume-session` / `--session`; strict mode. **Verified 2026-08: design-only — not yet in code** | SRD-77 §Session selection |
 | Session option surface (landed) | `--session <kv>` umbrella + `--session-{name,path,reuse,keep,shelflife}`; `reuse ∈ error\|restart\|resume`; `sessions/` root + `sessions/latest` symlink | `session::SessionDirSpec` |
 | Dispatch gate composition | "a phase is dispatched iff both agree": `phase_filter` × `refine_plan`, already additive on `ExecCtx` | `executor::ExecCtx` |
@@ -140,7 +140,7 @@ skip-or-run. The filter continues to gate measurement and destructive
 phases exactly as today.
 
 ```
-nbrs refine workload=cql/vector_suite_cql_impl scenario=traverse \
+nmbrs refine workload=cql/vector_suite_cql_impl scenario=traverse \
      phases='sweep_probe'          # runs sweep only; schema/load/
                                    # build stay in the walk and skip
                                    # when valid, run when not

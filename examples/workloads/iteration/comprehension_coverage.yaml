@@ -1,11 +1,11 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # comprehension_coverage.yaml — Thematic coverage workload for the
 # comprehension / iteration surface (SRD 18b / 18c / 18d / 18e).
 #
 # Follows the `<theme>_coverage.yaml` pattern: one operator-readable
 # artifact carrying every supported iteration shape on the
 # `for: "<var> in <expr>"` axis, paired with a matching
-# `nbrs/tests/comprehension.rs` test file.
+# `nmbrs/tests/comprehension.rs` test file.
 #
 # Each scenario emits a stable `cmp/<scenario>` prefixed line per
 # iteration tuple. Tests grep for the prefix and assert against
@@ -23,7 +23,7 @@
 #   - Dependent clauses (clause N references clauses 0..N-1)
 #
 # Run individually:
-#   nbrs run workload=examples/workloads/comprehension_coverage.yaml \
+#   nmbrs run workload=examples/workloads/comprehension_coverage.yaml \
 #            scenario=<one of the scenario names below>
 
 bindings: |
@@ -280,6 +280,6 @@ phases:
       info:
         stmt: "cmp/xval xval={xval}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=form_single_var
 #@ expect completed, 0 failed

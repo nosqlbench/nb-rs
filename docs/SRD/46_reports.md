@@ -1,11 +1,11 @@
 # SRD-46 — Reports: plots, tables, and the unified `report:` block
 
 **Status:** normative
-**Owner:** runtime / runner / nbrs-workload
-**Implementation:** `nbrs-workload/src/report.rs` (parser),
-  `nbrs/src/report.rs` (markdown assembly),
-  `nbrs/src/plot_metrics.rs` (plot rendering),
-  `nbrs/src/summary.rs` (table rendering)
+**Owner:** runtime / runner / nmbrs-workload
+**Implementation:** `nmbrs-workload/src/report.rs` (parser),
+  `nmbrs/src/report.rs` (markdown assembly),
+  `nmbrs/src/plot_metrics.rs` (plot rendering),
+  `nmbrs/src/summary.rs` (table rendering)
 **Cross-refs:** SRD-04 (umbrella options), SRD-15 (strict mode),
   SRD-20 (workload model), SRD-40 (metrics), SRD-45 (sessions)
 
@@ -316,7 +316,7 @@ Group keys render as section headings at the next outer level:
 ## Cross-session subsetting
 
 When the resolved source covers multiple runs (e.g., a
-session db that holds items from several `nbrs run`
+session db that holds items from several `nmbrs run`
 invocations), numbering goes hierarchical: `<run>.<item>`.
 
 ```
@@ -378,7 +378,7 @@ Every `report:` item the workload defines is persisted into
 the session db at run time, keyed `report.<canonical_name>`
 (flat, kind embedded in the spec body). Persistence covers
 all defined items, active or not — so post-run
-`nbrs report ...` against the db sees the full set even when
+`nmbrs report ...` against the db sees the full set even when
 no `workload=` is given.
 
 ---
@@ -409,13 +409,13 @@ Always-error, strict-independent:
 
 | Form | Behavior |
 | --- | --- |
-| `nbrs report` | List every defined item. No rendering. |
-| `nbrs report all` | Render every item. |
-| `nbrs report <glob>` | Render every item whose name matches the glob. |
-| `nbrs report figure <N>` | Render by global index. |
-| `nbrs report plot <glob>` | Kind-filtered name lookup. |
-| `nbrs report table <glob>` | Kind-filtered name lookup. |
-| `nbrs Polydat visualize <expr\|file.polydat>` | Polydat expression visualizer. Sibling of `polydat functions` / `polydat dag`. Unrelated to `report`. |
+| `nmbrs report` | List every defined item. No rendering. |
+| `nmbrs report all` | Render every item. |
+| `nmbrs report <glob>` | Render every item whose name matches the glob. |
+| `nmbrs report figure <N>` | Render by global index. |
+| `nmbrs report plot <glob>` | Kind-filtered name lookup. |
+| `nmbrs report table <glob>` | Kind-filtered name lookup. |
+| `nmbrs Polydat visualize <expr\|file.polydat>` | Polydat expression visualizer. Sibling of `polydat functions` / `polydat dag`. Unrelated to `report`. |
 
 All forms accept `workload=<file>` positionally or fall back
 to `logs/latest/metrics.db`'s persisted items when no source
@@ -437,29 +437,29 @@ directive form. The on-disk source stays as the user wrote it.
 
 Not in `--help`, not in top-level command tab-completion:
 
-- `nbrs plot <glob>` ≡ `nbrs report plot <glob>`
-- `nbrs table <glob>` ≡ `nbrs report table <glob>`
+- `nmbrs plot <glob>` ≡ `nmbrs report plot <glob>`
+- `nmbrs table <glob>` ≡ `nmbrs report table <glob>`
 
 ### Removed
 
-- `nbrs summary` — gone. No alias.
-- `nbrs plot polydat` — gone. Renamed to `nbrs Polydat visualize`.
+- `nmbrs summary` — gone. No alias.
+- `nmbrs plot polydat` — gone. Renamed to `nmbrs Polydat visualize`.
 
 ### Tab completion
 
 Pervasive across all forms:
 
-- `nbrs report <TAB>` → `all`, `plot`, `table`, `figure`, plus
+- `nmbrs report <TAB>` → `all`, `plot`, `table`, `figure`, plus
   the union of all named items.
-- `nbrs report plot <TAB>` → plot-kind names only.
-- `nbrs report table <TAB>` → table-kind names only.
-- `nbrs report figure <TAB>` → numeric range hint
+- `nmbrs report plot <TAB>` → plot-kind names only.
+- `nmbrs report table <TAB>` → table-kind names only.
+- `nmbrs report figure <TAB>` → numeric range hint
   (e.g., `1..N`).
-- `nbrs plot <TAB>` / `nbrs table <TAB>` (aliases) →
+- `nmbrs plot <TAB>` / `nmbrs table <TAB>` (aliases) →
   per-kind name filtering.
 
 All providers read from a single
-`nbrs_workload::Report::named_items()` lookup; the file walk
+`nmbrs_workload::Report::named_items()` lookup; the file walk
 and db fallback are shared.
 
 ---
@@ -512,9 +512,9 @@ the canonical surface — every report block in the canonical
 `full_cql_vector.yaml` workload now uses metricsql directly
 through the new `y:` / `x:` / `series:` directives. The
 metricsql-backed pipeline (`parse → evaluate →
-SqliteDataSource`) is wired into both `nbrs metrics query`
+SqliteDataSource`) is wired into both `nmbrs metrics query`
 and the report renderers (`plot_metrics.rs` /
-`summary.rs`); `nbrs report` consumes the same pipeline,
+`summary.rs`); `nmbrs report` consumes the same pipeline,
 giving operators **one query language across the whole
 system**. The legacy DSL keywords (`over` / `by` / `where`
 / `agg=`) still parse for back-compat with un-migrated
@@ -529,7 +529,7 @@ remaining Push C work.
   `avg(recall_at_10_mean{k="10"}) by (limit)` say roughly the
   same thing; users have to know which surface they're on.
 - Reports get features-for-free that already work in
-  `nbrs metrics query`: `rate`, counter-reset adjustment,
+  `nmbrs metrics query`: `rate`, counter-reset adjustment,
   window extrapolation, vector matching, subqueries,
   `topk`/`bottomk`/`quantile`, `@ start()`/`@ end()`.
 - The DSL's SQL builders deduplicate against the
@@ -565,23 +565,23 @@ selecting from a fan-out of per-`k` family names. The
 `recall_at_<N>_<stat>` shape was scoped out and never
 shipped; the bare-family + labels shape is canonical.
 
-The change lives in `nbrs-runtime/src/validation.rs`
+The change lives in `nmbrs-runtime/src/validation.rs`
 (`ValidationMetrics::new` builds the labelled stats family),
 the recall observer in
-`nbrs-runtime/src/observer.rs`, and the control reporter
-in `nbrs-metrics/src/controls.rs`. Stored summary-vs-gauge
+`nmbrs-runtime/src/observer.rs`, and the control reporter
+in `nmbrs-metrics/src/controls.rs`. Stored summary-vs-gauge
 model is unchanged; only the family-name shape canonicalizes.
 
 **Migration policy:** existing `metrics.db` files written
 with `@`/`.` family names are unreadable by the new code.
 `metrics.db` is a session-scoped artifact (per SRD-45) —
-sessions don't persist across nb-rs upgrades, so this is
+sessions don't persist across nmbrs upgrades, so this is
 tolerable. No legacy-name fallback.
 
 #### Push B — Report renderers consume `Vec<Series>` — SHIPPED
 
 `plot_metrics.rs` and `summary.rs` parse the report-body
-string, extract metricsql expressions via `nbrs_metricsql::
+string, extract metricsql expressions via `nmbrs_metricsql::
 parse`, evaluate them via `evaluate` / `evaluate_range`
 against `SqliteDataSource`, and consume the returned
 `Vec<Series>`. Both renderers route through this path; the
@@ -669,14 +669,14 @@ migrated to the new shape.
   shipping configurations; they're the last live consumers
   of `over` / `by` / `where`.
 - Once those migrate, **delete the legacy DSL parser** at
-  `nbrs/src/plot_metrics.rs:128-449` (the
+  `nmbrs/src/plot_metrics.rs:128-449` (the
   `parse_spec`/`parse_over` walkers and the
   `over`/`by`/`where`/`agg=` directive matchers in the
   per-line dispatch loop). The SRD's original "delete at
-  `nbrs-workload/src/report.rs:121-300`" location was
+  `nmbrs-workload/src/report.rs:121-300`" location was
   wrong — the DSL parsing always lived in the renderer
   (plot_metrics), not in the workload chunker. The chunker
-  in `nbrs-workload/src/report.rs::parse_group` (line 467)
+  in `nmbrs-workload/src/report.rs::parse_group` (line 467)
   stays; it only splits items by kind keyword.
 
 **Translation reference for the remaining migrations:**
@@ -695,7 +695,7 @@ policy as the legacy `plot:` / `summary:` keys
 (per §"Invariants"). Until the DSL parser is removed, the
 old syntax keeps parsing for the grace window.
 
-**Acceptance:** `nbrs report all` against every active
+**Acceptance:** `nmbrs report all` against every active
 workload produces correct artifacts; the legacy DSL is
 removed from `plot_metrics.rs`; the example workloads have
 been rewritten or deleted.

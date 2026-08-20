@@ -1,8 +1,8 @@
 # nb-adapter-model
 
-Model adapter for nb-rs: simulates operation execution with configurable results, latency, and error injection.
+Model adapter for nmbrs: simulates operation execution with configurable results, latency, and error injection.
 
-Part of the [nb-rs](https://github.com/nosqlbench/nb-rs) workspace.
+Part of the [nmbrs](https://github.com/nosqlbench/nmbrs) workspace.
 
 ## License
 

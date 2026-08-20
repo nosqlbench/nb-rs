@@ -140,7 +140,7 @@ These test how topology interacts with scale.
 
 ### Group D: Realistic Workloads
 
-These approximate real nb-rs workload binding patterns.
+These approximate real nmbrs workload binding patterns.
 
 | File | Pattern | Nodes | Description |
 |------|---------|-------|-------------|
@@ -176,14 +176,14 @@ the isolated findings translate to reality.
 
 ```bash
 # Full suite with provenance comparison
-nbrs bench Polydat perf_tests/a*.gk --provenance iters=10
-nbrs bench Polydat perf_tests/a*.gk --no-provenance iters=10
+nmbrs bench Polydat perf_tests/a*.gk --provenance iters=10
+nmbrs bench Polydat perf_tests/a*.gk --no-provenance iters=10
 
 # Topology scaling
-nbrs bench Polydat perf_tests/c*.gk iters=10
+nmbrs bench Polydat perf_tests/c*.gk iters=10
 
 # Realistic workloads
-nbrs bench Polydat perf_tests/d*.gk iters=10
+nmbrs bench Polydat perf_tests/d*.gk iters=10
 ```
 
 The comparison table shows all files side-by-side with

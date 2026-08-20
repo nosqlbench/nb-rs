@@ -4,7 +4,7 @@
 //! Stdout adapter: writes resolved ops to stdout or a file.
 //!
 //! Formats:
-//!   stmt        — statement field only (default for `nbrs run`)
+//!   stmt        — statement field only (default for `nmbrs run`)
 //!   readout     — aligned name=value pairs, one per line per op
 //!   assignments — compact name=value pairs on one line
 //!   json        — JSON object per op (proper types, not all strings)
@@ -23,7 +23,7 @@
 //! Per-op-template channel routing (SRD-40b §9):
 //!   stdout=terminal    — default, write rendered op to fd 1 / file
 //!   stdout=eventlog    — emit through the runner's event log
-//!                        (`nbrs_runtime::diag!` Info level), suppressing
+//!                        (`nmbrs_runtime::diag!` Info level), suppressing
 //!                        terminal/file output. Use when the op's
 //!                        synthetic metric is the point and the rendered
 //!                        line is just diagnostic.
@@ -34,12 +34,12 @@ use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use nbrs_runtime::adapter::{
+use nmbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, TextBody,
 };
-use nbrs_runtime::observer::LogLevel;
-use nbrs_runtime::wires::resolve_op_fields_via_wires;
-use nbrs_workload::model::ParsedOp;
+use nmbrs_runtime::observer::LogLevel;
+use nmbrs_runtime::wires::resolve_op_fields_via_wires;
+use nmbrs_workload::model::ParsedOp;
 
 /// Where the stdout adapter routes its rendered output for a
 /// given op template (SRD-40b §9).
@@ -163,7 +163,7 @@ impl StdoutConfig {
 /// How to render the resolved op fields.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StdoutFormat {
-    /// The `stmt` field only. Default for `nbrs run`.
+    /// The `stmt` field only. Default for `nmbrs run`.
     Statement,
     /// Aligned `name = value` pairs, one per line. Readable output
     /// for debugging multi-field ops.
@@ -380,7 +380,7 @@ impl DriverAdapter for StdoutAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
+        parent: std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
     > {
@@ -459,7 +459,7 @@ pub struct StdoutDispenser {
     /// Stored so the per-fiber fan-out can build per-fiber kernels
     /// from this dispenser's slot via the standard `build_subscope`
     /// path (see `OpDispenser::canonical_kernel`).
-    canonical_kernel: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
+    canonical_kernel: std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>,
     /// Op-field templates snapshotted at `map_op` (name + raw
     /// JSON value from the parsed op). At cycle time each entry
     /// is resolved against the per-fiber wires: pure-token
@@ -472,13 +472,13 @@ pub struct StdoutDispenser {
 }
 
 impl OpDispenser for StdoutDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
     fn execute<'a>(
         &'a self,
         _cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
@@ -524,7 +524,7 @@ impl OpDispenser for StdoutDispenser {
             // SRD-40b §9 channel dispatch. Terminal keeps the
             // current write-to-OutputTarget path (with header
             // bookkeeping). EventLog routes the rendered line
-            // through `nbrs_runtime::diag!` so it lands in the
+            // through `nmbrs_runtime::diag!` so it lands in the
             // session log file and the runner observer (TUI ring
             // buffer / stderr) instead of the user-facing target.
             // Silent drops the line entirely; the op still
@@ -536,7 +536,7 @@ impl OpDispenser for StdoutDispenser {
                     // the terminal in raw mode, so route it through the observer's
                     // op-output channel (coordinated with the display when
                     // interactive; straight to stdout when piped/redirected, so
-                    // `nbrs run | grep` keeps working). A file target has no
+                    // `nmbrs run | grep` keeps working). A file target has no
                     // terminal — write to it directly.
                     let to_stdout = matches!(
                         &*self.writer.lock().unwrap_or_else(|e| e.into_inner()),
@@ -549,10 +549,10 @@ impl OpDispenser for StdoutDispenser {
                         {
                             let header = self.format.render_header(render_fields, &self.separator);
                             if !header.is_empty() {
-                                nbrs_runtime::observer::op_output(&header);
+                                nmbrs_runtime::observer::op_output(&header);
                             }
                         }
-                        nbrs_runtime::observer::op_output(&text);
+                        nmbrs_runtime::observer::op_output(&text);
                     } else {
                         let result = {
                             let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
@@ -602,10 +602,10 @@ impl OpDispenser for StdoutDispenser {
                     {
                         let header = self.format.render_header(render_fields, &self.separator);
                         if !header.is_empty() {
-                            nbrs_runtime::diag!(LogLevel::Info, "{}", header);
+                            nmbrs_runtime::diag!(LogLevel::Info, "{}", header);
                         }
                     }
-                    nbrs_runtime::diag!(LogLevel::Info, "{}", text);
+                    nmbrs_runtime::diag!(LogLevel::Info, "{}", text);
                 }
                 StdoutChannel::Silent => {
                     // No emit. Op-execution side effects (running
@@ -785,10 +785,10 @@ mod tests {
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         dispenser.execute(0, &ctx).await.unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -832,12 +832,12 @@ mod tests {
              age := \"25\"\n",
         )
         .unwrap();
-        let cw1 = nbrs_runtime::wires::CycleWires::new(&mut k1);
-        let cw2 = nbrs_runtime::wires::CycleWires::new(&mut k2);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let cw1 = nmbrs_runtime::wires::CycleWires::new(&mut k1);
+        let cw2 = nmbrs_runtime::wires::CycleWires::new(&mut k2);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx1 = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw1);
-        let ctx2 = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw2);
+        let ctx1 = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw1);
+        let ctx2 = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw2);
         dispenser.execute(0, &ctx1).await.unwrap();
         dispenser.execute(1, &ctx2).await.unwrap();
 
@@ -886,10 +886,10 @@ mod tests {
         sink: CapturedLogs,
     }
 
-    impl nbrs_runtime::observer::RunObserver for CapturingObserver {
+    impl nmbrs_runtime::observer::RunObserver for CapturingObserver {
         fn phase_starting(
             &self,
-            _: nbrs_runtime::scene_tree::SceneNodeId,
+            _: nmbrs_runtime::scene_tree::SceneNodeId,
             _: &str,
             _: &str,
             _: usize,
@@ -899,7 +899,7 @@ mod tests {
         }
         fn phase_completed(
             &self,
-            _: nbrs_runtime::scene_tree::SceneNodeId,
+            _: nmbrs_runtime::scene_tree::SceneNodeId,
             _: &str,
             _: &str,
             _: f64,
@@ -907,13 +907,13 @@ mod tests {
         }
         fn phase_failed(
             &self,
-            _: nbrs_runtime::scene_tree::SceneNodeId,
+            _: nmbrs_runtime::scene_tree::SceneNodeId,
             _: &str,
             _: &str,
             _: &str,
         ) {
         }
-        fn phase_progress(&self, _: &nbrs_runtime::observer::PhaseProgressUpdate) {}
+        fn phase_progress(&self, _: &nmbrs_runtime::observer::PhaseProgressUpdate) {}
         fn run_finished(&self) {}
         fn log(&self, level: LogLevel, message: &str) {
             self.sink.lock().unwrap().push((level, message.to_string()));
@@ -927,9 +927,9 @@ mod tests {
     /// path, they share one observer and the captured-logs vec.
     fn install_capturing_observer() -> CapturedLogs {
         let sink = captured_logs().clone();
-        let observer: Arc<dyn nbrs_runtime::observer::RunObserver> =
+        let observer: Arc<dyn nmbrs_runtime::observer::RunObserver> =
             Arc::new(CapturingObserver { sink: sink.clone() });
-        nbrs_runtime::observer::set_global_observer(observer);
+        nmbrs_runtime::observer::set_global_observer(observer);
         sink
     }
 
@@ -992,10 +992,10 @@ mod tests {
         );
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         dispenser.execute(0, &ctx).await.unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1042,10 +1042,10 @@ mod tests {
 
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         let result = dispenser.execute(0, &ctx).await.unwrap();
 
         // The OpResult body still carries the rendered text so
@@ -1094,10 +1094,10 @@ mod tests {
 
         let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         dispenser.execute(0, &ctx).await.unwrap();
 
         let file_contents = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1158,7 +1158,7 @@ mod tests {
 // =========================================================================
 
 inventory::submit! {
-    nbrs_runtime::adapter::AdapterRegistration {
+    nmbrs_runtime::adapter::AdapterRegistration {
         names: || &["stdout"],
         known_params: || &["filename", "format", "separator", "header", "color", "fields"],
         display_preference: |params| {
@@ -1171,9 +1171,9 @@ inventory::submit! {
                 .map(|f| f.eq_ignore_ascii_case("stdout"))
                 .unwrap_or(true);
             if to_console {
-                nbrs_runtime::adapter::DisplayPreference::Off
+                nmbrs_runtime::adapter::DisplayPreference::Off
             } else {
-                nbrs_runtime::adapter::DisplayPreference::Auto
+                nmbrs_runtime::adapter::DisplayPreference::Auto
             }
         },
         supported_controls: || &[],
@@ -1184,7 +1184,7 @@ inventory::submit! {
                 StdoutFormat::parse(f)?;
             }
             Ok(std::sync::Arc::new(StdoutAdapter::with_config(StdoutConfig::from_params(&params)))
-                as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
+                as std::sync::Arc<dyn nmbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -1198,16 +1198,16 @@ inventory::submit! {
 // adapter, avoiding per-phase file-handle re-open
 // churn.
 inventory::submit! {
-    nbrs_runtime::adapter::SharedDriverRegistration {
+    nmbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "stdout",
-        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
+        driver: nmbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nmbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             // Identity-bearing: the output destination
             // and on-write formatting decisions. Per-op
             // `fields` values come from op templates and
             // don't shape the underlying writer.
-            let mut k = nbrs_runtime::resource_pool::ResourceKey::new("stdout");
+            let mut k = nmbrs_runtime::resource_pool::ResourceKey::new("stdout");
             for field in ["filename", "format", "separator", "header", "color"] {
                 if let Some(v) = params.get(field) {
                     k = k.with(field, v.clone());

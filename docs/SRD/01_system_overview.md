@@ -1,6 +1,6 @@
 # 01: System Overview
 
-nb-rs is a workload generation and testing engine. It produces
+nmbrs is a workload generation and testing engine. It produces
 deterministic, high-throughput request streams against database and
 service targets using composable data generation kernels.
 
@@ -10,25 +10,25 @@ service targets using composable data generation kernels.
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│                       nbrs (binary)                       │
+│                       nmbrs (binary)                       │
 │  Single CLI; protocol drivers gated by Cargo features     │
 ├───────────────────────────────────────────────────────────┤
 │                     Adapter Crates                        │
-│  nbrs-adapter-stdout  ·  nbrs-adapter-http                │
-│  nbrs-adapter-testkit ·  nbrs-adapter-plotter             │
-│  nbrs-adapter-cql  (engine-scylla / engine-cassandra-cpp) │
-│  nbrs-adapter-openapi (openapi feature)                   │
+│  nmbrs-adapter-stdout  ·  nmbrs-adapter-http                │
+│  nmbrs-adapter-testkit ·  nmbrs-adapter-plotter             │
+│  nmbrs-adapter-cql  (engine-scylla / engine-cassandra-cpp) │
+│  nmbrs-adapter-openapi (openapi feature)                   │
 ├───────────────────────────────────────────────────────────┤
-│                       nbrs-runtime                         │
+│                       nmbrs-runtime                         │
 │  Activity engine: executor, op synthesis, sequencing,     │
 │  validation, dispenser wrappers                           │
 ├───────────────┬─────────────────────┬─────────────────────┤
-│  nbrs-workload  │  polydat 0.2    │  nbrs-metrics         │
+│  nmbrs-workload  │  polydat 0.2    │  nmbrs-metrics         │
 │  YAML parsing │  Polydat kernel, nodes,  │  Timers, counters,  │
 │  ParsedOp     │  DSL compiler,      │  HDR histograms,    │
 │  tag filters  │  constant folding   │  frame capture      │
 ├───────────────┴─────────────────────┴─────────────────────┤
-│  nbrs-rate          nbrs-errorhandler       nbrs-web  ·  nbrs-tui │
+│  nmbrs-rate          nmbrs-errorhandler       nmbrs-web  ·  nmbrs-tui │
 │  Token bucket     Error routing         Web UI    Term UI │
 │  rate limiter     spec parser           API       status  │
 └───────────────────────────────────────────────────────────┘
@@ -39,24 +39,24 @@ service targets using composable data generation kernels.
 The crate/module dependency rules — the 7-layer workspace DAG, the per-crate Contract
 Registry, external Polydat boundary, no-upward-imports, no-cross-adapter edges — are
 specified in [SRD 05 — Dependency Rules](05_dependency_rules.md), with workspace-applicable
-edges **CI-enforced** by `nbrs/tests/architecture_rules.rs`. In one line: internal dependencies flow
-strictly downward, workspace crates consume published `polydat 0.2`, `nbrs-runtime` is the
+edges **CI-enforced** by `nmbrs/tests/architecture_rules.rs`. In one line: internal dependencies flow
+strictly downward, workspace crates consume published `polydat 0.2`, `nmbrs-runtime` is the
 integration hub above the foundation crates, adapters implement the
-`nbrs_runtime::adapter` contract, and `nbrs` is the composition root.
+`nmbrs_runtime::adapter` contract, and `nmbrs` is the composition root.
 
 ### Workspace Structure
 
 ```
-nb-rs/
-├── nbrs/                   single user-facing binary
-├── nbrs-workload/         YAML workload parser
-├── nbrs-runtime/         execution engine
-├── nbrs-metrics/          metrics instruments and reporters
-├── nbrs-metricsql/        MetricsQL parser / evaluator (atop nbrs-metrics queryapi)
-├── nbrs-rate/             rate limiter
-├── nbrs-errorhandler/     error routing
-├── nbrs-web/              web UI
-├── nbrs-tui/              terminal UI + TuiObserver
+nmbrs/
+├── nmbrs/                   single user-facing binary
+├── nmbrs-workload/         YAML workload parser
+├── nmbrs-runtime/         execution engine
+├── nmbrs-metrics/          metrics instruments and reporters
+├── nmbrs-metricsql/        MetricsQL parser / evaluator (atop nmbrs-metrics queryapi)
+├── nmbrs-rate/             rate limiter
+├── nmbrs-errorhandler/     error routing
+├── nmbrs-web/              web UI
+├── nmbrs-tui/              terminal UI + TuiObserver
 ├── adapters/
 │   ├── stdout/            text output
 │   ├── http/              HTTP client
@@ -68,7 +68,7 @@ nb-rs/
 │   └── openapi/           OpenAPI 3.x workload synthesis
 ├── workloads/             shared workload examples
 └── docs/
-    ├── SRD/               the nb-rs system reference (this doc set)
+    ├── SRD/               the nmbrs system reference (this doc set)
     │   ├── notes/         living design rationale (discursive, Pillar-3 mechanism)
     │   └── history/       superseded notes + shipped implementation-plans (archive)
     └── guide/             user-facing documentation
@@ -76,13 +76,13 @@ nb-rs/
 
 The Polydat source and substrate design live in the external
 [Polydat repository](https://github.com/nosqlbench/polydat); `docs/SRD` carries
-only the nb-rs-side integration and Polydat contract surface. See
+only the nmbrs-side integration and Polydat contract surface. See
 [SRD 05 §Dependency Rules](05_dependency_rules.md) and the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
 The cassandra-cpp engine isn't on crates.io and needs a system
 toolchain; build it via `adapters/cql/build.sh` (Docker-based
-sysroot) and link it with `cargo build -p nbrs --features
+sysroot) and link it with `cargo build -p nmbrs --features
 engine-cassandra-cpp`.
 
 ---
@@ -90,7 +90,7 @@ engine-cassandra-cpp`.
 ## Data Flow
 
 ```
-Workload YAML ──▶ nbrs-workload ──▶ ParsedOp[]
+Workload YAML ──▶ nmbrs-workload ──▶ ParsedOp[]
                                       │
                                       ├──▶ polydat (compile Polydat bindings)
                                       │        │
@@ -99,7 +99,7 @@ Workload YAML ──▶ nbrs-workload ──▶ ParsedOp[]
                                       │        │
 CLI params ─────────────────────────┐ │        │
                                     ▼ ▼        ▼
-                                nbrs-runtime
+                                nmbrs-runtime
                               ┌────────────────────┐
                               │  Activity           │
                               │  ├── OpSequence     │
@@ -142,7 +142,7 @@ deterministic from the cycle input.
 
 ## Single Binary, Feature-Gated Drivers
 
-`nbrs` is the single user-facing binary. Lightweight universal
+`nmbrs` is the single user-facing binary. Lightweight universal
 adapters (stdout, HTTP, model) are always linked in. Protocol
 drivers that need heavy or non-portable build dependencies are
 gated behind Cargo features so users compile in only what they

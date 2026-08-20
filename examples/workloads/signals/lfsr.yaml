@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # lfsr.yaml — Galois Linear Feedback Shift Register
 #
 # Demonstrates bitwise Polydat operations computing a maximal-length LFSR
@@ -66,5 +66,5 @@ ops:
   lfsr_step:
     stmt: "cycle={cycle} state={state} bits={b7}{b6}{b5}{b4}{b3}{b2}{b1}{b0} next={next_state}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

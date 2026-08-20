@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # CQL Vector Search — Multi-Profile Discovery
 #
 # Generic phases parameterized by {table}, {dataset}, and {profile}.
@@ -7,10 +7,10 @@
 # "{dataset}:{profile}" composite inline format.
 #
 # Usage:
-#   nbrs full_cql_vector.yaml scenario=fulltest
-#   nbrs full_cql_vector.yaml scenario=filtered_knn
-#   nbrs full_cql_vector.yaml scenario=unfiltered
-#   nbrs full_cql_vector.yaml scenario=filtered_knn limit=100
+#   nmbrs full_cql_vector.yaml scenario=fulltest
+#   nmbrs full_cql_vector.yaml scenario=filtered_knn
+#   nmbrs full_cql_vector.yaml scenario=unfiltered
+#   nmbrs full_cql_vector.yaml scenario=filtered_knn limit=100
 
 description: |
   CQL vector-search suite, multi-profile: schema, rampup from a

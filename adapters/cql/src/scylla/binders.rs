@@ -6,14 +6,14 @@
 //! Each prepared-statement parameter has a known [`ColumnType`]
 //! retrieved from the prepared-statement metadata. The cycle-time
 //! resolved [`Value`](polydat::ast::Value) is wrapped into a
-//! lightweight [`NbrsCell`] that implements [`SerializeValue`].
+//! lightweight [`NmbrsCell`] that implements [`SerializeValue`].
 //! Scylla's blanket `impl<T: SerializeValue> SerializeRow for Vec<T>`
-//! then turns a `Vec<NbrsCell>` into a row that
+//! then turns a `Vec<NmbrsCell>` into a row that
 //! `execute_unpaged` / `batch` consume natively.
 //!
 //! **Vector binding (SRD 53 §"Native Vector Binding")**: when the
 //! column is `vector<float, N>` and the value is
-//! [`Value::VecF32`], the [`NbrsCell::F32Slice`] variant borrows
+//! [`Value::VecF32`], the [`NmbrsCell::F32Slice`] variant borrows
 //! the `&[f32]` directly. Scylla's
 //! `impl<T: SerializeValue> SerializeValue for [T]` writes the
 //! wire bytes from the slice with no intermediate
@@ -29,33 +29,33 @@ use scylla::value::CqlValue;
 
 /// Wire-side cell value. Either a [`CqlValue`] (built once for
 /// primitives) or a borrowed slice for the typed-vector fast path.
-pub(super) enum NbrsCell<'a> {
+pub(super) enum NmbrsCell<'a> {
     Cql(CqlValue),
     F32Slice(&'a [f32]),
     I32Slice(&'a [i32]),
 }
 
-impl<'a> SerializeValue for NbrsCell<'a> {
+impl<'a> SerializeValue for NmbrsCell<'a> {
     fn serialize<'b>(
         &self,
         typ: &ColumnType,
         writer: CellWriter<'b>,
     ) -> Result<WrittenCellProof<'b>, SerializationError> {
         match self {
-            NbrsCell::Cql(c) => <CqlValue as SerializeValue>::serialize(c, typ, writer),
-            NbrsCell::F32Slice(s) => <[f32] as SerializeValue>::serialize(*s, typ, writer),
-            NbrsCell::I32Slice(s) => <[i32] as SerializeValue>::serialize(*s, typ, writer),
+            NmbrsCell::Cql(c) => <CqlValue as SerializeValue>::serialize(c, typ, writer),
+            NmbrsCell::F32Slice(s) => <[f32] as SerializeValue>::serialize(*s, typ, writer),
+            NmbrsCell::I32Slice(s) => <[i32] as SerializeValue>::serialize(*s, typ, writer),
         }
     }
 }
 
-/// Build a `Vec<NbrsCell>` aligned with the prepared statement's
+/// Build a `Vec<NmbrsCell>` aligned with the prepared statement's
 /// variable column specs. Used by both the prepared dispenser
 /// (single row) and the batch dispenser (per row).
 pub(super) fn build_row<'v>(
     col_specs: scylla::response::query_result::ColumnSpecs<'_, '_>,
     values: &'v [Value],
-) -> Result<Vec<NbrsCell<'v>>, String> {
+) -> Result<Vec<NmbrsCell<'v>>, String> {
     let specs = col_specs.as_slice();
     if specs.len() != values.len() {
         return Err(format!(
@@ -64,38 +64,38 @@ pub(super) fn build_row<'v>(
             values.len(),
         ));
     }
-    let mut row: Vec<NbrsCell<'v>> = Vec::with_capacity(specs.len());
+    let mut row: Vec<NmbrsCell<'v>> = Vec::with_capacity(specs.len());
     for (idx, (spec, value)) in specs.iter().zip(values.iter()).enumerate() {
         row.push(value_to_cell(spec.typ(), value).map_err(|e| format!("position {idx}: {e}"))?);
     }
     Ok(row)
 }
 
-/// Map one [`Value`] to an [`NbrsCell`], preferring the borrowed
+/// Map one [`Value`] to an [`NmbrsCell`], preferring the borrowed
 /// slice path for typed-vector columns.
-fn value_to_cell<'v>(col_type: &ColumnType<'_>, value: &'v Value) -> Result<NbrsCell<'v>, String> {
+fn value_to_cell<'v>(col_type: &ColumnType<'_>, value: &'v Value) -> Result<NmbrsCell<'v>, String> {
     use ColumnType as CT;
     match col_type {
         CT::Vector { typ: inner, .. } => match (inner.as_ref(), value) {
-            (CT::Native(NativeType::Float), Value::VecF32(arc)) => Ok(NbrsCell::F32Slice(arc)),
-            (CT::Native(NativeType::Int), Value::VecI32(arc)) => Ok(NbrsCell::I32Slice(arc)),
+            (CT::Native(NativeType::Float), Value::VecF32(arc)) => Ok(NmbrsCell::F32Slice(arc)),
+            (CT::Native(NativeType::Int), Value::VecI32(arc)) => Ok(NmbrsCell::I32Slice(arc)),
             // Fallback: build a CqlValue::Vector from non-typed
             // input shapes (Bytes, Str). Kept for migration and
             // for workloads that compute vectors via expression
             // rather than dataset accessors.
             (CT::Native(NativeType::Float), other) => {
-                Ok(NbrsCell::Cql(vector_float_from_value(other)?))
+                Ok(NmbrsCell::Cql(vector_float_from_value(other)?))
             }
             (other, _) => Err(format!(
                 "vector<{other:?}, _> binding from {value:?} not supported"
             )),
         },
         // Native scalars: build a CqlValue once.
-        CT::Native(native) => Ok(NbrsCell::Cql(native_to_cql(native, value)?)),
+        CT::Native(native) => Ok(NmbrsCell::Cql(native_to_cql(native, value)?)),
         // Less-specialized types (collections, UDTs, tuples)
         // fall back to text rendering of the value. Workloads
         // that exercise them can extend the dispatch as needed.
-        _ => Ok(NbrsCell::Cql(CqlValue::Text(value.to_display_string()))),
+        _ => Ok(NmbrsCell::Cql(CqlValue::Text(value.to_display_string()))),
     }
 }
 

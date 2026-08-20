@@ -1,9 +1,9 @@
-# 29: Execution Engine — Contract & Axioms (nbrs-runtime)
+# 29: Execution Engine — Contract & Axioms (nmbrs-runtime)
 
-The front door for **nbrs-runtime**, the integration hub (layer L4): the async
+The front door for **nmbrs-runtime**, the integration hub (layer L4): the async
 dispatch loop, the adapter trait, op sequencing, scenario-tree walking, error/stop
 handling, observation, and the runner. It depends on every foundation crate
-(`polydat` + `nbrs-metrics` + `nbrs-rate` + `nbrs-errorhandler` + `nbrs-workload`) and
+(`polydat` + `nmbrs-metrics` + `nmbrs-rate` + `nmbrs-errorhandler` + `nmbrs-workload`) and
 is consumed by every adapter, the TUI, the web UI, and the binary.
 
 This document carries Pillars 1 (Contract) and 2 (Axioms) of the
@@ -14,10 +14,10 @@ mechanism docs (SRD 30–35, 68, 71–76, 82–83) are the Pillar-3 tier beneath
 
 ## Contract
 
-### Public surface (what nb-rs consumes)
+### Public surface (what nmbrs consumes)
 
 The authoritative surface + edges are in [SRD 05 §Contract Registry](05_dependency_rules.md);
-grouped here by consumption role for navigation. `nbrs-runtime` declares 51 public modules
+grouped here by consumption role for navigation. `nmbrs-runtime` declares 51 public modules
 today, but the surface other crates actually depend on is the set below. New cross-crate use
 should stay within it.
 
@@ -31,9 +31,9 @@ should stay within it.
 
 ### Inbound contract (what it requires)
 
-`polydat` (kernel + `compile_polydat` + `PolydatMatter`), `nbrs-metrics` (component tree,
-instruments, controls), `nbrs-rate` (`RateLimiter`), `nbrs-errorhandler` (`ErrorRouter`),
-`nbrs-workload` (`Workload`, `ParsedOp`). Allowed edges: L0–L3 only — see
+`polydat` (kernel + `compile_polydat` + `PolydatMatter`), `nmbrs-metrics` (component tree,
+instruments, controls), `nmbrs-rate` (`RateLimiter`), `nmbrs-errorhandler` (`ErrorRouter`),
+`nmbrs-workload` (`Workload`, `ParsedOp`). Allowed edges: L0–L3 only — see
 [SRD 05 §Contract Registry](05_dependency_rules.md).
 
 ### Internal — now `pub(crate)` (compiler-enforced)
@@ -121,8 +121,8 @@ Scenario-tree / scope / scheduler structure is [SRD 18b](18b_scenario_tree_and_s
 
 ## Runtime context nodes (DSL surface)
 
-The engine registers a set of Polydat library nodes (in `nbrs-runtime::polydat_nodes`)
-that project nb-rs runtime state into the DSL — the host-registered nodes the open
+The engine registers a set of Polydat library nodes (in `nmbrs-runtime::polydat_nodes`)
+that project nmbrs runtime state into the DSL — the host-registered nodes the open
 polydat registry allows (polydat itself provides only deterministic nodes; these depend
 on the component tree / executor / controls, which is why they live here, not in
 polydat). Each projects a single runtime surface into a wire — no side channels, no
@@ -153,8 +153,8 @@ access surface"](10_polydat_language.md); the open-registry mechanism is
 ---
 
 ## See also (Pillar 4)
-- crate root: `nbrs-runtime/src/lib.rs` (module doc) — `runner::Runner` is the entry point
-- tests: `nbrs-runtime/tests/`, `nbrs/tests/op_composition_dryrun.rs`
+- crate root: `nmbrs-runtime/src/lib.rs` (module doc) — `runner::Runner` is the entry point
+- tests: `nmbrs-runtime/tests/`, `nmbrs/tests/op_composition_dryrun.rs`
 - [SRD 00b — Subsystem Treatment Standard](00b_subsystem_standard.md) (the rubric)
 - [SRD 05 — Dependency Rules](05_dependency_rules.md) (the enforced edges + Contract Registry)
 - [SRD 01 — System Overview](01_system_overview.md)

@@ -1,7 +1,7 @@
-# 40c: The Metric Query API (nbrs-metrics::queryapi)
+# 40c: The Metric Query API (nmbrs-metrics::queryapi)
 
 Front door for the **metric query API** — the data-access *service* boundary inside
-`nbrs-metrics` (layer L2). `nbrs-metrics` is the foundational data-access library; the
+`nmbrs-metrics` (layer L2). `nmbrs-metrics` is the foundational data-access library; the
 `queryapi` module exposes its query surface as a service that any reader — the MetricsQL
 engine ([SRD 08](08_metricsql.md)), the `metricsql_*` polydat nodes, report/plot CLIs —
 locates and reads through. It is the "metric-reader surface" of
@@ -15,7 +15,7 @@ via `MetricsQuery`.
 
 ## Contract
 
-**Surface** (`nbrs_metrics::queryapi`):
+**Surface** (`nmbrs_metrics::queryapi`):
 
 - **Access contract** — `trait MetricAccess: Send + Sync`:
   `select_range(matchers, start_ms, end_ms) -> Result<Vector, QueryError>` (required);
@@ -57,12 +57,12 @@ via `MetricsQuery`.
   `Dynamic` (polydat R1.v) so it is never folded and re-evaluates on every pull.
 
 ## Mechanism (Pillar 3)
-`nbrs-metrics/src/queryapi/{mod,shapes,live,sqlite,catalog}.rs`. The MetricsQL engine
-consumes the surface through `nbrs_metricsql::eval::EvalContext.data: &dyn MetricAccess`
+`nmbrs-metrics/src/queryapi/{mod,shapes,live,sqlite,catalog}.rs`. The MetricsQL engine
+consumes the surface through `nmbrs_metricsql::eval::EvalContext.data: &dyn MetricAccess`
 ([SRD 08](08_metricsql.md)); the `metricsql_*` nodes project a fetched `Vector` to a polydat
 `Value` by result-type affinity ([SRD 08 §Reader nodes](08_metricsql.md)).
 
 ## See also
-`nbrs-metrics/src/queryapi/mod.rs`; [SRD 08](08_metricsql.md) (the query language atop it);
+`nmbrs-metrics/src/queryapi/mod.rs`; [SRD 08](08_metricsql.md) (the query language atop it);
 [SRD 42](42_windowed_metrics.md) (the cadence feed the live backend reads);
 [SRD 49](49_metricsql_supported_scope.md); [SRD 86 §10](86_optimization.md).

@@ -56,7 +56,7 @@ A testkit-provided Polydat function node, registered via the existing
 **Per-invocation state machine (across runs):**
 
 State lives in a tmp file keyed by **session id**: e.g.
-`${TMPDIR}/nbrs-failure-step-<session-id>.state`. Session id is
+`${TMPDIR}/nmbrs-failure-step-<session-id>.state`. Session id is
 the same one `Session::resume` reuses, so the file persists across
 invocations of the same session.
 
@@ -105,7 +105,7 @@ test scenario `default` or `staircase`). The `reset` scenario:
 The reset is run by name:
 
 ```
-nbrs run workload=resume_test.yaml scenario=reset session=<id>
+nmbrs run workload=resume_test.yaml scenario=reset session=<id>
 ```
 
 (or against `logs/latest`).
@@ -175,11 +175,11 @@ cycle.
 ```
 session = "resume_test_<timestamp>"
 
-Run 1: nbrs run workload=resume_test.yaml session=$session
+Run 1: nmbrs run workload=resume_test.yaml session=$session
   → failure_step picks t1=10. phase1 fails at cycle 10.
   → checkpoint: phase1=Failed, phase2/3=Pending.
 
-Run 2: nbrs run workload=resume_test.yaml resume=$session
+Run 2: nmbrs run workload=resume_test.yaml resume=$session
   → failure_step picks t2=51. phase1 reruns (errors-cascade re-runs
     the failed phase per `--force-retry-failed` or default cascade),
     succeeds (cap=50, never reaches 51). phase2 fails at cycle 51.
@@ -246,7 +246,7 @@ the stateful threshold-picking is the testkit-specific piece. But
 
 ### OQ-2 — state file location
 
-`${TMPDIR}/nbrs-failure-step-<session-id>.state` works but it's
+`${TMPDIR}/nmbrs-failure-step-<session-id>.state` works but it's
 outside the session's `logs/<session>/` dir, which is otherwise
 self-contained. Alternative: `logs/<session>/.failure-step.state`.
 
@@ -284,7 +284,7 @@ Cleanest paths:
 - **In-workload:** a no-op phase that calls a sibling testkit node
   `failure_step_reset(session_name)` whose only job is to delete
   the state file.
-- **CLI:** a subcommand `nbrs failure-step reset <session>`.
+- **CLI:** a subcommand `nmbrs failure-step reset <session>`.
 
 The former keeps everything inside the workload model; the latter is
 more discoverable. Slight preference for the in-workload version.

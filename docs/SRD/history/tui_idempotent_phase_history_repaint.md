@@ -37,7 +37,7 @@ were swapped.
   computation, `redraw_bottom_region`'s `phase_lines`, the gutter,
   scroll-on-growth-for-region, the `phase_history_*` trackers, the
   `MAX_PHASE_HISTORY_ROWS`/`LOG_MIN_RESERVE` consts, and
-  `bound_phase_history`. `nbrs-tui/src/phase_history.rs` is removed
+  `bound_phase_history`. `nmbrs-tui/src/phase_history.rs` is removed
   (module decl gone from `lib.rs`). The bottom region is now just
   `[status][inline-prompt]`.
 - **History = scrollback.** The rich `✓` DONE lines already flow to
@@ -86,7 +86,7 @@ were swapped.
 
 ## Shipped (implementation — 2026-06-06)
 
-Production (all in `nbrs-tui`, no test-only escape hatches):
+Production (all in `nmbrs-tui`, no test-only escape hatches):
 
 - **Managed phase-history region** (`log_only_sink.rs`
   `run_render_loop`): a region painted above the status block from
@@ -129,21 +129,21 @@ Production (all in `nbrs-tui`, no test-only escape hatches):
   (`redraw_tests`) pin the absolute positions of the
   phase/status/prompt rows; `phase_history.rs` tests pin the
   projection.
-- **Fully-encapsulated E2E**: `nbrs/examples/tui_display_harness.rs`
+- **Fully-encapsulated E2E**: `nmbrs/examples/tui_display_harness.rs`
   drives the real `LogOnlySink` from a mock run-state actor
   (`spawn_run_state_actor` + `RunStateCmd`) under
   `shadow_terminal`, lock-stepped via stdin commands
   (`tree`/`start`/`done`/`bar`/`window`/`out`). Tests in
-  `nbrs/tests/tui_display_harness.rs`: region renders started
+  `nmbrs/tests/tui_display_harness.rs`: region renders started
   phases (in-place glyph flip, no dup), bar-toggle idempotency,
   window-close idempotency, console-output containment. The
   harness reads stdin in no-echo raw mode (termios) so command
-  bytes don't paint the surface. It uses only `nbrs-tui`'s public
+  bytes don't paint the surface. It uses only `nmbrs-tui`'s public
   API.
-- **Real-run Ctrl-T swap** (`nbrs/tests/tui_terminal_toggle.rs`
+- **Real-run Ctrl-T swap** (`nmbrs/tests/tui_terminal_toggle.rs`
   `ctrl_t_toggles_into_tui_and_back`, formerly `#[ignore]`d): the
   harness can't exercise the supervisor + TuiSink swap, so this
-  spawns the real `nbrs` under `shadow_terminal` and toggles
+  spawns the real `nmbrs` under `shadow_terminal` and toggles
   terminal → TUI → terminal. The old MetricsQuery race is gated
   out by construction — it waits for the region's `▶` before
   Ctrl-T, and a phase only reaches `Running` after the runner's
@@ -276,7 +276,7 @@ Both collapse to one invariant:
 
 ## Shipped (foundational contract — DONE, tested)
 
-`nbrs-tui/src/phase_history.rs` (registered in `lib.rs`):
+`nmbrs-tui/src/phase_history.rs` (registered in `lib.rs`):
 
 - `phase_history_lines(snap: &RunState) -> Vec<String>` — pure
   projection of `snap.phases` (the denormalized DFS `PhaseEntry`
@@ -285,14 +285,14 @@ Both collapse to one invariant:
   duration (Completed) / error (Failed). **Idempotent by
   construction**: identical snapshot ⇒ byte-identical output.
 - 3 unit tests: idempotency (N calls identical), pending-omission,
-  per-status formatting. `cargo test -p nbrs-tui --lib phase_history`.
+  per-status formatting. `cargo test -p nmbrs-tui --lib phase_history`.
 
-This is the function both transitions call. nbrs-tui: 73/0, 0 warnings.
+This is the function both transitions call. nmbrs-tui: 73/0, 0 warnings.
 
 ## Remaining work (tasks #29–#32)
 
 ### #29 — Wire painter into LogOnlySink managed region
-- `nbrs-tui/src/log_only_sink.rs` `run_render_loop`: add a managed
+- `nmbrs-tui/src/log_only_sink.rs` `run_render_loop`: add a managed
   **phase-history region** above the existing status region. Follow
   the existing clear+repaint discipline (`clear_combined_region`,
   absolute positioning — see the bottom-region block ~L334–L595).
@@ -304,7 +304,7 @@ This is the function both transitions call. nbrs-tui: 73/0, 0 warnings.
   `phase_outcome` readout reaches `log_messages` and gate it.
 
 ### #30 — Repaint on Ctrl-T re-entry + `~`-close
-- Ctrl-T re-entry: `nbrs-tui/src/sink_supervisor.rs` restarts the
+- Ctrl-T re-entry: `nmbrs-tui/src/sink_supervisor.rs` restarts the
   `LogOnlySink` and currently **skips replay** (bumps
   `last_seen_seq`; comment "no replay of historical buffer" ~L207).
   Replace with: on terminal-mode entry, paint the phase-history
@@ -321,7 +321,7 @@ This is the function both transitions call. nbrs-tui: 73/0, 0 warnings.
   so it can't scroll the terminal state.
 
 ### #32 — Shadow-terminal idempotency E2E test
-- Extend `nbrs/tests/tui_terminal_toggle.rs` (uses
+- Extend `nmbrs/tests/tui_terminal_toggle.rs` (uses
   `shadow_terminal::SteppableTerminal` — an in-memory rendered
   terminal driven via PTY). Assert: (a) Ctrl-T N times → identical
   rendered cells on each terminal-mode entry; (b) open console,

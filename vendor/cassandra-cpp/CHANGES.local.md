@@ -1,6 +1,6 @@
 # Local changes to the vendored `cassandra-cpp` fork
 
-This is a fork of upstream `cassandra-cpp` 3.0.2. It exists so the nb-rs
+This is a fork of upstream `cassandra-cpp` 3.0.2. It exists so the nmbrs
 CQL adapter can reach a few driver capabilities the published wrapper
 does not expose. Keep this file current when the local surface changes —
 `adapters/cql/Cargo.toml` points here.

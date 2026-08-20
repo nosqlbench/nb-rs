@@ -19,7 +19,7 @@ phase-scoped CLI overrides with globs
 `subdivide(outer, n)` as a nested comprehension source, and the
 `partition i/n [lo..hi)` status banner. Behavioral coverage
 lives in `examples/workloads/cursors/cursor_partitions_coverage.yaml` +
-`nbrs/tests/cursor_partitions.rs`; the operator/author guide is
+`nmbrs/tests/cursor_partitions.rs`; the operator/author guide is
 `docs/guide/cursor_partitions.md`; the showcase example is
 `examples/workloads/cursors/timeboxed_partition_sweep.yaml`.
 
@@ -1127,7 +1127,7 @@ phases:
 Operator runs:
 
 ```
-nbrs run workload=full_cql_vector.yaml scenario=test_oracles cursor=0..1%
+nmbrs run workload=full_cql_vector.yaml scenario=test_oracles cursor=0..1%
 ```
 
 Each cursor declared `over cursor` narrows to the
@@ -1138,7 +1138,7 @@ keep their full extent. Phases without cursors (`schema`,
 ### Three-stage workload sweep
 
 ```
-nbrs run workload=ann_sweep.yaml cursor=2%,10%,*%
+nmbrs run workload=ann_sweep.yaml cursor=2%,10%,*%
 ```
 
 Workload declares:
@@ -1207,7 +1207,7 @@ parameters.
 ### Glob-scoped override
 
 ```
-nbrs run workload=full_cql_vector.yaml *_query.cursor=fib:7
+nmbrs run workload=full_cql_vector.yaml *_query.cursor=fib:7
 ```
 
 Every phase whose name ends in `_query` (e.g. `ann_query`,

@@ -1,6 +1,6 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # =====================================================================
-# nbrs Plot DSL Reference
+# nmbrs Plot DSL Reference
 # =====================================================================
 #
 # This workload is a reference for every directive supported by the
@@ -10,12 +10,12 @@
 # label space so every plot has data to draw from.
 #
 # Regenerate one plot from a session db:
-#   nbrs plot --name <plot-name> --db logs/latest/metrics.db
+#   nmbrs plot --name <plot-name> --db logs/latest/metrics.db
 # Materialise the whole report:
-#   nbrs report --workload docs/guide/plot_reference.yaml \
+#   nmbrs report --workload docs/guide/plot_reference.yaml \
 #               --db logs/latest/metrics.db
 # Run end-to-end (produces all plots in one shot):
-#   nbrs run docs/guide/plot_reference.yaml
+#   nmbrs run docs/guide/plot_reference.yaml
 #
 # ─────────────────────────────────────────────────────────────────────
 # Quick reference

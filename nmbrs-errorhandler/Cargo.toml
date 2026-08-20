@@ -1,0 +1,15 @@
+[package]
+name = "nmbrs-errorhandler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Modular composable error handler for nmbrs"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+regex = "1"
+log = "0.4"

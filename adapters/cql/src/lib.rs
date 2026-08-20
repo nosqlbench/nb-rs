@@ -1,9 +1,9 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! # nbrs-adapter-cql
+//! # nmbrs-adapter-cql
 //!
-//! Multi-engine CQL adapter for nb-rs. Each engine is a sibling
+//! Multi-engine CQL adapter for nmbrs. Each engine is a sibling
 //! submodule gated behind a Cargo feature; both can be linked
 //! into the same binary, in which case the user picks at runtime
 //! via the `cqldriver=<name>` workload parameter (or
@@ -13,7 +13,7 @@
 
 #[cfg(not(any(feature = "engine-scylla", feature = "engine-cassandra-cpp")))]
 compile_error!(
-    "nbrs-adapter-cql needs at least one engine feature enabled; \
+    "nmbrs-adapter-cql needs at least one engine feature enabled; \
      try --features engine-scylla (default) or --features engine-cassandra-cpp"
 );
 

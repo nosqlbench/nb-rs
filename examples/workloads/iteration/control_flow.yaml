@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Control Flow Syntax Examples
 #
 # Demonstrates all control flow constructs available in scenario trees:
@@ -12,15 +12,15 @@
 # All examples use adapter=stdout for safe testing without a database.
 #
 # Run specific scenarios:
-#   nbrs run workload=control_flow.yaml scenario=test_for_each
-#   nbrs run workload=control_flow.yaml scenario=test_nested
-#   nbrs run workload=control_flow.yaml scenario=test_phase_for_each
-#   nbrs run workload=control_flow.yaml scenario=test_do_until
-#   nbrs run workload=control_flow.yaml scenario=test_do_while
-#   nbrs run workload=control_flow.yaml scenario=test_mixed
+#   nmbrs run workload=control_flow.yaml scenario=test_for_each
+#   nmbrs run workload=control_flow.yaml scenario=test_nested
+#   nmbrs run workload=control_flow.yaml scenario=test_phase_for_each
+#   nmbrs run workload=control_flow.yaml scenario=test_do_until
+#   nmbrs run workload=control_flow.yaml scenario=test_do_while
+#   nmbrs run workload=control_flow.yaml scenario=test_mixed
 #
 # Default scenario runs the basic demonstrations:
-#   nbrs run workload=control_flow.yaml
+#   nmbrs run workload=control_flow.yaml
 
 params:
   adapter: stdout
@@ -151,7 +151,7 @@ phases:
       step:
         stmt: "loop step (do_while/do_until runtime eval pending)"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ case for_each
 #@   run scenario=test_for_each
 #@   expect 3 completed, 0 failed

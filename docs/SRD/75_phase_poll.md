@@ -15,7 +15,7 @@ this SRD is reviewed against the Polydat invariants listed in
 >
 > The load-bearing correction: a daemon op does **not** "fire once at
 > phase init". It dispatches **at its position in the cycle/op walk** —
-> `nbrs-runtime/src/activity.rs`'s cycle loop spawns the daemon fiber
+> `nmbrs-runtime/src/activity.rs`'s cycle loop spawns the daemon fiber
 > when the stanza walk reaches that op (pinned by the
 > `daemon_op_dispatches_at_cycle_pool_position` test). So daemon ordering
 > follows normal op declaration order: a regular op declared *before* a
@@ -31,12 +31,12 @@ this SRD is reviewed against the Polydat invariants listed in
 > §"Runner integration" around the daemon-based `trigger_compact`;
 > (2) state the daemon dispatch-at-op-position semantics explicitly and
 > cross-ref SRD-79; (3) fix the stale module doc in
-> `nbrs-runtime/src/daemon_pool.rs` ("spawned at phase init" → "spawned
+> `nmbrs-runtime/src/daemon_pool.rs` ("spawned at phase init" → "spawned
 > when the cycle-pool stanza walk reaches the daemon op"). Until then,
 > the shipped `ensure_compacted` phase is the source of truth, not this
 > draft's example.
 
-**Owner:** nbrs-workload (model), nbrs-runtime (synthesis,
+**Owner:** nmbrs-workload (model), nmbrs-runtime (synthesis,
 runner / executor), workloads (consumers under
 `adapters/cql/workloads/`).
 
@@ -279,7 +279,7 @@ the parent export carries `shared` (SRD-67 Rule 1
 ### Runner integration
 
 The change is bounded to one site:
-`nbrs-runtime/src/runner.rs::run_phase` (or its current
+`nmbrs-runtime/src/runner.rs::run_phase` (or its current
 equivalent — the function that drives a phase's cycles).
 When `phase.poll.is_some()`, the existing cycle loop is
 invoked from a `PollController` that:
@@ -425,7 +425,7 @@ same machinery the existing per-op metrics use.
 
 ### Push 1 — Workload model surface
 
-- `nbrs-workload/src/model.rs::WorkloadPhase` gains
+- `nmbrs-workload/src/model.rs::WorkloadPhase` gains
   `pub poll: Option<PhasePollSpec>`.
 - `PhasePollSpec` defined with the fields above.
 - Parser accepts `poll:` block; validates the
@@ -559,10 +559,10 @@ hang). Grace window = one smallest-cadence frame + one poll interval
 from loop start; past it, an unresolved selector fails the phase with
 error class `poll_require` naming the selectors — loud, never a
 hang-to-timeout. Deliberately poll-only: `stop_when`'s lenient reads
-stay as SRD-83 sanctions. Probe: `nbrs-metrics::polydat_nodes::
+stay as SRD-83 sanctions. Probe: `nmbrs-metrics::polydat_nodes::
 metric_selector_resolves`. Caveat discovered in coverage: a phase
 reading its OWN activity metrics from inside its poll loop sees no
 fresh frames while holding — cross-phase reads (the coordination-gate
 pattern) are the supported shape. Tested:
-`nbrs/tests/poll_require.rs` over
+`nmbrs/tests/poll_require.rs` over
 `examples/workloads/controls/poll_require_smoke.yaml`.

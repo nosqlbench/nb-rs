@@ -1,9 +1,9 @@
-# 08: MetricsQL — Contract & Axioms (nbrs-metricsql)
+# 08: MetricsQL — Contract & Axioms (nmbrs-metricsql)
 
-Front door for **nbrs-metricsql** (layer L3): a Rust port of VictoriaMetrics MetricsQL —
+Front door for **nmbrs-metricsql** (layer L3): a Rust port of VictoriaMetrics MetricsQL —
 lexer, parser, evaluator, the streaming/continuous-query runtime, and the four `metricsql_*`
 polydat reader nodes. It is the **query language atop the metric query API**
-([SRD 40c](40c_metric_query_api.md)): `nbrs-metrics` owns the data-access service (fetch,
+([SRD 40c](40c_metric_query_api.md)): `nmbrs-metrics` owns the data-access service (fetch,
 result shapes, backends); this crate parses and evaluates MetricsQL over it. Pillars 1+2 of
 the [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
@@ -11,24 +11,24 @@ the [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
 **Surface and edges:** authoritative in [SRD 05 §Contract Registry](05_dependency_rules.md).
 In brief — `parser::parse` + `ast::Expr`; `eval::{evaluate, EvalContext}` evaluating over a
-`MetricAccess` data source (re-exported from `nbrs_metrics::queryapi` through `eval`);
+`MetricAccess` data source (re-exported from `nmbrs_metrics::queryapi` through `eval`);
 `streaming::{StreamingPlan, …}`; `runtime` (feature `runtime`); and the four `metricsql_*`
 polydat reader nodes (feature `polydat-nodes`, §Reader nodes below). The inbound contract is
-a `MetricAccess` implementation supplied by the host — in nb-rs, nbrs-metrics' live or sqlite
+a `MetricAccess` implementation supplied by the host — in nmbrs, nmbrs-metrics' live or sqlite
 backend ([SRD 40c](40c_metric_query_api.md)).
 
-Its public module set is its own library contract — broader than what the nb-rs workspace
+Its public module set is its own library contract — broader than what the nmbrs workspace
 consumes — so it is **D5-exempt** ([SRD 05](05_dependency_rules.md)). It is **not**
-zero-internal-dependency, however: it depends on `nbrs-metrics` (L3 → L2) to reach the
+zero-internal-dependency, however: it depends on `nmbrs-metrics` (L3 → L2) to reach the
 data-access seam. The result shapes and the `catalog`/sqlite backend that earlier lived here
-now live in `nbrs-metrics::queryapi` ([SRD 40c](40c_metric_query_api.md)); this crate
+now live in `nmbrs-metrics::queryapi` ([SRD 40c](40c_metric_query_api.md)); this crate
 re-exports the shapes through `eval`, never re-models them.
 
 ## Axioms
 
 - **Q1 — Query language, not storage.** This crate computes; it never owns sample storage or
-  metric shapes. Those live in `nbrs-metrics::queryapi` ([SRD 40c](40c_metric_query_api.md)).
-  The data-access seam is the `MetricAccess` trait; metricsql depends on nbrs-metrics to reach
+  metric shapes. Those live in `nmbrs-metrics::queryapi` ([SRD 40c](40c_metric_query_api.md)).
+  The data-access seam is the `MetricAccess` trait; metricsql depends on nmbrs-metrics to reach
   it. (Storage-as-a-service boundary, viewed from the consuming side.)
 - **Q2 — Access-API affinity.** The shapes the evaluator consumes — `Vector` / `Series` /
   `Sample` / `Matcher` — ARE the queryapi's shapes, re-exported rather than re-modelled, so a
@@ -63,4 +63,4 @@ never be const-folded ([SRD 40c](40c_metric_query_api.md) MQ4).
 [SRD 49](49_metricsql_supported_scope.md) (supported scope + drift tests).
 
 ## See also
-`nbrs-metricsql/src/lib.rs`; [SRD 40c](40c_metric_query_api.md); [SRD 47](47_metricsql_streaming.md); [SRD 48](48_metricsql_continuous_query.md); [SRD 49](49_metricsql_supported_scope.md).
+`nmbrs-metricsql/src/lib.rs`; [SRD 40c](40c_metric_query_api.md); [SRD 47](47_metricsql_streaming.md); [SRD 48](48_metricsql_continuous_query.md); [SRD 49](49_metricsql_supported_scope.md).

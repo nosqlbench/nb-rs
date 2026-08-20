@@ -14,7 +14,7 @@
 # mechanism (two live controls moved together), not a rate/concurrency trade-off.
 #
 # Runs standalone:
-#   nbrs run workload=examples/workloads/optimizer_multiservo.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_multiservo.yaml \
 #       --session-path /tmp/opt-multiservo
 
 description: |
@@ -93,5 +93,5 @@ phases:
         # window. (No `result-capacity`: overload is synthetic.)
         result-latency: "20ms"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect \(control\): best \[2,

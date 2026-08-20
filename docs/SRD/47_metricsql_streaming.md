@@ -1,6 +1,6 @@
 # 47: MetricsQL Streaming Aggregation
 
-`nbrs-metricsql` provides a parser, prettifier, and batch evaluator
+`nmbrs-metricsql` provides a parser, prettifier, and batch evaluator
 for the MetricsQL subset of PromQL (see the crate-level rustdoc and
 the parity-test fixtures harvested from the upstream Go
 `metricsql` library). This SRD specifies the **streaming /
@@ -16,7 +16,7 @@ The user-facing capability:
 > would have produced over the same data.
 
 This is the foundation for live TUI dashboards, web reporting,
-and any continuous-query workload nb-rs adds. It composes with
+and any continuous-query workload nmbrs adds. It composes with
 the existing `DataSource` trait (SRD section §References) without
 modifying its contract.
 
@@ -339,7 +339,7 @@ then reset and start a new minute"). Sliding-window framing
 
 ## The equivalence test (load-bearing)
 
-A property test in `nbrs-metricsql/src/streaming.rs::tests`:
+A property test in `nmbrs-metricsql/src/streaming.rs::tests`:
 
 ```rust
 #[test]
@@ -411,7 +411,7 @@ The choice is per-query (annotation) or per-installation
 | **HDR-sketch** | `O(sigdigs)` per series, bounded | Approximate within HDR precision | None (precision is HDR's) |
 | **Forbid** | n/a | Compile-time `CompileError::Unsupported` | n/a |
 
-**HDR-sketch is the recommended default** for nb-rs given
+**HDR-sketch is the recommended default** for nmbrs given
 `hdrhistogram = "7"` is already on the dependency path (see
 SRD-40 §"Timer"). HDR histograms are mergeable, the precision
 is configurable per session via the existing `hdr.sigdigs`
@@ -443,7 +443,7 @@ re-evaluated at every step in a range query) need either an
 monotonic deque for min/max, hard for quantile) OR a
 window-bucket grid where windows align to a fixed cadence.
 
-The pragmatic answer for nb-rs is the second: cadences are
+The pragmatic answer for nmbrs is the second: cadences are
 already grid-aligned per SRD-42 (Windowed Metrics). The
 streaming plan evaluates **one window at a time** under the
 current SRD-42 cadence; range-query stepping over arbitrary
@@ -559,7 +559,7 @@ The push is done when **all** of the following hold:
 2. ✅ **HDR-sketch reducer**: `QuantileOverTime` —
    `hdrhistogram::Histogram` as the `Acc` type. Negative /
    NaN samples dropped; values floored to `u64`. Covers
-   nb-rs's nanosecond-latency use case.
+   nmbrs's nanosecond-latency use case.
 3. ✅ **Binary ops in streaming plans**: `Binary { op,
    left_child, right_child }` plan node, per-timestamp
    value combine, reducers unchanged.
@@ -572,8 +572,8 @@ The push is done when **all** of the following hold:
    feature flag.
 6. ✅ **Sqlite `DataSource` adapter**: schema patches
    (indexes, PRAGMAs), stat-suffix resolution, INTERSECT-
-   based matchers. Powers `nbrs metrics query` /
-   `nbrs metrics watch`.
+   based matchers. Powers `nmbrs metrics query` /
+   `nmbrs metrics watch`.
 
 ### Still deferred
 
@@ -610,14 +610,14 @@ shape what the streaming layer doesn't have to do:
 
 ## References
 
-- **Code (current state)**: `nbrs-metricsql/src/eval.rs` —
+- **Code (current state)**: `nmbrs-metricsql/src/eval.rs` —
   batch evaluator with six AST shapes covered (selector,
   rollup, aggregate, binary op, range query, rollup-consumer
-  function); `nbrs-metricsql/src/ast.rs` — AST types;
-  `nbrs-metricsql/src/parser.rs` — 100% parser parity
-  against upstream; `nbrs-metricsql/src/prettifier.rs` —
+  function); `nmbrs-metricsql/src/ast.rs` — AST types;
+  `nmbrs-metricsql/src/parser.rs` — 100% parser parity
+  against upstream; `nmbrs-metricsql/src/prettifier.rs` —
   100% prettifier parity.
-- **`DataSource` trait contract**: `nbrs-metricsql::eval` —
+- **`DataSource` trait contract**: `nmbrs-metricsql::eval` —
   `__name__` in labels, samples sorted ascending, samples in
   `[start, end]` inclusive, no-match → empty-or-omitted.
   Returns `Result<Vec<Series>, DataSourceError>`. Single
@@ -641,5 +641,5 @@ shape what the streaming layer doesn't have to do:
   builds on the same grid, not a parallel one.
 - **Upstream MetricsQL parser**: linked at
   `links/metricsql/`. The parity-test fixtures in
-  `nbrs-metricsql/tests/fixtures/*.json` are harvested from
+  `nmbrs-metricsql/tests/fixtures/*.json` are harvested from
   it.

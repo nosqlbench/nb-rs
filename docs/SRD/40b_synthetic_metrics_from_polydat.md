@@ -2,8 +2,8 @@
 
 **Status:** normative (sketch — not yet implemented; tracked under
   SRD-98 deferred until phases A–E land)
-**Owner:** nbrs-workload (model + parser), nbrs-runtime (wrapper +
-  registration), nbrs-metrics (component-level family registry),
+**Owner:** nmbrs-workload (model + parser), nmbrs-runtime (wrapper +
+  registration), nmbrs-metrics (component-level family registry),
   adapters (output-channel convention)
 **Cross-refs:** SRD-40 (metrics umbrella), SRD-40a (data model),
   SRD-13c (GK scope model), SRD-18b (scenario tree),
@@ -39,7 +39,7 @@ directives (SRD-46). Without this, three lower-quality paths exist:
   in the metrics db.
 - Pre-populating `sample_value` rows with SQL. Bypasses the
   cadence pipeline and the registry; metrics are invisible to
-  `nbrs metrics` and `metricsql`.
+  `nmbrs metrics` and `metricsql`.
 
 The mechanism in this SRD lets the workload **declare metrics
 directly on an op template**, owned by the op dispenser, recorded
@@ -443,7 +443,7 @@ two clarifications:
 ## 6. Wrapper: `MetricsDispenser`
 
 A new op-dispenser wrapper, sibling to the existing decorators in
-[`nbrs-runtime/src/wrappers.rs`][wrappers]. Stacks **outermost**
+[`nmbrs-runtime/src/wrappers.rs`][wrappers]. Stacks **outermost**
 in the op-dispenser construction chain:
 
 ```text
@@ -476,7 +476,7 @@ has already paid its time.
 ### 5.1 `MetricKind` → instrument type → record API
 
 Each `MetricKind` variant maps to a concrete instrument from
-[`nbrs_metrics::instruments`][nbrs-instruments]:
+[`nmbrs_metrics::instruments`][nmbrs-instruments]:
 
 | `MetricKind` | Instrument type    | Per-cycle call             | Stored shape                                             |
 |--------------|--------------------|----------------------------|----------------------------------------------------------|
@@ -520,13 +520,13 @@ last-write-wins; workloads where per-fiber values diverge (§5
 result-derived metrics) should choose a kind whose semantics
 match the intended aggregation.
 
-[nbrs-instruments]: ../../nbrs-metrics/src/instruments/
+[nmbrs-instruments]: ../../nmbrs-metrics/src/instruments/
 
 ---
 
 ## 7. Family + dimensional uniqueness — strict at init
 
-The nbrs runtime aligns metric instruments with **components**:
+The nmbrs runtime aligns metric instruments with **components**:
 each instrument is owned by the closest component for which its
 label set is canonical. The component tree (SRD-40 / SRD-40a)
 already does this for measured metrics; SRD-40b reuses the
@@ -837,14 +837,14 @@ op-template kernel handle.
 
 | Phase | What                                                                                | Where                                              |
 |-------|-------------------------------------------------------------------------------------|----------------------------------------------------|
-| A     | `ParsedOp.metrics` + `MetricSpec` + `ParsedOp.result` model + parsing (full + sugared) | `nbrs-workload/src/{model,parse}.rs`              |
-| B     | `format:` numeric-sanitiser parser (Excel hash patterns → round/trunc op)           | `nbrs-workload/src/report.rs` or sibling           |
-| C     | `unit:` flow into both family-name suffix and `metric_family.unit` column           | `nbrs-metrics/src/reporters/sqlite.rs`             |
-| D     | Result-as-GK adapter layer (§5): dispenser-owned, writes captured wires to GkState  | `nbrs-runtime/src/wrappers.rs`                    |
-| E     | `MetricsDispenser` wrapper + kind→instrument dispatch (§6.1)                        | `nbrs-runtime/src/wrappers.rs`                    |
-| F     | Wrapper insertion at op-dispenser construction; op-dispenser as component (op label) | `nbrs-runtime/src/{runner,activity}.rs`           |
-| G     | Component instrument-set duplicate check on registration (§7)                       | `nbrs-metrics/src/component.rs`                    |
-| H     | `scope_close` cadence-streamer flush signal (§11) — generic, not synthetic-specific | `nbrs-metrics/src/scheduler.rs` (or sibling)       |
+| A     | `ParsedOp.metrics` + `MetricSpec` + `ParsedOp.result` model + parsing (full + sugared) | `nmbrs-workload/src/{model,parse}.rs`              |
+| B     | `format:` numeric-sanitiser parser (Excel hash patterns → round/trunc op)           | `nmbrs-workload/src/report.rs` or sibling           |
+| C     | `unit:` flow into both family-name suffix and `metric_family.unit` column           | `nmbrs-metrics/src/reporters/sqlite.rs`             |
+| D     | Result-as-GK adapter layer (§5): dispenser-owned, writes captured wires to GkState  | `nmbrs-runtime/src/wrappers.rs`                    |
+| E     | `MetricsDispenser` wrapper + kind→instrument dispatch (§6.1)                        | `nmbrs-runtime/src/wrappers.rs`                    |
+| F     | Wrapper insertion at op-dispenser construction; op-dispenser as component (op label) | `nmbrs-runtime/src/{runner,activity}.rs`           |
+| G     | Component instrument-set duplicate check on registration (§7)                       | `nmbrs-metrics/src/component.rs`                    |
+| H     | `scope_close` cadence-streamer flush signal (§11) — generic, not synthetic-specific | `nmbrs-metrics/src/scheduler.rs` (or sibling)       |
 | I     | Adapter output-channel convention (stdout impl)                                     | `adapters/stdout/src/...`                          |
 
 Phases A, B, C, E, G are independently testable. Phase D
@@ -857,5 +857,5 @@ Workload adoption (the actual phase / scenario / plot YAML)
 belongs in a design memo and per-workload follow-up — not part
 of this SRD.
 
-[parsed-op]: ../../nbrs-workload/src/model.rs
-[wrappers]: ../../nbrs-runtime/src/wrappers.rs
+[parsed-op]: ../../nmbrs-workload/src/model.rs
+[wrappers]: ../../nmbrs-runtime/src/wrappers.rs

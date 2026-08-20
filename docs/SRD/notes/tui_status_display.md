@@ -21,7 +21,7 @@ TTY and no `dryrun=` mode is active. Can be disabled with `tui=off`.
 ### Layout
 
 ```
-┌─ nbrs ─────────────────────────────────────────────────────────────────────┐
+┌─ nmbrs ─────────────────────────────────────────────────────────────────────┐
 │ workload: full_cql_vector.yaml  scenario: fknn_rampup  elapsed: 5m 23s    │
 │ adapter: cql (127.0.0.1)       profiler: off           limit: none        │
 ├─ Phase ────────────────────────────────────────────────────────────────────┤
@@ -220,14 +220,14 @@ Dim text:    #606060 (used for pending phases, help text)
 
 | Component | Change |
 |-----------|--------|
-| `nbrs-tui/src/app.rs` | Replace current layout with the new design |
-| `nbrs-tui/src/widgets.rs` | `MetricsState` gains phase info, cursor, adapter counters, sparkline history |
-| `nbrs-tui/src/tree.rs` | NEW — `TreeState` struct, scenario tree rendering |
-| `nbrs-tui/src/sparkline.rs` | NEW — Rolling sparkline widget with 24-bit gradient |
-| `nbrs-tui/src/latency.rs` | NEW — Horizontal bar chart for percentiles |
-| `nbrs-runtime/src/executor.rs` | Update `TreeState` on phase start/complete |
-| `nbrs-runtime/src/activity.rs` | Remove single-line progress thread when TUI is active |
-| `nbrs-runtime/src/runner.rs` | TUI activation logic, reporter registration |
+| `nmbrs-tui/src/app.rs` | Replace current layout with the new design |
+| `nmbrs-tui/src/widgets.rs` | `MetricsState` gains phase info, cursor, adapter counters, sparkline history |
+| `nmbrs-tui/src/tree.rs` | NEW — `TreeState` struct, scenario tree rendering |
+| `nmbrs-tui/src/sparkline.rs` | NEW — Rolling sparkline widget with 24-bit gradient |
+| `nmbrs-tui/src/latency.rs` | NEW — Horizontal bar chart for percentiles |
+| `nmbrs-runtime/src/executor.rs` | Update `TreeState` on phase start/complete |
+| `nmbrs-runtime/src/activity.rs` | Remove single-line progress thread when TUI is active |
+| `nmbrs-runtime/src/runner.rs` | TUI activation logic, reporter registration |
 
 ### Not Changing
 

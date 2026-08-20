@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Copyright 2024-2026 Jonathan Shook
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -31,7 +31,7 @@ phases:
       msg:
         stmt: "mode={mode}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect mode=alpha
 #@ expect mode=beta
 #@ expect 0 failed

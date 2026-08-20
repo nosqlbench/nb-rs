@@ -2,7 +2,7 @@
 
 **Status:** DRAFT — design for the per-phase error
 disposition surface that flows through both realtime
-displays and `nbrs replay`.
+displays and `nmbrs replay`.
 
 > **Metric-naming note (SRD-91):** the op-outcome metric
 > taxonomy described here (`successes_total` / `errors_total` /
@@ -14,9 +14,9 @@ displays and `nbrs replay`.
 > per-attempt handler-layer tally; the per-op terminal failure
 > count is `result_failure`. Defer to SRD-91 for metric names.
 
-**Owner:** nbrs-runtime (scene tree + observer +
-executor extensions), nbrs-metrics (sqlite persistence),
-nbrs-tui / nbrs-cli (consumers), nbrs (replay command).
+**Owner:** nmbrs-runtime (scene tree + observer +
+executor extensions), nmbrs-metrics (sqlite persistence),
+nmbrs-tui / nmbrs-cli (consumers), nmbrs (replay command).
 
 **Cross-refs:**
 - [SRD-03](03_error_handling.md) — Error scoping, retry,
@@ -45,7 +45,7 @@ nbrs-tui / nbrs-cli (consumers), nbrs (replay command).
 
 ## Why this exists
 
-Today, `nbrs replay` reads the `readout_snapshots`
+Today, `nmbrs replay` reads the `readout_snapshots`
 table (SRD-63 §6) and writes one line per row to
 stdout. The rows are pre-rendered text per
 `(slot, subject, readout, lod)` tuple — the latest
@@ -61,13 +61,13 @@ That has TWO gaps that the SRD-75 work surfaced:
    structured data; both lose the originating
    `op-template` / `op-resolved` lines that the
    executor printed at fault time.
-2. **No errors in `nbrs replay`.** The readout
+2. **No errors in `nmbrs replay`.** The readout
    snapshots have whatever was rendered at
    `on_phase_end` — which today is the `phase_done`
    readout's success summary. There is no
    `phase_errors` readout, and no failed-phase variant
    of `phase_done`. So a session with 50 failed
-   phases shows 0 failure indicators in `nbrs replay`
+   phases shows 0 failure indicators in `nmbrs replay`
    output. The operator has to read session.log
    directly to understand what happened.
 
@@ -173,7 +173,7 @@ pub struct PhaseErrorDetail {
     pub op_resolved: Option<String>,
 
     /// Wall-clock nanos-since-epoch when the error was
-    /// recorded. Used to display chronology in `nbrs
+    /// recorded. Used to display chronology in `nmbrs
     /// replay` and to correlate with metric snapshots.
     pub at_nanos: u64,
 
@@ -204,7 +204,7 @@ pub enum SessionDisposition {
     /// from the operator's perspective.
     Success,
     /// At least one phase has `PhaseStatus::Failed`.
-    /// The realtime status surface and `nbrs replay`
+    /// The realtime status surface and `nmbrs replay`
     /// render this in red; CI / scripted callers
     /// observe via the process exit code (non-zero)
     /// and the `--json` machine-readable summary.
@@ -235,7 +235,7 @@ happened?" — drives:
 - The terminating status line:
   `session: idx_sweep (SUCCESS in 2h14m, 64/64 phases)` vs.
   `session: idx_sweep (FAILURE: 3 phases failed in 1h08m)`.
-- The `nbrs replay` header line at the top of its
+- The `nmbrs replay` header line at the top of its
   output.
 - A new `session_disposition` Readout in the
   `on_session_end` slot (extends SRD-63 §4.1) so
@@ -452,7 +452,7 @@ impl SqliteReporter {
 ## Readout integration
 
 Two new built-in readouts in
-`nbrs-runtime::readouts::builtins`:
+`nmbrs-runtime::readouts::builtins`:
 
 ### `phase_outcome`
 
@@ -502,20 +502,20 @@ on_phase_end: ""` to clear the slot.
 
 ---
 
-## Replay: `nbrs replay` reads the structured store
+## Replay: `nmbrs replay` reads the structured store
 
-`nbrs replay` today walks `readout_snapshots` and
+`nmbrs replay` today walks `readout_snapshots` and
 writes the rendered lines to stdout. SRD-76 extends
 it to ALSO consume `phase_outcomes` + `phase_errors`,
 running the same Readout binder over the loaded
 outcomes as if each were firing live.
 
 ```
-nbrs replay                   # render all phases via the readouts
-nbrs replay --status          # status-line only (no expanded errors)
-nbrs replay --errors          # only phases with non-empty error lists
-nbrs replay --json            # structured JSON dump (one outcome per line)
-nbrs replay --phase=<name>    # filter to a single phase identity
+nmbrs replay                   # render all phases via the readouts
+nmbrs replay --status          # status-line only (no expanded errors)
+nmbrs replay --errors          # only phases with non-empty error lists
+nmbrs replay --json            # structured JSON dump (one outcome per line)
+nmbrs replay --phase=<name>    # filter to a single phase identity
 ```
 
 The same `PhaseOutcome` data flows to `--json` (raw)
@@ -523,7 +523,7 @@ and to the readout-rendered text path. One canonical
 store; two projections.
 
 For sessions that predate SRD-76 (no
-`phase_outcomes` table), `nbrs replay` falls back to
+`phase_outcomes` table), `nmbrs replay` falls back to
 the SRD-63 `readout_snapshots` table verbatim — the
 new tables are additive.
 
@@ -535,7 +535,7 @@ new tables are additive.
 
 - `PhaseOutcome`, `PhaseStatus`, `PhaseErrorDetail`,
   `PhaseIdentity` in a new module
-  `nbrs-runtime/src/phase_outcome.rs`.
+  `nmbrs-runtime/src/phase_outcome.rs`.
 - `SceneNode.outcome: Option<PhaseOutcome>` field +
   `set_phase_outcome(idx, outcome)` mutator.
 - Unit tests for the data shape; no executor wiring
@@ -571,7 +571,7 @@ new tables are additive.
 ### Push 4 — New readouts
 
 - `phase_outcome` and `phase_errors` built-ins in
-  `nbrs-runtime::readouts::builtins`.
+  `nmbrs-runtime::readouts::builtins`.
 - Default binding: `on_phase_end: phase_outcome
   (phase_errors)` — the parens-grouping signals
   conditional render (skip when error list is
@@ -583,7 +583,7 @@ new tables are additive.
 
 ### Push 5 — Replay rehydration
 
-- `nbrs replay` adds the `--errors` / `--json` /
+- `nmbrs replay` adds the `--errors` / `--json` /
   `--phase=` flags.
 - The replay-time renderer runs a `DefaultBinder`
   over each loaded `PhaseOutcome` to produce the
@@ -598,7 +598,7 @@ new tables are additive.
   test: kill compaction mid-flight, verify the
   `phase_errors` readout renders with the
   `op-template` / `op-resolved` / `poll_timeout`
-  class, and that `nbrs replay --errors` shows it.
+  class, and that `nmbrs replay --errors` shows it.
 
 Each push leaves the tree green. Push 1+2 ship the
 in-memory shape; the realtime display works
@@ -637,10 +637,10 @@ push 6 closes the loop with the regression test.
 
 ## What this enables
 
-- **`nbrs replay --errors`** lists every cell that
+- **`nmbrs replay --errors`** lists every cell that
   failed in a 64-cell sweep with full context. The
   operator doesn't have to grep session.log.
-- **`nbrs replay --json`** dumps structured
+- **`nmbrs replay --json`** dumps structured
   outcomes for downstream tooling (CI parsing,
   cluster-side correlation, regression analysis).
 - **Realtime TUI failure surface.** The Failed

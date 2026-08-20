@@ -5,8 +5,8 @@
 # value is a string (YAML block scalar), it is parsed as Polydat grammar.
 #
 # Usage:
-#   nbrs run workload=examples/polydat_bindings.yaml cycles=10
-#   nbrs run workload=examples/polydat_bindings.yaml cycles=1000 format=json threads=4
+#   nmbrs run workload=examples/polydat_bindings.yaml cycles=10
+#   nmbrs run workload=examples/polydat_bindings.yaml cycles=1000 format=json threads=4
 
 description: |
   Sensor telemetry workload using native Polydat bindings.
@@ -47,6 +47,6 @@ blocks:
         ratio: 1
         stmt: "INSERT INTO telemetry (device, ts, temp, humid) VALUES ({device_id}, {timestamp}, {temperature}, {humidity});"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=3
 #@ expect completed, 0 failed

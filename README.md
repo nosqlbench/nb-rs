@@ -1,10 +1,10 @@
-# nbrs
+# nmbrs
 
-[![build](https://github.com/nosqlbench/nb-rs/actions/workflows/build.yml/badge.svg)](https://github.com/nosqlbench/nb-rs/actions/workflows/build.yml)
+[![build](https://github.com/nosqlbench/nmbrs/actions/workflows/build.yml/badge.svg)](https://github.com/nosqlbench/nmbrs/actions/workflows/build.yml)
 
 High-performance workload generation and database testing in Rust.
 
-nbrs generates deterministic, reproducible request streams at scale.
+nmbrs generates deterministic, reproducible request streams at scale.
 Every value is derived from a cycle number through a composable DAG
 of functions — same cycle, same output, every time. This makes
 workloads debuggable, cacheable, and exactly reproducible across runs.
@@ -16,7 +16,7 @@ This system was derived from things learned building nosqlbench, and shares many
 ## Quick Start
 
 ```
-$ nbrs run op='INSERT INTO t (id, name) VALUES ({{mod(hash(cycle), 1000000)}}, "{{number_to_words(cycle)}}")' cycles=5
+$ nmbrs run op='INSERT INTO t (id, name) VALUES ({{mod(hash(cycle), 1000000)}}, "{{number_to_words(cycle)}}")' cycles=5
 
 INSERT INTO t (id, name) VALUES (527897, "zero")
 INSERT INTO t (id, name) VALUES (460078, "one")
@@ -28,7 +28,7 @@ INSERT INTO t (id, name) VALUES (862456, "four")
 Or from a workload file:
 
 ```yaml
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # service.yaml
 
 params:
@@ -84,7 +84,7 @@ $ ./service.yaml cycles=100 concurrency=4 rate=1000
 - HDR histograms for latency percentiles
 - OpenMetrics push to Prometheus/VictoriaMetrics
 - Live TUI dashboard (`--tui`)
-- Web dashboard (`nbrs web`)
+- Web dashboard (`nmbrs web`)
 
 ## Build
 
@@ -94,53 +94,53 @@ cargo build --release
 
 Enable shell completions:
 ```
-eval "$(nbrs completions)"
+eval "$(nmbrs completions)"
 ```
 
 ## Commands
 
 ```
-nbrs run workload=file.yaml cycles=1M concurrency=8 rate=10000
-nbrs run op='hello {{hash(cycle)}}' cycles=10
-nbrs bench wiring 'hash(cycle)' cycles=1M threads=1:8*2
-nbrs describe wiring functions
-nbrs report plot workload=file.yaml   # render the workload's report: items
-nbrs metrics list                     # introspect a session's metrics db
-nbrs web --daemon
+nmbrs run workload=file.yaml cycles=1M concurrency=8 rate=10000
+nmbrs run op='hello {{hash(cycle)}}' cycles=10
+nmbrs bench wiring 'hash(cycle)' cycles=1M threads=1:8*2
+nmbrs describe wiring functions
+nmbrs report plot workload=file.yaml   # render the workload's report: items
+nmbrs metrics list                     # introspect a session's metrics db
+nmbrs web --daemon
 ```
 
 ## Data Wiring
 
-The _wiring_ for nbrs is provided by a dedicated subsystem called polydat. 
+The _wiring_ for nmbrs is provided by a dedicated subsystem called polydat.
 This takes the place of the classic *virtual dataset* procedural generation 
-system in nosqlbench, but it is, like nbrs, derived and evolved from the 
+system in nosqlbench, but it is, like nmbrs, derived and evolved from the
 original blueprints around lessons learned in that project.
 
 ### Visualizing wiring expressions
 
-`nbrs wiring visualize <expr>` evaluates a wiring expression across a
+`nmbrs wiring visualize <expr>` evaluates a wiring expression across a
 range of cycles and plots it in the terminal. The **output wire names**
 choose the plot mode:
 
 ```
 # default — each output plotted against cycle (line plot)
-nbrs wiring visualize 'y := sin(to_f64(cycle) * 0.1)' cycles=200
+nmbrs wiring visualize 'y := sin(to_f64(cycle) * 0.1)' cycles=200
 
 # wires named x / y → parametric (this traces a circle)
-nbrs wiring visualize 't := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=120
+nmbrs wiring visualize 't := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=120
 
 # wires named r / theta → polar (this traces a 3-petal rose)
-nbrs wiring visualize 'theta := to_f64(cycle)*0.06; r := cos(theta*3.0)' cycles=120
+nmbrs wiring visualize 'theta := to_f64(cycle)*0.06; r := cos(theta*3.0)' cycles=120
 ```
 
 `r`/`theta` also accept `radius`/`angle` or `rho`/`phi`. Pass
 `--mode=plot|parametric|polar` to override the name inference.
 
-`wiring visualize` is sugar for `nbrs run adapter=plotter render=single` —
+`wiring visualize` is sugar for `nmbrs run adapter=plotter render=single` —
 it builds a one-op plotter workload and runs it through the engine. The
 plotter adapter renders either a **single** static snapshot (the default
 for `visualize`, and for any non-TTY output) or **live**, animated as
-cycles arrive — `nbrs run adapter=plotter op='…' render=live` (or
+cycles arrive — `nmbrs run adapter=plotter op='…' render=live` (or
 `render=5hz` for a specific refresh rate; a TTY defaults to live).
 
 ## Examples
@@ -156,14 +156,14 @@ See [`examples/`](examples/):
 
 ```
 polydat     Polydat engine: DAG compilation, node functions, JIT, provenance
-nbrs-workload     YAML parsing, bind points, inline expressions, phasing
-nbrs-runtime     Async execution engine, dispenser wrappers, capture flow
-nbrs-metrics      HDR histograms, frame capture, OpenMetrics export
-nbrs-rate         Async token bucket rate limiter
-nbrs-errorhandler Composable error routing
-nb-rs           CLI binary (nbrs), bench, plot, web dashboard
-nbrs-tui          Terminal UI for live monitoring
-nbrs-web          Web dashboard with Axum + HTMX
+nmbrs-workload     YAML parsing, bind points, inline expressions, phasing
+nmbrs-runtime     Async execution engine, dispenser wrappers, capture flow
+nmbrs-metrics      HDR histograms, frame capture, OpenMetrics export
+nmbrs-rate         Async token bucket rate limiter
+nmbrs-errorhandler Composable error routing
+nmbrs           CLI binary (nmbrs), bench, plot, web dashboard
+nmbrs-tui          Terminal UI for live monitoring
+nmbrs-web          Web dashboard with Axum + HTMX
 ```
 
 ## Functional Areas

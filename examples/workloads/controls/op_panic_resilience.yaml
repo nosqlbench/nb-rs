@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Op-panic resilience — a panicking op must NOT kill its fiber.
 # (Concurrency invariant: a phase's target fiber count is maintained
 # IRRESPECTIVE of error handling.)
@@ -29,7 +29,7 @@
 # that is the tolerated op unwinding, not a crash; the run continues.)
 #
 # Usage:
-#   nbrs run workload=examples/workloads/controls/op_panic_resilience.yaml
+#   nmbrs run workload=examples/workloads/controls/op_panic_resilience.yaml
 
 description: |
   Op-panic resilience: a panicking op is caught at the fiber boundary,
@@ -55,11 +55,11 @@ phases:
         result-panic-rate: 0.02
         result-panic-message: "synthetic op panic (broken connection)"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 # Standalone (testkit; no host/dataset). Panicking ops are caught + counted;
 # every fiber survives, so the phase COMPLETES with no failed phases (op-level
 # failures are counted, not fatal). If the fiber-boundary catch regressed, the
 # fibers would die on their panics and the phase would stall — the dedicated
-# cycle-count assertion in nbrs-runtime/tests guards that precisely.
+# cycle-count assertion in nmbrs-runtime/tests guards that precisely.
 #@ run
 #@ expect completed, 0 failed

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # phase_gutters.yaml — per-phase contextual gutter cells
 #
 # Each phase owns the compact cell to the LEFT of its detail row
@@ -20,7 +20,7 @@
 #                                   current value
 #
 # Usage:
-#   nbrs run workload=examples/workloads/visual/phase_gutters.yaml
+#   nmbrs run workload=examples/workloads/visual/phase_gutters.yaml
 #
 #@ expect completed, 0 failed
 

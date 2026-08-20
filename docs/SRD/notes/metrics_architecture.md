@@ -1,8 +1,8 @@
-# Design Memo: Metrics Architecture for nb-rs
+# Design Memo: Metrics Architecture for nmbrs
 
 ## Problem
 
-The current nb-rs metrics system has three fundamental defects:
+The current nmbrs metrics system has three fundamental defects:
 
 1. **No accumulation** — Timer histograms use delta snapshots that reset every capture interval. The summary report queries the last sample, which can be empty if the phase ended between capture ticks. This caused the 0.00ns latency bug.
 
@@ -10,7 +10,7 @@ The current nb-rs metrics system has three fundamental defects:
 
 3. **No configurable time windows** — There is one capture cadence (1 second). Reporters cannot request different aggregation windows. There is no "total lifetime" accumulator.
 
-NoSQLBench solved all three with a component-tree-rooted metrics architecture. This memo proposes an equivalent for nb-rs, adapted to Rust's ownership model and the GK/workload structure.
+NoSQLBench solved all three with a component-tree-rooted metrics architecture. This memo proposes an equivalent for nmbrs, adapted to Rust's ownership model and the GK/workload structure.
 
 ## Reference: How NoSQLBench Does It
 
@@ -46,7 +46,7 @@ Each node accumulates via `MetricsView.combine()` — merging HDR histograms, we
 
 Components have lifecycle states (STARTING → RUNNING → CLOSING → STOPPED). The scheduler collects metrics by traversing the live component tree — dead components are detached, and their metrics disappear from the next capture automatically.
 
-## Proposed Design for nb-rs
+## Proposed Design for nmbrs
 
 ### 1. Component Tree
 
@@ -276,7 +276,7 @@ The scheduler builds the divisor tree automatically. The in-process store is alw
 
 ## Key Differences from NoSQLBench
 
-| Aspect | NoSQLBench (Java) | nb-rs (Rust) |
+| Aspect | NoSQLBench (Java) | nmbrs (Rust) |
 |--------|-------------------|--------------|
 | Concurrency | ConcurrentHashMap, synchronized blocks | Arc<RwLock<Component>>, lock-free atomics for hot path |
 | Histogram | Codahale Metrics + HdrHistogram Recorder | hdrhistogram crate, delta-only instruments; cumulative maintained by scheduler via combine() |
@@ -284,7 +284,7 @@ The scheduler builds the divisor tree automatically. The in-process store is alw
 | Snapshot immutability | Defensive copies | Owned values, no interior mutability |
 | View merging | `MetricsView.combine()` with accumulators | Same pattern, but `Snapshot` is an enum not a trait object |
 
->> We should set the minimum hdr histogram significant digits to 3 or 4 and make this an easily configurable setting within the scope of a component tree. For example if it is set on the session as 4 (the session is the root of the component tree) then all hdr histograms created should have that setting. Look at the decorator services within the NBComponent types in links/nosqlbench to see how this works. Find a way to do it in nbrs which is appropriate for this code base
+>> We should set the minimum hdr histogram significant digits to 3 or 4 and make this an easily configurable setting within the scope of a component tree. For example if it is set on the session as 4 (the session is the root of the component tree) then all hdr histograms created should have that setting. Look at the decorator services within the NBComponent types in links/nosqlbench to see how this works. Find a way to do it in nmbrs which is appropriate for this code base
 
 **Resolution**: Component properties with walk-up inheritance. NoSQLBench uses `getComponentProp(name)` which checks the local node's `props` map, then walks up to the parent. We adopt the same pattern:
 

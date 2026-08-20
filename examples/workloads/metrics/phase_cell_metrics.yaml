@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # phase_cell_metrics.yaml — C9 coverage: phase-level `metrics:` honor
 # `cell:`/`dimensions:` placement, the same rule op-level metrics
 # follow. The phase declares a `tier` dimension; its completion metric

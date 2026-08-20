@@ -5,15 +5,15 @@ enum + append-only writer + streaming reader/fold +
 truncated-tail recovery + path migration to
 `checkpoint.jsonl` (Pushes 1–2); scope_enter / scope_exit
 emission from the executor scope walker (Push 3);
-`nbrs checkpoint show` and `nbrs checkpoint fold` operator
+`nmbrs checkpoint show` and `nmbrs checkpoint fold` operator
 tooling (Push 4). Compaction is unnecessary at expected
 file sizes; log rotation is canonically incorrect for an
 event-sourced store and explicitly out of scope. The
 session is the durability boundary. Refinement of SRD-44.
 **Owner:** runtime / runner / checkpoint subsystem
-**Implementation target:** `nbrs-runtime/src/checkpoint/storage.rs`
-  (rewrite), `nbrs-runtime/src/checkpoint/writer.rs` (append-path),
-  `nbrs-runtime/src/checkpoint/resume.rs` (replay reader)
+**Implementation target:** `nmbrs-runtime/src/checkpoint/storage.rs`
+  (rewrite), `nmbrs-runtime/src/checkpoint/writer.rs` (append-path),
+  `nmbrs-runtime/src/checkpoint/resume.rs` (replay reader)
 **Cross-refs:** SRD-44 (checkpointing semantics), SRD-41 (logging),
   SRD-45 (sessions), SRD-13d (scope coordinates)
 
@@ -93,7 +93,7 @@ The load-bearing rule this SRD establishes:
 - Existing path `logs/<session>/checkpoint.json` is retired —
   builds that read it during resume should fail with
   "checkpoint format upgraded to JSONL; this session was
-  recorded with an older nb-rs version" rather than silent
+  recorded with an older nmbrs version" rather than silent
   fallback.
 - Lock file `logs/<session>/checkpoint.lock` continues to
   carry the advisory `flock` for cross-process exclusion (SRD
@@ -551,9 +551,9 @@ atomic-rename pattern:
 
 ### Push 4 (optional) — operator tooling
 
-- `nbrs checkpoint show <session>` — pretty-print the
+- `nmbrs checkpoint show <session>` — pretty-print the
   event stream.
-- `nbrs checkpoint fold <session>` — emit the folded
+- `nmbrs checkpoint fold <session>` — emit the folded
   document (the old `checkpoint.json` shape) for diff /
   inspection.
 

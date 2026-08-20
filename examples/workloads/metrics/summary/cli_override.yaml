@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Summary Report — CLI Override Examples
 #
 # The workload-level `summary:` sets the default report format, but
@@ -9,29 +9,29 @@
 # Try these:
 #
 #   # Default: show all columns
-#   nbrs run workload=examples/summary_cli_override.yaml
+#   nmbrs run workload=examples/summary_cli_override.yaml
 #
 #   # Only recall columns
-#   nbrs run workload=examples/summary_cli_override.yaml summary=recall
+#   nmbrs run workload=examples/summary_cli_override.yaml summary=recall
 #
 #   # Recall with mean aggregate across all regions
-#   nbrs run workload=examples/summary_cli_override.yaml \
+#   nmbrs run workload=examples/summary_cli_override.yaml \
 #     summary="recall; mean(recall) over region~us"
 #
 #   # Only aggregates, no detail rows
-#   nbrs run workload=examples/summary_cli_override.yaml \
+#   nmbrs run workload=examples/summary_cli_override.yaml \
 #     summary="recall; mean(recall) over region~us; mean(recall) over region~eu; details=hide"
 #
 #   # Row filter: only show us-east rows
-#   nbrs run workload=examples/summary_cli_override.yaml \
+#   nmbrs run workload=examples/summary_cli_override.yaml \
 #     summary="all; filter=us-east"
 #
 #   # Min and max across all regions
-#   nbrs run workload=examples/summary_cli_override.yaml \
+#   nmbrs run workload=examples/summary_cli_override.yaml \
 #     summary="recall; min(recall) over region~us; max(recall) over region~us"
 #
 #   # No summary at all (remove the workload default)
-#   nbrs run workload=examples/summary_cli_override.yaml summary=""
+#   nmbrs run workload=examples/summary_cli_override.yaml summary=""
 
 params:
   adapter: stdout
@@ -66,5 +66,5 @@ phases:
       req:
         stmt: "GET region={region} query={query_id} latency={latency}ms status={status}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Staged execution over structured data partitioned by intrinsic
 # cardinality — the generic counterpart to the vector profile sweep
 # (adapters/cql/workloads/compaction_demo_derived.yaml).
@@ -18,7 +18,7 @@
 # `end_of` / `idx_of`, and per-stage phases) is identical.
 #
 # Run from the repo root:
-#   nbrs run workload=examples/workloads/iteration/staged_cardinality_sweep.yaml
+#   nmbrs run workload=examples/workloads/iteration/staged_cardinality_sweep.yaml
 #
 # Expected: 4 stages, printing the incremental record slice per tier —dwwwwwww
 #   stage 0/4 [0..2)   ids 0,1     (tier xs)

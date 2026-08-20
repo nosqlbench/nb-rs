@@ -4,10 +4,10 @@
 # baselinesv3/keyvalue — key-value baseline. The op shapes
 # (schema, sequential rampup insert, random read/write mix) are
 # taken from the nosqlbench heritage workload; everything else
-# is native nbrs:
+# is native nmbrs:
 #
 #   - Every knob is a declared param: discoverable via
-#     `nbrs describe workloads cql/baselinesv3/keyvalue`,
+#     `nmbrs describe workloads cql/baselinesv3/keyvalue`,
 #     overridable on the CLI (`keycount=10000000`), and
 #     shadowable per scenario subtree via `set:`. Params flow
 #     into bindings as typed const wires — no macro layer.

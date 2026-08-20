@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Incremental profile-sweep compaction recall test (derived from
 # compaction_demo.yaml).
 #
@@ -38,8 +38,8 @@
 # tiers instead, smallest first.
 #
 # Usage:
-#   nbrs workload=compaction_demo_derived.yaml host=10.0.0.1
-#   nbrs workload=compaction_demo_derived.yaml max_size=500000
+#   nmbrs workload=compaction_demo_derived.yaml host=10.0.0.1
+#   nmbrs workload=compaction_demo_derived.yaml max_size=500000
 
 description: |
   Incremental profile-sweep compaction recall test: walk a dataset's
@@ -134,7 +134,7 @@ params:
   adapter: cql
   # ── Environment defaults captured from `runtest` (2026-08-03) ──
   # The standing test environment, promoted from the wrapper script so
-  # `nbrs run workload=compaction_demo_derived scenario=serialized_baseline`
+  # `nmbrs run workload=compaction_demo_derived scenario=serialized_baseline`
   # reproduces it with no extra script. CLI overrides still win. (These
   # are adapter/runner-tier params — a scenario-level `set:` cannot
   # reach driver selection or the sysmon subsystem, which is why they
@@ -167,9 +167,9 @@ params:
   # `incremental` sweep wants. Set it to a duration to turn the `recall`
   # scenario into a periodic monitor whose measurements all land in ONE
   # session / one metrics timeline (an external shell loop cannot do that —
-  # each `nbrs run` is its own session). With no `repeat:` bound it runs
+  # each `nmbrs run` is its own session). With no `repeat:` bound it runs
   # until the session is stopped (Ctrl-C). E.g. recall at 900M every 5min:
-  #   nbrs run workload=compaction_demo_derived scenario=recall \
+  #   nmbrs run workload=compaction_demo_derived scenario=recall \
   #     profile_pattern='^900m$' recall_interval=5m dataset=… host=…
   recall_interval: 0
   # Open-extent budget for the `concurrent_query` daemon's cursor. The
@@ -550,7 +550,7 @@ scenarios:
   # background compaction (disable_auto_compaction=0). Environment
   # params (host/dataset/cqldriver/sysmon) are the workload defaults
   # above, so this runs scriptless:
-  #   nbrs run workload=compaction_demo_derived scenario=serialized_baseline
+  #   nmbrs run workload=compaction_demo_derived scenario=serialized_baseline
   serialized_baseline:
     - set: { disable_auto_compaction: 0, enable_finalize: 1, enable_flush: 1, enable_compact: 1 }
       phases:
@@ -692,10 +692,10 @@ scenarios:
   # element `for:` binds the `part` it needs. `profile_pattern` picks the tier:
   # filter it to one profile (`profile_pattern='^900m$'`) so the loop yields
   # exactly that tier and recall runs at 900M against the existing table.
-  # For a periodic measurement, drive it from a shell loop (nbrs runs a
+  # For a periodic measurement, drive it from a shell loop (nmbrs runs a
   # scenario once and exits):
   #   while true; do
-  #     nbrs run workload=compaction_demo_derived scenario=recall \
+  #     nmbrs run workload=compaction_demo_derived scenario=recall \
   #       profile_pattern='^900m$' dataset=… cqldriver=… host=… ; sleep 300
   #   done
   # (Without the `profile_pattern` override this runs a recall pass for
@@ -2262,13 +2262,13 @@ phases:
 # ---------------------------------------------------------------------------
 # Reports. Rendered from the SESSION DB, which is written continuously, so the
 # same command gives the same view during a run and after it — the view is a
-# function of recorded state, not of run lifecycle. `nbrs table compaction_shape`
+# function of recorded state, not of run lifecycle. `nmbrs table compaction_shape`
 # mid-run shows every tier finished so far; the in-flight tier renders `-` for
 # anything derived from the phase duration (`finalize_time`,
 # `index_bytes_per_ms`), because its phase has not closed and the value does not
 # exist yet — absent rather than guessed.
 #
-# NOTE: a bare `nbrs table compaction_shape` resolves the definition from the
+# NOTE: a bare `nmbrs table compaction_shape` resolves the definition from the
 # session db (`report.*` rows, snapshotted when the run started), so edits here
 # do not show up in an already-running session. Pass
 # `workload=adapters/cql/workloads/compaction_demo_derived.yaml` to render the

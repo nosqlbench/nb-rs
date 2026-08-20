@@ -5,8 +5,8 @@
 # names and defaults only — every op field lives in the library
 # (vector_impl.yaml) as a literal http request.
 #
-#   nbrs describe drivers
-#   nbrs run driver=vendorx scenario=search_perf
+#   nmbrs describe drivers
+#   nmbrs run driver=vendorx scenario=search_perf
 
 driver: vendorx
 adapter: http

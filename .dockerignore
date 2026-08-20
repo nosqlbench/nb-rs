@@ -5,4 +5,4 @@ target/
 .vscode/
 *.log
 adapters/cql/sysroot/
-adapters/cql/nbrs
+adapters/cql/nmbrs

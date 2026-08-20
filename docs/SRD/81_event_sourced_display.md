@@ -13,12 +13,12 @@
 >   `diag!(Info, phase_outcome.render())` is GONE; the phase-end
 >   outcome now flows through
 >   `observer::log_categorized(LogLevel::Info, LogCategory::PhaseOutcome, &rendered)`
->   (`nbrs-runtime/src/activity.rs` ~line 2560), so the TUI log panel
+>   (`nmbrs-runtime/src/activity.rs` ~line 2560), so the TUI log panel
 >   filters it and re-projects natively via `TuiReadoutSink`.
 > - The durable canonical record is BUILT: checkpoint JSONL
 >   (`CheckpointData` with `event_type() -> Option<EventType>`) +
 >   sqlite (`phase_outcomes`, `phase_errors`, `readout_snapshots`);
->   `nbrs replay` and `nbrs checkpoint show|fold` re-project from it.
+>   `nmbrs replay` and `nmbrs checkpoint show|fold` re-project from it.
 > - REMAINING (§7): the in-memory ring `RunState.log_messages` is still
 >   `Vec<LogEntry{ severity, message: String, category: LogCategory }>`
 >   — i.e. category-tagged RENDERED STRINGS, NOT the fully-typed
@@ -178,7 +178,7 @@ concrete need appears.
 
 ## 5. The load-bearing seam — `ReadoutSink`
 
-`ReadoutSink` (`nbrs-runtime/src/readouts/binder.rs`) is already the
+`ReadoutSink` (`nmbrs-runtime/src/readouts/binder.rs`) is already the
 projection abstraction:
 
 ```rust
@@ -196,7 +196,7 @@ half-built and proven:
 
 - **`StringSink`** (`readouts/binder.rs`) — plain text for the
   terminal (`\r\x1b[K…`) and `session.log`.
-- **`TuiReadoutSink`** (`nbrs-tui/src/readout_sink.rs`) — the ratatui
+- **`TuiReadoutSink`** (`nmbrs-tui/src/readout_sink.rs`) — the ratatui
   `Line`/`Span` impl, honoring `LayoutHint` as styled spans. This
   **is the "`SpanSink`"** earlier drafts slated as new work. The TUI
   already renders phase readouts natively through it:
@@ -244,7 +244,7 @@ metrics-store query.
   happened" record (`2>`/`tail`/`grep`). The structured/queryable
   form *additionally* lives in sqlite (SRD-76) + the metrics store —
   different consumers, not duplication.
-- **Replay (`nbrs replay`).** Re-projects the persisted events
+- **Replay (`nmbrs replay`).** Re-projects the persisted events
   through the same `StringSink`/`TuiReadoutSink`, joining each
   lifecycle event against the persisted metrics store — realtime and
   replay use one projection path (extends the SRD-76 contract).
@@ -291,7 +291,7 @@ from at replay.
    events project natively, not via any string path), not new
    machinery.
 3. **Reconcile persistence + replay.** `session.log` and
-   checkpoint/sqlite as named projections; `nbrs replay` re-projects
+   checkpoint/sqlite as named projections; `nmbrs replay` re-projects
    typed spine records; re-open whether to physically merge the
    display-spine record and `CheckpointData` (the kind-tag
    `lifecycle::EventType` is already shared — decision 1).

@@ -30,7 +30,7 @@ Independent stages, sorted by yield-per-effort:
 Average comparison hides per-pair behaviour. Get per-predicate PVS averages
 and pair them with their corresponding oracle labels.
 
-- [ ] Inspect labels: `nbrs metrics show 'recall_at_1_mean{phase="pvs_query"}'`.
+- [ ] Inspect labels: `nmbrs metrics show 'recall_at_1_mean{phase="pvs_query"}'`.
       Confirm whether `predicate` (or analogous) is a metric dimension.
 - [ ] If absent, instrument `pvs_query` so each sample carries the predicate
       value as a metric label. Without this, you can't compare the right pairs.
@@ -320,7 +320,7 @@ Confirm the right items get written to each table.
     `polydat/src/nodes/vectors.rs:635-654` are macro-generated facet
     lookups: pure index reads into pre-computed dataset facets
     (`neighbor_indices` and `filtered_neighbor_indices` respectively). No
-    filter logic in nbrs.
+    filter logic in nmbrs.
   - The facet is computed by vectordata at dataset-build time. The pipeline
     step is named `"compute-filtered-knn"` with description **"Compute
     filtered KNN with predicate pre-filtering"** (`veks/src/prepare/import.rs:1948-1950`).

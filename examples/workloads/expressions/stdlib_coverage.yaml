@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # stdlib_coverage.yaml — Thematic coverage workload for the GK
 # standard library node catalog (SRD 12).
 #
@@ -7,14 +7,14 @@
 # encoding, digests, distributions, lerp/quantize, picks/blend,
 # noise, JSON, regex, date/time, probability) by emitting a
 # stable `lib/<family>` prefixed line whose fields are
-# deterministic. The matching `nbrs/tests/stdlib.rs` file
+# deterministic. The matching `nmbrs/tests/stdlib.rs` file
 # asserts on the exact emitted values.
 #
 # Scenarios are independent; running any one in isolation
 # produces the same line for that family.
 #
 # Run individually:
-#   nbrs run workload=examples/workloads/stdlib_coverage.yaml \
+#   nmbrs run workload=examples/workloads/stdlib_coverage.yaml \
 #            scenario=<one of the scenario names below>
 
 scenarios:
@@ -487,6 +487,6 @@ phases:
         adapter: stdout
         stmt: "lib/regex matches={matches} replaced={replaced}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=arithmetic_named_nodes
 #@ expect completed, 0 failed

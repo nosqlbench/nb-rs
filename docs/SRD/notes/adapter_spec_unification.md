@@ -9,7 +9,7 @@ in **four** independent places, and they're all hand-maintained:
    `params.get("port")`, etc. — the *real* parser.
 2. `DriverImpl::known_params: &["hosts", "host", "port", …]` —
    what the CLI validator accepts (and what
-   `nbrs describe adapter=cql` enumerates).
+   `nmbrs describe adapter=cql` enumerates).
 3. `STMT_FIELD_NAMES = &["raw", "simple", "prepared", "stmt"]`
    — the op-template discriminator the dispenser-mapper iterates.
 4. `DriverAdapter::known_op_fields()` (per-engine) — what the
@@ -24,7 +24,7 @@ dispenser branch and forgetting to extend `known_op_fields` makes
 strict mode reject the op template the adapter was about to
 handle correctly.
 
-`nbrs describe adapter=cql` exposed this directly. The
+`nmbrs describe adapter=cql` exposed this directly. The
 `Adapter params: cqldriver` line is real (one source); the per-
 driver `params: hosts, host, port, …` line is the hand-maintained
 slice — not what `from_params` actually parses.
@@ -44,7 +44,7 @@ all in-scope names — see *Polydat Is Canonical Scope* in MEMORY.md.
 ## Sketch
 
 ```rust
-// nbrs-runtime::adapter::spec
+// nmbrs-runtime::adapter::spec
 
 pub struct AdapterSpec {
     /// User-facing adapter name (matches AdapterRegistration::names)
@@ -127,7 +127,7 @@ constructs the corresponding dispenser, then applies any
 SRD 30 walks the same list — every key in the template that
 isn't in `op_fields` is a hard error.
 
-**`nbrs describe adapter=…`**: prints `name`/`doc`/`drivers`,
+**`nmbrs describe adapter=…`**: prints `name`/`doc`/`drivers`,
 then a table of `session_params` (with `default`, `kind`, doc),
 then a table of `op_fields` (grouped by role), then the selector
 hint if `drivers.len() > 1`. Output is generated, not hand-written.
@@ -140,7 +140,7 @@ connect).
 
 ## Migration path
 
-1. Land the types in `nbrs-runtime::adapter::spec`. New types
+1. Land the types in `nmbrs-runtime::adapter::spec`. New types
    only — no consumer changes yet.
 2. Convert one adapter (stdout — smallest surface) end-to-end:
    declare its `AdapterSpec`, route `known_op_fields()` through

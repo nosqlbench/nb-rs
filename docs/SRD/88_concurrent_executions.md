@@ -120,7 +120,7 @@ pub fn current_observer() -> Arc<dyn RunObserver> {
 **Axiom A1 — additive de-globalization.** The override is *additive*:
 the existing process-globals stay and remain the **process default**.
 Code that does not run inside an `EXEC_CTX.scope` (bootstrap, the CLI,
-single-run `nbrs run`, tests) reads the default — **behavior is
+single-run `nmbrs run`, tests) reads the default — **behavior is
 byte-identical to today**. Only concurrent executions set the task-local
 and get isolation. This is what makes the migration safe and
 incremental: every accessor change is a no-op until someone scopes a
@@ -166,8 +166,8 @@ workload layer**. Concretely:
   `MetricsQueryAccess::select_range` now drops any series whose `exec_id`
   isn't the reading execution's. The reader learns *which* execution is
   asking via `queryapi::install_read_exec_id_hook` — `exec_id` lives in
-  nbrs-runtime's task-local `ExecutionContext`, a layer above
-  nbrs-metrics, so the runtime installs a one-line resolver hook rather
+  nmbrs-runtime's task-local `ExecutionContext`, a layer above
+  nmbrs-metrics, so the runtime installs a one-line resolver hook rather
   than the lower crate reaching up. `None` outside any scope ⇒ unscoped
   (single-run, A1). This was a real concurrency defect: `control.yaml`'s
   optimizer intermittently converged to the wrong control value when
@@ -200,7 +200,7 @@ workload layer**. Concretely:
   `concurrency`/`rate` — become per-execution. This is the deterministic
   cross-talk behind the SRD-89 servo-example failures.
 - **The metrics subsystem holds *zero dedicated threads* — it runs on
-  the shared runtime.** `nbrs-metrics` carries the tokio `rt` feature.
+  the shared runtime.** `nmbrs-metrics` carries the tokio `rt` feature.
   The cadence reporter's single-writer **owner** (the lock-free actor
   draining the command stream) and the **scheduler** (the cadence-tick
   capture loop) are both `tokio::spawn`ed tasks, not `std::thread`s; the
@@ -307,7 +307,7 @@ an un-scoped query would aggregate unrelated runs.
   is honored, never overridden (`Never Ignore Silently`).
 
 Open follow-up: the concurrent path (`run_executions`) renders no plots
-yet — plot rendering lives cross-crate in `nbrs` (post-run,
+yet — plot rendering lives cross-crate in `nmbrs` (post-run,
 single-execution). Per-execution concurrent plot rendering needs a
 registered render hook the workload-end report block can invoke with the
 `exec_id`, the way tables already render in-runtime.
@@ -330,14 +330,14 @@ registered render hook the workload-end report block can invoke with the
 4. **Consumers.** Re-point the example walker (`verify_path`) and any
    batch path at `run_executions` for in-process concurrency instead of
    subprocess fan-out where it pays. **SHIPPED** for the example walker:
-   `nbrs/tests/example_workloads_in_process.rs` checks the whole
+   `nmbrs/tests/example_workloads_in_process.rs` checks the whole
    `examples/workloads` tree as concurrent in-process executions sharing
    one session (≤10), with the **same** `#@`/`verify:` rules and
-   `check_case_output` checker the `nbrs check` CLI uses. Each case
+   `check_case_output` checker the `nmbrs check` CLI uses. Each case
    captures op stdout via its own `CaptureChannel`. This **retired** the
-   subprocess-per-case walker (`nbrs/tests/workloads.rs`); the `nbrs
+   subprocess-per-case walker (`nmbrs/tests/workloads.rs`); the `nmbrs
    check` CLI still drives the subprocess `verify_target`/`run_case` path
-   (`nbrs/tests/check_cli.rs` is its smoke test).
+   (`nmbrs/tests/check_cli.rs` is its smoke test).
 
    **Load-bearing finding — the rule-matched phase count must come from
    the `RunState`, not the observer callbacks.** A dynamic loop
@@ -408,7 +408,7 @@ tree, activities, fiber task-locals, metrics instruments.
   `exec_id`s; a stop signal to one does NOT stop the other; their
   outcomes and metric rows are independently correct and separable by
   `exec_id`.
-- **Single-run invariance (A1).** A representative `nbrs run` produces
+- **Single-run invariance (A1).** A representative `nmbrs run` produces
   byte-identical output/log/store with the task-local layer present but
   unused (no context scoped) — proves the override is a true no-op for
   the existing path.

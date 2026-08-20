@@ -103,7 +103,7 @@ Module inlining (mode 1) does not surface conflicts — it's
 additive within one kernel.
 
 See SRD 13c §"GK Scope Model" for the mechanism, and the workload
-side in `nbrs-runtime` for the runner that actually wires scopes.
+side in `nmbrs-runtime` for the runner that actually wires scopes.
 
 ---
 

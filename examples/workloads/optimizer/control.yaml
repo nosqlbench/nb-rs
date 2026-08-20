@@ -24,7 +24,7 @@
 # rerun never sustains 100%.
 #
 # Runs standalone:
-#   nbrs run workload=examples/workloads/optimizer_control.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_control.yaml \
 #       --session-path /tmp/opt-control
 
 description: |
@@ -117,5 +117,5 @@ phases:
         # permit pool.)
         result-latency: "20ms"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect \(control\): best \[2\]

@@ -1,12 +1,12 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Native scylla `QueryResult` body for nb-rs validation /
+//! Native scylla `QueryResult` body for nmbrs validation /
 //! capture. Mirrors the cassandra-cpp adapter's `CqlResultBody`
 //! shape so downstream wrappers see the same row/column surface
 //! regardless of which engine produced the result.
 
-use nbrs_runtime::adapter::ResultBody;
+use nmbrs_runtime::adapter::ResultBody;
 use scylla::response::query_result::QueryResult;
 use scylla::value::{CqlValue, Row};
 use std::any::Any;

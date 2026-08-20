@@ -1,8 +1,8 @@
-# nbrs-adapter-http
+# nmbrs-adapter-http
 
-HTTP adapter for nb-rs: executes workload operations as HTTP requests.
+HTTP adapter for nmbrs: executes workload operations as HTTP requests.
 
-Part of the [nb-rs](https://github.com/nosqlbench/nb-rs) workspace.
+Part of the [nmbrs](https://github.com/nosqlbench/nmbrs) workspace.
 
 ## License
 

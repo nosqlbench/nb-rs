@@ -199,7 +199,7 @@ scenarios:
   quick:      [schema, rampup_small]
 ```
 
-CLI: `nbrs run workload.yaml scenario=quick`. Default is
+CLI: `nmbrs run workload.yaml scenario=quick`. Default is
 `default`. If no `scenarios:` section exists, all phases run
 in YAML definition order.
 

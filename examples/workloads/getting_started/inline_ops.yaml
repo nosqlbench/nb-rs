@@ -3,8 +3,8 @@
 # Both of these print the SAME lines (run either — both use the default
 # `stdout` adapter, which echoes each op's rendered `stmt`):
 #
-#   nbrs run workload=examples/workloads/getting_started/inline_ops.yaml cycles=8
-#   nbrs run op='3:read id={{mod(hash(cycle),1000000)}};1:write id={{mod(hash(cycle),1000000)}}' cycles=8
+#   nmbrs run workload=examples/workloads/getting_started/inline_ops.yaml cycles=8
+#   nmbrs run op='3:read id={{mod(hash(cycle),1000000)}};1:write id={{mod(hash(cycle),1000000)}}' cycles=8
 #
 # The one-liner de-sugars to exactly the two ops below: a top-level `;`
 # separates ops, an `N:` prefix sets the ratio, and `{{expr}}` is evaluated
@@ -33,7 +33,7 @@ ops:
     ratio: 1
     stmt: "write id={user_id}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect read id=[0-9]
 #@ expect write id=[0-9]
 #@ expect 0 failed

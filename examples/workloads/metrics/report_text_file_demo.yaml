@@ -48,5 +48,5 @@ report:
       recall@10.mean over limit
       label "No file scope, lands in summary.md"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ requires the `plot:` block reads sessions/latest/metrics.db, which --session-path redirects away; the report itself renders clean when run bare

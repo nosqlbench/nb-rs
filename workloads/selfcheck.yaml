@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 description: |
-  Artifact self-check: verify this nbrs binary end-to-end on the
+  Artifact self-check: verify this nmbrs binary end-to-end on the
   current machine in a few seconds.
   Exercises deterministic binding evaluation, scenario
   comprehension, cursor partitioning, and multi-phase sequencing
   using only built-in adapters — no external systems, no files.
   A clean exit with every phase completed is the pass signal:
-  `nbrs run workload=selfcheck`.
+  `nmbrs run workload=selfcheck`.
 
 params:
   # Cycles for the binding-evaluation phase.

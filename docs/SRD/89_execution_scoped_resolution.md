@@ -103,7 +103,7 @@ The seam is therefore: **`ExecutionContext` carries its execution component**
 boundaries — its labels give the `(session, exec_id)` dims the metric path
 injects (§3b), and it is the root the control path walks up from (§3c). Both
 read it through one resolver hook, the indirection SRD-88 already uses for
-`exec_id` (the lower crates don't reach up into nbrs-runtime). This replaces
+`exec_id` (the lower crates don't reach up into nmbrs-runtime). This replaces
 **two** ad-hoc globals — the metric path's bare `exec_id` hook and the
 control path's global `SESSION_ROOT` — with one component-rooted source, so
 metrics and controls are scoped by *construction*, from the same anchor.
@@ -246,11 +246,11 @@ all.
 
 ### 3d. No-context ⇒ unconstrained; single-run is **not** special
 
-- A query issued with **no** execution context (a bare `nbrs metrics query`,
+- A query issued with **no** execution context (a bare `nmbrs metrics query`,
   or a session-tier rollup report deliberately run outside an exec scope)
   injects no matcher and sees the whole (single-session) store. This is the
   *only* unconstrained case.
-- **Single-run is qualified exactly like multi-run.** A single `nbrs run`
+- **Single-run is qualified exactly like multi-run.** A single `nmbrs run`
   establishes an execution context (one `exec_id`) and its queries carry the
   `(session, exec_id)` matchers like any execution. Because that run owns
   every series in its store, the qualifier selects all of them — so output
@@ -301,8 +301,8 @@ all.
 ## 5. Load-bearing test
 
 - **No isolation, full concurrency.** The example walker at **1 hardware
-  thread / 20 concurrent executions** (`NBRS_TEST_WORKER_THREADS=1`,
-  `NBRS_TEST_CONCURRENCY=20`): every optimizer example — servo (`control`,
+  thread / 20 concurrent executions** (`NMBRS_TEST_WORKER_THREADS=1`,
+  `NMBRS_TEST_CONCURRENCY=20`): every optimizer example — servo (`control`,
   `multiservo`, `hybrid`) and rerun (`saturation`, `metricsql`) — finds its
   correct `best`, with no serial-isolation grouping. Deterministic across
   repeated runs.
@@ -310,7 +310,7 @@ all.
   session, retargeting `concurrency` to different settings: each reads its
   own `errors_total` aggregate and resolves its own control — distinct,
   correct bests. Fails on `main` (shared root + post-filter), passes after.
-- **Single-run invariance (A1).** A representative `nbrs run` produces
+- **Single-run invariance (A1).** A representative `nmbrs run` produces
   byte-identical output to pre-change (the qualifier selects the sole
   execution's full series).
 

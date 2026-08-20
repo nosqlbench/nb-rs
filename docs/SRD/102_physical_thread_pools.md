@@ -5,7 +5,7 @@
 ## 1. Problem
 
 Realtime-sensitive, schedule-keeping work — the metrics cadence scheduler
-(`nbrs-metrics/src/scheduler.rs`), and future low-jitter dispatchers — currently
+(`nmbrs-metrics/src/scheduler.rs`), and future low-jitter dispatchers — currently
 runs as `tokio::spawn` tasks on the **shared async runtime** alongside the
 workload fibers. Under load the timer fires on time but the task is polled late
 (the runtime is busy running fibers), producing tick drift (observed
@@ -64,7 +64,7 @@ from CLI flags and env with core-count-derived defaults:
 --threads.timing.pin=<core|auto|off>       # affinity (default auto = reserve a core)
 ```
 
-Env mirrors: `NBRS_THREADS_TIMING`, `NBRS_THREADS_TIMING_SCHED`, etc. A single
+Env mirrors: `NMBRS_THREADS_TIMING`, `NMBRS_THREADS_TIMING_SCHED`, etc. A single
 resolution point produces the immutable `ThreadPoolConfig`; the registry applies
 it. Unknown pool names / policies are hard errors at startup (never silently
 ignored — cf. `max_batch_size`, docs/TODO.md).
@@ -90,7 +90,7 @@ is the assertive belt-and-suspenders for a fully-saturated box.
 
 ## 6. First consumer — the cadence scheduler
 
-`Scheduler::start` (`nbrs-metrics/src/scheduler.rs`) moves off the shared runtime
+`Scheduler::start` (`nmbrs-metrics/src/scheduler.rs`) moves off the shared runtime
 onto a `timing`-pool thread:
 
 - **Isolation (#1):** the tick loop runs on `timing`; the tokio `Notify`/`done`

@@ -110,7 +110,7 @@ classes:
 
 ## Scenario A — clean run baseline
 
-Operator: `nbrs run workload=full.yaml dataset=sift1m`
+Operator: `nmbrs run workload=full.yaml dataset=sift1m`
 
 Run completes without interruption. We trace the state at each
 30s sqlite-flush tick and at terminal completion.
@@ -175,7 +175,7 @@ somehow.
 
 ## Scenario B — crash mid-rampup; cursor-resume
 
-Operator: `nbrs run workload=full.yaml dataset=sift1m`
+Operator: `nmbrs run workload=full.yaml dataset=sift1m`
 
 Runs to t=152s (rampup at cycle ~63 000). Power loss. The
 last sqlite tick was at t=150s. The checkpoint flush
@@ -196,7 +196,7 @@ hit.
 
 ### Resume invocation
 
-Operator: `nbrs run workload=full.yaml dataset=sift1m --resume-latest`
+Operator: `nmbrs run workload=full.yaml dataset=sift1m --resume-latest`
 
 Pre-map runs against the current YAML. Workload + params
 unchanged → all phase hashes match. Resume planner reads the
@@ -270,7 +270,7 @@ identical to a clean-run phase 2.
 
 ## Scenario C — await_index fails; resume re-runs it
 
-Operator: `nbrs run workload=full.yaml`
+Operator: `nmbrs run workload=full.yaml`
 
 Runs cleanly through phases 1–2. Phase 3 (await_index) starts
 polling. After 600 s the timeout fires; the SAI index isn't
@@ -348,7 +348,7 @@ After re-run + remaining phases 4–7:
 
 ## Scenario D — workload param change between invocations
 
-Operator: `nbrs run workload=full.yaml dataset=sift1m`
+Operator: `nmbrs run workload=full.yaml dataset=sift1m`
 
 Runs cleanly to completion (Scenario A's final state).
 
@@ -356,7 +356,7 @@ Operator: edits the YAML… no, doesn't edit the YAML. Instead
 runs:
 
 ```
-nbrs run workload=full.yaml dataset=sift10m --resume-latest
+nmbrs run workload=full.yaml dataset=sift10m --resume-latest
 ```
 
 The `dataset=sift10m` CLI param **changes the workload params
@@ -436,7 +436,7 @@ Scenario A's run completed. Days pass. The operator drops the
 cluster). Then runs:
 
 ```
-nbrs run workload=full.yaml --resume-latest
+nmbrs run workload=full.yaml --resume-latest
 ```
 
 ### Without `verify:` on phase 1
@@ -650,7 +650,7 @@ Big workload, slow target. Operator runs in three invocations.
 ### Invocation 1
 
 ```
-nbrs run workload=full.yaml --resume-latest
+nmbrs run workload=full.yaml --resume-latest
 ```
 
 Auto-detect finds no prior session → starts fresh. Runs t=0
@@ -677,7 +677,7 @@ the planner won't honour it.
 ### Invocation 2
 
 ```
-nbrs run workload=full.yaml --resume-latest
+nmbrs run workload=full.yaml --resume-latest
 ```
 
 Resume planner reads checkpoint. Phase 5 classifies:
@@ -708,7 +708,7 @@ at cycle 6 500.
 ### Invocation 3
 
 ```
-nbrs run workload=full.yaml --resume-latest
+nmbrs run workload=full.yaml --resume-latest
 ```
 
 Same logic as invocation 2. Phase 7 has no `checkpoint:` →

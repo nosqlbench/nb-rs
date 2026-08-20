@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # provenance_stick_roundtrip.yaml — SRD-106 + SRD-107 round trip.
 #
 # `stick_session: true` re-attaches bare re-runs to the same

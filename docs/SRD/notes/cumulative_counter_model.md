@@ -29,7 +29,7 @@ drains per window for the distribution), capture stamps it onto
 counter, and both backends expose it (live `value_to_f64` → `cumulative_count`; sqlite reporter
 writes it as the stored count). So `rate()`/`increase` over a histogram count is PromQL-correct
 on either backend. The per-window *distribution* (percentiles) stays windowed — Prometheus's
-cumulative-*bucket*-counter alignment remains a separate follow-on (nb-rs uses HDR reservoirs).
+cumulative-*bucket*-counter alignment remains a separate follow-on (nmbrs uses HDR reservoirs).
 
 Scopes the move from delta-source to cumulative-source counters so the stored form (sqlite) is numerically a
 Prometheus/VictoriaMetrics-style series, MetricsQL aggregate rules are exact, and
@@ -74,7 +74,7 @@ Scope: **counters, plus the histogram/timer count** (the rate-aggregate concern)
 already last-value. The histogram/timer *count* now follows the same cumulative model (the
 instrument's monotonic lifetime total); the per-window *distribution* (HDR reservoir,
 windowed-merge) keeps its model — Prometheus's cumulative-*bucket*-counter alignment is a
-separate follow-on (nb-rs uses HDR reservoirs, which don't window cumulatively).
+separate follow-on (nmbrs uses HDR reservoirs, which don't window cumulatively).
 
 ## Why cumulative is the more correct source (the correctness case)
 

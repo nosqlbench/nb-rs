@@ -1,6 +1,6 @@
 # 00b: The Subsystem Treatment Standard
 
-This is the rubric every subsystem in nb-rs is held to. **polydat is the worked
+This is the rubric every subsystem in nmbrs is held to. **polydat is the worked
 exemplar** — it was built to this bar first (standalone crate, rigid contractual
 boundary, tiered design docs, CI-gated axioms). The purpose of this document is to
 generalize that treatment to *every* subsystem so the whole system reads with one
@@ -26,7 +26,7 @@ deliberate; everything else is internal and may change freely.
   exposed from `lib.rs`, with the cross-boundary contract row in
   [SRD 01 §Contract Boundaries](01_system_overview.md) (`PolydatProgram` + `PolydatState`).
 - *Anti-pattern:* a crate that re-exports its entire internal module tree as `pub`,
-  so consumers reach arbitrarily deep and the "contract" is undefined. `nbrs-runtime`
+  so consumers reach arbitrarily deep and the "contract" is undefined. `nmbrs-runtime`
   is in this state today (~50 public modules) — its Contract section must declare the
   *intended* surface and mark the rest internal, even before the visibility is narrowed.
 
@@ -42,7 +42,7 @@ contradict. These are short, named, and stable. Mechanism detail delegates *up* 
 - *polydat reference:* [composition_substrate.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md)
   (the S/T/L pillars) and the slot-state axioms S1–S10 (CI-gated in the Polydat
   repository).
-- For nbrs subsystems, the axioms already exist but are scattered across
+- For nmbrs subsystems, the axioms already exist but are scattered across
   [SYSREF.md](../SYSREF.md)'s rules table and the per-SRD prose. The treatment **hoists**
   each subsystem's axioms into a named "Axioms" block at the top of its SRD (e.g. for
   metrics: lock-free reporter, nanoseconds-internal, no std `RwLock` for render state).
@@ -72,7 +72,7 @@ The subsystem's **allowed dependency edges** and **public-surface boundary** are
 machine-checked, not merely documented. Drift fails CI.
 
 - *polydat reference:* Polydat's dependency boundary is enforced in its own repository;
-  nb-rs enforces its side of the boundary with D6 (no deep Polydat paths).
+  nmbrs enforces its side of the boundary with D6 (no deep Polydat paths).
 - The gate reads the Contract Registry (Pillar 1) so the contracts have teeth:
   forbidden crate edges, adapter→adapter edges, upward imports, and reaches past a
   crate's declared public surface all fail.
@@ -110,14 +110,14 @@ Tracks each subsystem against the five pillars. Tick as the treatment lands.
 | Subsystem (crate) | P1 Contract | P2 Axioms | P3 Mechanism | P4 Xref | P5 Enforced | Owning SRDs |
 |---|:--:|:--:|:--:|:--:|:--:|---|
 | **polydat** (external exemplar) | ✅ | ✅ | ✅ | ✅ | ✅ (upstream + D6) | **09** contract; substrate in the [Polydat repository](https://github.com/nosqlbench/polydat/tree/main/crates/polydat/docs) |
-| nbrs-runtime | ✅ | ✅ | ✅ | ✅ | ✅ | **29** + 30/31/32/32a/33/34/35/68/71/73/75/76/82/83 |
-| nbrs-workload | ✅ | ✅ | ✅ | ✅ | ✅ | **25** + 18/18b–f, 20, 21, 22, 72, 85 |
-| nbrs-metrics | ✅ | ✅ | ✅ | ✅ | ✅ | **39** + 40/40a/40b/40c, 42, 43, 24 |
-| nbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: own contract; L2 atop nbrs-metrics) | **08** + 40c, 47, 48, 49 |
-| nbrs-rate | ✅ | ✅ | ✅ | ✅ | ✅ | **06** (+ 02, 23) |
-| nbrs-errorhandler | ✅ | ✅ | ✅ | ✅ | ✅ | **07** (+ 03, 82, 83) |
-| nbrs-tui | ✅ | ✅ | ✅ | ✅ | ✅ | **59** + 62, 63, 81 |
-| nbrs-web | ✅ | ✅ | ◐ | ✅ | ✅ | **54** + (folds `internals/32`) |
+| nmbrs-runtime | ✅ | ✅ | ✅ | ✅ | ✅ | **29** + 30/31/32/32a/33/34/35/68/71/73/75/76/82/83 |
+| nmbrs-workload | ✅ | ✅ | ✅ | ✅ | ✅ | **25** + 18/18b–f, 20, 21, 22, 72, 85 |
+| nmbrs-metrics | ✅ | ✅ | ✅ | ✅ | ✅ | **39** + 40/40a/40b/40c, 42, 43, 24 |
+| nmbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: own contract; L2 atop nmbrs-metrics) | **08** + 40c, 47, 48, 49 |
+| nmbrs-rate | ✅ | ✅ | ✅ | ✅ | ✅ | **06** (+ 02, 23) |
+| nmbrs-errorhandler | ✅ | ✅ | ✅ | ✅ | ✅ | **07** (+ 03, 82, 83) |
+| nmbrs-tui | ✅ | ✅ | ✅ | ✅ | ✅ | **59** + 62, 63, 81 |
+| nmbrs-web | ✅ | ✅ | ◐ | ✅ | ✅ | **54** + (folds `internals/32`) |
 | adapters/* | ✅ | ✅ | ✅ | ✅ | ✅ | 30 §Contract (inbound `DriverAdapter`) + 50/51/52/53 |
 
 See [SRD 05 §Dependency Rules](05_dependency_rules.md) for the enforced edges and the

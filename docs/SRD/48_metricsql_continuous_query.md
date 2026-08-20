@@ -10,7 +10,7 @@ endpoints, programmatic API). This SRD specifies that
 runtime.
 
 The first consumer of this design is
-[`nbrs metrics watch`](../../nbrs/src/metricsql_cmd.rs) —
+[`nmbrs metrics watch`](../../nmbrs/src/metricsql_cmd.rs) —
 already shipping a polling-loop CLI demo of the streaming
 engine. The runtime generalises that pattern to
 multi-query orchestration: one sample feed fanning out to
@@ -166,13 +166,13 @@ pub trait SampleFeed: Send + Sync {
 }
 
 /// Pulls from any `DataSource` on a cadence. Wraps the
-/// polling logic from `nbrs metrics watch`.
+/// polling logic from `nmbrs metrics watch`.
 pub struct PullFeed { source: Box<dyn DataSource> }
 
 /// Push-driven feed for runtime ingest from the reporter
 /// path. Producer calls `ingest(sample)`; the runtime's
 /// ingest loop drains a queue per tick. Built on
-/// `crossbeam-channel` to match the rest of nb-rs's
+/// `crossbeam-channel` to match the rest of nmbrs's
 /// lock-free metrics path (memory: §"Lock-Free Metrics").
 pub struct PushFeed { /* mpsc channel, watermark */ }
 ```
@@ -212,7 +212,7 @@ exactly:
   whenever they poll.
 
 **Pros**: zero contention on the read path; matches an
-established nb-rs pattern; readers and producers never
+established nmbrs pattern; readers and producers never
 block each other.
 
 **Cons**: mutating a plan (e.g. unregistering) requires a
@@ -235,7 +235,7 @@ pattern.
 
 **Decision**: Option A. The runtime is owned by an actor,
 sample feeds and consumers communicate via channels +
-ArcSwap snapshots. This is the established nb-rs pattern;
+ArcSwap snapshots. This is the established nmbrs pattern;
 adopting it here keeps the dispatch layer uniform across
 metrics, dynamic controls, and continuous queries.
 
@@ -259,7 +259,7 @@ When the runtime is connected to historical data (e.g.
 running queries against an existing `metrics.db`), a new
 plan should ingest the warmup window so its first
 snapshot reflects real data, not "(no series matched)".
-Same logic `nbrs metrics watch` already uses — lifted
+Same logic `nmbrs metrics watch` already uses — lifted
 into the runtime so every consumer benefits.
 
 ---
@@ -320,7 +320,7 @@ GET /api/v1/query/stream?expr=<metricsql>  (SSE)
 ```
 
 - `/query` does a single batch eval — same semantics as
-  `nbrs metrics query`.
+  `nmbrs metrics query`.
 - `/query/stream` registers a continuous query and
   emits snapshots over Server-Sent Events. Closes the
   query when the client disconnects.
@@ -504,8 +504,8 @@ infrastructure cleanly. Followups are ordered by code dep:
   state held in an actor with command-channel writes and
   ArcSwap reads; runtime wiring should look familiar to
   anyone who's read SRD-23.
-- **`nbrs metrics watch`**: the polling-loop CLI in
-  `nbrs/src/metricsql_cmd.rs::watch` is the proto-runtime;
+- **`nmbrs metrics watch`**: the polling-loop CLI in
+  `nmbrs/src/metricsql_cmd.rs::watch` is the proto-runtime;
   this SRD generalises that pattern.
 - **OLAP algebra background** (Gray et al. 1997) — same
   reference SRD-47 cites; the partition law that makes

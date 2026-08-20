@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # service_model.yaml — Simulated multi-table service workload
 #
 # Demonstrates: multi-table access, weighted operation ratios,
@@ -6,8 +6,8 @@
 # workload params, and mixed read/write patterns.
 #
 # Usage:
-#   nbrs run workload=examples/service_model.yaml cycles=20
-#   nbrs run workload=examples/service_model.yaml cycles=100 threads=4 rate=1000
+#   nmbrs run workload=examples/service_model.yaml cycles=20
+#   nmbrs run workload=examples/service_model.yaml cycles=100 threads=4 rate=1000
 
 params:
   keyspace: service
@@ -60,6 +60,6 @@ ops:
     tags: { type: read, table: analytics }
     stmt: "SELECT count(*), avg(price) FROM {keyspace}.orders WHERE user_id={user_id}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=22
 #@ expect completed, 0 failed

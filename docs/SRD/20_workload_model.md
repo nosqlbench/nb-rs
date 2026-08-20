@@ -206,7 +206,7 @@ CQL adapter).
 
 ### Audit Against nosqlbench Op Fields
 
-| nosqlbench field | nb-rs | Status |
+| nosqlbench field | nmbrs | Status |
 |---|---|---|
 | `driver` / `space` | `params` | Implemented |
 | `ratio` | `params` | Implemented |
@@ -228,7 +228,7 @@ metrics, enabling per-template metric breakdown in dashboards
 Single-op workloads can be specified inline on the CLI:
 
 ```
-nbrs run adapter=stdout op="hello {cycle}" cycles=5
+nmbrs run adapter=stdout op="hello {cycle}" cycles=5
 ```
 
 Synthesized into a minimal `Workload` with one `ParsedOp`.

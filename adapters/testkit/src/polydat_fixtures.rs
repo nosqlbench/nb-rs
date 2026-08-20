@@ -53,7 +53,7 @@ use polydat::Const;
 /// caches the picked value; subsequent constructions for the
 /// same path return the cached value untouched.
 ///
-/// Process lifetime is the right scope — each `nbrs run`
+/// Process lifetime is the right scope — each `nmbrs run`
 /// invocation is its own process, and the cache is empty at
 /// process start. Resume sessions are separate processes, so
 /// they hit a fresh cache and re-read the file (which is
@@ -77,10 +77,10 @@ fn cached_or_advance(path: &str, values: &[u64], cycling: bool) -> Result<u64, S
 /// **Test-only**: clear the in-process advance cache for the
 /// given path so a subsequent `new()` re-reads the state file.
 /// Models the process boundary that production runs naturally
-/// provide (each `nbrs run` is a fresh process) without
+/// provide (each `nmbrs run` is a fresh process) without
 /// spawning real subprocesses in the tests.
 ///
-/// Public so cross-crate integration tests in nbrs-runtime can
+/// Public so cross-crate integration tests in nmbrs-runtime can
 /// simulate multiple resume invocations within one cargo-test
 /// process. Real workloads must not call this — it's a test-
 /// affordance only.
@@ -298,11 +298,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("nbrs-fixture-{tag}-{n:x}.txt"));
+        let p = std::env::temp_dir().join(format!("nmbrs-fixture-{tag}-{n:x}.txt"));
         let _ = std::fs::remove_file(&p);
         // Forward slashes: the path gets embedded in a polydat
         // string literal below, where a Windows `\` separator
-        // (`...\Temp\nbrs-…`) would read as an escape sequence.
+        // (`...\Temp\nmbrs-…`) would read as an escape sequence.
         // Windows filesystem APIs accept `/` just as well.
         p.to_string_lossy().replace('\\', "/")
     }
@@ -349,7 +349,7 @@ mod tests {
         let src =
             format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
         // Each compile constructs the node (= advances once); clearing the
-        // cache between models a fresh process (each `nbrs run`).
+        // cache between models a fresh process (each `nmbrs run`).
         let session = |s: &str| {
             let v = pull_u64(s);
             clear_sequence_cache_for(&path);

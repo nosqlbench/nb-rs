@@ -16,5 +16,5 @@ substrate concerns. The Rule-2 explicit-optionality
 syntax remains as future work documented in the moved
 SRD.
 
-The linked polydat doc is authoritative. For the public contract nb-rs depends
+The linked polydat doc is authoritative. For the public contract nmbrs depends
 on, see [SRD 09 Polydat Contract](09_polydat_contract.md).

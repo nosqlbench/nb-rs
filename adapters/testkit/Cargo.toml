@@ -1,9 +1,9 @@
 [package]
-name = "nbrs-adapter-testkit"
+name = "nmbrs-adapter-testkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Testkit adapter for nb-rs: simulates operation execution with configurable results, latency, and error injection"
+description = "Testkit adapter for nmbrs: simulates operation execution with configurable results, latency, and error injection"
 keywords = ["nosqlbench", "workload", "benchmark", "simulation"]
 categories = ["command-line-utilities", "simulation"]
 repository.workspace = true
@@ -11,9 +11,9 @@ homepage.workspace = true
 readme.workspace = true
 
 [dependencies]
-nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1" }
-nbrs-adapter-stdout = { path = "../stdout", version = "0.1.1" }
-nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
+nmbrs-runtime = { path = "../../nmbrs-runtime", version = "0.1.1" }
+nmbrs-adapter-stdout = { path = "../stdout", version = "0.1.1" }
+nmbrs-workload = { path = "../../nmbrs-workload", version = "0.1.1" }
 tokio = { version = "1", features = ["time", "sync"] }
 serde_json = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

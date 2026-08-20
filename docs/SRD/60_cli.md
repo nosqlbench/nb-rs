@@ -1,6 +1,6 @@
 # 60: CLI Structure
 
-The nb-rs CLI provides workload execution, Polydat benchmarking,
+The nmbrs CLI provides workload execution, Polydat benchmarking,
 diagnostic tools, and shell completions.
 
 ---
@@ -8,7 +8,7 @@ diagnostic tools, and shell completions.
 ## Command Tree
 
 ```
-nbrs
+nmbrs
 ├── run           Execute a workload
 │   adapter=<name> workload=<file.yaml> cycles=N concurrency=N
 │   tags=<filter> rate=N format=<type>
@@ -38,10 +38,10 @@ nbrs
 ### Bare File Invocation
 
 ```
-nbrs myworkload.yaml tags=phase:rampup cycles=1000
+nmbrs myworkload.yaml tags=phase:rampup cycles=1000
 ```
 
-Equivalent to `nbrs run workload=myworkload.yaml ...`. The CLI
+Equivalent to `nmbrs run workload=myworkload.yaml ...`. The CLI
 detects `.yaml`/`.yml` extensions and routes to `run`.
 
 ---
@@ -51,7 +51,7 @@ detects `.yaml`/`.yml` extensions and routes to `run`.
 All parameters use `key=value` syntax:
 
 ```
-nbrs run adapter=cql hosts=127.0.0.1 workload=cql_vector.yaml \
+nmbrs run adapter=cql hosts=127.0.0.1 workload=cql_vector.yaml \
   tags=phase:search cycles=100 concurrency=100
 ```
 
@@ -87,7 +87,7 @@ CLI and override YAML defaults.
 
 `watch=<spec>[,<spec>...]` registers one or more phase-end
 triggers that fire after every successful or failed phase.
-Each trigger spawns an `nbrs` subprocess to re-render a
+Each trigger spawns an `nmbrs` subprocess to re-render a
 report or plot against the live session database, so an
 external viewer (image viewer, browser, `tail -F`-style
 watcher) sees up-to-date output as the run progresses.
@@ -96,10 +96,10 @@ Specs:
 
 | Spec form              | Subprocess invoked                            |
 |------------------------|-----------------------------------------------|
-| `report`               | `nbrs report all --session <S>`               |
-| `report:<args>`        | `nbrs report <args> --session <S>`            |
-| `plot`                 | `nbrs plot all --session <S>`                 |
-| `plot:<name>`          | `nbrs plot --name <name> --session <S>`       |
+| `report`               | `nmbrs report all --session <S>`               |
+| `report:<args>`        | `nmbrs report <args> --session <S>`            |
+| `plot`                 | `nmbrs plot all --session <S>`                 |
+| `plot:<name>`          | `nmbrs plot --name <name> --session <S>`       |
 
 `<S>` is the active run's session directory (resolved from
 the same `--session=`/`logs/latest` lookup the report
@@ -109,18 +109,18 @@ Examples:
 
 ```
 # Re-render every stored plot after each phase end:
-nbrs run workload=fknn.yaml watch=plot
+nmbrs run workload=fknn.yaml watch=plot
 
 # Re-render one specific plot — point an image viewer at
 # logs/latest/throughput.svg and it'll refresh per phase:
-nbrs run workload=fknn.yaml watch=plot:throughput
+nmbrs run workload=fknn.yaml watch=plot:throughput
 
 # Re-render an HTML report:
-nbrs run workload=fknn.yaml watch=report:fmt=html
+nmbrs run workload=fknn.yaml watch=report:fmt=html
 
 # Stack triggers — both fire on each phase end, in
 # registration order:
-nbrs run workload=fknn.yaml watch=report,plot:recall,plot:throughput
+nmbrs run workload=fknn.yaml watch=report,plot:recall,plot:throughput
 ```
 
 **Semantics:**
@@ -140,8 +140,8 @@ nbrs run workload=fknn.yaml watch=report,plot:recall,plot:throughput
 - When no `watch=` is given the registry is empty and the
   worker thread is never spawned — zero overhead.
 
-Implementation: `nbrs/src/watch_trigger.rs` (subprocess
-trigger), `nbrs-runtime/src/phase_end_triggers.rs`
+Implementation: `nmbrs/src/watch_trigger.rs` (subprocess
+trigger), `nmbrs-runtime/src/phase_end_triggers.rs`
 (content-agnostic registry the executor fires into after
 every `phase_completed` / `phase_failed`).
 
@@ -155,7 +155,7 @@ for bash, zsh, fish, and PowerShell.
 
 ```rust
 fn cli_tree() -> Tree {
-    Tree::new("nbrs")
+    Tree::new("nmbrs")
         .command("run", Node::leaf_with_flags(
             &["adapter=", "workload=", "cycles=", "concurrency=", ...],
             &["--dry-run"],
@@ -177,7 +177,7 @@ Workload params are discoverable: when the user has specified
 
 ### Plot Command
 
-    nbrs plot Polydat <expr|file.polydat> [cycles=N] [--width=N] [--height=N]
+    nmbrs plot Polydat <expr|file.polydat> [cycles=N] [--width=N] [--height=N]
                                  [--mode=plot|histogram] [--no-color]
                                  [--xscale=N] [--yscale=N] [--max-labels=N]
 
@@ -191,8 +191,8 @@ Evaluate a Polydat expression and render outputs to the terminal:
 
 ### Inline Workloads
 
-    nbrs run op='hello {cycle}'
-    nbrs run op='id={{mod(hash(cycle), 1000)}} name={{number_to_words(cycle)}}'
+    nmbrs run op='hello {cycle}'
+    nmbrs run op='id={{mod(hash(cycle), 1000)}} name={{number_to_words(cycle)}}'
 
 The `op=` parameter synthesizes a complete workload from a single
 template string. `{{expr}}` are inline Polydat expressions compiled
@@ -214,7 +214,7 @@ On the `bench` command, `--explain` dumps the Polydat compiler event
 stream showing each compilation step:
 
 ```
-$ nbrs bench --explain "mod(hash(cycle), 1000)" cycles=5
+$ nmbrs bench --explain "mod(hash(cycle), 1000)" cycles=5
 [parsed]    cycle → graph input #0
 [parsed]    hash  → Hash64 node
 [wired]     hash.input[0] ← input:cycle

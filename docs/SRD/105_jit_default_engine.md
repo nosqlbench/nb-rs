@@ -38,7 +38,7 @@ The production path hardcodes the interpreter: `compile_filtered` →
 `compile_strict` → `PolydatKernel::new_with_inputs`
 (`dsl/compile.rs`, `compile/assembly.rs:536-603`). The engine-selection
 machinery (`auto_compile_p2/p3`, `select.rs::GraphAnalysis`) is reachable
-only from `nbrs/src/bench.rs`. The `jit` cargo feature is already in
+only from `nmbrs/src/bench.rs`. The `jit` cargo feature is already in
 polydat's default set — Cranelift ships in every build; only the wiring
 is absent.
 
@@ -175,7 +175,7 @@ Implemented (Push 2) at two levels:
   differential by construction. Nondeterministic programs
   (`PolydatProgram::is_deterministic`) skip the cross-kernel
   comparison — two instances legitimately diverge.
-- **Workload level** — `nbrs/tests/jit_differential.rs` runs every
+- **Workload level** — `nmbrs/tests/jit_differential.rs` runs every
   stdlib-coverage scenario (plus expression examples) through the
   real binary under `jit=off` and `jit=force` and byte-compares the
   op output, covering op-template synthesis, scope chains, and the

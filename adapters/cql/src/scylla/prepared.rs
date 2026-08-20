@@ -6,13 +6,13 @@
 //! Used for `prepared:` / `stmt:` op fields without a `batch:`
 //! param. The statement is prepared in `map_op` (the
 //! dispenser-init stack frame — see
-//! `nbrs_runtime::adapter::DriverAdapter::map_op` docs) and
+//! `nmbrs_runtime::adapter::DriverAdapter::map_op` docs) and
 //! handed in already prepared so per-cycle execute has no
 //! init work left to do.
 
 use std::sync::Arc;
 
-use nbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nmbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use polydat::ast::Value;
 use scylla::client::session::Session;
 use scylla::statement::prepared::PreparedStatement;
@@ -71,7 +71,7 @@ impl OpDispenser for ScyllaPreparedDispenser {
     fn execute<'a>(
         &'a self,
         _cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {

@@ -496,7 +496,7 @@ impl PragmaSet {
 }
 ```
 
-Callers at scope boundaries (`nbrs-runtime` for workload → phase →
+Callers at scope boundaries (`nmbrs-runtime` for workload → phase →
 iteration) build the inner `PragmaSet`, call `attach_to(outer)`,
 log/raise on the returned conflicts, and feed the attached
 result into the inner kernel's compile.
@@ -507,11 +507,11 @@ result into the inner kernel's compile.
   (`PragmaSet { parent }` + `attach_to`). Single-scope use is
   fully wired: the lib reads pragmas from each kernel's source
   AST, applies strict-wire flags, walks the chain at lookup.
-- **Pending:** `nbrs-runtime` adoption — the workload runner does
+- **Pending:** `nmbrs-runtime` adoption — the workload runner does
   not yet call `attach_to` at phase / iteration boundaries. Until
   it does, every kernel sees only its own pragmas. The conflict-
   detection path is unit-tested but not yet exercised end-to-end
-  across an `nbrs-runtime` scope chain.
+  across an `nmbrs-runtime` scope chain.
 
 ---
 
@@ -681,7 +681,7 @@ the meaning of each parameter.
 | Unused bindings | Implemented | Nodes with no consumers and not in output_map |
 | Implicit type coercions | Implemented | Auto-inserted `__adapt_*` nodes detected |
 | Non-deterministic nodes | Implemented | Zero-input non-init nodes (counter, etc.) |
-| Unqualified bind points | Design target | Requires nbrs-runtime changes |
+| Unqualified bind points | Design target | Requires nmbrs-runtime changes |
 | Undeclared string refs | Design target | Requires string template resolution changes |
 | Named function arguments | Implemented | Already enforced in module calls |
 | Const constraint metadata | Implemented | `ConstConstraint` field on `ParamSpec`; factory walks each owning `FuncSig.params` and rejects with `bad constant <func>: <reason>`. Cross-param relational rules use the per-module `validate_node` hook on `register_nodes!`. |
@@ -692,6 +692,6 @@ the meaning of each parameter.
 | Strict wire mode (single-scope) | Implemented | `GkAssembler::set_strict_wires(types, values)`. Pragma-driven via `pragma strict_values` / `strict_types` / `strict`. Compiler auto-inserts `AssertValue` for wires whose sink declares a `Port::with_constraint(...)` and whose source isn't a constant or upstream assertion. |
 | Skip-rules: const source, upstream assertion | Implemented | The compiler skips the assertion when the source is a no-wire-input constant node or an existing assertion. Static type match is handled by the existing adapter pass. |
 | `AssertionInserted` / `AssertionSkipped` events | Implemented | Symmetric advisories alongside `TypeAdapterInserted`; reason field names which skip rule applied. |
-| Pragma scope stack + `PragmaSet { parent }` | Implemented | Lookups walk the chain; `attach_to(outer)` returns conflicts. Single-scope today; `nbrs-runtime` adoption at phase / iteration boundaries is pending. |
+| Pragma scope stack + `PragmaSet { parent }` | Implemented | Lookups walk the chain; `attach_to(outer)` returns conflicts. Single-scope today; `nmbrs-runtime` adoption at phase / iteration boundaries is pending. |
 | Skip-rule: fusion-derived bound | Design target | The fusion pass doesn't yet expose its inferred output ranges, so `mod(x, 1000)` feeding a constraint of u64 ∈ [0, 10000) still gets an assertion under strict_values. Wiring this is a follow-up. |
 | First wire-typed dynamic divisor (`mod_wire` / `div_wire`) | Implemented | Nodes in `nodes::arithmetic` declare a `NonZeroU64` constraint on the divisor wire. End-to-end fuzz test confirms strict_values inserts the assertion when the source isn't a const. |

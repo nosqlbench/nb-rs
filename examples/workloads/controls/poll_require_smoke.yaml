@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # poll_require_smoke.yaml — SRD-75 (C5) strict-gate coverage.
 #
 # A phase-poll gate whose `until:` reads live metrics is only

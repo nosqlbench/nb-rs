@@ -6,8 +6,8 @@ of visiting every coordinate, an optimizer proposes coordinates, reads an
 design is [SRD-86](../SRD/86_optimization.md). Every form below has a runnable
 example under `examples/workloads/optimizer_*.yaml`.
 
-> **Discover what's installed:** `nbrs describe optimizers` lists the search
-> methods, and `nbrs describe controls` lists the live controls you can `servo:`
+> **Discover what's installed:** `nmbrs describe optimizers` lists the search
+> methods, and `nmbrs describe controls` lists the live controls you can `servo:`
 > — both read from *this* binary, so they're never out of date.
 
 ## The one-minute version
@@ -28,7 +28,7 @@ phases:
       probe: { adapter: stdout, stmt: "ef={ef}" }
 ```
 
-`nbrs run workload=...` reports `best [3] → score=0`. Two things you do **not**
+`nmbrs run workload=...` reports `best [3] → score=0`. Two things you do **not**
 write: the axes (auto-gathered from `for_each`), and — with no `method:` — the
 optimizer: it defaults to **`sweep`** (the identity: evaluate every coordinate,
 report the best). Add `method: cmaes` (etc.) to search adaptively instead.
@@ -55,7 +55,7 @@ Discrete and continuous axes both work at any cardinality. See
 
 ## Choose a method
 
-`nbrs describe optimizers` lists them. The two classes:
+`nmbrs describe optimizers` lists them. The two classes:
 
 - **Identity** — `sweep` (the **default**, used when `method:` is omitted) visits
   every coordinate in order and reports the best. Use it for small grids and
@@ -181,7 +181,7 @@ wire a control but use a session-cumulative
 `metric(...)` objective (which can't isolate a live setting), don't `servo:` it —
 just step it through (the default), as `optimizer_saturation.yaml` does.
 
-> Which names are live controls? Run **`nbrs describe controls`** — it lists every
+> Which names are live controls? Run **`nmbrs describe controls`** — it lists every
 > control this binary can servo (core `concurrency`/`rate` plus any adapter knobs
 > like `cql_trace_rate`), with the condition under which each appears (SRD-23).
 

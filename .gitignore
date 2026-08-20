@@ -23,7 +23,7 @@ target
 /links
 local/
 .idea/**
-.nbrs**
+.nmbrs**
 **/*.db
 **/*.db-journal
 **/logs

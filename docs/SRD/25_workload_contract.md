@@ -1,6 +1,6 @@
-# 25: Workload Specification — Contract & Axioms (nbrs-workload)
+# 25: Workload Specification — Contract & Axioms (nmbrs-workload)
 
-Front door for **nbrs-workload** (layer L2): the YAML → typed-model parser. It turns a
+Front door for **nmbrs-workload** (layer L2): the YAML → typed-model parser. It turns a
 workload document into `ParsedOp`s, bind points, tags, and the scenario/phase structure —
 and contains **no execution logic**. Pillars 1+2 of the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
@@ -31,4 +31,4 @@ consumes `polydat` (`ast`, `dsl`); `template` / `spectest` are internal.
 [SRD 72](72_workload_extends.md) (extends), [SRD 85](85_bundled_workloads.md) (bundled).
 
 ## See also
-`nbrs-workload/src/lib.rs`; [SRD 20](20_workload_model.md); [SRD 21](21_parameters.md); [SRD 72](72_workload_extends.md); [SRD 85](85_bundled_workloads.md).
+`nmbrs-workload/src/lib.rs`; [SRD 20](20_workload_model.md); [SRD 21](21_parameters.md); [SRD 72](72_workload_extends.md); [SRD 85](85_bundled_workloads.md).

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # vector_suite_blueprint.yaml — the vector_suite BLUEPRINT
 # (SRD-108 Part B): the protocol-agnostic contract for the FULL
 # vector benchmarking suite.
@@ -10,8 +10,8 @@
 # NOTHING about any wire protocol — every op is an `abstract:`
 # slot. An implementation module binds the bodies:
 #
-#   nbrs run workload=cql/vector_suite_cql_impl scenario=search_perf
-#   nbrs run workload=vector_suite_blueprint \
+#   nmbrs run workload=cql/vector_suite_cql_impl scenario=search_perf
+#   nmbrs run workload=vector_suite_blueprint \
 #            impl=cql/vector_suite_cql_impl scenario=search_perf
 #
 # This file lives in the NEUTRAL bundled catalog (top-level

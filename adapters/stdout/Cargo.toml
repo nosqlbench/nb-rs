@@ -1,9 +1,9 @@
 [package]
-name = "nbrs-adapter-stdout"
+name = "nmbrs-adapter-stdout"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Stdout adapter for nb-rs: writes assembled ops to stdout or a file"
+description = "Stdout adapter for nmbrs: writes assembled ops to stdout or a file"
 keywords = ["nosqlbench", "workload", "benchmark", "stdout"]
 categories = ["command-line-utilities", "simulation"]
 repository.workspace = true
@@ -11,8 +11,8 @@ homepage.workspace = true
 readme.workspace = true
 
 [dependencies]
-nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1" }
-nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
+nmbrs-runtime = { path = "../../nmbrs-runtime", version = "0.1.1" }
+nmbrs-workload = { path = "../../nmbrs-workload", version = "0.1.1" }
 inventory = "0.3.24"
 # `ParsedOp.params` is `HashMap<String, serde_json::Value>`; the
 # adapter needs the type to read its per-op-template `stdout:`

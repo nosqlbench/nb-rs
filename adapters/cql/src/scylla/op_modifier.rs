@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nbrs_runtime::op_modifier::OpFieldModifier;
+use nmbrs_runtime::op_modifier::OpFieldModifier;
 use polydat::ast::Value;
 use scylla::statement::batch::Batch;
 use scylla::statement::prepared::PreparedStatement;

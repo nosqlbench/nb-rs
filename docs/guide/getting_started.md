@@ -1,6 +1,6 @@
-# Getting Started with nbrs
+# Getting Started with nmbrs
 
-nbrs is a performance testing tool for databases and services. It
+nmbrs is a performance testing tool for databases and services. It
 generates deterministic workloads from YAML definitions and dispatches
 them through pluggable adapters.
 
@@ -14,7 +14,7 @@ them through pluggable adapters.
 cargo build --release
 ```
 
-The binary is `target/release/nbrs`.
+The binary is `target/release/nmbrs`.
 
 ### 2. Create a Workload
 
@@ -35,27 +35,27 @@ ops:
 ### 3. Run It
 
 ```
-nbrs run workload=my_workload.yaml cycles=10
+nmbrs run workload=my_workload.yaml cycles=10
 ```
 
 No workload yet? The binary carries a catalog (SRD-85):
 
 ```bash
-nbrs describe workloads          # curated workloads bundled in this binary
-nbrs run workload=selfcheck      # artifact self-check, no files needed
-nbrs copy capacity_probe         # materialize one locally for editing
+nmbrs describe workloads          # curated workloads bundled in this binary
+nmbrs run workload=selfcheck      # artifact self-check, no files needed
+nmbrs copy capacity_probe         # materialize one locally for editing
 ```
 
 Output:
 ```
-nbrs: 2 ops selected, 10 cycles, 1 threads, driver=stdout
-nbrs: stanza length=2, sequencer=Bucket
+nmbrs: 2 ops selected, 10 cycles, 1 threads, driver=stdout
+nmbrs: stanza length=2, sequencer=Bucket
 INSERT INTO users (id, name) VALUES (527897, 'user_0');
 SELECT * FROM users WHERE id=460078;
 INSERT INTO users (id, name) VALUES (564547, 'user_2');
 SELECT * FROM users WHERE id=960189;
 ...
-nbrs: done
+nmbrs: done
 ```
 
 Each `{user_id}` is replaced with a deterministic pseudo-random value
@@ -119,8 +119,8 @@ blocks:
 Run a specific block with tag filtering:
 
 ```
-nbrs run workload=file.yaml tags=block:main cycles=1000
-nbrs run workload=file.yaml tags=block:schema cycles=1
+nmbrs run workload=file.yaml tags=block:main cycles=1000
+nmbrs run workload=file.yaml tags=block:schema cycles=1
 ```
 
 ### Ratios
@@ -134,7 +134,7 @@ than writes.
 ## Command-Line Parameters
 
 ```
-nbrs run workload=<file> [parameters...]
+nmbrs run workload=<file> [parameters...]
 ```
 
 | Parameter | Default | Description |
@@ -156,29 +156,29 @@ nbrs run workload=<file> [parameters...]
 
 `watch=<spec>[,<spec>...]` registers subprocess-based
 re-renderers that fire after every phase completion or
-failure. Each trigger spawns an `nbrs` subprocess that
+failure. Each trigger spawns an `nmbrs` subprocess that
 writes its output against the live session directory, so
 external viewers (image viewer, browser, file watcher) see
 the latest data without waiting for the run to finish.
 
 | Spec | Subprocess invoked |
 |------|--------------------|
-| `report` | `nbrs report all --session <SESSION>` |
-| `report:<args>` | `nbrs report <args> --session <SESSION>` |
-| `plot` | `nbrs plot all --session <SESSION>` |
-| `plot:<name>` | `nbrs plot --name <name> --session <SESSION>` |
+| `report` | `nmbrs report all --session <SESSION>` |
+| `report:<args>` | `nmbrs report <args> --session <SESSION>` |
+| `plot` | `nmbrs plot all --session <SESSION>` |
+| `plot:<name>` | `nmbrs plot --name <name> --session <SESSION>` |
 
 Examples:
 
 ```bash
 # Re-render the throughput plot after each phase:
-nbrs run workload=fknn.yaml watch=plot:throughput
+nmbrs run workload=fknn.yaml watch=plot:throughput
 
 # Stack triggers — both fire per phase end:
-nbrs run workload=fknn.yaml watch=plot:throughput,plot:recall
+nmbrs run workload=fknn.yaml watch=plot:throughput,plot:recall
 
 # Rebuild a full report on each phase end:
-nbrs run workload=fknn.yaml watch=report
+nmbrs run workload=fknn.yaml watch=report
 ```
 
 Triggers run on a single background worker thread, sequenced
@@ -265,10 +265,10 @@ Control throughput:
 
 ```
 # 1000 ops per second
-nbrs run workload=w.yaml cycles=10K rate=1000
+nmbrs run workload=w.yaml cycles=10K rate=1000
 
 # 100 stanzas per second (each stanza = sum of ratios)
-nbrs run workload=w.yaml cycles=10K stanzarate=100
+nmbrs run workload=w.yaml cycles=10K stanzarate=100
 ```
 
 Both can be combined. The tighter limit wins.
@@ -281,13 +281,13 @@ Configure how errors are handled:
 
 ```
 # Stop on any error (default for production)
-nbrs run workload=w.yaml errors=".*:stop"
+nmbrs run workload=w.yaml errors=".*:stop"
 
 # Warn and count (default)
-nbrs run workload=w.yaml errors=".*:warn,counter"
+nmbrs run workload=w.yaml errors=".*:warn,counter"
 
 # Retry timeouts, stop on everything else
-nbrs run workload=w.yaml errors="Timeout:retry,warn;.*:stop"
+nmbrs run workload=w.yaml errors="Timeout:retry,warn;.*:stop"
 ```
 
 Handler modes: `stop`, `warn`, `error`, `ignore`, `retry`, `counter`.
@@ -310,7 +310,7 @@ ops:
 Override from CLI:
 
 ```
-nbrs run workload=w.yaml cycles=1K keycount=5000000 table=customers
+nmbrs run workload=w.yaml cycles=1K keycount=5000000 table=customers
 ```
 
 ---

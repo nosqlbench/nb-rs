@@ -407,7 +407,7 @@ the chosen sequencing strategy.
 
 Each takes parallel lists — `items[i]` paired with `ratios[i]`
 — and returns a `Vec<Value>` of length `sum(ratios)`. The
-algorithms are exactly those in `nbrs-runtime::opseq` (see
+algorithms are exactly those in `nmbrs-runtime::opseq` (see
 `build_bucket_lut`, `build_concat_lut`, `build_interval_lut`);
 the comprehension stdlib reuses them so behavior is
 guaranteed-identical to the executor's op-sequencing path.
@@ -558,7 +558,7 @@ silently mix or merge. The parser merges:
 | `for_combinations: { k: 1..10, l: 1..3 }` | `k in 1..10, l in 1..3` |
 
 YAML-shape detection (string vs list vs object) lives in
-`nbrs-workload`; the Polydat comprehension parser only sees text.
+`nmbrs-workload`; the Polydat comprehension parser only sees text.
 Both paths produce the same `Comprehension` AST.
 
 ---
@@ -639,7 +639,7 @@ function works in a clause expression, in a regular Polydat binding,
 in a const-folded final, and in a workload param.
 
 **LUT facility for free.** The sequencer functions (bucket,
-concat, interval) reuse `nbrs-runtime::opseq`'s algorithms
+concat, interval) reuse `nmbrs-runtime::opseq`'s algorithms
 unchanged. SRD-22's op-sequencing strategies become available
 to any clause; weighted dispatch tables, replay sequences, and
 deterministic-but-non-uniform sweeps all compose cleanly.
@@ -668,7 +668,7 @@ layer needing to know about any of it.
    `binomial`, `linear_starts`, `log_steps`). Each is one stdlib
    node + a short test. Land in any order.
 5. **Sequencer expansions** (`bucket`, `concat_seq`,
-   `interval_seq`). Reuse `nbrs-runtime::opseq` algorithms.
+   `interval_seq`). Reuse `nmbrs-runtime::opseq` algorithms.
 6. **Layer 5 — set operators.** Trivial once lists are
    first-class clause sources.
 7. **Layer 7b — destructure form.** Requires `Value::Tuple` or
@@ -750,4 +750,4 @@ have the continuous variants. Reference: polydat spec §3.1
 - `polydat/docs/design/comprehension_forms.md`: the
   migration plan that built the polydat `Comprehension` model.
 - `examples/workloads/iteration/comprehension_coverage.yaml`: every
-  shipped form, one scenario per form, asserted by `nbrs/tests/comprehension.rs`.
+  shipped form, one scenario per form, asserted by `nmbrs/tests/comprehension.rs`.

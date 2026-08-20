@@ -1,5 +1,5 @@
-#!/usr/bin/env nbrs
-# feature_showcase.yaml — Demonstrates all major nbrs features
+#!/usr/bin/env nmbrs
+# feature_showcase.yaml — Demonstrates all major nmbrs features
 #
 # Features covered:
 #   - Native Polydat bindings with DAG composition
@@ -14,12 +14,12 @@
 #   - Ratio weighting
 #
 # Usage:
-#   nbrs run workload=examples/feature_showcase.yaml
-#   nbrs run workload=examples/feature_showcase.yaml scenario=quick
-#   nbrs run workload=examples/feature_showcase.yaml num_items=20
+#   nmbrs run workload=examples/feature_showcase.yaml
+#   nmbrs run workload=examples/feature_showcase.yaml scenario=quick
+#   nmbrs run workload=examples/feature_showcase.yaml num_items=20
 
 description: |
-  Feature showcase: exercises all major nbrs capabilities in a
+  Feature showcase: exercises all major nmbrs capabilities in a
   single workload file. Outputs to stdout for verification.
 
 params:
@@ -88,5 +88,5 @@ phases:
         if: is_tenth
         stmt: "SELECT count(*) FROM {keyspace}.{table}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

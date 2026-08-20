@@ -5,7 +5,7 @@
 # grouping, and operator precedence.
 #
 # Usage:
-#   nbrs run workload=examples/math_and_bitwise.yaml cycles=5
+#   nmbrs run workload=examples/math_and_bitwise.yaml cycles=5
 
 bindings: |
   input cycle: u64
@@ -39,6 +39,6 @@ ops:
   grouping:
     stmt: "grouped=(cycle+1)*(cycle+2)={grouped}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=8
 #@ expect completed, 0 failed

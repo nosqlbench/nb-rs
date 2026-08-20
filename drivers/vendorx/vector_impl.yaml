@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # drivers/vendorx/vector_impl.yaml — the vendorx implementation of
 # vector_suite_blueprint (SRD-108 Part B module; SRD-109 web-only
 # client driver).
@@ -10,7 +10,7 @@
 # captures the session token into the shared `auth_token` wire;
 # every later op presents it in an `api-key` header.
 #
-#   nbrs run driver=vendorx scenario=search_perf
+#   nmbrs run driver=vendorx scenario=search_perf
 
 description: |
   vendorx implementation of the vector_suite blueprint: literal

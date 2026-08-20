@@ -1,6 +1,6 @@
 # 02: Concurrency Model
 
-nb-rs is async-native. All execution uses tokio tasks (fibers),
+nmbrs is async-native. All execution uses tokio tasks (fibers),
 not OS threads. Concurrency is controlled by a single knob:
 `concurrency=N` (number of fibers in flight).
 
@@ -195,7 +195,7 @@ cycles within a single thread. This was necessary because system
 threads were expensive, and even virtual threads had scheduling
 overhead limiting the practical fiber count.
 
-nb-rs does not need stride as a user-facing parameter. Tokio tasks
+nmbrs does not need stride as a user-facing parameter. Tokio tasks
 are as cheap as Java virtual threads. The idiomatic approach:
 increase `concurrency` to get more in-flight requests.
 
@@ -203,7 +203,7 @@ increase `concurrency` to get more in-flight requests.
 # Java nosqlbench (stride was needed):
 #   threads=4 stride=64  →  256 in-flight requests
 #
-# nb-rs (no stride needed):
+# nmbrs (no stride needed):
 #   concurrency=256       →  256 in-flight requests
 ```
 
@@ -428,7 +428,7 @@ tasks have completed.
    non-production) that uses a sync ack.
 3. **One blocking call per session is the ceiling, not the
    target.** `shutdown_flush` is the single sanctioned exception
-   in nb-rs's metrics path. New components must not add another
+   in nmbrs's metrics path. New components must not add another
    without a matching SRD justification.
 
 ### What's safe

@@ -1,11 +1,11 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # reported_blueprint.yaml — a BLUEPRINT (SRD-108) carrying its
 # own REPORT: the measurement matter (extents, pacing, metrics,
 # and the report's tables and charts) lives blueprint-side, so
 # every implementation inherits the same rendered results
 # surface. Bind an implementation to run it:
 #
-#   nbrs run workload=reported_blueprint.yaml impl=reported_impl_testkit.yaml
+#   nmbrs run workload=reported_blueprint.yaml impl=reported_impl_testkit.yaml
 #
 # The report block (SRD-46) renders at end of run: the table
 # inline plus, via the post-run pipeline, every item including
@@ -76,7 +76,7 @@ report:
       x-legend: "throughput (ops/s)"
       y-labels: ["mean service time (ns)"]
 
-# ─── verification (nbrs check / example-walker) ───
+# ─── verification (nmbrs check / example-walker) ───
 # A blueprint alone cannot run — unbound slots are a LOAD error
 # naming the slot and the remedy; bound via impl=, both phases
 # complete and the report pipeline renders both items.

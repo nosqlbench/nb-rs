@@ -7,9 +7,9 @@ Execution). No code lands until reviewed against SRD-44
 (checkpoint event log) + SRD-76 (PhaseOutcome /
 SessionDisposition).
 
-**Owner:** nbrs-runtime (session model, runner,
-checkpoint-resume planner), nbrs-metrics (sqlite
-schema), nbrs (CLI verbs + flags), workloads (consumers
+**Owner:** nmbrs-runtime (session model, runner,
+checkpoint-resume planner), nmbrs-metrics (sqlite
+schema), nmbrs (CLI verbs + flags), workloads (consumers
 of the new verb).
 
 **Cross-refs:**
@@ -20,7 +20,7 @@ of the new verb).
 - [SRD-76](76_phase_outcome_disposition.md) — structured
   `PhaseOutcome` per phase; SRD-77 extends every
   outcome row with an `execution_id` foreign key.
-- [SRD-46](46_reports.md) — `nbrs report` gains an
+- [SRD-46](46_reports.md) — `nmbrs report` gains an
   `--execution=<id>` filter so reports can scope to a
   single execution or aggregate across the whole
   session.
@@ -40,8 +40,8 @@ my workload — maybe added new sweep cells, maybe changed an
 op's bindings, maybe both. Run only what's new or changed;
 keep my existing data."**
 
-Today `nbrs run` always creates a fresh session dir and
-re-runs everything. `nbrs resume` reruns a session that
+Today `nmbrs run` always creates a fresh session dir and
+re-runs everything. `nmbrs resume` reruns a session that
 was interrupted, matching prior identity to skip done
 phases — but it doesn't tolerate workload changes and
 doesn't accept new phases beyond the prior pre-map.
@@ -52,12 +52,12 @@ needed by other SRDs (44, 46, 63, 76):
 
 1. **Working sessions** — a session is a persistent
    container, not a single invocation's scratch space.
-2. **Executions** — within a session, each `nbrs <verb>`
+2. **Executions** — within a session, each `nmbrs <verb>`
    invocation is a distinct **execution** with its own
    identity, workload-yaml snapshot, and outcome roll-up.
 3. **Universal session-selection flags** — `--new-session`,
    `--resume-session`, `--session` (basic) trio across every
-   nbrs verb that operates on a session, with strict mode
+   nmbrs verb that operates on a session, with strict mode
    forbidding the bare ambiguous form.
 
 ---
@@ -73,12 +73,12 @@ re-runs for phases whose definition changed.
 CLI shape:
 
 ```
-nbrs refine [session selection] [scope] workload=<file>
+nmbrs refine [session selection] [scope] workload=<file>
 ```
 
 Without any session selection: warn if no `sessions/latest`
 exists, then create a new session and run all phases
-(equivalent to `nbrs run` for the first execution). With an
+(equivalent to `nmbrs run` for the first execution). With an
 existing target session: layer a new execution onto it
 following the `--scope` selector.
 
@@ -103,7 +103,7 @@ pre-map); `refine` happily runs new phases.
 
 Today's model has a single tier:
 ```
-Session   ←  one invocation of nbrs
+Session   ←  one invocation of nmbrs
 ```
 
 The new model splits into two tiers:
@@ -122,7 +122,7 @@ Session   ←  persistent container
 - `created_at`: timestamp at session birth.
 - `output_dir`: filesystem path to the session dir.
 - The session is the unit of `sessions/latest` symlink, the
-  unit of `nbrs report`, the unit of `nbrs replay`.
+  unit of `nmbrs report`, the unit of `nmbrs replay`.
 
 ### `Execution`
 
@@ -178,7 +178,7 @@ walks all executions, applying the most-recent-wins rule.
 
 ## Session selection — the universal flag trio
 
-Three flags, every nbrs verb that operates on a session
+Three flags, every nmbrs verb that operates on a session
 respects them:
 
 | Flag | Semantic | Behavior on existing | Behavior on missing |
@@ -188,7 +188,7 @@ respects them:
 | `--session=<name>` | Basic / opportunistic | re-attach | create + run |
 | *(no flag)* | Implicit (verb-dependent default) | per verb | per verb |
 
-Strict mode (`--strict` / `NBRS_STRICT=1`): the bare
+Strict mode (`--strict` / `NMBRS_STRICT=1`): the bare
 `--session` is rejected. The operator must pick
 `--new-session` or `--resume-session` explicitly. This
 forecloses the "I thought it would resume but it created
@@ -209,7 +209,7 @@ When `refine` is invoked with no session flag AND
 `sessions/latest` doesn't exist:
 
 ```
-nbrs refine workload=…
+nmbrs refine workload=…
 warning: no `sessions/latest` — creating a new session.
          For non-ambiguous behavior, use `--new-session=<name>`
          or `--resume-session=<name>`.
@@ -310,7 +310,7 @@ phase from the scenario tree):
 Default: **error** — refuses to proceed.
 
 ```
-nbrs refine: workload removes 1 phase that has prior
+nmbrs refine: workload removes 1 phase that has prior
 outcomes in this session:
   phase 'ann_query' @ (k=10, limit=20, profile=default)
     (from execution 2, completed 2026-05-27 14:30:00)
@@ -407,7 +407,7 @@ surface usable.
 
 ### Push 2 — Execution entity
 
-- New `Execution` struct in `nbrs-runtime/src/session.rs`
+- New `Execution` struct in `nmbrs-runtime/src/session.rs`
   alongside `Session`.
 - `executions` sqlite table with the schema above.
 - Lifecycle: at runner start, INSERT a row; at shutdown
@@ -425,7 +425,7 @@ surface usable.
 - `session_disposition()` updates: most-recent-execution
   wins.
 
-### Push 4 — `nbrs refine` verb + `--scope` + removed-phase
+### Push 4 — `nmbrs refine` verb + `--scope` + removed-phase
 
 - New verb registered in cli_spec.
 - Pre-map walker runs as today; the resume planner gains
@@ -438,13 +438,13 @@ surface usable.
   not present in this pre-map fire the removed-phase
   policy.
 
-### Push 5 — `nbrs report --execution=<id>` filter
+### Push 5 — `nmbrs report --execution=<id>` filter
 
-- `nbrs report` gains `--execution=<id>` to scope plots /
+- `nmbrs report` gains `--execution=<id>` to scope plots /
   tables to one execution.
 - Default behavior (no filter): aggregate across all
   executions in the session.
-- Same flag on `nbrs replay`.
+- Same flag on `nmbrs replay`.
 
 ### Push 6 — Workload-author surfaces + tests
 

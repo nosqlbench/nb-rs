@@ -1,12 +1,12 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # JVector two-flush compaction recall test.
 # Loads 50% of vectors, flushes, loads the other 50%, flushes,
 # forces a major compaction, then measures recall.
 #
 # Usage:
-#   nbrs workload=compaction_test_updated.yaml
-#   nbrs workload=compaction_test_updated.yaml dataset=/path/to/cohere-1M
-#   nbrs workload=compaction_test_updated.yaml dataset=cohere-1M host=10.0.0.1
+#   nmbrs workload=compaction_test_updated.yaml
+#   nmbrs workload=compaction_test_updated.yaml dataset=/path/to/cohere-1M
+#   nmbrs workload=compaction_test_updated.yaml dataset=cohere-1M host=10.0.0.1
 
 description: |
   JVector two-flush compaction recall test: loads half the vectors,

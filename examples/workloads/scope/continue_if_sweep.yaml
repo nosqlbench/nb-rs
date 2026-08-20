@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # SRD-101 — `continue_if` pre-entry sweep gate (testkit; no DB / dataset).
 #
 # The scenario sweeps a comprehension `k in 1,2,3,4,5` and runs one phase per
@@ -12,7 +12,7 @@
 # This is the dataset-free regression guard for the gate's evaluation +
 # graceful halt (the compaction sweep uses the same gate keyed on
 # `end_of(p) <= effective_max_size`). Watch it:
-#   nbrs run workload=examples/workloads/scope/continue_if_sweep.yaml
+#   nmbrs run workload=examples/workloads/scope/continue_if_sweep.yaml
 #       → three `tick` phases (k=1,2,3), then the sweep halts cleanly.
 
 params:
@@ -43,7 +43,7 @@ phases:
       beat:
         stmt: "SELECT {k};"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 # Runs standalone (testkit; no host/dataset). The gate halts the sweep at k=4,
 # so the run completes gracefully with no failed phases (the over-budget
 # iterations are skipped, not failed).

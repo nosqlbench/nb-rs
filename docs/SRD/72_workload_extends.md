@@ -1,6 +1,6 @@
 # 72: Workload `extends:` (single-parent composition)
 
-*Status: SHIPPED — implemented in `nbrs-workload/src/extends.rs`
+*Status: SHIPPED — implemented in `nmbrs-workload/src/extends.rs`
 (audited 2026-06-10).* `load_and_merge` follows the chain with
 cycle detection (full-chain diagnostic), applies every merge
 rule in the table below on parsed JSON trees, strips `extends:`
@@ -13,14 +13,14 @@ core rules (per-key child-wins, bindings concat order +
 trailing-newline handling, `status_metrics` union with
 first-occurrence dedup, `extends` stripping, per-name phase
 replace); the file-level 16-case matrix under "Test plan" is
-not fully realised as `nbrs-workload/tests/extends.rs` — the
+not fully realised as `nmbrs-workload/tests/extends.rs` — the
 chain/cycle/missing-target paths are exercised through the
 loader but not individually pinned. SRD-85 (2026-06-11) added
 catalog-name resolution of `extends:` targets: local-first,
 then catalog (extension-stripped exact name, then
 namespace-relative for bundled origins), with a fatal
 local-vs-catalog ambiguity error; e2e coverage in
-`nbrs/tests/bundled_workloads.rs` pins extends-from-bundled
+`nmbrs/tests/bundled_workloads.rs` pins extends-from-bundled
 and bundled-sibling resolution through the real loader.
 
 A workload YAML file MAY declare a single parent workload at the
@@ -196,7 +196,7 @@ be runnable on its own.
 
 ## Implementation hook
 
-Entry point: `nbrs-workload/src/parse.rs::parse_workload`.
+Entry point: `nmbrs-workload/src/parse.rs::parse_workload`.
 
 The merge step inserts between **Stage 1 (template expansion)**
 and **Stage 2 (YAML→JVal parse)**, conceptually — but in practice
@@ -225,7 +225,7 @@ params win at the outer-most layer, as today.
 
 ### New module / file
 
-A new module `nbrs-workload/src/extends.rs` MAY house the loader
+A new module `nmbrs-workload/src/extends.rs` MAY house the loader
 helper (`load_with_extends(path, visited) -> Result<JVal, _>`) and
 the per-field merge functions. Splitting it out keeps
 `parse.rs` from growing past the [[feedback_file_size_limit]]
@@ -245,7 +245,7 @@ context available).
 
 ## Test plan
 
-Test file: `nbrs-workload/tests/extends.rs` (new).
+Test file: `nmbrs-workload/tests/extends.rs` (new).
 
 | # | Case | Assertion |
 |---|---|---|
@@ -297,7 +297,7 @@ Test file: `nbrs-workload/tests/extends.rs` (new).
   parent)`) instead of override. Punted — override is simpler and
   the user can write whatever they want in the child.
 - Whether the merged-workload result should record the include
-  chain for diagnostic / `nbrs describe workload` output. Likely
+  chain for diagnostic / `nmbrs describe workload` output. Likely
   yes (cheap, useful for "which file did this phase come from").
   Captured here, deferred to implementation.
 - Interaction with [[project_workload_field_contexts]] (workload

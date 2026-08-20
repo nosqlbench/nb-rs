@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! # nbrs-adapter-plotter
+//! # nmbrs-adapter-plotter
 //!
 //! Live-updating terminal-plot adapter. Each cycle's resolved
 //! fields are projected onto a braille-canvas plot in the
@@ -29,18 +29,20 @@
 //! ## Display preference
 //!
 //! Plotter declares
-//! [`DisplayPreference::Off`](nbrs_runtime::adapter::DisplayPreference::Off):
+//! [`DisplayPreference::Off`](nmbrs_runtime::adapter::DisplayPreference::Off):
 //! running this adapter auto-disables the dashboard TUI.
 //! Plotter and TUI both want raw terminal control of the same
-//! screen real estate; the resolution is "plotter wins" — `nbrs
+//! screen real estate; the resolution is "plotter wins" — `nmbrs
 //! run adapter=plotter ...` skips the TUI without needing
 //! `tui=off`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use nbrs_runtime::adapter::{DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields};
-use nbrs_workload::model::ParsedOp;
+use nmbrs_runtime::adapter::{
+    DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields,
+};
+use nmbrs_workload::model::ParsedOp;
 use polydat::ast::Value;
 
 const PALETTE: [(u8, u8, u8); 10] = [
@@ -125,8 +127,8 @@ impl RenderRequest {
                 if hz > 10.0 {
                     // SRD-87 A1: diagnostics go through the log channel (→ the
                     // channel's log bucket + session.log), never raw stderr.
-                    nbrs_runtime::diag!(
-                        nbrs_runtime::observer::LogLevel::Warn,
+                    nmbrs_runtime::diag!(
+                        nmbrs_runtime::observer::LogLevel::Warn,
                         "render={other}: refresh above ~10hz exceeds most \
                          terminals' usable redraw rate"
                     );
@@ -344,7 +346,7 @@ fn paint(fb: &FrameBuffer, title: &str, is_tty: bool, use_color: bool) {
     // SRD-87 §5: submit the rendered canvas to the channel's raster bucket
     // (the channel owns the fd) rather than writing stdout directly. The
     // plotter is console-owning, so this lands on the console it owns.
-    nbrs_runtime::output_channel::raster(&buf);
+    nmbrs_runtime::output_channel::raster(&buf);
 }
 
 /// Paint a stacked, multi-lane plot with a per-lane heading + divider rule.
@@ -378,7 +380,7 @@ fn paint_lanes(
             buf.push_str(eol);
         }
     }
-    nbrs_runtime::output_channel::raster(&buf);
+    nmbrs_runtime::output_channel::raster(&buf);
 }
 
 // ─── Data collector ────────────────────────────────────────────
@@ -541,7 +543,7 @@ impl DriverAdapter for PlotterAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
+        parent: std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
     > {
@@ -560,8 +562,8 @@ impl DriverAdapter for PlotterAdapter {
             }) as Box<dyn OpDispenser>)
         })
     }
-    fn display_preference(&self) -> nbrs_runtime::adapter::DisplayPreference {
-        nbrs_runtime::adapter::DisplayPreference::Off
+    fn display_preference(&self) -> nmbrs_runtime::adapter::DisplayPreference {
+        nmbrs_runtime::adapter::DisplayPreference::Off
     }
 
     /// Draw the final plot to the terminal exactly once, HERE, before the run
@@ -587,7 +589,7 @@ impl DriverAdapter for PlotterAdapter {
 struct PlotterDispenser {
     data: Arc<Mutex<PlotData>>,
     /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
-    canonical_kernel: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
+    canonical_kernel: std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>,
     /// Op-field templates snapshotted at `map_op`. Resolved per
     /// cycle via the generic `wires` API; typed `Value`s feed the
     /// numeric plot data store.
@@ -595,27 +597,29 @@ struct PlotterDispenser {
 }
 
 impl OpDispenser for PlotterDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
     fn execute<'a>(
         &'a self,
         _cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
         let wires = ctx.wires;
         Box::pin(async move {
-            let resolved = nbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
-                .map_err(|msg| {
-                    ExecutionError::Op(nbrs_runtime::adapter::AdapterError {
-                        error_name: "BindError".into(),
-                        message: msg,
-                        retryable: false,
-                    })
-                })?;
+            let resolved =
+                nmbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires).map_err(
+                    |msg| {
+                        ExecutionError::Op(nmbrs_runtime::adapter::AdapterError {
+                            error_name: "BindError".into(),
+                            message: msg,
+                            retryable: false,
+                        })
+                    },
+                )?;
             self.data.lock().unwrap().record(&resolved);
             Ok(OpResult {
                 body: None,
@@ -876,10 +880,10 @@ fn atty_stdout() -> bool {
 // =========================================================================
 
 inventory::submit! {
-    nbrs_runtime::adapter::AdapterRegistration {
+    nmbrs_runtime::adapter::AdapterRegistration {
         names: || &["plotter", "plot"],
         known_params: || &["mode", "fade", "lanes", "render", "width", "height", "no_color"],
-        display_preference: |_params| nbrs_runtime::adapter::DisplayPreference::Off,
+        display_preference: |_params| nmbrs_runtime::adapter::DisplayPreference::Off,
         supported_controls: || &[],
         create: |params| Box::pin(async move {
             let mode = params.get("mode").cloned().unwrap_or_else(|| "auto".into());
@@ -902,7 +906,7 @@ inventory::submit! {
                 .unwrap_or(false);
             Ok(std::sync::Arc::new(PlotterAdapter::with_config(PlotterConfig {
                 mode, fade, lanes, render, width, height, no_color,
-            })) as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
+            })) as std::sync::Arc<dyn nmbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -914,12 +918,12 @@ inventory::submit! {
 // share one adapter, avoiding the per-phase plot-state
 // reset that would otherwise wipe accumulated history.
 inventory::submit! {
-    nbrs_runtime::adapter::SharedDriverRegistration {
+    nmbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "plotter",
-        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
+        driver: nmbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nmbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
-            let mut k = nbrs_runtime::resource_pool::ResourceKey::new("plotter");
+            let mut k = nmbrs_runtime::resource_pool::ResourceKey::new("plotter");
             for field in ["mode", "fade", "lanes", "render", "width", "height", "no_color"] {
                 if let Some(v) = params.get(field) {
                     k = k.with(field, v.clone());

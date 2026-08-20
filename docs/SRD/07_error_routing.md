@@ -1,6 +1,6 @@
-# 07: Error Routing — Contract & Axioms (nbrs-errorhandler)
+# 07: Error Routing — Contract & Axioms (nmbrs-errorhandler)
 
-Front door for **nbrs-errorhandler** (layer L0, standalone): the reusable error-routing
+Front door for **nmbrs-errorhandler** (layer L0, standalone): the reusable error-routing
 primitive — pattern → handler-chain. Another **tight-contract** exemplar. Pillars 1+2 of
 the [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
@@ -18,7 +18,7 @@ zero internal dependencies (standalone).
 - **E2 — Router = ordered pattern → handler-chain.** First match wins within a scope;
   handlers compose (count, warn, retry, stop). [SRD 03].
 - **E3 — Standalone primitive.** The router knows nothing about activities. The engine
-  composes it (`nbrs-runtime::error_policy`); how error *handling* stays orthogonal to
+  composes it (`nmbrs-runtime::error_policy`); how error *handling* stays orthogonal to
   *stop conditions* is [SRD 82](82_uniform_execution_shells.md)/[SRD 83](83_stop_conditions.md).
 
 ## Mechanism (Pillar 3)
@@ -26,4 +26,4 @@ zero internal dependencies (standalone).
 the execution shells is [SRD 82](82_uniform_execution_shells.md) / [SRD 83](83_stop_conditions.md).
 
 ## See also
-`nbrs-errorhandler/src/lib.rs`; [SRD 03](03_error_handling.md); [SRD 82](82_uniform_execution_shells.md); [SRD 83](83_stop_conditions.md).
+`nmbrs-errorhandler/src/lib.rs`; [SRD 03](03_error_handling.md); [SRD 82](82_uniform_execution_shells.md); [SRD 83](83_stop_conditions.md).

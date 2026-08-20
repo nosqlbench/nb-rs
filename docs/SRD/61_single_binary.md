@@ -1,6 +1,6 @@
 # 61: Single Binary, Feature-Gated Drivers
 
-`nbrs` is the single user-facing CLI. Protocol-specific drivers
+`nmbrs` is the single user-facing CLI. Protocol-specific drivers
 that need heavy or non-portable build requirements (C++
 toolchain, system libraries) are gated behind Cargo features,
 so users compile in only what they need.
@@ -10,15 +10,15 @@ so users compile in only what they need.
 ## Architecture
 
 ```
-nbrs (single binary)
-├── nbrs-adapter-stdout              (always)
-├── nbrs-adapter-http                (always)
-├── nbrs-adapter-testkit             (always)
-├── nbrs-adapter-plotter             (always)
-├── nbrs-adapter-cql                 (always — common surface)
+nmbrs (single binary)
+├── nmbrs-adapter-stdout              (always)
+├── nmbrs-adapter-http                (always)
+├── nmbrs-adapter-testkit             (always)
+├── nmbrs-adapter-plotter             (always)
+├── nmbrs-adapter-cql                 (always — common surface)
 │   ├── engine-scylla feature        (default — pure-Rust)
 │   └── engine-cassandra-cpp feature (opt-in — needs libcassandra)
-└── nbrs-adapter-openapi             (openapi feature)
+└── nmbrs-adapter-openapi             (openapi feature)
 ```
 
 The default build picks up every adapter that compiles cleanly
@@ -27,7 +27,7 @@ toolchains.
 
 ---
 
-## Cargo features on `nbrs`
+## Cargo features on `nmbrs`
 
 | Feature | Default | Adds |
 |---------|---------|------|
@@ -35,7 +35,7 @@ toolchains.
 | `engine-cassandra-cpp` | no | DataStax Cassandra C++ driver. `cqldriver=cassandra-cpp`. Requires `libcassandra` + libuv + openssl on the host or via `adapters/cql/build.sh`. |
 | `all-engines` | no | Both CQL engines linked; runtime selection via `cqldriver=`. |
 | `openapi` | no | Adds `describe-openapi` and `run-openapi` subcommands that synthesize ops from an OpenAPI 3.x spec. |
-| `flamegraph` | no | Forwards to `nbrs-runtime/flamegraph` for built-in CPU profiling. |
+| `flamegraph` | no | Forwards to `nmbrs-runtime/flamegraph` for built-in CPU profiling. |
 
 ---
 
@@ -44,7 +44,7 @@ toolchains.
 ### Default (everything that needs no system toolchain)
 
 ```bash
-cargo build --release -p nbrs
+cargo build --release -p nmbrs
 ```
 
 ### Opt-in: cassandra-cpp engine
@@ -71,20 +71,20 @@ bash build.sh docker
 `build.sh cargo` invokes:
 
 ```bash
-cargo build --release -p nbrs --no-default-features \
+cargo build --release -p nmbrs --no-default-features \
     --features engine-cassandra-cpp
 ```
 
 Both engines together:
 
 ```bash
-cargo build --release -p nbrs --features all-engines
+cargo build --release -p nmbrs --features all-engines
 ```
 
 ### Opt-in: OpenAPI workload generation
 
 ```bash
-cargo build --release -p nbrs --features openapi
+cargo build --release -p nmbrs --features openapi
 ```
 
 Adds `describe-openapi` and `run-openapi` subcommands.
@@ -102,7 +102,7 @@ User-facing names (registered in inventory):
 - `adapter=cql`
 
 `adapter=cql` is a meta-adapter that resolves to a concrete
-engine via [`AliasResolverEntry`](../../nbrs-runtime/src/adapter.rs).
+engine via [`AliasResolverEntry`](../../nmbrs-runtime/src/adapter.rs).
 The user picks the engine with `cqldriver=scylla` /
 `cqldriver=cassandra-cpp`. Direct dispatch by engine name is
 intentionally not exposed — engines stay an internal concept.
@@ -110,11 +110,11 @@ intentionally not exposed — engines stay an internal concept.
 ```bash
 # Default — picks the lowest-rank engine (cassandra-cpp if both
 # are linked; scylla otherwise).
-nbrs run adapter=cql workload=...
+nmbrs run adapter=cql workload=...
 
 # Force a specific engine.
-nbrs run adapter=cql cqldriver=scylla
-nbrs run adapter=cql cqldriver=cassandra-cpp
+nmbrs run adapter=cql cqldriver=scylla
+nmbrs run adapter=cql cqldriver=cassandra-cpp
 ```
 
 ---
@@ -125,14 +125,14 @@ nbrs run adapter=cql cqldriver=cassandra-cpp
   one set of subcommand dispatch. No fork drift.
 - **Familiar Cargo idiom.** Users who already know how to
   `cargo build --features ...` for any other Rust crate can
-  drive nbrs the same way.
+  drive nmbrs the same way.
 - **Reusable glue.** TUI observer, post-run summary, completion
-  shell — all live in `nbrs-tui` / `nbrs-runtime` / `nbrs-workload`
+  shell — all live in `nmbrs-tui` / `nmbrs-runtime` / `nmbrs-workload`
   and are reachable from any future binary that wants them.
-- **Honest minimal default.** `cargo build -p nbrs` builds
+- **Honest minimal default.** `cargo build -p nmbrs` builds
   cleanly on a stock Rust toolchain with no system packages.
 - **Independent driver evolution.** Driver crates
-  (`nbrs-adapter-cql`, `nbrs-adapter-openapi`) version
+  (`nmbrs-adapter-cql`, `nmbrs-adapter-openapi`) version
   independently. A driver-only release doesn't churn the
   user-facing CLI.
 
@@ -142,14 +142,14 @@ nbrs run adapter=cql cqldriver=cassandra-cpp
 
 | Driver | Crate | Feature flag | Status |
 |--------|-------|--------------|--------|
-| Scylla / Cassandra | `nbrs-adapter-cql` | `engine-scylla` | Default |
-| Cassandra (C++) | `nbrs-adapter-cql` | `engine-cassandra-cpp` | Implemented |
-| OpenAPI 3.x | `nbrs-adapter-openapi` | `openapi` | Implemented |
-| gRPC | `nbrs-adapter-grpc` (planned) | `grpc` | Planned |
-| SQL (sqlx) | `nbrs-adapter-sql` (planned) | `sql` | Planned |
-| Redis | `nbrs-adapter-redis` (planned) | `redis` | Planned |
+| Scylla / Cassandra | `nmbrs-adapter-cql` | `engine-scylla` | Default |
+| Cassandra (C++) | `nmbrs-adapter-cql` | `engine-cassandra-cpp` | Implemented |
+| OpenAPI 3.x | `nmbrs-adapter-openapi` | `openapi` | Implemented |
+| gRPC | `nmbrs-adapter-grpc` (planned) | `grpc` | Planned |
+| SQL (sqlx) | `nmbrs-adapter-sql` (planned) | `sql` | Planned |
+| Redis | `nmbrs-adapter-redis` (planned) | `redis` | Planned |
 
 Each new driver follows the same pattern: a library crate that
-implements [`DriverAdapter`](../../nbrs-runtime/src/adapter.rs)
+implements [`DriverAdapter`](../../nmbrs-runtime/src/adapter.rs)
 or registers an `AliasResolverEntry`, plus a feature flag on
-`nbrs` that pulls it in.
+`nmbrs` that pulls it in.

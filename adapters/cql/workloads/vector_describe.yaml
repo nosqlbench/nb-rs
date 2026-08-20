@@ -17,10 +17,10 @@
 # covers every field each of them touched.
 #
 # Usage:
-#   nbrs run workload=workloads/vector_describe.yaml
-#   nbrs run workload=workloads/vector_describe.yaml dataset=glove-25
-#   nbrs run workload=workloads/vector_describe.yaml dataset=example prefix=label_
-#   nbrs run workload=workloads/vector_describe.yaml dataset=example qi=42
+#   nmbrs run workload=workloads/vector_describe.yaml
+#   nmbrs run workload=workloads/vector_describe.yaml dataset=glove-25
+#   nmbrs run workload=workloads/vector_describe.yaml dataset=example prefix=label_
+#   nmbrs run workload=workloads/vector_describe.yaml dataset=example qi=42
 
 description: |
   Describe everything knowable about a vector dataset and each of

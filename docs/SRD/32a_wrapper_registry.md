@@ -2,18 +2,18 @@
 
 **Status:** Pushes 1–4 shipped 2026-05-07, including
 `--wrap-order` and `--wrap-default-order` CLI flags
-(env-equivalent `NBRS_WRAP_ORDER` / `NBRS_WRAP_DEFAULT_ORDER`
+(env-equivalent `NMBRS_WRAP_ORDER` / `NMBRS_WRAP_DEFAULT_ORDER`
 auto-derived per SRD-04). Registry + resolver + cascade
 replacement + Info-level assignment logging (Push 1);
 parse-time field ownership / misplaced-field guard (Push 2);
 workload-root + per-op + CLI order overrides (Push 3);
-`nbrs describe wrappers` / `nbrs describe op` (Push 4).
+`nmbrs describe wrappers` / `nmbrs describe op` (Push 4).
 Refinement of SRD-32.
 **Owner:** runtime / executor / wrappers
-**Implementation target:** `nbrs-runtime/src/wrappers.rs` (registry
-  surface), `nbrs-runtime/src/wrappers/registry.rs` (new),
-  `nbrs-runtime/src/activity.rs` (composition loop),
-  `nbrs-workload/src/model.rs` (field-ownership routing)
+**Implementation target:** `nmbrs-runtime/src/wrappers.rs` (registry
+  surface), `nmbrs-runtime/src/wrappers/registry.rs` (new),
+  `nmbrs-runtime/src/activity.rs` (composition loop),
+  `nmbrs-workload/src/model.rs` (field-ownership routing)
 **Cross-refs:** SRD-32 (dispenser wrappers — load-bearing),
   SRD-30 (adapter interface — core/adapter field split),
   SRD-31 (op pipeline), SRD-13d Phase 9 (op-template scope)
@@ -59,7 +59,7 @@ Three problems:
 3. **Order is non-discoverable.** A user who wants
    "rate outside the conditional" has no surface to
    configure that, and no way to inspect the current order
-   from `nbrs describe`.
+   from `nmbrs describe`.
 
 This SRD specifies a **wrapper registry** that names every
 wrapper, declares the op-template fields each wrapper owns,
@@ -131,7 +131,7 @@ The load-bearing rule:
 ## Wrapper registry
 
 One entry per wrapper, consolidated in
-`nbrs-runtime/src/wrappers/registry.rs`. The registry is the
+`nmbrs-runtime/src/wrappers/registry.rs`. The registry is the
 single source of truth for "what wrappers exist, which fields
 they own, when they apply, and where they stack."
 
@@ -450,7 +450,7 @@ pub trait WrapperResolver: Send + Sync + 'static {
     /// Resolve the wrapper composition for one op template.
     fn resolve(
         &self,
-        template: &nbrs_workload::model::ParsedOp,
+        template: &nmbrs_workload::model::ParsedOp,
         registry: &WrapperRegistry,
     ) -> Result<WrapperPlan, ResolveError>;
 }
@@ -463,7 +463,7 @@ pub struct WrapperPlan {
     pub stack: Vec<&'static WrapperRegistration>,
     /// Diagnostic record of which wrappers triggered
     /// directly vs. via transitive activation. Used by
-    /// `nbrs describe op` to explain why each wrapper
+    /// `nmbrs describe op` to explain why each wrapper
     /// is present.
     pub provenance: Vec<WrapperActivation>,
 }
@@ -540,7 +540,7 @@ wrappers (typically ≤ 8). Negligible per op template.
   level default order is the only tiebreaker for
   unconstrained pairs.
 - **Diagnostic completeness.** Every wrapper in the plan
-  carries a `WrapperActivation` so `nbrs describe op` can
+  carries a `WrapperActivation` so `nmbrs describe op` can
   explain the presence of any wrapper without re-running
   the resolver.
 - **Single responsibility.** The resolver does NOT build
@@ -579,7 +579,7 @@ it via:
 
 - `--wrap-default-order <list>` on the CLI (SRD-04 umbrella)
 - `wrappers: { default_order: [...] }` at workload root
-- `NBRS_WRAP_DEFAULT_ORDER=<list>` env
+- `NMBRS_WRAP_DEFAULT_ORDER=<list>` env
 
 The override is **validated against the constraint graph
 at startup** before any phase runs:
@@ -679,7 +679,7 @@ Rules:
 
 ```
 --wrap-order <list>
-NBRS_WRAP_ORDER=<list>
+NMBRS_WRAP_ORDER=<list>
 ```
 
 Comma-separated. Applies to every op template in the run.
@@ -914,7 +914,7 @@ plan accurately reflects the chain, the resolver
 needs no session awareness.
 
 Implementation lives in
-`nbrs-runtime/src/activity.rs::run_with_adapters`: at
+`nmbrs-runtime/src/activity.rs::run_with_adapters`: at
 session startup, if any adapter has been substituted
 with the dryrun stand-in (signalled via
 `DriverAdapter::dry_run_mode`), every op template's
@@ -958,10 +958,10 @@ the mistake if they try.
 
 ## Discoverability
 
-### `nbrs describe wrappers`
+### `nmbrs describe wrappers`
 
 ```
-$ nbrs describe wrappers
+$ nmbrs describe wrappers
 NAME       RANK  OWNED FIELDS                                                                        TRIGGER
 traverse   -100  (none — always-on)                                                                  always
 rate       0  rate                                                                                rate set
@@ -972,13 +972,13 @@ result      500  (none — reads result: wires)                                 
 metrics     600  (none — applies to every op)                                                        always
 ```
 
-### `nbrs describe op <workload> <op>`
+### `nmbrs describe op <workload> <op>`
 
 Renders the actual stack that *will* be applied to the op
 under the current workload + CLI override:
 
 ```
-$ nbrs describe op full_cql_vector.yaml indexes_built_cass
+$ nmbrs describe op full_cql_vector.yaml indexes_built_cass
 op 'indexes_built_cass' (phase: await_index)
   wrapper stack (innermost → outermost):
     1. traverse
@@ -990,7 +990,7 @@ op 'indexes_built_cass' (phase: await_index)
 
 ### Workload validation
 
-`nbrs check <workload>` walks every op template and validates
+`nmbrs check <workload>` walks every op template and validates
 field ownership per the registry. Misplaced or unknown fields
 are reported with file/line locations, same shape as adapter-
 field validation today.
@@ -1091,10 +1091,10 @@ without growing the special-case validator surface.
 
 ### Push 4 — discoverability
 
-- `nbrs describe wrappers` — registry dump.
-- `nbrs describe op <workload> <op>` — effective stack
+- `nmbrs describe wrappers` — registry dump.
+- `nmbrs describe op <workload> <op>` — effective stack
   rendering, including overrides.
-- `nbrs check <workload>` — walk every op, validate field
+- `nmbrs check <workload>` — walk every op, validate field
   ownership and order.
 
 ---
@@ -1175,7 +1175,7 @@ boilerplate stays at Debug.
 
 A workload's full assignment surface for every op is
 fixed by the parsed templates — running the resolver in
-"plan only" mode (`nbrs describe op …`) reproduces the
+"plan only" mode (`nmbrs describe op …`) reproduces the
 same Info output without firing the run, so
 post-hoc inspection matches what operators saw at start.
 
@@ -1193,7 +1193,7 @@ post-hoc inspection matches what operators saw at start.
   kind of signal a verbose-by-default surface should
   preserve. Don't second-guess the operator. Operators
   who want the noise compressed have `loglevel=warn` and
-  `nbrs describe op <name>` on demand.
+  `nmbrs describe op <name>` on demand.
 - **Per-phase overrides** — not in scope for the initial
   push. Workload-root + per-op covers every concrete use
   case raised so far; phase-level overrides can be added

@@ -1,10 +1,10 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # reports_coverage.yaml — Thematic coverage workload for the
 # unified `report:` block (SRD 46).
 #
 # Workload-root `report:` is the only scope wired today, so this
 # workload exercises every item-kind / directive shape in one
-# rich `report:` block. The matching `nbrs/tests/reports.rs`
+# rich `report:` block. The matching `nmbrs/tests/reports.rs`
 # tests each run the workload once (the cheap shared run is
 # memoised across tests via a `OnceLock`) and assert on different
 # structural slices of the rendered `<session>/summary.md`.
@@ -18,7 +18,7 @@
 #   - `defaults` cascade — group-level directive line
 #
 # Run:
-#   nbrs run workload=examples/workloads/reports_coverage.yaml
+#   nmbrs run workload=examples/workloads/reports_coverage.yaml
 #
 # After a run the session directory contains:
 #   summary.md       — assembled report (workload-root + tables)
@@ -91,5 +91,5 @@ scenarios:
   default:
     - emit_phase
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

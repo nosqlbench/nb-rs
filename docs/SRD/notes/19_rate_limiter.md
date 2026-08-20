@@ -1,7 +1,7 @@
 # Rate Limiter — Design Brief
 
 Study of the nosqlbench SimRate implementation and implications for
-nb-rs.
+nmbrs.
 
 ---
 

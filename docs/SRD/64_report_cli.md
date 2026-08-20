@@ -4,7 +4,7 @@
 > Iterating before code lands.
 
 This SRD specifies the **command-line surface** for SRD-46
-report items: the `nbrs report` family, its subcommands,
+report items: the `nmbrs report` family, its subcommands,
 their dynamic completion behavior, and the
 "render-then-promote-to-workload" workflow.
 
@@ -24,7 +24,7 @@ for reproducibility), SRD-47/48 (metricsql for plot/table data).
 
 ## 1. Goals
 
-1. **Discoverability via shell completion.** `nbrs report
+1. **Discoverability via shell completion.** `nmbrs report
    plot <TAB>` surfaces every valid directive name, and
    each directive's value position offers the canonical
    value list — palette names, agg functions, metric names
@@ -33,7 +33,7 @@ for reproducibility), SRD-47/48 (metricsql for plot/table data).
    discover via tab-completion at the CLI.
 
 2. **Iterative single-item rendering.** A user can run one
-   `nbrs report plot recall_at_k10 over limit by profile ...`
+   `nmbrs report plot recall_at_k10 over limit by profile ...`
    and have exactly that one component rendered into the
    active session directory. No surrounding YAML mutation,
    no rerun of the workload — just the renderer pointed at
@@ -56,29 +56,29 @@ for reproducibility), SRD-47/48 (metricsql for plot/table data).
 
 ## 2. Subcommand surface
 
-`nbrs report <kind> <name> [directives...]` is the canonical
+`nmbrs report <kind> <name> [directives...]` is the canonical
 form. Each `<kind>` is one of the SRD-46 component kinds:
 
 | Subcommand | Kind | Notes |
 | --- | --- | --- |
-| `nbrs report plot <name> ...` | `Plot` | renders PNG + section in markdown |
-| `nbrs report table <name> ...` | `Table` | renders markdown table |
-| `nbrs report text <name> ...` | `Text` | prose section; body via `--body` or `--body-file` |
-| `nbrs report file <stem>` | `File` | scope directive; only meaningful with `--add` |
-| `nbrs report details [<name>]` | `Details` | auto-injected run-context block; explicit form lets the user pin its position |
+| `nmbrs report plot <name> ...` | `Plot` | renders PNG + section in markdown |
+| `nmbrs report table <name> ...` | `Table` | renders markdown table |
+| `nmbrs report text <name> ...` | `Text` | prose section; body via `--body` or `--body-file` |
+| `nmbrs report file <stem>` | `File` | scope directive; only meaningful with `--add` |
+| `nmbrs report details [<name>]` | `Details` | auto-injected run-context block; explicit form lets the user pin its position |
 
 Plus management subcommands:
 
 | Subcommand | Purpose |
 | --- | --- |
-| `nbrs report list` | list every named item resolved against `--workload` (or stored in the session db) |
-| `nbrs report all` | render every named item in declaration order |
-| `nbrs report figure <N>` | render the Nth figure-numbered item |
-| `nbrs report show <name>` | print the resolved spec for a named item without rendering |
+| `nmbrs report list` | list every named item resolved against `--workload` (or stored in the session db) |
+| `nmbrs report all` | render every named item in declaration order |
+| `nmbrs report figure <N>` | render the Nth figure-numbered item |
+| `nmbrs report show <name>` | print the resolved spec for a named item without rendering |
 
-The existing `nbrs plot` and `nbrs table` aliases remain
+The existing `nmbrs plot` and `nmbrs table` aliases remain
 (SRD-46 mentions them) but are documented as kind-filtered
-shorthands for `nbrs report plot|table`. No new aliases.
+shorthands for `nmbrs report plot|table`. No new aliases.
 
 ### 2.1 Component-name positional
 
@@ -131,7 +131,7 @@ one promotion path.
 
 ### 3.1 Why flag-form, not directive-string-form
 
-CLIs that accept `nbrs report plot recall over limit by
+CLIs that accept `nmbrs report plot recall over limit by
 profile where dataset=glove` look ergonomic at a demo but
 fight the shell:
 
@@ -157,8 +157,8 @@ unchanged); the CLI just doesn't accept that flavor.
 
 ### 4.1 Tap progression
 
-`nbrs report` is **Tap 2** (secondary commands, post-run
-analysis), matching `nbrs summary` today.
+`nmbrs report` is **Tap 2** (secondary commands, post-run
+analysis), matching `nmbrs summary` today.
 
 ### 4.2 Completion cascade
 
@@ -166,9 +166,9 @@ Completion at each cursor position is decided by three
 inputs, in order:
 
 1. **The kind subcommand** in the current command line.
-   `nbrs report plot --<TAB>` offers plot-applicable
+   `nmbrs report plot --<TAB>` offers plot-applicable
    directive flags only; `--xlabel` doesn't appear under
-   `nbrs report table`.
+   `nmbrs report table`.
 2. **The active session db.** Resolved from
    `--db <path>` / `--session <name>` / `logs/latest`
    (in that order). Metric names, x-axis keys, series keys,
@@ -196,7 +196,7 @@ inputs, in order:
 | `--session` | session names under `logs/` |
 
 Closed sets live in one Rust source-of-truth (likely
-`nbrs_workload::report::vocab`) consulted by both the CLI
+`nmbrs_workload::report::vocab`) consulted by both the CLI
 parser (for validation) and the completion node (for
 suggestions). Adding a new palette adds it once; both
 surfaces update.
@@ -206,13 +206,13 @@ surfaces update.
 The intended flow:
 
 ```
-nbrs report <TAB>           → plot table text file details list all show figure ...
-nbrs report plot <TAB>      → (existing names) auto
-nbrs report plot recall_q1 --<TAB>
+nmbrs report <TAB>           → plot table text file details list all show figure ...
+nmbrs report plot <TAB>      → (existing names) auto
+nmbrs report plot recall_q1 --<TAB>
                             → --over --by --where --agg --label --palette ...
-nbrs report plot recall_q1 --over <TAB>
+nmbrs report plot recall_q1 --over <TAB>
                             → cycle limit profile dataset ... (label keys in db)
-nbrs report plot recall_q1 --over limit --by <TAB>
+nmbrs report plot recall_q1 --over limit --by <TAB>
                             → profile dataset table optimize_for ...
 ```
 
@@ -373,7 +373,7 @@ the CLI errors with the parser's diagnostic.
 ### 6.5 Backup + locking on every workload mutation
 
 Every workload-mutating CLI invocation (`--add`,
-`--replace`, `nbrs report rename`, future `nbrs report rm`
+`--replace`, `nmbrs report rename`, future `nmbrs report rm`
 etc.) writes a **backup of the pre-edit workload** before
 touching the on-disk file. Backups use a stable-name
 convention so re-running edits doesn't blow up disk under
@@ -398,11 +398,11 @@ workload file via `flock(LOCK_EX)` (Unix) /
 `LockFileEx` (Windows); on contention the second writer
 waits up to 5s then errors with the holding-pid (where
 known). Locks are advisory — they protect concurrent
-`nbrs` invocations, not arbitrary editors. An open
+`nmbrs` invocations, not arbitrary editors. An open
 editor holding the file in a buffer is the user's
 responsibility.
 
-### 6.6 `nbrs report rename <old> <new>`
+### 6.6 `nmbrs report rename <old> <new>`
 
 In-place rename of an existing item across the workload.
 Mechanics mirror `--add --replace`:
@@ -425,9 +425,9 @@ Mechanics mirror `--add --replace`:
    it"). That's a destructive operation; it's spelled out
    explicitly so it can't happen by accident.
 
-`nbrs report rename` does **not** render anything — it's a
+`nmbrs report rename` does **not** render anything — it's a
 pure metadata edit. To re-render after rename, run the
-appropriate `nbrs report <kind> <new>` (no `--add`).
+appropriate `nmbrs report <kind> <new>` (no `--add`).
 
 ---
 
@@ -437,15 +437,15 @@ Items rendered without `--add` live under
 `<session>/scratch/`. They are **session-local**,
 disposable, and out of `summary.md`'s assembly path.
 
-`nbrs report scratch list` lists scratch items in the
+`nmbrs report scratch list` lists scratch items in the
 active session.
 
-`nbrs report scratch promote <name> [--add ...]` is sugar
-for `nbrs report show <session-stored-name> --add ...`,
+`nmbrs report scratch promote <name> [--add ...]` is sugar
+for `nmbrs report show <session-stored-name> --add ...`,
 turning a scratch item into a workload definition without
 re-typing every directive.
 
-`nbrs report scratch clean` deletes the scratch directory.
+`nmbrs report scratch clean` deletes the scratch directory.
 
 Scratch items don't collide with workload-defined names —
 they live in their own namespace per session.
@@ -454,7 +454,7 @@ they live in their own namespace per session.
 
 ## 8. Idempotence + reproducibility
 
-A given `nbrs report ...` invocation must produce the same
+A given `nmbrs report ...` invocation must produce the same
 artifact bytes given the same session db. This is already
 true of the underlying renderers; the CLI's contribution is:
 
@@ -497,21 +497,21 @@ explicitly rejected (cf. memory: "Never Ignore Silently").
 ## 10. Implementation pointers
 
 - **Single grammar registry.** A new module
-  `nbrs-workload::report::vocab` exposes:
+  `nmbrs-workload::report::vocab` exposes:
   - `KINDS: &[Kind]`
   - `directives_for(kind) -> &[Directive]` where
     `Directive { flag, yaml_directive, value_provider, ... }`
   - `value_vocabulary(kind, flag) -> ValueProvider`
   consumed by:
-  - `nbrs/src/completion.rs::report_node()` for completion,
-  - `nbrs/src/report_cmd.rs` for arg parsing,
-  - `nbrs-workload/src/report.rs` for YAML parsing,
+  - `nmbrs/src/completion.rs::report_node()` for completion,
+  - `nmbrs/src/report_cmd.rs` for arg parsing,
+  - `nmbrs-workload/src/report.rs` for YAML parsing,
   - the `--add` emitter for YAML round-trip.
 
-- **Workload mutation primitive.** `nbrs-workload::edit`
+- **Workload mutation primitive.** `nmbrs-workload::edit`
   (new module) exposes the read → lock → backup-rotate →
   mutate → roundtrip-parse → write transaction as a single
-  function. `--add`, `--replace`, and `nbrs report rename`
+  function. `--add`, `--replace`, and `nmbrs report rename`
   all dispatch into it; tests don't reach for backup files
   individually. Failure at any step restores from the
   in-memory pre-edit copy and rotates the backup pair
@@ -523,7 +523,7 @@ explicitly rejected (cf. memory: "Never Ignore Silently").
 
 - **Session resolution helper.** Already exists in spirit
   across `replay.rs` / `summary.rs`; consolidate into one
-  `nbrs_runtime::session::resolve_active(args, env) -> SessionHandle`
+  `nmbrs_runtime::session::resolve_active(args, env) -> SessionHandle`
   that all post-run commands share.
 
 - **Workload edit.** Use a YAML AST library that preserves
@@ -553,13 +553,13 @@ rationale survives:
   hard-error if the data doesn't support it). See §6.1.
 - **`figure N` does not drive `--add`.** Figure numbers
   shift as items move; only stable item names anchor a
-  promotion. `nbrs report figure 3` is render-only.
+  promotion. `nmbrs report figure 3` is render-only.
 - **Backup + locking on every workload mutation.** Every
   `--add` / `--replace` / `rename` writes
   `<workload>.bak` (rotating `<workload>.bak.prev` to keep
   a two-deep stable history) under a cooperative file
-  lock that serialises concurrent `nbrs` writers. See §6.5.
-- **`nbrs report rename` is in scope.** Detailed in §6.6
+  lock that serialises concurrent `nmbrs` writers. See §6.5.
+- **`nmbrs report rename` is in scope.** Detailed in §6.6
   alongside the other promotion flows; not parked.
 ---
 
@@ -569,28 +569,28 @@ A lightweight end-to-end script that proves the contract:
 
 ```text
 1. Run a tiny workload with no `report:` block.
-2. nbrs report plot demo --over cycle --metric throughput
+2. nmbrs report plot demo --over cycle --metric throughput
    → produces logs/<session>/scratch/demo.md and
      logs/<session>/plot_demo.png. No workload mutation.
-3. nbrs report plot demo --over cycle --metric throughput \
+3. nmbrs report plot demo --over cycle --metric throughput \
                         --label "Demo" --add
    → re-renders identical artifact + writes
      `report.cli_added.demo: |\n  plot demo\n    over cycle\n    metric=throughput\n    label "Demo"`
      to the workload's root report block. Backup at
      <workload>.bak holds the pre-edit content.
-4. nbrs report plot demo --over cycle --metric throughput \
+4. nmbrs report plot demo --over cycle --metric throughput \
                         --label "Demo v2" --add
    → errors with "name 'demo' already defined at root; pass
      --replace or --rename".
-5. nbrs report plot demo --over cycle --metric throughput \
+5. nmbrs report plot demo --over cycle --metric throughput \
                         --label "Demo v2" --add --replace
    → in-place updates the existing block's `label`. Backup
      pair rotates: <workload>.bak → .bak.prev, current
      state → .bak.
-6. nbrs report rename demo demo_v2
+6. nmbrs report rename demo demo_v2
    → renames the item across the workload. Same
      backup-rotate transaction as --add.
-7. nbrs report plot demo_v3 --over cycle --metric throughput \
+7. nmbrs report plot demo_v3 --over cycle --metric throughput \
                             --add --contextual scenario
    → errors if no scenario in the active session uniquely
      covers the row stream; otherwise anchors the new item

@@ -14,5 +14,5 @@ all polydat-internal contracts. Their authoritative
 location is now inside the polydat crate, where the JIT
 implementation lives.
 
-The linked polydat docs are authoritative. For the public contract nb-rs depends
+The linked polydat docs are authoritative. For the public contract nmbrs depends
 on, see [SRD 09 Polydat Contract](09_polydat_contract.md).

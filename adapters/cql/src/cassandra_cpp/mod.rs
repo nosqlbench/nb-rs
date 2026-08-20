@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! CQL/Cassandra adapter for nb-rs.
+//! CQL/Cassandra adapter for nmbrs.
 //!
 //! Uses the Apache Cassandra C++ driver via the `cassandra-cpp`
 //! crate. Compatible with Apache Cassandra, ScyllaDB, and DataStax
@@ -76,10 +76,10 @@ fn apply_log_level_once(params: &HashMap<String, String>) -> Result<(), String> 
 }
 
 use crate::common::{CqlConfig, CqlConsistency, STMT_FIELD_NAMES};
-use nbrs_runtime::adapter::{
+use nmbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResultBody,
 };
-use nbrs_workload::model::ParsedOp;
+use nmbrs_workload::model::ParsedOp;
 
 // Bridge: `crate::common::CqlConsistency` → `cass::Consistency`.
 // Engine-specific because each driver has its own consistency
@@ -345,7 +345,7 @@ unsafe impl Sync for CqlAdapter {}
 ///   `wires.get(name)` at cycle time.
 ///
 /// Honours the same brace-discipline as
-/// `nbrs_workload::bindpoints::extract_bind_points`: `{` followed
+/// `nmbrs_workload::bindpoints::extract_bind_points`: `{` followed
 /// by `'`/`"` is a CQL map-literal opener (emit the brace,
 /// continue scanning so nested `{name}` placeholders inside still
 /// resolve); depth-tracking finds the true matching `}`;
@@ -433,10 +433,10 @@ where
         // (also wrong — the cluster would reject it). The bare
         // name carries through; the spec is recovered separately
         // at binder-construction time via `extract_bind_points`.
-        let (body_bare, _spec) = nbrs_workload::bindpoints::split_lvalue_spec(body);
+        let (body_bare, _spec) = nmbrs_workload::bindpoints::split_lvalue_spec(body);
         // Qualifier-prefixed (`{bind:name}`, etc.) and non-bare
         // identifiers pass through verbatim — same discipline as
-        // `nbrs_runtime::wires::substitute_via_wires`.
+        // `nmbrs_runtime::wires::substitute_via_wires`.
         if body_bare.contains(':')
             || !body_bare
                 .chars()
@@ -687,8 +687,8 @@ impl CqlAdapter {
                         || msg.contains("keyspace")
                         || msg.contains("not found")
                     {
-                        nbrs_runtime::observer::log(
-                            nbrs_runtime::observer::LogLevel::Warn,
+                        nmbrs_runtime::observer::log(
+                            nmbrs_runtime::observer::LogLevel::Warn,
                             &format!(
                                 "cql/cassandra-cpp: keyspace '{}' not found, connecting without keyspace",
                                 config.keyspace
@@ -768,7 +768,7 @@ impl DriverAdapter for CqlAdapter {
         "cql"
     }
 
-    fn default_status_metrics(&self) -> Vec<nbrs_runtime::adapter::StatusMetric> {
+    fn default_status_metrics(&self) -> Vec<nmbrs_runtime::adapter::StatusMetric> {
         crate::common::default_status_metrics()
     }
 
@@ -786,11 +786,11 @@ impl DriverAdapter for CqlAdapter {
 
     fn declare_controls(
         &self,
-        parent: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
+        parent: &Arc<std::sync::RwLock<nmbrs_metrics::component::Component>>,
     ) {
-        use nbrs_metrics::component::{Component, attach};
-        use nbrs_metrics::controls::SyncApplier;
-        use nbrs_metrics::labels::Labels;
+        use nmbrs_metrics::component::{Component, attach};
+        use nmbrs_metrics::controls::SyncApplier;
+        use nmbrs_metrics::labels::Labels;
 
         // One subcomponent per adapter instance, attached to the
         // activity. The name `cql` matches the user-facing adapter
@@ -918,8 +918,8 @@ impl DriverAdapter for CqlAdapter {
             // position. Bind points that the structural resolver
             // inlined (workload-param substitutions like {keyspace}
             // / {table}) drop out of both lists symmetrically.
-            let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
-                use nbrs_workload::bindpoints::{BindPoint, extract_bind_points};
+            let lvalue_specs: Vec<Option<nmbrs_workload::bindpoints::LvalueSpec>> = {
+                use nmbrs_workload::bindpoints::{BindPoint, extract_bind_points};
                 extract_bind_points(&stmt_text)
                     .into_iter()
                     .filter_map(|bp| match bp {
@@ -1101,7 +1101,7 @@ impl DriverAdapter for CqlAdapter {
                         let mut slot_build_err: Option<String> = None;
                         let slots: Vec<polydat::binder::BinderSlot> = (0..bind_names.len())
                         .map(|i| {
-                            use nbrs_workload::bindpoints::LvalueSpec;
+                            use nmbrs_workload::bindpoints::LvalueSpec;
                             let name = &bind_names[i];
                             // Cluster-side polydat type for this `?`
                             // position — always computed (used in all
@@ -1161,8 +1161,8 @@ impl DriverAdapter for CqlAdapter {
                                         // silent — they're honest, deliberate
                                         // mappings.
                                         if let Some(cql_label) = policy.fallback_label() {
-                                            nbrs_runtime::diag!(
-                                                nbrs_runtime::observer::LogLevel::Warn,
+                                            nmbrs_runtime::diag!(
+                                                nmbrs_runtime::observer::LogLevel::Warn,
                                                 "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
                                                  wire `{name}`: CQL type {cql_label} has no precise \
                                                  polydat mapping yet — slot accepts any rvalue via \
@@ -1233,8 +1233,8 @@ impl DriverAdapter for CqlAdapter {
                                 binders,
                                 batch_type,
                                 retry_safe: batch_retry_safe,
-                                rows_timer: nbrs_metrics::instruments::timer::Timer::new(
-                                    nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
+                                rows_timer: nmbrs_metrics::instruments::timer::Timer::new(
+                                    nmbrs_metrics::labels::Labels::of("name", "rows_inserted"),
                                 ),
                                 rows_total: std::sync::atomic::AtomicU64::new(0),
                                 batch_writes: std::sync::atomic::AtomicU64::new(0),
@@ -1282,7 +1282,7 @@ impl DriverAdapter for CqlAdapter {
     /// goes away.
     ///
     /// This override fires from
-    /// [`nbrs_runtime::resource_pool::SharedAdapterResource::close`]
+    /// [`nmbrs_runtime::resource_pool::SharedAdapterResource::close`]
     /// when the pool determines a shared CQL adapter has no
     /// remaining users.
     fn shutdown<'a>(
@@ -1293,20 +1293,20 @@ impl DriverAdapter for CqlAdapter {
             let timeout = std::time::Duration::from_secs(5);
             match tokio::time::timeout(timeout, close_future).await {
                 Ok(Ok(())) => {
-                    nbrs_runtime::diag!(
-                        nbrs_runtime::observer::LogLevel::Info,
+                    nmbrs_runtime::diag!(
+                        nmbrs_runtime::observer::LogLevel::Info,
                         "cql session closed cleanly",
                     );
                 }
                 Ok(Err(e)) => {
-                    nbrs_runtime::diag!(
-                        nbrs_runtime::observer::LogLevel::Error,
+                    nmbrs_runtime::diag!(
+                        nmbrs_runtime::observer::LogLevel::Error,
                         "cql session close returned error: {e}; falling back to Drop teardown",
                     );
                 }
                 Err(_) => {
-                    nbrs_runtime::diag!(
-                        nbrs_runtime::observer::LogLevel::Error,
+                    nmbrs_runtime::diag!(
+                        nmbrs_runtime::observer::LogLevel::Error,
                         "cql session close timed out after 5s; falling back to Drop teardown",
                     );
                 }
@@ -1371,7 +1371,7 @@ struct CqlRawDispenser {
     /// string fast-path. Non-empty chain → execute() builds
     /// a Statement, applies modifiers, then runs the explicit
     /// statement-path execute.
-    modifiers: nbrs_runtime::op_modifier::ModifierChain<cass::Statement>,
+    modifiers: nmbrs_runtime::op_modifier::ModifierChain<cass::Statement>,
 }
 
 impl OpDispenser for CqlRawDispenser {
@@ -1386,26 +1386,26 @@ impl OpDispenser for CqlRawDispenser {
         ))
     }
 
-    fn describe_resolved(&self, wires: &dyn nbrs_runtime::wires::WireSource) -> Option<String> {
+    fn describe_resolved(&self, wires: &dyn nmbrs_runtime::wires::WireSource) -> Option<String> {
         // SRD-68 Push 5: render the post-substitution statement
         // through the same `substitute_via_wires` path the cycle
         // uses so the operator sees exactly what was sent. Bind
         // failures (unresolved name) surface in the message; the
         // describe-resolved is best-effort, so a None on error is
         // fine.
-        nbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires)
+        nmbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires)
             .ok()
             .map(|s| format!("CQL raw: {}", flatten_one_line(&s)))
     }
 
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
@@ -1421,7 +1421,7 @@ impl OpDispenser for CqlRawDispenser {
             // SRD-68 invariant I-1; legacy `fields.get_str` path
             // retired for CQL raw mode.
             let stmt_text_owned =
-                nbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires).map_err(
+                nmbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires).map_err(
                     |msg| {
                         ExecutionError::Op(AdapterError {
                             error_name: "unresolved_bind_point".into(),
@@ -1588,7 +1588,7 @@ struct CqlPreparedDispenser {
     /// SRD 73 universal per-op field overrides applied per
     /// execute after the session-level consistency is set.
     /// Empty chain is a hot-path no-op.
-    modifiers: nbrs_runtime::op_modifier::ModifierChain<cass::Statement>,
+    modifiers: nmbrs_runtime::op_modifier::ModifierChain<cass::Statement>,
 }
 
 impl OpDispenser for CqlPreparedDispenser {
@@ -1599,11 +1599,11 @@ impl OpDispenser for CqlPreparedDispenser {
         ))
     }
 
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
-    fn describe_resolved(&self, wires: &dyn nbrs_runtime::wires::WireSource) -> Option<String> {
+    fn describe_resolved(&self, wires: &dyn nmbrs_runtime::wires::WireSource) -> Option<String> {
         // SRD-68 Push 5: walk the prepared text and replace each
         // `?` placeholder with the bound name's value pulled
         // through the dispenser's wires surface. The output is
@@ -1638,7 +1638,7 @@ impl OpDispenser for CqlPreparedDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
@@ -1858,7 +1858,7 @@ struct CqlBatchDispenser {
     retry_safe: bool,
     /// Per-row timer: records amortized latency (batch_nanos / row_count)
     /// for each row in the batch. Enables rows/s throughput in the summary.
-    rows_timer: nbrs_metrics::instruments::timer::Timer,
+    rows_timer: nmbrs_metrics::instruments::timer::Timer,
     /// Cumulative row counter for the status line. Not reset on snapshot.
     rows_total: std::sync::atomic::AtomicU64,
     /// Cumulative count of batch ops that actually wrote ≥1 row — one
@@ -1883,7 +1883,7 @@ struct CqlBatchDispenser {
     /// so these target the `cass::Batch` itself — the driver reads the batch's
     /// own aspects (consistency, request timeout, tracing), NOT those of the
     /// member statements added to it.
-    modifiers: nbrs_runtime::op_modifier::ModifierChain<cass::Batch>,
+    modifiers: nmbrs_runtime::op_modifier::ModifierChain<cass::Batch>,
 }
 
 impl OpDispenser for CqlBatchDispenser {
@@ -1891,11 +1891,11 @@ impl OpDispenser for CqlBatchDispenser {
         Some(format!("CQL batch: {}", flatten_one_line(&self.stmt_text)))
     }
 
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
-    fn describe_resolved(&self, wires: &dyn nbrs_runtime::wires::WireSource) -> Option<String> {
+    fn describe_resolved(&self, wires: &dyn nmbrs_runtime::wires::WireSource) -> Option<String> {
         // SRD-68 Push 5: render the head row by pulling each
         // bind name through the wires surface. The footer reports
         // the configured batch size so the operator sees how many
@@ -1954,10 +1954,12 @@ impl OpDispenser for CqlBatchDispenser {
         &self,
     ) -> Vec<(
         String,
-        nbrs_metrics::labels::Labels,
-        nbrs_metrics::snapshot::MetricValue,
+        nmbrs_metrics::labels::Labels,
+        nmbrs_metrics::snapshot::MetricValue,
     )> {
-        use nbrs_metrics::snapshot::{CounterValue, HistogramValue, MetricValue, split_name_label};
+        use nmbrs_metrics::snapshot::{
+            CounterValue, HistogramValue, MetricValue, split_name_label,
+        };
         let snap = self.rows_timer.snapshot();
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::new();
@@ -1972,7 +1974,7 @@ impl OpDispenser for CqlBatchDispenser {
         if total > 0 {
             out.push((
                 "rows_inserted_total".to_string(),
-                nbrs_metrics::labels::Labels::default(),
+                nmbrs_metrics::labels::Labels::default(),
                 MetricValue::Counter(CounterValue::new(total)),
             ));
         }
@@ -1986,7 +1988,7 @@ impl OpDispenser for CqlBatchDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
@@ -2046,8 +2048,8 @@ impl OpDispenser for CqlBatchDispenser {
                             .oversize_warned
                             .swap(true, std::sync::atomic::Ordering::Relaxed)
                     {
-                        nbrs_runtime::diag!(
-                            nbrs_runtime::observer::LogLevel::Warn,
+                        nmbrs_runtime::diag!(
+                            nmbrs_runtime::observer::LogLevel::Warn,
                             "cql batch: a single row (~{row_bytes} B) exceeds \
                              max_batch_size ({budget} B); sending it as a one-row \
                              batch — the server may still reject it",
@@ -2259,7 +2261,7 @@ impl CqlBatchDispenser {
 // link both drivers default to cassandra-cpp ahead of scylla
 // (200).
 inventory::submit! {
-    nbrs_runtime::adapter::DriverImpl {
+    nmbrs_runtime::adapter::DriverImpl {
         adapter: "cql",
         driver: "cassandra-cpp",
         default_rank: 100,
@@ -2271,7 +2273,7 @@ inventory::submit! {
             let config = CqlConfig::from_params(&params)
                 .map_err(|e| format!("CQL config error: {e}"))?;
             CqlAdapter::connect(&config).await
-                .map(|a| std::sync::Arc::new(a) as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
+                .map(|a| std::sync::Arc::new(a) as std::sync::Arc<dyn nmbrs_runtime::adapter::DriverAdapter>)
                 .map_err(|e| format!("CQL connection failed: {e}"))
         }),
         known_params: || &[
@@ -2294,10 +2296,10 @@ inventory::submit! {
 // fixing the per-phase open/close storm that motivates
 // SRD-35.
 inventory::submit! {
-    nbrs_runtime::adapter::SharedDriverRegistration {
+    nmbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "cql",
         driver: "cassandra-cpp",
-        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
+        share_capability: nmbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let cfg = crate::common::CqlConfig::from_params(params)
                 .map_err(|e| format!("CQL config error: {e}"))?;
@@ -2944,7 +2946,7 @@ mod connect_diag_tests {
 #[cfg(test)]
 mod result_body_tests {
     use super::CqlResultBody;
-    use nbrs_runtime::adapter::ResultBody;
+    use nmbrs_runtime::adapter::ResultBody;
 
     #[test]
     fn write_result_reports_rows_written_as_element_count() {

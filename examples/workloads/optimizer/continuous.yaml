@@ -15,7 +15,7 @@
 # because there is no grid.
 #
 # Usage (runs standalone):
-#   nbrs run workload=examples/workloads/optimizer_continuous.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_continuous.yaml \
 #       --session-path /tmp/opt-cont
 #
 # The objective is maximized (score = 0) at ef=4.
@@ -46,5 +46,5 @@ phases:
           stdout: eventlog
         stmt: "probe ef={ef}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[[34]\.

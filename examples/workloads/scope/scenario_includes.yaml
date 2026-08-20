@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Scenario inclusion — `scenario: <name>` reuses the phases of
 # another scenario at any point in the tree.
 #
@@ -14,10 +14,10 @@
 # inclusion).
 #
 # Usage:
-#   nbrs run scenario_includes.yaml scenario=top_level
-#   nbrs run scenario_includes.yaml scenario=nested_in_for_each
-#   nbrs run scenario_includes.yaml scenario=mixed_phases
-#   nbrs run scenario_includes.yaml scenario=composed
+#   nmbrs run scenario_includes.yaml scenario=top_level
+#   nmbrs run scenario_includes.yaml scenario=nested_in_for_each
+#   nmbrs run scenario_includes.yaml scenario=mixed_phases
+#   nmbrs run scenario_includes.yaml scenario=composed
 
 scenarios:
 
@@ -97,5 +97,5 @@ phases:
       msg:
         stmt: "[search]"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

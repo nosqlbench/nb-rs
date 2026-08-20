@@ -1,11 +1,11 @@
-# SRD 32 — Web UI (nbrs-web)
+# SRD 32 — Web UI (nmbrs-web)
 
 ## Purpose
 
 The web UI provides a browser-based dashboard for monitoring,
-controlling, and inspecting nb-rs workloads. It serves as the
-graphical counterpart to the terminal TUI (`nbrs-tui`) and the
-CLI (`nbrs describe`).
+controlling, and inspecting nmbrs workloads. It serves as the
+graphical counterpart to the terminal TUI (`nmbrs-tui`) and the
+CLI (`nmbrs describe`).
 
 Built with Axum + Askama + htmx. No JavaScript build step, no SPA
 framework, no node_modules. The server renders HTML fragments; htmx
@@ -35,7 +35,7 @@ DOM by element ID. No polling.
 
 ### 2. Polydat Function Browser
 
-Interactive version of `nbrs describe Polydat functions`:
+Interactive version of `nmbrs describe Polydat functions`:
 
 - **Category-grouped table**: all native node functions with
   signature, arity, P123 level, description
@@ -51,7 +51,7 @@ fragments, no client-side JavaScript.
 
 ### 3. Stdlib Module Browser
 
-Interactive version of `nbrs describe Polydat stdlib`:
+Interactive version of `nmbrs describe Polydat stdlib`:
 
 - **Module list**: all embedded stdlib modules with typed signatures
 - **Source view**: click a module to see its `.polydat` source with syntax
@@ -60,7 +60,7 @@ Interactive version of `nbrs describe Polydat stdlib`:
 
 ### 4. DAG Viewer
 
-Interactive version of `nbrs describe Polydat dag`:
+Interactive version of `nmbrs describe Polydat dag`:
 
 - **Source editor**: textarea where you paste or type Polydat source
 - **Render button**: submits source via htmx, server renders the DAG
@@ -105,7 +105,7 @@ signals — deferred until the activity lifecycle API is designed.
 ```
 Browser (htmx)
     ↕ HTTP + WebSocket
-Axum server (nbrs-web)
+Axum server (nmbrs-web)
     ├── Static files (htmx.js, CSS)
     ├── Askama templates (HTML fragments)
     ├── API routes (JSON for programmatic access)
@@ -120,21 +120,21 @@ Axum server (nbrs-web)
 
 Two modes:
 
-**Embedded**: The web server starts inside `nbrs run` when
+**Embedded**: The web server starts inside `nmbrs run` when
 `--web` or `--web-port=8080` is passed. The server shares the
 same tokio runtime as the activity executor. It has direct access
 to the `Arc<ActivityMetrics>` for live streaming.
 
 ```
-nbrs run workload=w.yaml cycles=1M --web --web-port=8080
+nmbrs run workload=w.yaml cycles=1M --web --web-port=8080
 ```
 
-**Standalone**: `nbrs web` starts the server without running a
+**Standalone**: `nmbrs web` starts the server without running a
 workload. Provides the function browser, stdlib browser, DAG
 viewer, and workload inspector. No live metrics.
 
 ```
-nbrs web --port=8080
+nmbrs web --port=8080
 ```
 
 ### Route Structure
@@ -221,11 +221,11 @@ that feeds the TUI. The web server subscribes to the same
 
 ## Relationship to Other Components
 
-- **nbrs-tui (SRD TUI)**: Same metric frame source, different renderer.
+- **nmbrs-tui (SRD TUI)**: Same metric frame source, different renderer.
   TUI renders to terminal; web renders to HTML.
-- **nbrs-metrics (SRD 16)**: `MetricsFrame` is the shared data model.
+- **nmbrs-metrics (SRD 16)**: `MetricsFrame` is the shared data model.
   Both TUI and web consume frames from the capture thread.
 - **polydat (SRD 24/27/30)**: Registry, stdlib, and viz module
   power the function browser, stdlib browser, and DAG viewer.
-- **nbrs-runtime (SRD 21)**: Live activity state for the dashboard.
+- **nmbrs-runtime (SRD 21)**: Live activity state for the dashboard.
   Shared via `Arc`.

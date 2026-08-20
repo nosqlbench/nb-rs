@@ -1,8 +1,8 @@
-# nbrs-adapter-stdout
+# nmbrs-adapter-stdout
 
-Stdout adapter for nb-rs: writes assembled ops to stdout or a file.
+Stdout adapter for nmbrs: writes assembled ops to stdout or a file.
 
-Part of the [nb-rs](https://github.com/nosqlbench/nb-rs) workspace.
+Part of the [nmbrs](https://github.com/nosqlbench/nmbrs) workspace.
 
 ## License
 

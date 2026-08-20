@@ -1,9 +1,9 @@
 # SRD-65 — Plot multi-axis support (`y`, `y2`, `y3`, …, `yN`)
 
 **Status:** shipped (axis 3+ rail-tick rendering deferred — see Followups)
-**Owner:** runtime / nbrs (plot_metrics)
-**Implementation:** `nbrs/src/plot_metrics.rs` (renderer),
-  `nbrs-workload/src/report/vocab.rs` (directive vocab,
+**Owner:** runtime / nmbrs (plot_metrics)
+**Implementation:** `nmbrs/src/plot_metrics.rs` (renderer),
+  `nmbrs-workload/src/report/vocab.rs` (directive vocab,
   per SRD-46v2)
 **Cross-refs:** SRD-46 (reports), SRD-64 (report CLI),
   SRD-47 (MetricsQL streaming — supplies query rows)

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # stop_conditions_coverage.yaml — Thematic coverage workload for
 # SRD-83 stop conditions across execution shell levels (SRD-82).
 #
@@ -31,7 +31,7 @@
 # (phases pace themselves via `rate:`). Run any scenario individually —
 # always under a sandbox --session-path; never from the project root,
 # which would write session state into ./sessions:
-#   nbrs run workload=examples/workloads/stop_conditions_coverage.yaml \
+#   nmbrs run workload=examples/workloads/stop_conditions_coverage.yaml \
 #            scenario=<name> --session-path /tmp/sc/session
 
 # ── WORKLOAD shell (SRD-82 outermost) ────────────────────────────
@@ -209,7 +209,7 @@ phases:
       mark:
         stmt: "STEP_C"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=phase_cycles_total
 #@ expect-fail stop condition tripped
 #@ case shared_wire

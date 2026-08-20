@@ -1,6 +1,6 @@
 # 17: Diagnostic Modes
 
-How nb-rs workloads are inspected, validated, and explained
+How nmbrs workloads are inspected, validated, and explained
 without (or with controlled) execution.
 
 ---
@@ -96,16 +96,16 @@ Future flags may include `ops` (resolved op templates),
 
 ```
 # Compile and dump the wiring view, stop before cycles
-nbrs run workload=file.yaml dryrun=op,wiring
+nmbrs run workload=file.yaml dryrun=op,wiring
 
 # Compile and dump wiring, with dry-run cycle execution
-nbrs run workload=file.yaml dryrun=cycle,wiring
+nmbrs run workload=file.yaml dryrun=cycle,wiring
 
 # Plan dump only (phase structure, no kernels)
-nbrs run workload=file.yaml dryrun=phase
+nmbrs run workload=file.yaml dryrun=phase
 
 # Bare wiring — auto-bumps depth to Op so kernels exist
-nbrs run workload=file.yaml dryrun=wiring
+nmbrs run workload=file.yaml dryrun=wiring
 ```
 
 The `dryrun` parameter is a comma-separated list of flags.

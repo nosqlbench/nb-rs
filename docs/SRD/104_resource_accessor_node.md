@@ -1,9 +1,9 @@
 # SRD-104 — Generic Resource-Pool Accessor Node
 
 **Status:** design (not yet implemented)
-**Owner:** polydat (trait + node) + nbrs-runtime (pool impl + install)
+**Owner:** polydat (trait + node) + nmbrs-runtime (pool impl + install)
 **Implementation target:** `polydat/src/` (accessor trait + global install
-  point + generic node), `nbrs-runtime/src/resource_pool.rs` (implement the
+  point + generic node), `nmbrs-runtime/src/resource_pool.rs` (implement the
   trait, populate per-entry accessor payload, install at session start)
 **Cross-refs:** SRD-35 (resource pool — the definitive store + pre-map
   walker), SRD-80b (`#[polydat_node]` authoring), SRD-103 (CQL session handle —
@@ -27,13 +27,13 @@ is resource-agnostic.
    **synchronous and context-free** (`ast.rs:1872`). A node receives only its
    `Value` inputs — no threaded services, no environment.
 2. Therefore a `&dyn Accessor` **cannot** be passed into eval. The established
-   nb-rs pattern for a node reaching a live resource is a **process-global
+   nmbrs pattern for a node reaching a live resource is a **process-global
    registry** (`LazyLock`/`OnceLock` statics — how dataset handles resolve
    their readers, `vectors.rs:36-74`).
-3. `polydat` is the **dependency floor** (no `nbrs-*` deps). A trait usable by
+3. `polydat` is the **dependency floor** (no `nmbrs-*` deps). A trait usable by
    both polydat nodes and the runtime pool must live in polydat and be
    **type-erased** (`Arc<dyn Any + Send + Sync>`) so polydat needs no runtime
-   types. `nbrs-runtime` already depends on `polydat`, so it implements the
+   types. `nmbrs-runtime` already depends on `polydat`, so it implements the
    trait with no cycle.
 4. `map_op` is **async** and runs **after** the phase's resource is attached
    (`executor.rs:4814` attach → `activity.rs:1474` map_op). Op-field kernels
@@ -45,7 +45,7 @@ is resource-agnostic.
 ### 1. Dependency-inverted accessor trait (in polydat)
 
 ```rust
-// polydat — no nbrs-* types; fully type-erased.
+// polydat — no nmbrs-* types; fully type-erased.
 pub trait ResourceAccessor: Send + Sync {
     /// Synchronous lookup of an already-vivified resource's accessor payload,
     /// by fingerprint key. Returns None if no entry with that key is currently
@@ -60,7 +60,7 @@ pub static RESOURCE_ACCESSOR: OnceLock<Arc<dyn ResourceAccessor>> = OnceLock::ne
 
 ### 2. Runtime implements it; the pool stays definitive
 
-`nbrs-runtime`'s `ResourcePool` implements `ResourceAccessor`. Each pool
+`nmbrs-runtime`'s `ResourcePool` implements `ResourceAccessor`. Each pool
 `Entry` gains an optional **accessor payload** `Option<Arc<dyn Any + Send +
 Sync>>` that the resource populates at init (for CQL: a `CqlSessionHandle` with
 connect-time-cached cluster metadata — SRD-103). `lookup(key)` returns the

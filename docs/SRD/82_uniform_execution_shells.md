@@ -5,9 +5,9 @@ report results, handle errors, and decide stop conditions. Supersedes
 the ad-hoc, per-level error mechanisms and folds SRD-03 (the error
 router) and SRD-76 (phase outcome) into one recursive shape.
 
-**Owner:** nbrs-runtime (executor walker, `run_phase`, the activity
-cycle/stanza loop), nbrs-errorhandler (the router, generalised),
-nbrs-metrics (outcome persistence), nbrs-workload (the per-level
+**Owner:** nmbrs-runtime (executor walker, `run_phase`, the activity
+cycle/stanza loop), nmbrs-errorhandler (the router, generalised),
+nmbrs-metrics (outcome persistence), nmbrs-workload (the per-level
 `errors:` configuration surface).
 
 **Cross-refs:**
@@ -57,7 +57,7 @@ Today each shell has its *own* error mechanism and its own notion of
 | Scenario graph | `executor::run_siblings_concurrently` | implicit `first_err`; halts *further* dispatch but never aborts in-flight siblings and never consults a stop signal | `Result<(), String>` |
 | Phase | `executor::run_phase` | a `stop_flag: AtomicBool` boolean + `stop_reason` string | `PhaseOutcome { status }` |
 | Stanza | the per-cycle loop in `activity::executor_task` | inline, per-cycle | none distinct |
-| Op | `nbrs_errorhandler::ErrorRouter` | the `pattern:actions` cascade (`count`/`warn`/`stop`/`retry`) | per-op error |
+| Op | `nmbrs_errorhandler::ErrorRouter` | the `pattern:actions` cascade (`count`/`warn`/`stop`/`retry`) | per-op error |
 
 Two concrete failures fall out of this inconsistency:
 
@@ -144,7 +144,7 @@ a single overloaded enum.
 > `PhaseOutcome::interrupted(...)` constructs that shape. Legacy
 > compatibility is read-only: checkpoint JSONL records and sqlite
 > rows written with the old single `status` string still
-> deserialize/replay (`PhaseOutcomeWire` fallback; `nbrs replay`
+> deserialize/replay (`PhaseOutcomeWire` fallback; `nmbrs replay`
 > accepts both label sets); new records write the axes only.
 
 ---
@@ -396,7 +396,7 @@ Per-verb wrappers are both semantically wrong and slow. Rejected.
    registry (`owned_fields: ["errors"]`; activation = field present or
    an `errors` policy in scope — the session root's default seeds one
    everywhere, so stop-on-error stays the universal default). Full
-   aspect citizenship: `nbrs describe`, composition telemetry, per-op
+   aspect citizenship: `nmbrs describe`, composition telemetry, per-op
    override.
 2. **Its happy path is one branch**: `match inner.execute(..).await`
    — `Ok` passes through untouched; the pattern match, verb chain,
@@ -404,7 +404,7 @@ Per-verb wrappers are both semantically wrong and slow. Rejected.
    arm. The verbs never needed to be on the call path: they consume a
    discriminant (`Result`) the caller already branches on.
 3. **Verbs stay uniform INSIDE the compiled policy.** The
-   `nbrs-errorhandler` `ErrorHandler` chain is already the uniform verb
+   `nmbrs-errorhandler` `ErrorHandler` chain is already the uniform verb
    abstraction at the correct altitude — pattern-routed, in-rule-order,
    extensible by registering one handler impl. Same precedent as the
    CQL `ModifierChain` (SRD 73): many uniform aspects, ONE applied
@@ -486,13 +486,13 @@ Incremental; each step compiles and is independently testable.
    deleted. Producers set the axes directly (`Completed+Failed` is
    expressible); legacy single-`status` records deserialize via the
    `PhaseOutcomeWire` fallback. See the Part 1 implementation note.
-2. **Generalise the router.** Extend `nbrs_errorhandler::ErrorRouter`
+2. **Generalise the router.** Extend `nmbrs_errorhandler::ErrorRouter`
    to match `child validity` and `aggregate` keys and to emit `fail` /
    `stop` actions, alongside the existing op verbs. Keep first-match
    semantics.
 3. **Phase shell.** ✅ DONE. `AggregateGuard`
-   (`nbrs-errorhandler/src/aggregate.rs`) holds the `rate>N:fail,stop`
-   rule; `ErrorPolicy` (`nbrs-runtime/src/error_policy.rs`, Part 3a)
+   (`nmbrs-errorhandler/src/aggregate.rs`) holds the `rate>N:fail,stop`
+   rule; `ErrorPolicy` (`nmbrs-runtime/src/error_policy.rs`, Part 3a)
    composes it with the op router; the phase shell's drain loop
    delegates the breach decision to `error_policy.guard.assess(cycles,
    errors)` rather than testing a hardcoded threshold. `run_phase`
@@ -512,7 +512,7 @@ Incremental; each step compiles and is independently testable.
    deliberately-skipped tail is not reported as stranded
    (`unreached_phase_exit_code` stays quiet on fault, as for graceful) —
    distinct from a graceful trip's `request_graceful_stop`. Tested:
-   `nbrs/tests/workload_shell_e2e.rs::failed_phase_halts_walk_with_fault`.
+   `nmbrs/tests/workload_shell_e2e.rs::failed_phase_halts_walk_with_fault`.
    ABORT-IN-FLIGHT ✅ DONE: already-running `Bounded(N>1)` sibling phases
    abort cooperatively too. The per-execution `walk_stop`
    (`Arc<AtomicBool>` on the `WorkloadShell`, exposed via
@@ -539,15 +539,15 @@ Incremental; each step compiles and is independently testable.
    one never hardens them. Only the op-error ROUTER is per-op; the
    aggregate rate breach (`error_policy.guard`) stays the phase
    shell's. The op-level `errors:` surface parses as a per-op
-   activity-param (`nbrs-workload` `parse.rs`), excised from op fields
+   activity-param (`nmbrs-workload` `parse.rs`), excised from op fields
    so it never reaches the adapter. Per Part 3b the handler is the
    OUTERMOST `ErrorHandlerDispenser` wrapper
-   (`nbrs-runtime/src/wrappers/errors.rs`, replacing the fiber
+   (`nmbrs-runtime/src/wrappers/errors.rs`, replacing the fiber
    loop's inline block), and the retry wrapper is the CONDITIONAL
    `tries` wrapper (`wrappers/tries.rs` — total-attempts sigil,
    orthogonal to `errors:`, bridged by `retry`/`retry(N)` verb
-   injection; `nbrs-runtime/tests/tries_wrapper.rs`). Tested:
-   `nbrs/tests/error_handlers.rs::op_level_errors_overrides_scope_policy`
+   injection; `nmbrs-runtime/tests/tries_wrapper.rs`). Tested:
+   `nmbrs/tests/error_handlers.rs::op_level_errors_overrides_scope_policy`
    + `…::op_level_errors_does_not_leak_to_siblings`. (The op-*daemon* path
    keeps its Part 6 daemon-outcome lifecycle — a `Failed` bubbles to the
    parent handler — rather than the op router.)
@@ -567,7 +567,7 @@ Incremental; each step compiles and is independently testable.
    `Completed` (clean), while a daemon that ERRORS sets `stop_flag` →
    bubbles up through the handler. Its own phase scope gives it the
    independent cursor base (the motivating requirement). Tested:
-   `nbrs/tests/workload_shell_e2e.rs::daemon_phase_runs_concurrently_and_stops_with_foreground`
+   `nmbrs/tests/workload_shell_e2e.rs::daemon_phase_runs_concurrently_and_stops_with_foreground`
    + `…::daemon_phase_failure_bubbles_up`. PENDING refinements: the
    op-daemon collapsing into this same definition at the leaf; `daemon: N`
    (max-N activations); the until-stopped cursor primitive (today a daemon

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # CQL Vector Search — Parameter-Space Sweep Sibling
 #
 # Diagnostic workload that extends `full_cql_vector.yaml` (SRD-72
@@ -20,8 +20,8 @@
 #     against the just-built table.
 #
 # Usage:
-#   nbrs run workload=full_cql_vector_sweep.yaml scenario=query_sweep
-#   nbrs run workload=full_cql_vector_sweep.yaml scenario=idx_sweep
+#   nmbrs run workload=full_cql_vector_sweep.yaml scenario=query_sweep
+#   nmbrs run workload=full_cql_vector_sweep.yaml scenario=idx_sweep
 #
 # Phase A precondition: `test_fknn` (or `fulltest`) from the parent
 # workload must have populated `fknn_default` first; this scenario
@@ -46,13 +46,13 @@ extends: ./full_cql_vector.yaml
 # diagnostic runs:
 #
 #     # Pin one variant to test a fix:
-#     nbrs run workload=full_cql_vector_sweep scenario=idx_sweep \
+#     nmbrs run workload=full_cql_vector_sweep scenario=idx_sweep \
 #          sm_values=OTHER mnc_values=8 bw_values=50 eh_values=false \
 #          nbo_v_values=1.0 nbo_label_values='"1p0"' \
 #          alf_v_values=1.0 alf_label_values='"1p0"'
 #
 #     # Halve the sweep:
-#     nbrs run workload=... sm_values=OTHER
+#     nmbrs run workload=... sm_values=OTHER
 #
 # Params are interpolated verbatim into the iter clause text
 # via `{name}` substitution. The grammar of the comprehension
@@ -433,7 +433,7 @@ scenarios:
                         # INNER comprehension: query-only params.
                         # Reified value lists are workload params so
                         # operators can pin individual axes for
-                        # diagnostic runs (`nbrs run ...
+                        # diagnostic runs (`nmbrs run ...
                         # rerank_k_strategy_values=default
                         # pruning_strategy_values=default`). Iter-var
                         # names don't collide with any workload param,

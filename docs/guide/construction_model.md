@@ -1,6 +1,6 @@
 # The Workload Construction Model
 
-Every construct that can appear in an nbrs workload document is
+Every construct that can appear in an nmbrs workload document is
 part of one enumerable, discoverable model. This page explains
 what that means for you as a workload author: what the loader
 will accept, how it tells you precisely what's wrong, and how
@@ -132,7 +132,7 @@ Two mechanical guards keep the declaration from drifting:
 
 ## For tooling integrators
 
-The model is a library surface in `nbrs-workload`:
+The model is a library surface in `nmbrs-workload`:
 
 - `construction::root()` / `construction::ALL_NODES` — the node
   graph and its enumeration.

@@ -1,13 +1,13 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # =====================================================================
-# nbrs Cursor Extension Reference
+# nmbrs Cursor Extension Reference
 # =====================================================================
 #
 # This workload demonstrates the five extension cursor functions
-# nbrs supports. Each phase below uses a different stop condition
+# nmbrs supports. Each phase below uses a different stop condition
 # (or composition of conditions) so a single run exercises every
 # variant end-to-end. The stdout adapter keeps it dependency-free:
-#   nbrs run docs/guide/cursor_extension_example.yaml
+#   nmbrs run docs/guide/cursor_extension_example.yaml
 #
 # ─────────────────────────────────────────────────────────────────────
 # What an "extending cursor" is

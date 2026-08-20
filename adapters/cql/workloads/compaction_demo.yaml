@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # JVector two-flush compaction recall test (updated — current syntax).
 #
 # Loads the FIRST 50% of the dataset, flushes to disk, loads the
@@ -13,9 +13,9 @@
 # poll system_views.sstable_tasks until idle).
 #
 # Usage:
-#   nbrs workload=compaction_test_updated2.yaml
-#   nbrs workload=compaction_test_updated2.yaml host=10.0.0.1
-#   nbrs workload=compaction_test_updated2.yaml dataset=/path/to/cohere-1M
+#   nmbrs workload=compaction_test_updated2.yaml
+#   nmbrs workload=compaction_test_updated2.yaml host=10.0.0.1
+#   nmbrs workload=compaction_test_updated2.yaml dataset=/path/to/cohere-1M
 
 description: |
   JVector two-flush compaction recall test: load 50% + flush, load

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Dynamic Controls Demo (SRD 23)
 #
 # Demonstrates the dynamic-controls surface end-to-end, driving
@@ -14,7 +14,7 @@
 #     `concurrency` control on its component at
 #     [`Activity::attach_component`] time (SRD 23 §"Fiber
 #     executor"). Operators then see / edit these controls via:
-#       - `nbrs run workload=examples/workloads/dynamic_controls.yaml \
+#       - `nmbrs run workload=examples/workloads/dynamic_controls.yaml \
 #          dryrun=controls`   ← lists every declared control
 #       - TUI `e` keybind     ← inline edit prompt (SRD 23 §"TUI surface")
 #       - Web API             ← POST /api/control/concurrency {"value": 16}
@@ -34,9 +34,9 @@
 # startup instead of in mysterious downstream failures.
 #
 # Usage:
-#   nbrs run workload=examples/workloads/dynamic_controls.yaml dryrun=controls
-#   nbrs run workload=examples/workloads/dynamic_controls.yaml           # fits under threshold
-#   nbrs run workload=examples/workloads/dynamic_controls.yaml \
+#   nmbrs run workload=examples/workloads/dynamic_controls.yaml dryrun=controls
+#   nmbrs run workload=examples/workloads/dynamic_controls.yaml           # fits under threshold
+#   nmbrs run workload=examples/workloads/dynamic_controls.yaml \
 #       concurrency=32 rate=100000                                        # pushes past overload
 
 params:
@@ -100,6 +100,6 @@ blocks:
     ops:
       tick: "SELECT now();"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=300
 #@ expect completed, 0 failed

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # shared_cells.yaml — End-to-end demonstration of `shared`
 # input-slot semantics (SRD-16 §"Mutability Rules: Shared Mutable").
 #
@@ -22,9 +22,9 @@
 # absence of specific lines.
 #
 # Run individually:
-#   nbrs run workload=examples/workloads/shared_cells.yaml scenario=basic
-#   nbrs run workload=examples/workloads/shared_cells.yaml scenario=loop
-#   nbrs run workload=examples/workloads/shared_cells.yaml scenario=mixed_types
+#   nmbrs run workload=examples/workloads/shared_cells.yaml scenario=basic
+#   nmbrs run workload=examples/workloads/shared_cells.yaml scenario=loop
+#   nmbrs run workload=examples/workloads/shared_cells.yaml scenario=mixed_types
 #
 # The default scenario runs all three.
 
@@ -124,5 +124,5 @@ phases:
       bool_line:
         stmt: "shared/typed kind=bool value={enabled_bool}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

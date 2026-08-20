@@ -9,8 +9,8 @@ single load-bearing pass. No code lands until the phasing
 below is reviewed.
 
 **Owner:** polydat (compile pipeline, name resolution, auto-
-extern emission), nbrs-workload (`set:` block sugar and YAML
-param shape), nbrs-runtime (workload-root params kernel,
+extern emission), nmbrs-workload (`set:` block sugar and YAML
+param shape), nmbrs-runtime (workload-root params kernel,
 scope synth cascade).
 
 **Cross-refs:**
@@ -418,7 +418,7 @@ the rules-table row and the actual node construction agree.
   `SlotType::Wire` without the parameter. The rules-table
   entry for the new function is automatically picked up by
   Phase A; no separate update needed.
-- **Discoverable.** `nbrs describe wiring functions` becomes
+- **Discoverable.** `nmbrs describe wiring functions` becomes
   authoritative on input port types too. Operators reading
   function help see the expected types directly.
 
@@ -786,7 +786,7 @@ the first refined run, the new types are stable.
    propagate Json everywhere, then see polyfill `as_u64`
    adapters at every consumer site. Mitigation: the polyfill
    insertions are visible in the kernel dump (`dryrun=kernels`
-   and `nbrs describe polydat`); operators can audit the
+   and `nmbrs describe polydat`); operators can audit the
    actual graph if the type behavior surprises them.
 
 6. **`SlotType::Wire(PortType)` migration has registry-wide
@@ -956,7 +956,7 @@ tests:
 - `str_coercion_under_strict_is_hard_error`.
 
 **Integration tests at the workload boundary**
-(`nbrs/tests/workload_examples.rs`):
+(`nmbrs/tests/workload_examples.rs`):
 
 - `yaml_array_param_lands_as_typed_vector` — the
   `mnc_values: [8, 128]` case produces no `→ Ext` audit
@@ -1075,13 +1075,13 @@ For the contributor picking up Phase C:
 
 Workload-side surface (stays as-is across all phases):
 
-- **`nbrs-workload::parse::format_jval_as_polydat_literal`**
+- **`nmbrs-workload::parse::format_jval_as_polydat_literal`**
   and the matching classifiers (`is_polydat_quoted_string`,
   `is_polydat_array_literal`, `is_bare_ident`) classify
   YAML syntax; the polydat-side resolution is Phase A/C's
   job.
-- **`nbrs-runtime::params::format_value_as_polydat_literal`**
-  and **`nbrs-runtime::scope::add_param_binding`** are the
+- **`nmbrs-runtime::params::format_value_as_polydat_literal`**
+  and **`nmbrs-runtime::scope::add_param_binding`** are the
   scope-cascade emission sites. Once Phase A drives type
   inference, these emission sites can simplify — they emit
   the polydat literal, and Phase A's graph tells the

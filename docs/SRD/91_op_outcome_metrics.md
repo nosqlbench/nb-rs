@@ -6,9 +6,9 @@ counter-vs-timer detail level. Shipped end-to-end; the five
 cross-check invariants are verified against happy-path and
 error-injection runs.
 
-**Owner:** nbrs-runtime (executor hot loop + `ActivityMetrics`),
-nbrs-errorhandler (handler-layer error tally), nbrs-metrics
-(instrument types + sqlite export), nbrs (`metrics list/show`
+**Owner:** nmbrs-runtime (executor hot loop + `ActivityMetrics`),
+nmbrs-errorhandler (handler-layer error tally), nmbrs-metrics
+(instrument types + sqlite export), nmbrs (`metrics list/show`
 consumers).
 
 **Cross-refs:**
@@ -36,7 +36,7 @@ consumers).
 
 The op-execution metrics emitted by the executor are
 incomplete, asymmetric, and partly dead. Concretely, today
-(`nbrs-runtime/src/activity.rs`):
+(`nmbrs-runtime/src/activity.rs`):
 
 1. **No `attempt_total` / `result_total`.** Per-attempt
    outcomes exist (`attempt_success` 3319, `attempt_failure`
@@ -61,7 +61,7 @@ incomplete, asymmetric, and partly dead. Concretely, today
    double-counts. (This bullet is retained as a caution.)
 4. **No validation cross-checks.** The error-handler's
    independent per-name tally (`CounterHandler`,
-   `nbrs-errorhandler/src/handlers.rs:86`,
+   `nmbrs-errorhandler/src/handlers.rs:86`,
    `all_counts()` 110) is disconnected from the executor's
    `errors_total`; nothing reconciles the two, and the per-type
    breakdown is computed in the executor (`count_error_type`,
@@ -86,7 +86,7 @@ count op outcomes:
   (`activity.rs:3306–3444`), around each op. Owns attempt and
   result accounting and op durations.
 - **Error-handler layer** — `ErrorRouter::handle_error`
-  (`activity.rs:3329`, impl in `nbrs-errorhandler`), invoked
+  (`activity.rs:3329`, impl in `nmbrs-errorhandler`), invoked
   **per failed attempt** (including retries). Owns error
   classification (synthesized names) and the per-name tally.
 
@@ -186,7 +186,7 @@ Mechanism:
 
 ## Implementation (shipped)
 
-1. **`OutcomeInstrument`** (`nbrs-metrics/src/instruments/outcome.rs`)
+1. **`OutcomeInstrument`** (`nmbrs-metrics/src/instruments/outcome.rs`)
    — `observe(nanos)` / `count()` / `instrument_ref()`, plus
    `MetricDetail` (Counts/Timers) and `MetricDetailConfig`
    (global default + per-family override). Counts→counter,
@@ -238,7 +238,7 @@ Mechanism:
 
 **Verified:** unit tests (`outcome.rs`), happy-path + error-
 injection e2e (all five invariants hold at scale), the detail
-toggle flips export types, and the full nbrs-runtime lib (768) +
+toggle flips export types, and the full nmbrs-runtime lib (768) +
 `error_handlers` / `phase_outcome_roundtrip` / `workload_examples`
 suites pass.
 

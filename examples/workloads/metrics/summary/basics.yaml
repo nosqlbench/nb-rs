@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Summary Report Basics
 #
 # Demonstrates the summary report DSL: column selection, auto-scaled
@@ -8,12 +8,12 @@
 # it contains. No summary: means no report at all.
 #
 # Usage:
-#   nbrs run workload=examples/summary_basics.yaml
-#   nbrs run workload=examples/summary_basics.yaml scenario=all_columns
-#   nbrs run workload=examples/summary_basics.yaml scenario=filtered_rows
+#   nmbrs run workload=examples/summary_basics.yaml
+#   nmbrs run workload=examples/summary_basics.yaml scenario=all_columns
+#   nmbrs run workload=examples/summary_basics.yaml scenario=filtered_rows
 #
 # Override from CLI (takes precedence over workload summary:):
-#   nbrs run workload=examples/summary_basics.yaml summary=all
+#   nmbrs run workload=examples/summary_basics.yaml summary=all
 
 params:
   adapter: stdout
@@ -74,5 +74,5 @@ phases:
       process:
         stmt: "batch={batch} item={item_id} score={score}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

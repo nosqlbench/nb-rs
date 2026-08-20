@@ -21,10 +21,10 @@ reviewed against SRD-18b (scope tree + scheduler), SRD-13c
 
 **Owner:** polydat (grammar, type system, comprehension
 algebra, compiled IR, consumption-surface contracts — see
-polydat spec §3–§10), nbrs-runtime (consumer migration —
+polydat spec §3–§10), nmbrs-runtime (consumer migration —
 `dispatch_comprehension`, `polydat::comprehension::runtime::evaluate_for_iteration`,
 the executor's per-iteration kernel construction),
-nbrs-workload (YAML→PolyStreamer-binding desugaring).
+nmbrs-workload (YAML→PolyStreamer-binding desugaring).
 
 **Cross-refs:**
 - **`polydat/docs/design/comprehension_forms.md`** — the
@@ -813,7 +813,7 @@ order is identical to a single-consumer pull sequence.
 
 Each push leaves the tree green. The existing
 `ScopeIterations`-based execution stays functional throughout
-— SRD-78 lands as an addition first, then nbrs-runtime migrates
+— SRD-78 lands as an addition first, then nmbrs-runtime migrates
 to use it, then the legacy `ScopeIterations` public surface
 narrows.
 
@@ -866,8 +866,8 @@ narrows.
 - `pull_async` becomes meaningfully different from `pull` only
   here.
 
-### Push 6 — nbrs-runtime migration
-- `dispatch_comprehension` in nbrs-runtime rewrites to consume
+### Push 6 — nmbrs-runtime migration
+- `dispatch_comprehension` in nmbrs-runtime rewrites to consume
   via `PolyStreamer::pull` instead of `ScopeIterations::next`.
 - Per-phase pull-then-spawn pattern unchanged — the difference
   is the source of `IterationStep`s.

@@ -6,7 +6,7 @@
 # rate. That rate exists only *after* the phase executes, so the objective value
 # is causally produced by running the phase at each coordinate.
 #
-# The search axis is `conc` — the phase's concurrency, which nb-rs exposes as a
+# The search axis is `conc` — the phase's concurrency, which nmbrs exposes as a
 # dynamic control (SRD-23). Against a fixed 2-server / queue-depth-4 backend,
 # high concurrency overruns the queue and rejects ops with Overload (high error
 # rate); low concurrency fits (zero overloads). So `score = -err_rate` is
@@ -18,7 +18,7 @@
 # post-execution read sees the real, run-produced error rate and picks conc=2.
 #
 # Usage (runs standalone):
-#   nbrs run workload=examples/workloads/optimizer_saturation.yaml \
+#   nmbrs run workload=examples/workloads/optimizer_saturation.yaml \
 #       --session-path /tmp/opt-sat
 
 description: |
@@ -75,5 +75,5 @@ phases:
         result-capacity: 2
         result-overload: 4
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[

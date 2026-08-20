@@ -76,5 +76,5 @@ phases:
         adapter: stdout
         stmt: "slice {q.cursor.idx}/{q.cursor.partition_count} window=[{q.cursor.start_ordinal}..{q.cursor.end_ordinal}) row={row}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

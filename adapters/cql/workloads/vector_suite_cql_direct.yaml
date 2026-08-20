@@ -8,7 +8,7 @@
 # (protocol-agnostic scaffolding + typed abstract op slots) bound
 # by vector_suite_cql_impl.yaml (`implements:`). The pair is
 # REQUIRED to stay result-equivalent to this document; the
-# equivalence test (nbrs/tests/vector_suite_equivalence.rs)
+# equivalence test (nmbrs/tests/vector_suite_equivalence.rs)
 # proves it model-for-model at load time.
 #
 # Extends full_cql_vector.yaml (SRD-72): schema / teardown / rampup /

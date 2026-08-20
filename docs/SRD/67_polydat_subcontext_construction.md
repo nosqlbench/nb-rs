@@ -26,10 +26,10 @@ the chokepoint that
 [composition_substrate.md L1/L4](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/composition_substrate.md)
 identifies as load-bearing.
 
-nbrs-side composition concerns (typed `ScopeModule`
-interface tailored for nbrs-runtime, integration with
+nmbrs-side composition concerns (typed `ScopeModule`
+interface tailored for nmbrs-runtime, integration with
 SRD-13e) remain in
 [SRD 13e Scope-as-Module Refinement](13e_scope_as_module.md).
 
-The linked polydat doc is authoritative. For the public contract nb-rs depends
+The linked polydat doc is authoritative. For the public contract nmbrs depends
 on, see [SRD 09 Polydat Contract](09_polydat_contract.md).

@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # prereq_filter_smoke.yaml — SRD-106 coverage: the `phases=` filter's
 # prereq exemption and its scope-liveness boundary.
 #

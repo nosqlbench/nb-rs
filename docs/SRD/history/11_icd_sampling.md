@@ -26,7 +26,7 @@ The Java version combined several concerns into single classes:
 This produced 70 classes (20 distributions × ~4 type combos), each
 bundling all stages together.
 
-## nb-rs Design: Decomposed Building Blocks
+## nmbrs Design: Decomposed Building Blocks
 
 Following the single-responsibility principle, we decompose the ICD
 pipeline into independent node functions. No node combines hashing
@@ -53,7 +53,7 @@ coordinate
   output
 ```
 
-In the Java version, all of this was one function call. In nb-rs,
+In the Java version, all of this was one function call. In nmbrs,
 each step is a visible, composable node. The user can:
 - Omit hashing (for map-mode sequential access)
 - Omit clamping (for unbounded distributions)

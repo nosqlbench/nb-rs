@@ -1,6 +1,6 @@
-# 59: Terminal UI — Contract & Axioms (nbrs-tui)
+# 59: Terminal UI — Contract & Axioms (nmbrs-tui)
 
-Front door for **nbrs-tui** (layer L5): the ratatui live dashboard and the `TuiObserver`
+Front door for **nmbrs-tui** (layer L5): the ratatui live dashboard and the `TuiObserver`
 that drives it from the run's event stream. Pillars 1+2 of the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
@@ -8,8 +8,8 @@ that drives it from the run's event stream. Pillars 1+2 of the
 
 **Surface, inbound contract, and allowed edges:** authoritative in
 [SRD 05 §Contract Registry](05_dependency_rules.md). In brief — exports the `TuiObserver` +
-`RunState` + the sink seam + the inspector REPL; consumes `nbrs_runtime::observer` and the
-`nbrs_metrics` snapshot it folds; the render/dispatch internals (`widgets`, `frame_broker`,
+`RunState` + the sink seam + the inspector REPL; consumes `nmbrs_runtime::observer` and the
+`nmbrs_metrics` snapshot it folds; the render/dispatch internals (`widgets`, `frame_broker`,
 `readout_panel`, `readout_sink`, `prompt_state`, `tui_sink`) are `pub(crate)` (SRD-05 D5).
 
 ## Axioms
@@ -32,4 +32,4 @@ that drives it from the run's event stream. Pillars 1+2 of the
 [SRD 81](81_event_sourced_display.md) (event-sourced display projections).
 
 ## See also
-`nbrs-tui/src/lib.rs`; [SRD 62](62_tui_layout.md); [SRD 63](63_status_readouts.md); [SRD 81](81_event_sourced_display.md).
+`nmbrs-tui/src/lib.rs`; [SRD 62](62_tui_layout.md); [SRD 63](63_status_readouts.md); [SRD 81](81_event_sourced_display.md).

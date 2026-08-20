@@ -4,14 +4,14 @@
 
 ## The ask
 
-The console view you get from running `nbrs` directly should be **one of several
+The console view you get from running `nmbrs` directly should be **one of several
 screens rendered the same way** — a second terminal (or a browser) attached to a
 running session should see the same thing, without mirroring the tty.
 
 ## What already exists (the hard part is done)
 
-- **Multi-client transport.** `nbrs-tui/src/inspector_server.rs` listens on a
-  Unix socket at `${XDG_RUNTIME_DIR:-/tmp}/nbrs-<pid>.sock` and its accept loop
+- **Multi-client transport.** `nmbrs-tui/src/inspector_server.rs` listens on a
+  Unix socket at `${XDG_RUNTIME_DIR:-/tmp}/nmbrs-<pid>.sock` and its accept loop
   spawns **a thread per connection**, so concurrent clients already work. Each
   connection is one request/response, stateless.
 - **Wedge-proof reads.** The endpoint reads through
@@ -22,7 +22,7 @@ running session should see the same thing, without mirroring the tty.
   `state.load()` plus a drained log tail. **There is no hidden tty state to
   share** — the view is a function of the snapshot, which is exactly what makes
   this tractable.
-- **`nbrs attach`** exists (with a `--tui` flag), and **`nbrs web`** exists as a
+- **`nmbrs attach`** exists (with a `--tui` flag), and **`nmbrs web`** exists as a
   daemon.
 
 ## Why the views differ today
@@ -87,7 +87,7 @@ Two options, and they are different products:
   But note the endpoint has a *control* surface, not only reads (`set`,
   `controls`), so widening access has a security dimension the rest of this work
   does not. Needs an explicit auth/authorization decision, not just a chmod.
-- **`nbrs web`.** Already a daemon; the natural multi-user answer. One process
+- **`nmbrs web`.** Already a daemon; the natural multi-user answer. One process
   reads the snapshot and serves many browsers, with no per-user filesystem
   permissions involved. If the web view rendered from the same snapshot through
   the shared fold, it becomes a third screen for nearly free once the refactor

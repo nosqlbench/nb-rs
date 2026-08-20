@@ -44,9 +44,9 @@ the kernel, all four are indistinguishable.
 **Shape:** `[name]` or `[name as alias]` inside `stmt:` / `prepared:`
 strings.
 
-**Parsing:** `nbrs_workload::bindpoints::parse_capture_points`.
+**Parsing:** `nmbrs_workload::bindpoints::parse_capture_points`.
 
-**Site:** `TraversingDispenser` (`nbrs-runtime/src/wrappers.rs:131`).
+**Site:** `TraversingDispenser` (`nmbrs-runtime/src/wrappers.rs:131`).
 After the inner adapter returns, the wrapper walks
 `result.body.to_json()` for each declared capture point and writes via
 `ctx.wires.write(name, value)`.
@@ -66,7 +66,7 @@ result:
 or the equivalent string-form Polydat source.
 
 **Parsing:** SRD-66 `ResultSpec`, flattened to a Polydat source by
-`collect_result_bindings_source` (`nbrs-runtime/src/scope.rs`).
+`collect_result_bindings_source` (`nmbrs-runtime/src/scope.rs`).
 
 **Site:** Compiled INTO the op-template kernel by
 `SubcontextBuilder::add_result_bindings`. Each LHS becomes a kernel
@@ -83,7 +83,7 @@ through the eval cone.
 them in a result-binding RHS (or under `KernelOptLevel::Diagnostic`,
 unconditionally) allocates an input slot on the op-template kernel.
 
-**Site:** `ResultDispenser` (`nbrs-runtime/src/wrappers.rs:~970`).
+**Site:** `ResultDispenser` (`nmbrs-runtime/src/wrappers.rs:~970`).
 After the inner adapter returns, writes the standard three values
 via `ctx.wires.write`:
 - `body` → `Value::Json(body.to_json())`
@@ -401,10 +401,10 @@ multi-column or typed captures.
 
 ## Code references
 
-- `nbrs-runtime/src/adapter.rs:34` — `ResultBody` trait.
-- `nbrs-runtime/src/wrappers.rs:131` — `TraversingDispenser` (bind-point captures).
-- `nbrs-runtime/src/wrappers.rs:~970` — `ResultDispenser` (result-bindings + magic externs).
-- `nbrs-runtime/src/wires.rs:41` — `WireSource` trait (sink contract).
+- `nmbrs-runtime/src/adapter.rs:34` — `ResultBody` trait.
+- `nmbrs-runtime/src/wrappers.rs:131` — `TraversingDispenser` (bind-point captures).
+- `nmbrs-runtime/src/wrappers.rs:~970` — `ResultDispenser` (result-bindings + magic externs).
+- `nmbrs-runtime/src/wires.rs:41` — `WireSource` trait (sink contract).
 - `polydat/src/subcontext/builder.rs:~220` — `add_result_bindings`
   (slot allocation walker).
 - `polydat/src/nodes/json.rs::BodyColumnI32` — first column-projection node.

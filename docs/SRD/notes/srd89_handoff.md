@@ -59,7 +59,7 @@ The servo examples converge wrong under concurrency. Root cause chain:
    resolves the control off the **phase component** (`phase_component.find_control_erased_up`).
    Not the bug.
 2. **`control()` / `control_u64()` READ is NOT per-execution.** In
-   `nbrs-runtime/src/polydat_nodes/runtime_context.rs`, `control_gauge_f64` →
+   `nmbrs-runtime/src/polydat_nodes/runtime_context.rs`, `control_gauge_f64` →
    `session_root()` → the process-global `SESSION_ROOT` (the **session** root,
    set in `session.rs`). It calls `find_control_erased_up`, which only walks
    **up**. The concurrency control lives on the per-exec **phase component** (a
@@ -83,14 +83,14 @@ re-apply synthetic saturation (follow-on, below).
 
 | What | Where |
 |---|---|
-| Control read/write nodes | `nbrs-runtime/src/polydat_nodes/runtime_context.rs`: `control_gauge_f64`, `control_value_string`, `control_set`, `FiberContext`, `with_fiber_context`, `session_root()`/`SESSION_ROOT` |
-| Per-exec component | `nbrs-runtime/src/session.rs` `Execution::component` (child of session, labels `exec_id`+`workload`); becomes `ExecCtx.session_component` (`runner.rs` ~2793 `session_component: execution.component.clone()`) |
-| Phase component | `nbrs-runtime/src/executor.rs` ~4057-4060: `phase_component` attached to `ctx.session_component`; controls declared on it |
+| Control read/write nodes | `nmbrs-runtime/src/polydat_nodes/runtime_context.rs`: `control_gauge_f64`, `control_value_string`, `control_set`, `FiberContext`, `with_fiber_context`, `session_root()`/`SESSION_ROOT` |
+| Per-exec component | `nmbrs-runtime/src/session.rs` `Execution::component` (child of session, labels `exec_id`+`workload`); becomes `ExecCtx.session_component` (`runner.rs` ~2793 `session_component: execution.component.clone()`) |
+| Phase component | `nmbrs-runtime/src/executor.rs` ~4057-4060: `phase_component` attached to `ctx.session_component`; controls declared on it |
 | Control declaration | `activity.rs::attach_component` (concurrency/rate) + `activity.rs::declare_adapter_controls`; `executor.rs` ~4110 `declare_adapter_controls(&adapters, &phase_component)` |
-| Servo write | `nbrs-runtime/src/optimize/servo.rs::retarget` (off `phase_component`) |
-| Non-nested snapshot helper (KEPT, reusable) | `nbrs-metrics/src/component.rs::Component::control_snapshot` (~542) |
-| Control registry / handle | `nbrs-metrics/src/controls.rs`: `ControlRegistry` (`list() -> Vec<Arc<dyn ErasedControl>>`, `get_erased`, `declare`); `trait ErasedControl` (`name`, `gauge_f64`, `value_string`, `branch_scope`, `set_f64`) |
-| Walker test | `nbrs/tests/example_workloads_in_process.rs` — `group_concurrent = max_concurrent` (~219; isolation already dropped, gap documented in-code); env `NBRS_TEST_WORKER_THREADS` / `NBRS_TEST_CONCURRENCY` / `NBRS_TEST_EXAMPLES_DIR` |
+| Servo write | `nmbrs-runtime/src/optimize/servo.rs::retarget` (off `phase_component`) |
+| Non-nested snapshot helper (KEPT, reusable) | `nmbrs-metrics/src/component.rs::Component::control_snapshot` (~542) |
+| Control registry / handle | `nmbrs-metrics/src/controls.rs`: `ControlRegistry` (`list() -> Vec<Arc<dyn ErasedControl>>`, `get_erased`, `declare`); `trait ErasedControl` (`name`, `gauge_f64`, `value_string`, `branch_scope`, `set_f64`) |
+| Walker test | `nmbrs/tests/example_workloads_in_process.rs` — `group_concurrent = max_concurrent` (~219; isolation already dropped, gap documented in-code); env `NMBRS_TEST_WORKER_THREADS` / `NMBRS_TEST_CONCURRENCY` / `NMBRS_TEST_EXAMPLES_DIR` |
 | Optimizer examples (currently MEASURED) | `examples/workloads/optimizer/{control,multiservo,saturation,metricsql,hybrid}.yaml` |
 
 ---
@@ -153,16 +153,16 @@ gated on an env var, written to `concat!(env!("CARGO_MANIFEST_DIR"),
 
 ## Reproduce + validate
 
-- **Functional baseline:** `cargo test -p nbrs --test example_workloads_in_process`
+- **Functional baseline:** `cargo test -p nmbrs --test example_workloads_in_process`
   → `75 passed, 2 skipped, 2 failed` (the 2 = `control`/`multiservo`), ~4s.
-- **Load-bearing target:** `NBRS_TEST_WORKER_THREADS=1 NBRS_TEST_CONCURRENCY=20
-  cargo test -p nbrs --test example_workloads_in_process` → every optimizer
+- **Load-bearing target:** `NMBRS_TEST_WORKER_THREADS=1 NMBRS_TEST_CONCURRENCY=20
+  cargo test -p nmbrs --test example_workloads_in_process` → every optimizer
   example finds the correct `best`, deterministic across runs.
 - **GOTCHA:** narrowed / low-concurrency probe runs **time out** (5 optimizer
   examples run serially exceed ~150s) — an earlier "reads fire 0×" conclusion
   was a **timeout artifact**. Use the **full** walker with a generous timeout
   (300s) for complete results; don't trust partial narrowed runs.
-- **Solo check:** `./target/debug/nbrs run workload=examples/workloads/optimizer/control.yaml --session-path target/test-tmp/<uniq>`
+- **Solo check:** `./target/debug/nmbrs run workload=examples/workloads/optimizer/control.yaml --session-path target/test-tmp/<uniq>`
   → expect `best [2]`.
 - **Two-exec cross-talk unit** (worth adding): two `control.yaml` execs in one
   session, distinct retargets → distinct correct bests.

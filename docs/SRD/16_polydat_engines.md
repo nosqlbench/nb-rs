@@ -14,5 +14,5 @@ are all polydat substrate concerns. The Phase-3 JIT
 boundary moved alongside as
 [polydat/docs/design/jit_boundary.md](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/jit_boundary.md).
 
-The linked polydat docs are authoritative. For the public contract nb-rs depends
+The linked polydat docs are authoritative. For the public contract nmbrs depends
 on, see [SRD 09 Polydat Contract](09_polydat_contract.md).

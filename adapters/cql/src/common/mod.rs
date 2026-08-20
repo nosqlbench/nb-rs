@@ -5,7 +5,7 @@
 //!
 //! Each engine — `cassandra_cpp` (DataStax C++ driver), `scylla`
 //! (pure-Rust driver), and any future addition — implements its
-//! own [`nbrs_runtime::adapter::DriverAdapter`] but consumes this
+//! own [`nmbrs_runtime::adapter::DriverAdapter`] but consumes this
 //! module for everything that isn't transport-specific:
 //!
 //! - [`CqlConfig`] and its [`from_params`](CqlConfig::from_params)
@@ -52,7 +52,7 @@ pub use status::default_status_metrics;
 /// (case-insensitively), evaluated BEFORE the statement text is appended, so a
 /// statement that happens to contain one of these words can't cause a
 /// false-positive. Consumed at each engine's `cql_error` execute site to set
-/// [`nbrs_runtime::adapter::AdapterError::retryable`], which the runtime's
+/// [`nmbrs_runtime::adapter::AdapterError::retryable`], which the runtime's
 /// `RetryDispenser` honours.
 pub fn cql_error_is_retryable(raw: &str) -> bool {
     let u = raw.to_ascii_uppercase();

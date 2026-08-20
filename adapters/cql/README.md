@@ -1,6 +1,6 @@
-# nbrs-adapter-cql
+# nmbrs-adapter-cql
 
-CQL adapter for nb-rs. **Multi-engine**: choose one or both
+CQL adapter for nmbrs. **Multi-engine**: choose one or both
 underlying drivers via Cargo features.
 
 | Feature | Engine | C++ toolchain | crates.io build |
@@ -17,11 +17,11 @@ participate via `AliasResolverEntry`s and are selected at runtime:
 ```bash
 # Default — picks the lowest-rank engine (cassandra-cpp if both
 # are linked; scylla otherwise).
-nbrs run adapter=cql workload=...
+nmbrs run adapter=cql workload=...
 
 # Force a specific engine.
-nbrs run adapter=cql cqldriver=scylla
-nbrs run adapter=cql cqldriver=cassandra-cpp
+nmbrs run adapter=cql cqldriver=scylla
+nmbrs run adapter=cql cqldriver=cassandra-cpp
 ```
 
 Engine names (`scylla`, `cassandra-cpp`) are *not* user-facing
@@ -41,7 +41,7 @@ linked.
   `bash build.sh driver`).
 - `workloads/` — CQL workload YAMLs (key-value, vector search,
   compaction tests).
-- `build.sh`, `nbrs.Dockerfile`, `cassandra-cpp-driver.Dockerfile`,
+- `build.sh`, `nmbrs.Dockerfile`, `cassandra-cpp-driver.Dockerfile`,
   `sysroot/`, `.cargo/config.toml` — the build infrastructure for
   the cassandra-cpp engine. The default scylla build needs none
   of this.
@@ -50,8 +50,8 @@ linked.
 
 ```bash
 cd adapters/cql
-bash build.sh           # builds the C driver in Docker, then nbrs
+bash build.sh           # builds the C driver in Docker, then nmbrs
 bash build.sh driver    # only the C driver → sysroot/
-bash build.sh cargo     # only nbrs (sysroot/ must exist)
+bash build.sh cargo     # only nmbrs (sysroot/ must exist)
 bash build.sh docker    # everything inside Docker
 ```

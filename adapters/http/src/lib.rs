@@ -26,11 +26,11 @@
 //!     content_type: application/json
 //! ```
 
-use nbrs_runtime::adapter::{
+use nmbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, ResultBody,
     TextBody,
 };
-use nbrs_workload::model::ParsedOp;
+use nmbrs_workload::model::ParsedOp;
 
 /// Configuration for the HTTP adapter.
 pub struct HttpConfig {
@@ -305,7 +305,7 @@ impl DriverAdapter for HttpAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
+        parent: std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>,
     > {
@@ -405,7 +405,7 @@ impl DriverAdapter for HttpAdapter {
                 .op
                 .get("connect_timeout")
                 .and_then(|v| v.as_str())
-                .and_then(|s| nbrs_runtime::timeval::parse_time_ms(s).ok());
+                .and_then(|s| nmbrs_runtime::timeval::parse_time_ms(s).ok());
             let client = match connect_timeout_ms {
                 Some(_) => build_http_client(&self.config, connect_timeout_ms),
                 None => self.client.clone(),
@@ -450,7 +450,7 @@ struct HttpDispenser {
     method: String,
     content_type: String,
     /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
-    canonical_kernel: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
+    canonical_kernel: std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>,
     /// Cycle-time templates rendered through `substitute_via_wires`.
     /// `uri` is mandatory; `body` and `headers` are optional.
     uri_template: Option<String>,
@@ -480,14 +480,14 @@ struct HttpDispenser {
 }
 
 impl OpDispenser for HttpDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nmbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
     fn execute<'a>(
         &'a self,
         _cycle: u64,
-        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
+        ctx: &'a nmbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>,
     > {
@@ -505,7 +505,7 @@ impl OpDispenser for HttpDispenser {
             // generic wires API. Bind-point resolution failures are
             // returned as op errors so the error router decides.
             let uri =
-                nbrs_runtime::wires::substitute_via_wires(uri_template, wires).map_err(|e| {
+                nmbrs_runtime::wires::substitute_via_wires(uri_template, wires).map_err(|e| {
                     ExecutionError::Op(AdapterError {
                         error_name: "BindError".into(),
                         message: format!("uri: {e}"),
@@ -524,15 +524,15 @@ impl OpDispenser for HttpDispenser {
             };
 
             let body = match &self.body_template {
-                Some(t) => Some(nbrs_runtime::wires::substitute_via_wires(t, wires).map_err(
-                    |e| {
+                Some(t) => Some(
+                    nmbrs_runtime::wires::substitute_via_wires(t, wires).map_err(|e| {
                         ExecutionError::Op(AdapterError {
                             error_name: "BindError".into(),
                             message: format!("body: {e}"),
                             retryable: false,
                         })
-                    },
-                )?),
+                    })?,
+                ),
                 None => None,
             };
 
@@ -541,7 +541,7 @@ impl OpDispenser for HttpDispenser {
             let extra_headers: Vec<(String, String)> = match &self.headers_template {
                 Some(t) => {
                     let rendered =
-                        nbrs_runtime::wires::substitute_via_wires(t, wires).map_err(|e| {
+                        nmbrs_runtime::wires::substitute_via_wires(t, wires).map_err(|e| {
                             ExecutionError::Op(AdapterError {
                                 error_name: "BindError".into(),
                                 message: format!("headers: {e}"),
@@ -626,16 +626,16 @@ impl OpDispenser for HttpDispenser {
                             .per_op_timeout_ms
                             .map(|n| n.to_string())
                             .unwrap_or_else(|| "client-default".to_string());
-                        nbrs_runtime::observer::log(
+                        nmbrs_runtime::observer::log(
                             // An op that declared `expect_body: false` has said a
                             // body-less success is its normal outcome, so this is
                             // not news - Debug, not Warn. Without that declaration
                             // it stays a warning: a silently swallowed timeout IS
                             // worth seeing.
                             if self.expect_body {
-                                nbrs_runtime::observer::LogLevel::Warn
+                                nmbrs_runtime::observer::LogLevel::Warn
                             } else {
-                                nbrs_runtime::observer::LogLevel::Debug
+                                nmbrs_runtime::observer::LogLevel::Debug
                             },
                             &format!(
                                 "http: `on_timeout: accept` swallowed a \
@@ -740,7 +740,7 @@ impl OpDispenser for HttpDispenser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_workload::model::ParsedOp;
+    use nmbrs_workload::model::ParsedOp;
 
     #[test]
     fn default_config() {
@@ -844,10 +844,10 @@ mod tests {
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
-        let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
+        let empty = nmbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
         let result = dispenser
             .execute(0, &ctx)
@@ -883,10 +883,10 @@ mod tests {
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
-        let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
+        let empty = nmbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
         let err = dispenser
             .execute(0, &ctx)
@@ -951,10 +951,10 @@ mod tests {
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
-        let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let cw = nmbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nmbrs_runtime::fixture::ResolvedPulls::empty();
+        let empty = nmbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nmbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
         let result = dispenser
             .execute(0, &ctx)
@@ -980,14 +980,14 @@ mod tests {
 // =========================================================================
 
 inventory::submit! {
-    nbrs_runtime::adapter::AdapterRegistration {
+    nmbrs_runtime::adapter::AdapterRegistration {
         names: || &["http"],
         known_params: || &["base_url", "host", "timeout"],
-        display_preference: |_params| nbrs_runtime::adapter::DisplayPreference::Auto,
+        display_preference: |_params| nmbrs_runtime::adapter::DisplayPreference::Auto,
         supported_controls: || &[],
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(HttpAdapter::with_config(HttpConfig::from_params(&params)))
-                as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
+                as std::sync::Arc<dyn nmbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -1004,13 +1004,13 @@ inventory::submit! {
 // per-call URL paths and method overrides come in via the
 // op-template layer and don't affect the resource key.
 inventory::submit! {
-    nbrs_runtime::adapter::SharedDriverRegistration {
+    nmbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "http",
-        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
+        driver: nmbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nmbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let cfg = HttpConfig::from_params(params);
-            Ok(nbrs_runtime::resource_pool::ResourceKey::new("http")
+            Ok(nmbrs_runtime::resource_pool::ResourceKey::new("http")
                 .with("base_url", cfg.base_url.unwrap_or_default())
                 .with("timeout_ms", cfg.timeout_ms.to_string()))
         },

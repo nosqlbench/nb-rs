@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Summary Report — Polydat Context and Dimensional Labels
 #
 # Demonstrates how for_each iteration variables automatically become
@@ -17,8 +17,8 @@
 # - Multiple aggregate expressions comparing algorithm families
 #
 # Usage:
-#   nbrs run workload=examples/summary_polydat_context.yaml
-#   nbrs run workload=examples/summary_polydat_context.yaml \
+#   nmbrs run workload=examples/summary_polydat_context.yaml
+#   nmbrs run workload=examples/summary_polydat_context.yaml \
 #     summary="recall; mean(recall) over algorithm~hnsw; mean(recall) over algorithm~ivf; details=hide"
 
 params:
@@ -69,5 +69,5 @@ phases:
       search:
         stmt: "PROBE algorithm={algorithm} dataset={dataset} k={k} query={query_id} rank={result_rank} result={result_id}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

@@ -3,15 +3,15 @@
 **Status:** DRAFT — the optimizer subsystem.
 
 - **LANDED + verified (2026-06-17):** the **pull-through functor contract**
-  (in `nbrs-runtime`) — `Optimizer::coordinate_source`, the
+  (in `nmbrs-runtime`) — `Optimizer::coordinate_source`, the
   `CoordinateSource` capability decorators (`as_feedback`/`as_pull`),
   `FeedbackSource::step` (the optimizer primitive), `PullSource`/`LexSource`,
   the capability-favoring default driver, and `NullOptimizer` as the literal
-  identity. The **`nbrs-optimizers` plugin** keeps its 9 loop-form algorithms
+  identity. The **`nmbrs-optimizers` plugin** keeps its 9 loop-form algorithms
   unchanged and adapts each to the source contract through one generic
   **`ThreadBridge`** in the `runtime` bridge; `inventory` registers them and
-  `nbrs describe optimizers` discovers them. The phase-level `optimize:` block
-  parses in `nbrs-workload`.
+  `nmbrs describe optimizers` discovers them. The phase-level `optimize:` block
+  parses in `nmbrs-workload`.
 - **LANDED + verified (2026-06-18):** the **value-model `Coord`**
   (`Vec<AxisValue>`); the phase-level **`optimize:` block** wired end-to-end
   through `executor::dispatch_optimization` (axes auto-gathered from the phase's
@@ -37,19 +37,19 @@
   `{var}`.)
 
 **Owner:**
-- `nbrs-runtime` owns the **contract** (`nbrs_runtime::optimize`): the
+- `nmbrs-runtime` owns the **contract** (`nmbrs_runtime::optimize`): the
   `Optimizer` functor, `CoordinateSource`/`PullSource`/`FeedbackSource`,
   `Coord`/`AxisValue`, `SearchSpace`/`Axis`/`AxisKind`/`Changeover`,
   `LexSource`/`PullOnly`, `Budget`/`Report`/`Observation`/`StopReason`,
   `NullOptimizer`, the `OptimizerRegistration` inventory type +
   `by_name`/`describe` discovery. **No dependency on any algorithm crate.**
-- `nbrs-optimizers` owns the **algorithms** (a local loop-form mirror trait +
+- `nmbrs-optimizers` owns the **algorithms** (a local loop-form mirror trait +
   the 9 optimizers + manifold tests, fully testable standalone) and the
   `runtime`-feature **bridge** (`bridge.rs`): the `ThreadBridge` loop→source
   adapter, the `AxisValue ↔ f64` numeric projector, and one
   `inventory::submit!` per optimizer.
-- `nbrs` (binary) force-links the plugin and runs `nbrs describe optimizers`.
-- `nbrs-workload` owns the `optimizer:` configuration surface (a node-level
+- `nmbrs` (binary) force-links the plugin and runs `nmbrs describe optimizers`.
+- `nmbrs-workload` owns the `optimizer:` configuration surface (a node-level
   property).
 
 **Cross-refs:**
@@ -113,7 +113,7 @@ normative form.
 
 ## Contract surface
 
-### The functor + the pull-through source (core, `nbrs_runtime::optimize`)
+### The functor + the pull-through source (core, `nmbrs_runtime::optimize`)
 
 An optimizer is a **stateless functor**; the search state lives in the
 **source** it produces, which the executor pulls through.
@@ -209,11 +209,11 @@ label has a stable position but no metric/distance — a numeric solver assumes 
 metric space); validation routes a categorical axis to an **outer node**
 ([§3 The node-level `optimizer:` property](#3-the-node-level-optimizer-property-a9),
 enumerate/bandit). The projector lives in the runtime
-[`nbrs-optimizers/src/bridge.rs`](../../nbrs-optimizers/src/bridge.rs) next to the
-[`ThreadBridge`](../../nbrs-optimizers/src/bridge.rs) (the loop→pull-through
-adapter — see [Contract surface §"The loop→source bridge"](#the-loopsource-bridge-runtime-nbrs-optimizerssrcbridgers)); the local f64 algorithms are unchanged.
+[`nmbrs-optimizers/src/bridge.rs`](../../nmbrs-optimizers/src/bridge.rs) next to the
+[`ThreadBridge`](../../nmbrs-optimizers/src/bridge.rs) (the loop→pull-through
+adapter — see [Contract surface §"The loop→source bridge"](#the-loopsource-bridge-runtime-nmbrs-optimizerssrcbridgers)); the local f64 algorithms are unchanged.
 
-### The loop→source bridge (runtime, `nbrs-optimizers/src/bridge.rs`)
+### The loop→source bridge (runtime, `nmbrs-optimizers/src/bridge.rs`)
 
 The 9 algorithms stay **loop-form** (`optimize(&mut self, space, obj, budget)
 -> Report` — their natural shape). One generic `ThreadBridge` adapts a loop to
@@ -241,11 +241,11 @@ this seam; the executor only ever sees a clean `FeedbackSource`.
   stream. Its default is the identity `sweep` (returns the lex stream
   unchanged). Installing it is a behavioural no-op until a non-`sweep` method is
   named. No optimizer adds a second walk modality (SRD-18b One Walker).
-- **A2 — The algorithm library is runtime-free + loop-form.** `nbrs-optimizers`
-  depends on no nbrs runtime crate, no polydat, no metrics; its algorithms keep
+- **A2 — The algorithm library is runtime-free + loop-form.** `nmbrs-optimizers`
+  depends on no nmbrs runtime crate, no polydat, no metrics; its algorithms keep
   their natural loops and are unit-tested against synthetic manifolds with zero
   runtime. The loop→pull-through adaptation is confined to the runtime bridge.
-  D5-exempt, extractable (like polydat / nbrs-metricsql).
+  D5-exempt, extractable (like polydat / nmbrs-metricsql).
 - **A3 — Algorithmic state is Rust; declarative surfaces are polydat.**
   Cross-point state (simplex, surrogate, trust region, best-so-far) lives in
   the source. Polydat owns only the objective expression, the search-domain
@@ -692,7 +692,7 @@ other a full query language — and neither is re-platformed onto the other.
 
 **1. MetricSet stat-readers — `metric(...)` / `metric_window(...)` (kept).**
 Family-named readers over the in-process `MetricSet`
-(`nbrs-metrics::polydat_nodes`). `metric(pattern, stat)` reads
+(`nmbrs-metrics::polydat_nodes`). `metric(pattern, stat)` reads
 `MetricsQuery::session_lifetime` (session-wide cumulative); `metric_window(pattern,
 stat)` reads the smallest cadence's last closed window. The pattern names the
 instrument FAMILY (a bare token; `key=value`/`key~sub` parts narrow the series —
@@ -731,7 +731,7 @@ a flat `VecF64` cannot carry (an instant vector with N>1 series, or a range
 Json`, which preserves labels and the 2-D shape; the typed accessors assert down to
 the single-series / scalar cases.
 
-**Dependency + coverage.** `nbrs-metricsql` evaluates against the `MetricAccess`
+**Dependency + coverage.** `nmbrs-metricsql` evaluates against the `MetricAccess`
 data-access service ([SRD 40c](40c_metric_query_api.md)); the `metricsql_*` nodes reach
 live data through its in-process backend (`MetricsQueryAccess`, a **cadence read** of the
 metrics cadence-feed store), installed per session via `queryapi::install_live_access`. The
@@ -803,20 +803,20 @@ Both adopted methods consume `AxisKind::Discrete` / `Categorical` **value-native
 
 | Artifact | Location |
 |---|---|
-| Core contract (functor + sources + value model) | `nbrs-runtime/src/optimize/contract.rs` |
-| Runtime seam + node-level dispatch | `nbrs-runtime/src/optimize/mod.rs`, `executor.rs` |
-| Algorithm library (loop-form) | `nbrs-optimizers/src/{lib,space,optimizer,registry}.rs` + `src/algos/*.rs` |
-| Loop→source `ThreadBridge` + numeric projector + inventory | `nbrs-optimizers/src/bridge.rs` |
-| Embedded markdown docs | `nbrs-optimizers/src/docs.rs` |
-| Manifold test models | `nbrs-optimizers/src/testmodels.rs` (sphere/rosenbrock/rastrigin/branin) |
-| Convergence tests (local loops) + bridge e2e | `nbrs-optimizers/tests/{converges,bridge_e2e}.rs` + `bridge.rs` unit test |
-| `optimizer:` config | `nbrs-workload/src/model.rs` (`OptimizeBlock`/`OptimizeAxis`), `parse.rs` |
-| Disposition wiring | `nbrs-runtime/src/stop_conditions.rs`, `workload_shell.rs` |
+| Core contract (functor + sources + value model) | `nmbrs-runtime/src/optimize/contract.rs` |
+| Runtime seam + node-level dispatch | `nmbrs-runtime/src/optimize/mod.rs`, `executor.rs` |
+| Algorithm library (loop-form) | `nmbrs-optimizers/src/{lib,space,optimizer,registry}.rs` + `src/algos/*.rs` |
+| Loop→source `ThreadBridge` + numeric projector + inventory | `nmbrs-optimizers/src/bridge.rs` |
+| Embedded markdown docs | `nmbrs-optimizers/src/docs.rs` |
+| Manifold test models | `nmbrs-optimizers/src/testmodels.rs` (sphere/rosenbrock/rastrigin/branin) |
+| Convergence tests (local loops) + bridge e2e | `nmbrs-optimizers/tests/{converges,bridge_e2e}.rs` + `bridge.rs` unit test |
+| `optimizer:` config | `nmbrs-workload/src/model.rs` (`OptimizeBlock`/`OptimizeAxis`), `parse.rs` |
+| Disposition wiring | `nmbrs-runtime/src/stop_conditions.rs`, `workload_shell.rs` |
 | Settle statistic nodes | `polydat/src/library/*` (EWMA / rolling-variance / freshness / slope) |
-| `describe optimizers` | `nbrs/src/describe.rs`; `nbrs/tests/describe_optimizers.rs` |
+| `describe optimizers` | `nmbrs/src/describe.rs`; `nmbrs/tests/describe_optimizers.rs` |
 | Example workloads (per feature) | `examples/workloads/optimizer_*.yaml` — testkit synthetic-manifold objectives, runnable standalone |
-| Integration test | `nbrs/tests/optimizer_manifold_e2e.rs` — testkit objective, drives the registry |
-| Layer + Contract Registry | `docs/SRD/05_dependency_rules.md`, `nbrs/tests/architecture_rules.rs` |
+| Integration test | `nmbrs/tests/optimizer_manifold_e2e.rs` — testkit objective, drives the registry |
+| Layer + Contract Registry | `docs/SRD/05_dependency_rules.md`, `nmbrs/tests/architecture_rules.rs` |
 
 ---
 
@@ -825,20 +825,20 @@ Both adopted methods consume `AxisKind::Discrete` / `Categorical` **value-native
 The optimizer follows the **adapter/plugin pattern** — inverted from a naive
 "core depends on the algorithm library":
 
-- **The contract lives in the core.** `nbrs-runtime` (L4) defines the functor +
+- **The contract lives in the core.** `nmbrs-runtime` (L4) defines the functor +
   source contract, the value model, the `OptimizerRegistration` inventory type,
   and discovery — with **no dependency on any algorithm crate**.
-- **The algorithms are an inventory plugin.** `nbrs-optimizers` (L5) depends on
-  `nbrs-runtime` *only* under its `runtime` feature, where `bridge.rs`
-  `inventory::submit!`s one registration per optimizer; `nbrs-optimizers →
-  nbrs-runtime` is a **downward** edge (D2). Verified by D0/D2 in
+- **The algorithms are an inventory plugin.** `nmbrs-optimizers` (L5) depends on
+  `nmbrs-runtime` *only* under its `runtime` feature, where `bridge.rs`
+  `inventory::submit!`s one registration per optimizer; `nmbrs-optimizers →
+  nmbrs-runtime` is a **downward** edge (D2). Verified by D0/D2 in
   `architecture_rules`.
-- **The default build is standalone.** Without `runtime`, `nbrs-optimizers`
+- **The default build is standalone.** Without `runtime`, `nmbrs-optimizers`
   depends on nothing — fully-locally-testable, independently extractable;
   its algorithm API is its own contract → **D5-exempt**.
-- **The binary force-links the plugin** (`extern crate nbrs_optimizers;` in
-  `nbrs/src/run.rs`) so its registrations are discovered.
-- The two-axis `Outcome` + the `ErrorPolicy` stay in `nbrs-runtime`
+- **The binary force-links the plugin** (`extern crate nmbrs_optimizers;` in
+  `nmbrs/src/run.rs`) so its registrations are discovered.
+- The two-axis `Outcome` + the `ErrorPolicy` stay in `nmbrs-runtime`
   (SRD-82); the Report→Outcome mapping lives on the runtime side.
 
 ---
@@ -869,7 +869,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    `for_each` grid (`CoordEval::Enumerated`) or, for float ranges, sampled
    (`CoordEval::Synthesized`); the objective read off each iteration's kernel.
    Validated end-to-end — `sweep` (pull), `nelder_mead`/`cmaes` (feedback via
-   `ThreadBridge`) converge in a real `nbrs run` across discrete, continuous,
+   `ThreadBridge`) converge in a real `nmbrs run` across discrete, continuous,
    multi-axis, and categorical axes (`examples/workloads/optimizer_*.yaml` +
    `workload_examples.rs`). *Follow-ups:* (a) a pre-existing synthesis gap means a
    phase cannot yet combine `for_each` with phase-level `metrics:`, so the
@@ -885,7 +885,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    `optimizer_hybrid.yaml`.
 8. **Settle-detector pipeline** — *first push SHIPPED 2026-06-18.* A
    `PhaseStopEvaluator` (general cadence-pulse phase evaluator,
-   `nbrs-runtime::optimize::phase_pulse`) subscribes to the smallest metrics
+   `nmbrs-runtime::optimize::phase_pulse`) subscribes to the smallest metrics
    cadence via the existing feed; each pulse it pokes the objective off node
    X's kernel (re-reading the latest window), feeds `is_stable`, publishes the
    windowed median to a register, and on a verdict sets a terminal phase
@@ -911,8 +911,8 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    to a finer interval; the settle path consumes both.
 10. **The MetricsQL reader family** *(SHIPPED 2026-06-18, except (e))* —
     `metricsql` / `metricsql_scalar` / `metricsql_vector` / `metricsql_window` polydat
-    nodes **in `nbrs-metricsql`** (`polydat_nodes`, feature `polydat-nodes`), evaluating
-    over the `MetricAccess` data-access service in `nbrs-metrics::queryapi`
+    nodes **in `nmbrs-metricsql`** (`polydat_nodes`, feature `polydat-nodes`), evaluating
+    over the `MetricAccess` data-access service in `nmbrs-metrics::queryapi`
     ([SRD 40c](40c_metric_query_api.md)). f64 throughout; result-shape assertions per
     §10's reader surface; string/non-matching → error; engine-gap exprs →
     `NotYetImplemented`. Shipped: (a) the `MetricAccess` service + the `MetricsQueryAccess`

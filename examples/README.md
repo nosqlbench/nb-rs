@@ -1,14 +1,14 @@
-# nbrs Examples
+# nmbrs Examples
 
 ## workloads/
 
 Example workload YAML files, grouped by theme. All support
-`#!/usr/bin/env nbrs` shebangs — make them executable and run directly, or run
-any by its catalog name (e.g. `nbrs run workload=examples/optimizer/sweep`).
+`#!/usr/bin/env nmbrs` shebangs — make them executable and run directly, or run
+any by its catalog name (e.g. `nmbrs run workload=examples/optimizer/sweep`).
 
 Each declares its own verification rules (`#@` comments or a `verify:` block);
-`nbrs check examples/workloads/` runs and verifies them all, and
-`nbrs check examples/workloads/<theme>/` checks one theme. Use the same command
+`nmbrs check examples/workloads/` runs and verifies them all, and
+`nmbrs check examples/workloads/<theme>/` checks one theme. Use the same command
 on your own workloads — see
 [docs/guide/checking_workloads.md](../docs/guide/checking_workloads.md).
 

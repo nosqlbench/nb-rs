@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Summary Report Aggregates
 #
 # Demonstrates aggregate expressions in the summary report DSL.
@@ -13,9 +13,9 @@
 # show "-" in the aggregate row.
 #
 # Usage:
-#   nbrs run workload=examples/summary_aggregates.yaml
-#   nbrs run workload=examples/summary_aggregates.yaml scenario=details_hidden
-#   nbrs run workload=examples/summary_aggregates.yaml scenario=multiple_aggregates
+#   nmbrs run workload=examples/summary_aggregates.yaml
+#   nmbrs run workload=examples/summary_aggregates.yaml scenario=details_hidden
+#   nmbrs run workload=examples/summary_aggregates.yaml scenario=multiple_aggregates
 
 params:
   adapter: stdout
@@ -46,7 +46,7 @@ scenarios:
 
   # Hide detail rows — only the aggregate is shown.
   # Override from CLI:
-  #   nbrs run workload=examples/summary_aggregates.yaml \
+  #   nmbrs run workload=examples/summary_aggregates.yaml \
   #     summary="recall; mean(recall) over profile~fast; details=hide"
   details_hidden:
     - for_each: "profile in {profiles}"
@@ -57,7 +57,7 @@ scenarios:
 
   # Multiple aggregate expressions — compare fast vs slow.
   # Override from CLI:
-  #   nbrs run workload=examples/summary_aggregates.yaml \
+  #   nmbrs run workload=examples/summary_aggregates.yaml \
   #     summary="recall; mean(recall) over profile~fast; mean(recall) over profile~slow"
   multiple_aggregates:
     - for_each: "profile in {profiles}"
@@ -78,5 +78,5 @@ phases:
       query:
         stmt: "profile={profile} k={k} query={query_id} result={result}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

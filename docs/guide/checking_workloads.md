@@ -1,25 +1,25 @@
-# Checking workloads — `nbrs check`
+# Checking workloads — `nmbrs check`
 
-`nbrs check` runs a workload (or every workload under a directory) and verifies
+`nmbrs check` runs a workload (or every workload under a directory) and verifies
 its output against rules the workload declares. It exits non-zero on any
 failure, so it drops straight into CI — and it's the same verifier the bundled
 examples are tested with, so checking your own workload works exactly the way
 the project checks its examples.
 
-The target is resolved exactly the way `nbrs run` resolves `workload=…`: a
-file, a directory, or a **bundled catalog name** (`nbrs describe workloads` /
-`--all` lists them). So whatever tab-completion offers for `nbrs check <TAB>` —
+The target is resolved exactly the way `nmbrs run` resolves `workload=…`: a
+file, a directory, or a **bundled catalog name** (`nmbrs describe workloads` /
+`--all` lists them). So whatever tab-completion offers for `nmbrs check <TAB>` —
 local files *and* catalog names — you can check.
 
 ```sh
-nbrs check workload=my_workload.yaml      # one file
-nbrs check examples/cursors/all_cursor/enumerate   # a bundled catalog name (runs by name)
-nbrs check examples/workloads/            # a whole directory (run concurrently)
+nmbrs check workload=my_workload.yaml      # one file
+nmbrs check examples/cursors/all_cursor/enumerate   # a bundled catalog name (runs by name)
+nmbrs check examples/workloads/            # a whole directory (run concurrently)
 ```
 
 A workload declares its verification rules in **either** of two equivalent
 surfaces (a file may use one or both — their cases combine). Both are inert to
-`nbrs run`: comments are comments, and a `verify:` block is an unknown top-level
+`nmbrs run`: comments are comments, and a `verify:` block is an unknown top-level
 key the runtime ignores.
 
 ## 1. `#@` comment directives
@@ -67,7 +67,7 @@ verify:
 | `timeout <secs>` | Per-case run timeout (default 90s). |
 | `case <name>` | Start a new named case — a file may declare several. |
 
-Each `nbrs run` is launched in a sandbox working directory with a fresh
+Each `nmbrs run` is launched in a sandbox working directory with a fresh
 `--session-path`, so checks don't depend on prior-run state or pollute your
 project. Exit code is `0` when every case passes (skips are fine), non-zero
 otherwise.

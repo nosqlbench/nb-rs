@@ -89,7 +89,7 @@ defaults:
   params. A `driver=` value matching no manifest keeps its legacy
   meaning (an alias for `adapter=`). `impl=` alongside `driver=`
   is a conflict error.
-- `nbrs describe drivers` lists manifests (bundled + local),
+- `nmbrs describe drivers` lists manifests (bundled + local),
   mirroring `describe workloads`.
 - The manifest maps NAMES to templates and defaults — it never
   defines op fields. The op surface remains exactly the http

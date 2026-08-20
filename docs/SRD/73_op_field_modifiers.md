@@ -10,7 +10,7 @@ carry every knob. A CQL op that wants a 5-minute timeout for a slow
 DROP INDEX shouldn't have to also declare consistency, page size,
 serial consistency, etc., and the absence of a knob on the op
 template must mean "the driver's native default applies" — not
-"reset the driver to nb-rs's default at this point".
+"reset the driver to nmbrs's default at this point".
 
 The current CQL adapter applies `request_timeout_ms` at **session
 construction time** (`cluster.set_request_timeout`,
@@ -24,7 +24,7 @@ end-to-end.
 This SRD introduces:
 
 1. A generic **`OpFieldModifier<T>`** trait + **`ModifierChain<T>`**
-   composer in `nbrs-runtime` (the adapter API crate). One
+   composer in `nmbrs-runtime` (the adapter API crate). One
    abstraction every adapter can reuse.
 2. A **GK-scoped initializer-time resolution** pattern that mirrors
    the upstream nosqlbench `enhanceFuncOptionally` (a.k.a.
@@ -86,7 +86,7 @@ OpFieldModifier<T>>` plays the role of the per-knob closure;
 
 ### `OpFieldModifier<T>` trait
 
-Lives in `nbrs-runtime::adapter` (the adapter API surface). Generic
+Lives in `nmbrs-runtime::adapter` (the adapter API surface). Generic
 over the target type so each adapter can specialize for its driver's
 per-statement type:
 
@@ -186,11 +186,11 @@ pub trait ModifierTraceSink: Send + Sync {
 }
 ```
 
-Built-in sinks (both in `nbrs-runtime`):
+Built-in sinks (both in `nmbrs-runtime`):
 
 - **`TracingTraceSink`** — emits a `tracing::trace!(target:
-  "nbrs::op_modifier", op, field, value = ?value_fn())` event,
-  gated on `tracing::enabled!(target: "nbrs::op_modifier", Level::TRACE)`.
+  "nmbrs::op_modifier", op, field, value = ?value_fn())` event,
+  gated on `tracing::enabled!(target: "nmbrs::op_modifier", Level::TRACE)`.
   Default sink for development.
 - **`JsonEventSink`** — writes `{ op, field, value }` JSON records
   to the SRD-44a checkpoint event log when a per-session config
@@ -261,7 +261,7 @@ explicit unit suffixes where SI ambiguity would matter.
 Naming choices, explicitly documented:
 
 - `request_timeout_ms` — explicit unit suffix beats upstream Java's
-  `timeout` (double seconds). Matches the existing nb-rs workload-
+  `timeout` (double seconds). Matches the existing nmbrs workload-
   param name; the session-level setting and the per-op setting use
   ONE name.
 - `page_size` — CQL spec spelling; beats cassandra-cpp's
@@ -283,11 +283,11 @@ Naming choices, explicitly documented:
 The word "tracing" is dangerously overloaded. This SRD pins down
 three separate concepts that must not be conflated:
 
-| Concept                                  | What it is                                                                             | nb-rs surface                                                          |
+| Concept                                  | What it is                                                                             | nmbrs surface                                                          |
 |------------------------------------------|----------------------------------------------------------------------------------------|------------------------------------------------------------------------|
-| **CQL query-tracing subsystem**          | Cassandra server-side query trace; rows written to `system_traces.*` on the cluster. A data SOURCE — independent of how nb-rs records or logs the result. | Per-op: `cql_trace: true` (this SRD). Workload-level stochastic: `trace_rate` (existing CQL config). |
+| **CQL query-tracing subsystem**          | Cassandra server-side query trace; rows written to `system_traces.*` on the cluster. A data SOURCE — independent of how nmbrs records or logs the result. | Per-op: `cql_trace: true` (this SRD). Workload-level stochastic: `trace_rate` (existing CQL config). |
 | **Rust `tracing` crate log severity**    | The `tracing` crate's `trace!`/`debug!`/`info!`/… emission filter; a LOG-LEVEL knob. Orthogonal to data sources. | `RUST_LOG=...=trace` env var. Not a workload field.                    |
-| **nb-rs event-log emission**             | Structured records written to the SRD-44a checkpoint JSONL or other registered event sinks. A separate channel from log levels. | `ModifierTraceSink::JsonEventSink` (this SRD) and other event subscribers. |
+| **nmbrs event-log emission**             | Structured records written to the SRD-44a checkpoint JSONL or other registered event sinks. A separate channel from log levels. | `ModifierTraceSink::JsonEventSink` (this SRD) and other event subscribers. |
 
 `cql_trace` engages concept #1 for a specific statement. Whether
 the resulting `system_traces` rows surface in concept #2 or #3 is
@@ -438,7 +438,7 @@ standard SRD-16 walk-up.
 
 ## Phased delivery
 
-**P1 — Trait + chain + sinks** (`nbrs-runtime`). Generic
+**P1 — Trait + chain + sinks** (`nmbrs-runtime`). Generic
 `OpFieldModifier<T>`, `ModifierChain<T>`, `ModifierTraceSink` +
 `TracingTraceSink` impl. Unit tests on a synthetic target type.
 No adapter changes.

@@ -29,7 +29,7 @@ As built in `adapters/stdout/src/lib.rs`, there are 7 formats:
 
 | Format | Output |
 |--------|--------|
-| `stmt` | The `stmt` field (Statement). **DEFAULT for `nbrs run`.** |
+| `stmt` | The `stmt` field (Statement). **DEFAULT for `nmbrs run`.** |
 | `readout` | Aligned `name = value`, one per line |
 | `assignments` | Compact `name=value` on one line |
 | `json` | Typed values; `jsonl` is an alias |

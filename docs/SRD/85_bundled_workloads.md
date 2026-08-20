@@ -1,17 +1,17 @@
 # SRD 85: Bundled Workloads — Catalog, Discovery, and Materialization
 
 **Status: SHIPPED (P1+P2+P3, 2026-06-11).** Catalog types +
-registry in `nbrs-workload/src/catalog.rs`; embedding generated
-by `nbrs/build.rs` alone — the binary is the only catalog
+registry in `nmbrs-workload/src/catalog.rs`; embedding generated
+by `nmbrs/build.rs` alone — the binary is the only catalog
 assembler, so it is the only generator (adapter directories are
 included there behind the same feature gates that compile the
 adapters in, read as `CARGO_FEATURE_*`); resolution + ambiguity
 error in
-`nbrs-runtime::runner::resolve_workload`; bundled loading
+`nmbrs-runtime::runner::resolve_workload`; bundled loading
 through `extends::load_and_merge_bundled` with catalog-name
-session identity; `nbrs describe workloads`
-(list/detail/`--all`/`examples`/`--json`) in `nbrs/src/describe.rs`;
-`nbrs copy` in `nbrs/src/copy_cmd.rs`; shell completion falls
+session identity; `nmbrs describe workloads`
+(list/detail/`--all`/`examples`/`--json`) in `nmbrs/src/describe.rs`;
+`nmbrs copy` in `nmbrs/src/copy_cmd.rs`; shell completion falls
 back to catalog sources for param/scenario suggestions. P3
 landed with it: `extends:` targets resolve local-first then
 catalog, with **namespace-relative sibling resolution** for
@@ -19,11 +19,11 @@ bundled origins (a bundled `cql/x` extending `y.yaml` finds
 `cql/y` — the sibling-by-filename idiom works identically on
 disk and in the catalog). The curated tier ships with
 `selfcheck` and `capacity_probe` plus the `cql/` suite
-(`baselinesv3/{keyvalue,tabular,timeseries}` — native nbrs
+(`baselinesv3/{keyvalue,tabular,timeseries}` — native nmbrs
 ports of the heritage baselines, op shapes only — plus the
 vector suite and compaction test), all carrying
 `description:`. Coverage:
-`nbrs/tests/bundled_workloads.rs` (bare-directory runs, tier
+`nmbrs/tests/bundled_workloads.rs` (bare-directory runs, tier
 listing, lint, copy, ambiguity, extends-from-bundled).
 Implementation deltas from the draft are folded into the
 sections below (the curated lint runs as a CI-gating e2e test
@@ -32,7 +32,7 @@ over `describe workloads --json` rather than a build.rs step;
 
 ## Motivation
 
-nbrs distributes as single-binary artifacts (multi-platform
+nmbrs distributes as single-binary artifacts (multi-platform
 binaries, docker images). A user who receives an artifact today
 receives **zero workloads**: workload resolution is
 cwd-relative only, and discovery means browsing the git repo.
@@ -55,7 +55,7 @@ but only the curated tier is *listed* by default.
 
 The nb5 heritage surface (`--list-workloads`,
 `--list-scenarios`, `--copy <name>`, classpath-bundled yamls)
-is the proven shape; this SRD restates it in nbrs idiom.
+is the proven shape; this SRD restates it in nmbrs idiom.
 
 One layer down, the precedent already exists in-tree: polydat
 stdlib modules are `include_str!`-embedded with name-based
@@ -95,23 +95,23 @@ operator writes `./mine.yaml` or the catalog name explicitly.
 (Plain local filenames without a namespace slash rarely
 collide; the error path exists for the day they do.)
 
-### Discovery — `nbrs describe workloads`
+### Discovery — `nmbrs describe workloads`
 
 Discovery rides the existing `describe` topic dispatch
-(`nbrs/src/describe.rs`), not a new subcommand family:
+(`nmbrs/src/describe.rs`), not a new subcommand family:
 
 ```
-nbrs describe workloads                  # curated tier: name, description, adapter(s)
-nbrs describe workloads --all            # + examples tier
-nbrs describe workloads examples         # examples tier only
-nbrs describe workloads cql/keyvalue     # one workload in detail
+nmbrs describe workloads                  # curated tier: name, description, adapter(s)
+nmbrs describe workloads --all            # + examples tier
+nmbrs describe workloads examples         # examples tier only
+nmbrs describe workloads cql/keyvalue     # one workload in detail
 ```
 
 The detail view renders the workload's `description:`, its
 scenarios (names + per-scenario structure), its params with
 defaults (SRD-60 already makes params discoverable), required
 adapter(s), and the run line to start from. The single-name
-form accepts local paths too — `nbrs describe workloads
+form accepts local paths too — `nmbrs describe workloads
 ./mine.yaml` introspects an un-bundled file with the same
 renderer.
 
@@ -128,11 +128,11 @@ Examples may rely on their header comments; the detail view
 falls back to the first comment block when `description:` is
 absent.
 
-### Materialization — `nbrs copy <name>`
+### Materialization — `nmbrs copy <name>`
 
 ```
-nbrs copy cql/baselinesv3/keyvalue       # writes ./cql_baselinesv3_keyvalue.yaml
-nbrs copy cql/baselinesv3/keyvalue to=my_test.yaml
+nmbrs copy cql/baselinesv3/keyvalue       # writes ./cql_baselinesv3_keyvalue.yaml
+nmbrs copy cql/baselinesv3/keyvalue to=my_test.yaml
 ```
 
 (The default filename flattens the catalog name's slashes to
@@ -141,7 +141,7 @@ directories.)
 
 Copies the bundled source to a local file for editing. Refuses
 to overwrite an existing file. The copy is stamped with a
-provenance header comment (catalog name + nbrs version) so a
+provenance header comment (catalog name + nmbrs version) so a
 diverged local copy can always be traced to its origin.
 
 The lighter-weight alternative to copying is SRD-72
@@ -155,7 +155,7 @@ itself anywhere: every bundled example is standalone-runnable
 standalone" convention), so
 
 ```
-nbrs run workload=examples/signals/lfsr
+nmbrs run workload=examples/signals/lfsr
 ```
 
 works on a machine with nothing but the binary. CI and proof
@@ -262,7 +262,7 @@ the `description:` model field + curated-tier lint. A first
 curated set under `workloads/` (even just 2-3 real-world
 workloads) to make the tier non-hypothetical.
 
-**P2 — Materialization + machine surface. (SHIPPED)** `nbrs copy` with
+**P2 — Materialization + machine surface. (SHIPPED)** `nmbrs copy` with
 provenance stamping; `describe workloads --json` for CI /
 proof-harness iteration; session metadata carries catalog
 identity for bundled runs.

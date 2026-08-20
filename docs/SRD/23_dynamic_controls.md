@@ -3,12 +3,12 @@
 > **Status.** Design committed and shipping end-to-end across
 > the runtime. The following integration points are all in code:
 >
-> - `nbrs-metrics/src/controls.rs` — `Control<T>`,
+> - `nmbrs-metrics/src/controls.rs` — `Control<T>`,
 >   `ControlBuilder` (`final_at_scope`, `branch_scope`,
 >   `from_f64`), `ControlRegistry`, `ErasedControl::set_f64`.
-> - `nbrs-rate/src/applier.rs` — `RateLimiterApplier` +
+> - `nmbrs-rate/src/applier.rs` — `RateLimiterApplier` +
 >   `RateLimiter::reconfigure`.
-> - `nbrs-runtime/src/fiber_pool.rs` — `FiberPool` +
+> - `nmbrs-runtime/src/fiber_pool.rs` — `FiberPool` +
 >   `ConcurrencyApplier`; wired into
 >   `Activity::run_with_adapters`, declared on the activity's
 >   component at `attach_component` time.
@@ -17,11 +17,11 @@
 >   `rate`, `concurrency`, `phase`, `cycle`. The Polydat compiler
 >   threads the enclosing DSL binding name into `ControlSet`
 >   for attribution (`ControlOrigin::Gk { binding }`).
-> - `nbrs-runtime/src/runner.rs` — `dryrun=controls` renders the
+> - `nmbrs-runtime/src/runner.rs` — `dryrun=controls` renders the
 >   component tree after phase construction.
-> - `nbrs-tui/src/app.rs` — inline `e` keybind + `ControlEditPrompt`
+> - `nmbrs-tui/src/app.rs` — inline `e` keybind + `ControlEditPrompt`
 >   with validator / final-scope error surfacing.
-> - `nbrs-web/src/routes.rs` — `GET /api/controls` and
+> - `nmbrs-web/src/routes.rs` — `GET /api/controls` and
 >   `POST /api/control/{name}` with structured error bodies.
 >
 > Outstanding: control-value types richer than `f64`/`u64`/
@@ -117,13 +117,13 @@ What's worth reconsidering for Rust:
   phase) requires punching through to the per-phase component
   externally.
 
-The nb-rs component tree + tokio primitives give us better
+The nmbrs component tree + tokio primitives give us better
 building blocks. Core pattern carries over; the implementation
 doesn't.
 
 ---
 
-## What's idiomatic for nb-rs
+## What's idiomatic for nmbrs
 
 A control is a **named, typed, observable cell** attached to a
 component node. Operators / scripts / automation read and write
@@ -218,7 +218,7 @@ pub trait ControlApplier<T>: Send + Sync + 'static {
 
 pub enum ControlOrigin {
     Launch,                       // initial seed from params
-    Cli,                          // `nbrs ctl ...` (future)
+    Cli,                          // `nmbrs ctl ...` (future)
     Tui,                          // keybind / input
     Polydat { binding: String },       // scripted feedback loop
     Api { source: String },       // web endpoint caller id
@@ -266,7 +266,7 @@ and inherited downward via the walk-up.
 `max_retries`, and `log_level` remain planned. Adapters contribute
 their own beyond this core set — e.g. `cql_trace_rate` (the
 `cassandra-cpp` driver). The live, build-accurate inventory is
-`nbrs describe controls`; this table is the core design scope.
+`nmbrs describe controls`; this table is the core design scope.
 
 Metric cadences (SRD 42) are not part of this v1 because they
 are a universal platform-level concern rather than a dynamic
@@ -321,7 +321,7 @@ Five prospective writers, each with its own
    rate-limited per GK-node invocation, and a kill-switch
    disables Polydat writes if the runner detects thrash.
 
-4. **Web API (`ControlOrigin::Api`).** When `nbrs-web` is built
+4. **Web API (`ControlOrigin::Api`).** When `nmbrs-web` is built
    in, `POST /control/:path/:name { value, origin }`. Mirrors
    the component path resolution the TUI uses. Authentication
    out of scope for v1.
@@ -329,7 +329,7 @@ Five prospective writers, each with its own
 5. **Programmatic / test
    (`ControlOrigin::Cli`).** Test harnesses and the CLI's
    existing `key=value` mutation at CLI-parse time. No
-   `nbrs ctl` command yet — that's a follow-up.
+   `nmbrs ctl` command yet — that's a follow-up.
 
 ---
 
@@ -597,7 +597,7 @@ servo at all. That is the discoverability asymmetry between
 `concurrency` and `rate`.
 
 The complementary **capability tier** closes it. Each control
-has a static [`ControlDesc`](../../nbrs-runtime/src/control_catalog.rs)
+has a static [`ControlDesc`](../../nmbrs-runtime/src/control_catalog.rs)
 — `name`, value-type, default, range, unit, doc, and a
 `declared_when` condition — that is the **single source of
 truth**: the imperative `declare` *derives* the live control
@@ -615,7 +615,7 @@ their descriptors where they already live:
 
 `control_catalog::all_controls()` unions them. Surfaced by:
 
-- **`nbrs describe controls [<name>]`** — the static capability
+- **`nmbrs describe controls [<name>]`** — the static capability
   catalog: every control the binary *can* declare, each with
   its `declared_when` condition, listed without running
   anything. `describe adapter <name>` shows that adapter's

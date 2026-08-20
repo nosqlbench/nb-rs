@@ -1,4 +1,4 @@
-# 14: Polydat Config Expressions — nbrs-side framing
+# 14: Polydat Config Expressions — nmbrs-side framing
 
 The substrate half of this SRD (the `{...}` expression syntax,
 the const-expression evaluation API, config-value type
@@ -10,7 +10,7 @@ the axiom-level polydat design:
   EmbeddingError variants. Hoisted 2026-05-30 as part of the
   reconciliation pass (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-This file retains the nbrs-side resolution order, param
+This file retains the nmbrs-side resolution order, param
 substitution interaction with SRD-21, implementation state,
 and historical context.
 
@@ -82,5 +82,5 @@ var train_count = dataset.getBaseCount();
 scenario.run("rampup", "cycles=" + train_count);
 ```
 
-nb-rs replaces this with Polydat const expressions — the same
+nmbrs replaces this with Polydat const expressions — the same
 language, the same compiler, no scripting runtime.

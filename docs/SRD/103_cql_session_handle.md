@@ -1,7 +1,7 @@
 # SRD-103 — CQL Session Handle + Byte-Bounded Batching
 
 **Status:** design (not yet implemented)
-**Owner:** adapters/cql + polydat (handle nodes) + nbrs-runtime (accessor payload)
+**Owner:** adapters/cql + polydat (handle nodes) + nmbrs-runtime (accessor payload)
 **Implementation target:** `adapters/cql/src/common/` (session handle, size
   estimator, server-limit query), `adapters/cql/src/{cassandra_cpp,scylla}/`
   (batch dispensers, connect-time query, accessor-payload registration),
@@ -56,7 +56,7 @@ Three coupled needs:
   (`vector_at`, `vector_dim`, …) take the handle wire and call methods on the
   live resource. Authored via `handle_indexed_node!` / `handle_metadata_node!`.
 - **Layering constraint (load-bearing).** `polydat` (GK) sits *below*
-  `adapters/cql`, which sits *below* `nbrs-runtime` (the resource pool). A
+  `adapters/cql`, which sits *below* `nmbrs-runtime` (the resource pool). A
   workload-author resolver node runs in the GK and **cannot reach the runtime
   pool**. And `#[polydat_node] eval` is **synchronous** — it cannot await a
   Cassandra query.
@@ -215,7 +215,7 @@ is genuinely session-scoped in the drivers, so it stays.)
 ## 9. Implementation phases
 
 0. **SRD-104 first** — the generic accessor trait (polydat), the pool impl +
-   per-entry accessor payload + global install (nbrs-runtime), the
+   per-entry accessor payload + global install (nmbrs-runtime), the
    `resource_lookup` node, and the pre-map walker extension. This SRD depends on
    it.
 1. **Batching + estimator + server query + `cql_server_batch_limit`**, with

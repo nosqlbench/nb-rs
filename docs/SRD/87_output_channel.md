@@ -16,7 +16,7 @@
 > defect and reverting the global-flag prototype), the **status** bucket,
 > and the **log** bucket; producers (the activity status line, the
 > observer's synchronous log writes) submit through the channel; the
-> behavioral harness (`nbrs/tests/output_channel_harness.rs`) pins all
+> behavioral harness (`nmbrs/tests/output_channel_harness.rs`) pins all
 > three contexts. **Stage C reframed:** reading the code showed
 > `DisplaySink` is a *pull* fold-drainer (per its own trait doc — "events
 > flow through the actor; the sink drains"), so the original "make the
@@ -62,7 +62,7 @@ or contends for the screen?** This SRD says yes, and names the seam.
 
 ## 2. The defect this fixes
 
-`nbrs run op='id-{cycle}' adapter=stdout` prints **nothing** on an
+`nmbrs run op='id-{cycle}' adapter=stdout` prints **nothing** on an
 interactive terminal (it works when piped). Root cause: the stdout
 adapter's op output is routed through `op_output()` → `log()` — the
 *diagnostic* channel — and a console-owning run raises `sink_active`
@@ -357,16 +357,16 @@ sink-agreement:
    deadlock-prone shutdown path entirely.
 4. **Straggler sweep + A1 CI gate (landed).** The hot-path stragglers
    route through the log channel — the plotter's render-rate warning and
-   the testkit `diagnose=` diagnostics now `nbrs_runtime::diag!` instead
+   the testkit `diagnose=` diagnostics now `nmbrs_runtime::diag!` instead
    of raw `eprintln!`. The **A1 no-bypass gate** is
-   `nbrs/tests/architecture_rules.rs::a1_output_channel_no_fd_bypass`: it
+   `nmbrs/tests/architecture_rules.rs::a1_output_channel_no_fd_bypass`: it
    asserts the op-output / raster / readout *producer* paths
-   (`adapters/{stdout,plotter,testkit}`, `nbrs-runtime/src/readouts`)
+   (`adapters/{stdout,plotter,testkit}`, `nmbrs-runtime/src/readouts`)
    contain zero raw terminal-write macros, proven to fail on an injected
    write. Scope is the producers that race the live display, NOT every
    `eprintln!` — the carve-outs (the channel itself, bootstrap/session
    errors, the post-run summary after teardown, CLI subcommands) are out
-   of scope per §6/§11. The gated `nbrs_dirty_debug_enabled()`
+   of scope per §6/§11. The gated `nmbrs_dirty_debug_enabled()`
    `DIRTY:`/`DBG:` dev instrumentation (wires.rs / synthesis.rs) is
    dev-only, off the display path, and left as an env-gated carve-out
    rather than forced through the trace router.

@@ -14,7 +14,7 @@ queries involve:
 
 The `vectordata` crate provides these as structured binary data via
 the `veks-anode` wire format (MNode for metadata, PNode for
-predicates). `nbrs` needs to translate this data
+predicates). `nmbrs` needs to translate this data
 into CQL for Cassandra/SAI vector workloads.
 
 ## The Translation Problem
@@ -207,7 +207,7 @@ These are all published crates from the same workspace.
    `TestDataView::metadata_content()` returns a `TypedVectorView`
    backed by `CachedChannel` for remote datasets and `MmapVectorReader`
    for local ones. Multiple nodes referencing the same dataset share
-   the view's cached handles. No separate cache needed in nb-rs.
+   the view's cached handles. No separate cache needed in nmbrs.
 
 4. **Field filtering with default-all.** A field filter parameter
    controls which metadata fields are included in CQL operations.

@@ -14,9 +14,9 @@ plotter, cql, openapi, testkit}`, layer L5/L6) per the
 [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
 **Contract.** Adapters **export nothing** — they implement `DriverAdapter` / `OpDispenser`
-from `nbrs_runtime::adapter` and register via the inventory pattern (`nbrs_runtime::adapters`).
+from `nmbrs_runtime::adapter` and register via the inventory pattern (`nmbrs_runtime::adapters`).
 Their *inbound* contract is the trait surface defined here. Allowed edges:
-`nbrs-runtime`, `nbrs-workload`, `polydat` (+ `nbrs-metrics` / vendored `cassandra-cpp`
+`nmbrs-runtime`, `nmbrs-workload`, `polydat` (+ `nmbrs-metrics` / vendored `cassandra-cpp`
 for CQL). No adapter depends on another adapter except `testkit → stdout`
 ([SRD 05 D4](05_dependency_rules.md)).
 
@@ -324,7 +324,7 @@ counter) and `status_counters()` (returning the cumulative
 ## No Space Concept
 
 Java nosqlbench had `Space` for many-to-many client/server
-topology testing. Dropped in nb-rs. Rust native drivers handle
+topology testing. Dropped in nmbrs. Rust native drivers handle
 connection pooling internally. The adapter owns one driver
 instance; fibers share it via `Arc<dyn DriverAdapter>`.
 

@@ -48,7 +48,7 @@ Used by: `CSVFrequencySampler`, `WeightedStringsFromCSV`,
 `WeightedInts`, `DelimFrequencySampler`, and indirectly by all
 discrete distribution curve classes.
 
-## nb-rs Design
+## nmbrs Design
 
 ### Simplification
 

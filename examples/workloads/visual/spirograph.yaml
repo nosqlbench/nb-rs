@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # spirograph.yaml — Spirograph (epitrochoid) pattern
 #
 # Traces the path of a point on a circle rolling around another:
@@ -40,5 +40,5 @@ ops:
     x: "{x}"
     y: "{y}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

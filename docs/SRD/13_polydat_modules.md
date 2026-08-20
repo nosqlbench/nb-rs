@@ -1,4 +1,4 @@
-# 13: Polydat Modules — nbrs-side framing
+# 13: Polydat Modules — nmbrs-side framing
 
 The module-as-source-file system (file-based modules, inlining
 mechanics, resolution chain, strict mode) has moved into the
@@ -8,7 +8,7 @@ polydat crate:
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-This file retains the nbrs-runtime-facing diagnostic API.
+This file retains the nmbrs-runtime-facing diagnostic API.
 
 > Composition mechanics — how modules combine with the host
 > program and with other Polydat kernels — live in
@@ -37,7 +37,7 @@ pub enum CompileEvent {
 
 ### Accessing Diagnostics
 
-- **CLI**: `nbrs bench --explain <expr>` dumps the event stream
+- **CLI**: `nmbrs bench --explain <expr>` dumps the event stream
   to stderr with formatted explanations
 - **Web UI**: event stream available via API for visual inspection
 - **Programmatic**: `PolydatKernel::new_with_log()` accepts an
@@ -46,7 +46,7 @@ pub enum CompileEvent {
 ### Example Output
 
 ```
-$ nbrs bench --explain "hash(cycle)" cycles=1
+$ nmbrs bench --explain "hash(cycle)" cycles=1
 [parsed]    cycle → graph input #0
 [parsed]    hash  → Hash64 node
 [wired]     hash.input[0] ← input:cycle

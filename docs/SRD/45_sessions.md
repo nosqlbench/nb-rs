@@ -2,7 +2,7 @@
 
 **Status:** normative
 **Owner:** runtime / runner
-**Implementation:** `nbrs-runtime/src/session.rs`
+**Implementation:** `nmbrs-runtime/src/session.rs`
 **Cross-refs:** SRD-04 (umbrella options), SRD-40 (metrics),
   SRD-44 (checkpointing)
 
@@ -10,7 +10,7 @@
 
 ## What a session is
 
-A *session* is the root context for one `nbrs run`. It owns:
+A *session* is the root context for one `nmbrs run`. It owns:
 
 - A **session name** — short identifier appearing on every
   metric label as `session=<name>`.
@@ -31,7 +31,7 @@ the `logs/latest` symlink that points at it.
 
 Sessions follow the umbrella-options pattern (SRD-04). One
 short flag for everyday use, full long-form flags for
-unambiguous expression. Each flag has an `NBRS_`-prefixed env
+unambiguous expression. Each flag has an `NMBRS_`-prefixed env
 equivalent (SRD-04 Rule 7); setting both CLI and env for the
 same flag is a hard error.
 
@@ -39,7 +39,7 @@ same flag is a hard error.
 
 ```
 --session <kv-list>
-NBRS_SESSION=<kv-list>
+NMBRS_SESSION=<kv-list>
 ```
 
 `<kv-list>` is comma-separated. Each item is a `key:value`
@@ -62,27 +62,27 @@ skipped (the rest of the spec still applies).
 ```
 --session 'restart,name:baseline'
 --session 'keep:42,name:experiment,path:/data/runs/SESSION,reuse:resume'
-NBRS_SESSION='restart,path:/tmp/scratch'
+NMBRS_SESSION='restart,path:/tmp/scratch'
 ```
 
 ### Long-form per-key flags
 
 | Flag                          | Env equivalent              |
 | ----------------------------- | --------------------------- |
-| `--session-name <name>`       | `NBRS_SESSION_NAME`         |
-| `--session-path <path>`       | `NBRS_SESSION_PATH`         |
-| `--session-reuse <mode>`      | `NBRS_SESSION_REUSE`        |
-| `--session-keep <N>`          | `NBRS_SESSION_KEEP`         |
-| `--session-shelflife <dur>`   | `NBRS_SESSION_SHELFLIFE`    |
+| `--session-name <name>`       | `NMBRS_SESSION_NAME`         |
+| `--session-path <path>`       | `NMBRS_SESSION_PATH`         |
+| `--session-reuse <mode>`      | `NMBRS_SESSION_REUSE`        |
+| `--session-keep <N>`          | `NMBRS_SESSION_KEEP`         |
+| `--session-shelflife <dur>`   | `NMBRS_SESSION_SHELFLIFE`    |
 
 Long-form flag wins over umbrella value when both are set.
 
 ### Legacy env
 
 `SESSION_DIRECTORY` is the pre-SRD-04 name for
-`NBRS_SESSION_PATH`. Honored as a deprecated fallback with a
+`NMBRS_SESSION_PATH`. Honored as a deprecated fallback with a
 one-line `Warn` on read; remove from your shell config and
-use `NBRS_SESSION_PATH` instead.
+use `NMBRS_SESSION_PATH` instead.
 
 ---
 
@@ -117,7 +117,7 @@ Always maintained. Points at the active session.
 
 ## Process-startup wiring
 
-`purge_stale_sessions_at_startup(args)` runs first in `nbrs::main()`. It resolves
+`purge_stale_sessions_at_startup(args)` runs first in `nmbrs::main()`. It resolves
 the spec and applies lifecycle cleanup (`--session-keep` /
 `--session-shelflife`, aliases `--sessions-max` /
 `--sessions-shelflife`). That is all it does.
@@ -126,8 +126,8 @@ the spec and applies lifecycle cleanup (`--session-keep` /
 startup it repointed the symlink so that read-side subcommands defaulting to
 `logs/latest/metrics.db` would target the named session for free. That made
 `--session` work by mutating shared state — after a read-only
-`nbrs report --session=logs/old`, `latest` stayed on `old`, so a later bare
-`nbrs report`, or a `--resume-latest`, silently operated on `old` instead of the
+`nmbrs report --session=logs/old`, `latest` stayed on `old`, so a later bare
+`nmbrs report`, or a `--resume-latest`, silently operated on `old` instead of the
 newest real run. It also only worked for sessions under `logs/`, so
 `--session=/tmp/x` and `--session=logs/x` behaved differently for no reason a
 caller could see.
@@ -144,18 +144,18 @@ Responsibility is now split along the read/write line:
   which works for any path, inside `logs/` or not.
 
 ```
-$ export NBRS_SESSION_PATH=/data/runs/today
-$ nbrs run workload=foo.yaml                    # claims latest -> today
-$ nbrs plot                                     # reads /data/runs/today/metrics.db
-$ nbrs report --session=logs/older              # reads older; latest stays on today
-$ nbrs run workload=foo.yaml --resume-latest    # still resumes today
+$ export NMBRS_SESSION_PATH=/data/runs/today
+$ nmbrs run workload=foo.yaml                    # claims latest -> today
+$ nmbrs plot                                     # reads /data/runs/today/metrics.db
+$ nmbrs report --session=logs/older              # reads older; latest stays on today
+$ nmbrs run workload=foo.yaml --resume-latest    # still resumes today
 ```
 
 ---
 
 ## Session-reuse policy
 
-When a fresh `nbrs run` resolves to a directory that already
+When a fresh `nmbrs run` resolves to a directory that already
 contains prior session artifacts (`metrics.db`,
 `session.log`, or `checkpoint.json`), the `reuse` policy
 applies:
@@ -205,15 +205,15 @@ housekeeping doesn't abort startup.
 
 ## Keep-cap forecast at exit
 
-At the end of every `nbrs run`, before the binary exits, the
+At the end of every `nmbrs run`, before the binary exits, the
 runtime checks whether the **next** new session would auto-
 purge sessions due to the `--session-keep` cap. If yes, it
 logs at INFO level:
 
 ```
-the next new nbrs session will auto-purge N prior session
+the next new nmbrs session will auto-purge N prior session
 director{y|ies} under <parent> due to --session-keep=<cap>.
-To disable: --session-keep=0 (or NBRS_SESSION_KEEP=0).
+To disable: --session-keep=0 (or NMBRS_SESSION_KEEP=0).
 To raise the cap: --session-keep=<bigger>.
 ```
 
@@ -259,7 +259,7 @@ phases at all.
 - Reuse policy must be explicit. There is no
   guess-what-the-operator-wanted path — `error` default
   makes accidental destruction impossible.
-- CLI flag and `NBRS_<FLAG>` env both set = hard error
+- CLI flag and `NMBRS_<FLAG>` env both set = hard error
   (SRD-04 Rule 7). No silent disambiguation.
 
 ---

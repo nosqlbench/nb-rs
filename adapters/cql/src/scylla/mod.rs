@@ -26,10 +26,10 @@ mod settings;
 use std::sync::Arc;
 
 use crate::common::{CqlConfig, CqlConsistency, OpMode, STMT_FIELD_NAMES};
-use nbrs_runtime::adapter::{
+use nmbrs_runtime::adapter::{
     AdapterError, DriverAdapter, DriverImpl, ExecutionError, OpDispenser, StatusMetric,
 };
-use nbrs_workload::model::ParsedOp;
+use nmbrs_workload::model::ParsedOp;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::Consistency;
@@ -107,8 +107,8 @@ impl ScyllaCqlAdapter {
         // knobs have no equivalent. Accepting them silently would be
         // a lie; say so once at connect.
         if config.reconnect_params_explicit {
-            nbrs_runtime::diag!(
-                nbrs_runtime::observer::LogLevel::Warn,
+            nmbrs_runtime::diag!(
+                nmbrs_runtime::observer::LogLevel::Warn,
                 "cql(scylla): reconnect_base_delay / reconnect_max_delay have \
                  no scylla-driver equivalent and are ignored — the driver \
                  manages reconnection internally"
@@ -180,9 +180,9 @@ impl DriverAdapter for ScyllaCqlAdapter {
             // itself) into `fields.values`; only the named bind points
             // belong on the wire, in the order they appeared in the
             // statement text.
-            let bind_names = nbrs_workload::bindpoints::referenced_bindings(&stmt_text);
+            let bind_names = nmbrs_workload::bindpoints::referenced_bindings(&stmt_text);
             let prepared_text =
-                nbrs_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
+                nmbrs_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
             // Workload-author lvalue assertions per bind-point: a
             // `{name:*}` or `{name:<polydat-type>}` suffix in the
             // statement text overrides the cluster-side parameter
@@ -190,8 +190,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
             // the bind path still uses cluster metadata). Indices
             // line up with `bind_names` because both come from
             // walking the same statement text in the same order.
-            let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
-                use nbrs_workload::bindpoints::{BindPoint, extract_bind_points};
+            let lvalue_specs: Vec<Option<nmbrs_workload::bindpoints::LvalueSpec>> = {
+                use nmbrs_workload::bindpoints::{BindPoint, extract_bind_points};
                 extract_bind_points(&stmt_text)
                     .into_iter()
                     .filter_map(|bp| match bp {
@@ -281,7 +281,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
                     .zip(bind_names.iter())
                     .enumerate()
                     .map(|(idx, (cluster_spec, name))| {
-                        use nbrs_workload::bindpoints::LvalueSpec;
+                        use nmbrs_workload::bindpoints::LvalueSpec;
                         // Compute the cluster-side (precise or
                         // Str-fallback) polydat type — used in all
                         // arms below as the slot's truthful lvalue
@@ -292,8 +292,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         let (lvalue_type, allow_fusion) =
                             match lvalue_specs.get(idx).and_then(|s| s.as_ref()) {
                                 Some(LvalueSpec::Wildcard) => {
-                                    nbrs_runtime::diag!(
-                                        nbrs_runtime::observer::LogLevel::Info,
+                                    nmbrs_runtime::diag!(
+                                        nmbrs_runtime::observer::LogLevel::Info,
                                         "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
                                          `:*` wildcard opt-in seen on this bind-point — polydat \
                                          binder slot keeps cluster-reported lvalue type \
@@ -307,8 +307,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 Some(LvalueSpec::Explicit(type_name)) => {
                                     match polydat::ast::PortType::from_workload_name(type_name) {
                                         Some(pt) => {
-                                            nbrs_runtime::diag!(
-                                                nbrs_runtime::observer::LogLevel::Info,
+                                            nmbrs_runtime::diag!(
+                                                nmbrs_runtime::observer::LogLevel::Info,
                                                 "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
                                                  `:{type_name}` lvalue assertion seen on this bind-point \
                                                  — using workload-asserted polydat type `{type_name}` \
@@ -333,8 +333,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 }
                                 None => {
                                     if let Some(cql_label) = fallback {
-                                        nbrs_runtime::diag!(
-                                            nbrs_runtime::observer::LogLevel::Warn,
+                                        nmbrs_runtime::diag!(
+                                            nmbrs_runtime::observer::LogLevel::Warn,
                                             "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
                                              CQL type {cql_label} has no precise polydat mapping yet — \
                                              falling back to Str-lvalue, which permits any rvalue and \
@@ -556,10 +556,10 @@ inventory::submit! {
 // `CqlConfig::to_resource_key("scylla")` keys share a
 // single `ScyllaCqlAdapter` for the whole workload.
 inventory::submit! {
-    nbrs_runtime::adapter::SharedDriverRegistration {
+    nmbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "cql",
         driver: "scylla",
-        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
+        share_capability: nmbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let cfg = crate::common::CqlConfig::from_params(params)
                 .map_err(|e| format!("scylla config error: {e}"))?;

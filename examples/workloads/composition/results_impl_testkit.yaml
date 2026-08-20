@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # results_impl_testkit.yaml — SRD-109 Part 3: an IMPLEMENTATION
 # delivering the blueprint's `results:` wire. The testkit adapter
 # returns the canned vendor-shaped body; `result: keys:

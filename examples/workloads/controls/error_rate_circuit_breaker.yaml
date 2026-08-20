@@ -1,4 +1,4 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # Error-rate circuit breaker — count errors, fail only above a budget.
 # (SRD-82 ErrorPolicy + SRD-83 stop conditions.)
 #
@@ -47,8 +47,8 @@
 #                                  holds it off).
 #
 # Usage:
-#   nbrs run workload=examples/workloads/controls/error_rate_circuit_breaker.yaml
-#   nbrs run workload=examples/workloads/controls/error_rate_circuit_breaker.yaml \
+#   nmbrs run workload=examples/workloads/controls/error_rate_circuit_breaker.yaml
+#   nmbrs run workload=examples/workloads/controls/error_rate_circuit_breaker.yaml \
 #       scenario=degraded
 
 params:
@@ -96,7 +96,7 @@ phases:
         result-error-name: Timeout
         result-error-message: "synthetic read timeout (error rate exceeded budget)"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 # Default `steady`: timeouts stay under budget → run completes, no failed
 # phases (errors are counted, not fatal).
 #@ run

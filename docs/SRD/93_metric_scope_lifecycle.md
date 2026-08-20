@@ -1,4 +1,4 @@
-# 93: Metric Instance Scope Lifecycle & Read-Path Tiering    (owning crates: nbrs-metrics (reporters/sqlite, snapshot, cadence_reporter, component), nbrs-runtime (session, session_signals, runner ReportConfig plumbing), nbrs (metrics_cmd, completion); tests: nbrs-metrics reporters/sqlite unit tier, nbrs/tests/phase_metrics_e2e)
+# 93: Metric Instance Scope Lifecycle & Read-Path Tiering    (owning crates: nmbrs-metrics (reporters/sqlite, snapshot, cadence_reporter, component), nmbrs-runtime (session, session_signals, runner ReportConfig plumbing), nmbrs (metrics_cmd, completion); tests: nmbrs-metrics reporters/sqlite unit tier, nmbrs/tests/phase_metrics_e2e)
 
 **Status:** IMPLEMENTED — all six stages landed 2026-08-03 (each
 stage's entry in §Staged implementation records its measured
@@ -41,7 +41,7 @@ incident (M7).
 
 ## Motivation — the defect, measured
 
-`time nbrs metrics show` against a live session db took **76 m 37 s**.
+`time nmbrs metrics show` against a live session db took **76 m 37 s**.
 Every contributing factor was verified against the code and the
 live db (4,917 `metric_instance` rows, ~5.0 M `sample_value` rows):
 
@@ -57,7 +57,7 @@ live db (4,917 `metric_instance` rows, ~5.0 M `sample_value` rows):
    is a full table scan (~180 ms measured at 5 M rows).
 
 2. **Value summaries are computed per instance, several scans
-   each.** `load_value_summary` (`nbrs/src/metrics_cmd.rs:2341`)
+   each.** `load_value_summary` (`nmbrs/src/metrics_cmd.rs:2341`)
    issues 3–4 queries per instance (`family_kind`, `MIN/MAX
    timestamp`, then a full ordered series load or an
    `ORDER BY count DESC LIMIT 1`). O(instances × table) instead
@@ -78,7 +78,7 @@ Arithmetic: ~180 ms × ~3 queries × 4,917 instances × 2 passes ≈
    live session.
 
 5. **(Same day, same session.) The graceful-stop door failed on a
-   detached, wedged run.** The session's `nbrs run` had 3 ops hung
+   detached, wedged run.** The session's `nmbrs run` had 3 ops hung
    in the adapter for ~28 h, its console unreachable. Two SIGINTs
    were sent to the pid; both were **delivered and consumed**
    (`SigCgt` showed the handler registered, `ShdPnd` stayed
@@ -121,17 +121,17 @@ SRD-93 completes the scaffold instead of caching around it.
   sealed cadence windows (`MetricSet`), replacing inference from
   the `partial` flag. `Reporter::report(&MetricSet)` is unchanged
   — the reason rides inside the snapshot, so no trait change.
-- **Exports (CLI).** `nbrs metrics summarize` — tier-two
+- **Exports (CLI).** `nmbrs metrics summarize` — tier-two
   subcommand carrying today's show-with-stats output.
-  `nbrs metrics show` narrows to scaffold + lifecycle only and
+  `nmbrs metrics show` narrows to scaffold + lifecycle only and
   never touches `sample_value`.
 - **Consumes:** the `upsert_instance` chokepoint and its
   `instance_cache` / `family_cache` (`reporters/sqlite.rs:1086`,
   `:1042`); the `scope_close` cascade (`component.rs:685` →
   `cadence_reporter` `force_close` `:203`); the SRD-77
   `executions` identity; the `metric_family_provider` completion
-  path (`nbrs/src/completion.rs`, `metrics_cache.rs` sidecar).
-- **Allowed edges:** nbrs-metrics internal + nbrs CLI reads. No
+  path (`nmbrs/src/completion.rs`, `metrics_cache.rs` sidecar).
+- **Allowed edges:** nmbrs-metrics internal + nmbrs CLI reads. No
   new cross-crate edge (SRD-05).
 
 ## Axioms
@@ -273,7 +273,7 @@ Two clocks, one derivation:
   process restarts (resume/refine), alignment is wall-clock
   through the durable epoch — stated honestly as the precision
   boundary. The pair + epoch reach `SqliteReporter` via
-  `ReportConfig` (`nbrs-runtime/src/runner.rs:88`).
+  `ReportConfig` (`nmbrs-runtime/src/runner.rs:88`).
 - **Legacy tables.** `executions`, `phase_outcomes`, and
   `sample_value` keep their existing UTC columns untouched.
   Session-time reads over them are the derivation
@@ -487,7 +487,7 @@ per rung by construction.
    5.11 M-row unindexed db (debug build): `show` 0.14 s,
    `summarize` 6.1 s, vs the incident's 76 m 37 s; leaf lines
    byte-identical to the old show-with-values output
-   (`load_all_value_summaries` in `nbrs/src/metrics_cmd.rs`, unit
+   (`load_all_value_summaries` in `nmbrs/src/metrics_cmd.rs`, unit
    test `one_pass_summaries_match_per_kind_semantics`). All three
    `metrics_cmd` db opens are `SQLITE_OPEN_READ_ONLY`
    (`open_metrics_db_ro`); db + `-wal` mtimes untouched by reads
@@ -575,10 +575,10 @@ per rung by construction.
    may land first.
    **IMPLEMENTED 2026-08-03** (landed first, as allowed) —
    `block_shutdown_signals` + `spawn_signal_dispatcher`
-   (`sigwait` on a dedicated thread; `nbrs/src/main.rs` blocks
+   (`sigwait` on a dedicated thread; `nmbrs/src/main.rs` blocks
    before any thread spawns) with the unarmed/armed routing in
    `dispatch_decision` (unit-tested); e2e
-   `nbrs/tests/signal_shutdown.rs`: one TERM → graceful with
+   `nmbrs/tests/signal_shutdown.rs`: one TERM → graceful with
    consolidated db (`user_version = 2` pre-stage-4, no `-wal`,
    disposition stamped) and TERM×3 past a 60 s parked op →
    exit 143. Two recorded deltas from the spec text: (a) the
@@ -595,7 +595,7 @@ per rung by construction.
    survival compatible with anything that owns the terminal. Also amended en route: a
    ladder-driven interrupt now stamps `executions.disposition` on
    its way out (`close_execution_row` on the walk-error path,
-   `nbrs-runtime/src/runner.rs`) — previously ANY interrupt left
+   `nmbrs-runtime/src/runner.rs`) — previously ANY interrupt left
    the unclean-exit NULL, contradicting this SRD's clean-shutdown
    claim for levels 1–2.
 

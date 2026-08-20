@@ -1,6 +1,6 @@
-#!/usr/bin/env nbrs
+#!/usr/bin/env nmbrs
 # =====================================================================
-# nbrs Kernel Opt-Level Diagnostic Mode
+# nmbrs Kernel Opt-Level Diagnostic Mode
 # =====================================================================
 #
 # This workload demonstrates the `--kernel-opt=diagnostic` flag (or
@@ -53,21 +53,21 @@
 # ─────────────────────────────────────────────────────────────────────
 #
 #   # default: release
-#   nbrs run docs/guide/kernel_opt_diagnostic_example.yaml
+#   nmbrs run docs/guide/kernel_opt_diagnostic_example.yaml
 #
 #   # opt in to diagnostic mode
-#   nbrs run docs/guide/kernel_opt_diagnostic_example.yaml \
+#   nmbrs run docs/guide/kernel_opt_diagnostic_example.yaml \
 #       --kernel-opt=diagnostic
 #
 #   # or via workload param
-#   nbrs run docs/guide/kernel_opt_diagnostic_example.yaml \
+#   nmbrs run docs/guide/kernel_opt_diagnostic_example.yaml \
 #       kernel_opt=diagnostic
 #
 # Under diagnostic the stdout adapter's auto-traversal (which writes
 # `body` / `count` / `ok` per cycle) lands every slot on the kernel.
 # Under release it lands only the slots the result block references.
 #
-# A future `nbrs debug step` subcommand will use the diagnostic slot
+# A future `nmbrs debug step` subcommand will use the diagnostic slot
 # set to surface "what the adapter wrote this cycle" — without
 # `--kernel-opt=diagnostic`, step-debug would only see the slots the
 # workload happened to read.

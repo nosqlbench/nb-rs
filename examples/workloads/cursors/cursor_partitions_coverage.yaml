@@ -6,7 +6,7 @@
 # Comprehensive coverage of SRD 71 cursor partitioning shapes.
 # Every scenario exercises exactly one shape and emits a `cp/...`
 # prefixed line that the matching `cursor_partitions_*` test in
-# `nbrs/tests/cursor_partitions.rs` scans and asserts against.
+# `nmbrs/tests/cursor_partitions.rs` scans and asserts against.
 #
 # ── Background: what a partition spec IS ──────────────────────
 #
@@ -1162,7 +1162,7 @@ scenarios:
   # input" leak. These scenarios are NAMED-ONLY: they are never the
   # walked scenario (the `#@ run` directive pins `windowed_chunking`)
   # and are exercised exclusively by their own `#[test]` fns in
-  # `nbrs/tests/cursor_partitions.rs`, each asserting the run FAILS.
+  # `nmbrs/tests/cursor_partitions.rs`, each asserting the run FAILS.
   #
   # CRITICAL: every rejection scenario points at the `noop_emit`
   # phase, which makes NO reference to `p`. If the phase consumed
@@ -1716,6 +1716,6 @@ phases:
         adapter: stdout
         stmt: "cp/no_over n={n}"
 
-# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# ─── example-walker test directives (nmbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=windowed_chunking
 #@ expect 4 completed, 0 failed

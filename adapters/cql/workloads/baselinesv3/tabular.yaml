@@ -5,7 +5,7 @@
 # (partition+clustering schema, 8 graduated data fields,
 # partition-ordered rampup, field-subset reads with varied
 # LIMIT, full-row writes) are taken from the nosqlbench heritage
-# workload; everything else is native nbrs:
+# workload; everything else is native nmbrs:
 #
 #   - Every knob is a declared param flowing into bindings as a
 #     typed const wire — discoverable via `describe workloads`,

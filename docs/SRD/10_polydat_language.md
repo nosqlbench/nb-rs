@@ -1,4 +1,4 @@
-# 10: Polydat Language and Compilation — nbrs-side framing
+# 10: Polydat Language and Compilation — nmbrs-side framing
 
 > **Planned (SRD-84):** add `&&` / `||` boolean operators (eager
 > truthiness combinators; short-circuit deferred) at the **lowest**
@@ -28,8 +28,8 @@ compilation pipeline now live in the polydat crate:
   the import-first reorganization; see
   [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-This file retains only the **nbrs-side framing** — why GK
-is the unified access surface for nbrs workloads, how nbrs
+This file retains only the **nmbrs-side framing** — why GK
+is the unified access surface for nmbrs workloads, how nmbrs
 selects outputs, how the Polydat kernel acts as the unified
 state holder for inter-op flow, and op-level binding
 conventions. Its grammar-facing material (cursor declarations,
@@ -126,7 +126,7 @@ The compiler scans op fields AND params for `{name}` references.
 Unreferenced bindings are dead code — compiled into the DAG but
 never pulled, so constant folding may eliminate them entirely.
 
-This is an nbrs-runtime concern: the activity layer is what
+This is an nmbrs-runtime concern: the activity layer is what
 defines "consumer" (which fields and which params count). The
 polydat compiler's Output Selection step (see
 [polydat/docs/design/language_spec.md §Compilation Pipeline](https://github.com/nosqlbench/polydat/blob/main/crates/polydat/docs/design/language_spec.md#compilation-pipeline))

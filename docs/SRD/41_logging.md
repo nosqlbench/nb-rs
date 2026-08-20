@@ -1,6 +1,6 @@
 # 41: Logging and Diagnostics
 
-Every nbrs **system signal** — startup banners, the phase walk, metrics
+Every nmbrs **system signal** — startup banners, the phase walk, metrics
 setup, lifecycle readouts, run-completion notices, the post-run summary
 — routes through the observer/sink traits. The sink's per-mode wiring
 decides the surface (TUI panel, stderr, or `session.log`). The console
@@ -24,7 +24,7 @@ the TUI panel, and clobbers a console-owning adapter's output.
 | Adapter result rendering (stdout fields, plotter canvas) | **stdout, directly** — the adapter owns the console |
 | User-requested report content (`summary=`, a rendered `.md`) | **stdout, directly** — it's the asked-for artifact |
 | Fatal error just before `process::exit` | **stderr, directly** — terminal reporting must be unconditional, not buffered behind the async sink |
-| Every other nbrs system signal | **the observer/sink** — `diag!` / `observer::log` / the readout binder |
+| Every other nmbrs system signal | **the observer/sink** — `diag!` / `observer::log` / the readout binder |
 
 **SRD-87 update:** the *transport* of adapter output is now owned by
 [SRD-87](87_output_channel.md). Adapter output no longer writes
@@ -32,7 +32,7 @@ the TUI panel, and clobbers a console-owning adapter's output.
 `OutputChannel`, which owns the fd. The intent here ("the console
 belongs to the adapter") is preserved as "the adapter's
 op-output/raster bucket owns the terminal surface." The interim
-`op_output()` half-measure (`nbrs-runtime/src/observer.rs`) that routed
+`op_output()` half-measure (`nmbrs-runtime/src/observer.rs`) that routed
 op output through the diagnostic channel — and produced the
 stdout-prints-nothing-on-an-interactive-TTY defect — is superseded by
 SRD-87.
@@ -113,12 +113,12 @@ adapter-writes-to-a-file workload correctly keeps its dashboard.
 ### Log-level resolution
 
 The display (stderr) and retain (`session.log`) floors resolve with
-**closest-wins precedence: CLI > workload `params:` > `NBRS_LOG_*` env >
+**closest-wins precedence: CLI > workload `params:` > `NMBRS_LOG_*` env >
 built-in default** (display `Info`, retain `Debug`). So a visual or
 quiet-by-default workload can declare `params: { loglevel: warn }` and a
 CLI `loglevel=info` still overrides it. Knobs: `loglevel=` /
-`loglevel-display=` / `NBRS_LOG_DISPLAY_LEVEL` (display) and
-`loglevel-retain=` / `NBRS_LOG_RETAIN_LEVEL` (file). All are accepted
+`loglevel-display=` / `NMBRS_LOG_DISPLAY_LEVEL` (display) and
+`loglevel-retain=` / `NMBRS_LOG_RETAIN_LEVEL` (file). All are accepted
 workload/CLI params (in `KNOWN_PARAMS`), so they pass the closed-vocabulary
 guard.
 
@@ -129,7 +129,7 @@ guard.
   `error:` in the message body for `Warn` / `Error` lines.
 - No timestamps in console messages; the `session.log` projection adds
   a wall-clock stamp, and metrics carry timing.
-- The inspector socket (`nbrs attach`'s out-of-band endpoint) is **off
+- The inspector socket (`nmbrs attach`'s out-of-band endpoint) is **off
   by default**; opt in with `inspector=on`. It is not part of the
   in-process display path — the in-process TUI/observer never read it.
 
@@ -155,10 +155,10 @@ pub enum CompileEvent {
 
 ### --explain Mode
 
-`nbrs bench --explain <expr>` dumps the event stream to stderr:
+`nmbrs bench --explain <expr>` dumps the event stream to stderr:
 
 ```
-$ nbrs bench --explain "hash(cycle)" cycles=1
+$ nmbrs bench --explain "hash(cycle)" cycles=1
 [parsed]    cycle → graph input #0
 [parsed]    hash  → Hash64 node
 [wired]     hash.input[0] ← input:cycle
@@ -183,7 +183,7 @@ and output selection decisions.
 | ConfigWireCycleWarning | Warning | Config wire perf |
 | Warning | Warning | General |
 
-Query advisories: `nbrs bench Polydat file.gk --explain`
+Query advisories: `nmbrs bench Polydat file.gk --explain`
 
 ---
 
