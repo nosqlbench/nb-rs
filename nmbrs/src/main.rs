@@ -73,6 +73,22 @@ fn main() {
     // hand-synced copy. Done before any run dispatch.
     nmbrs_runtime::runner::install_known_params(completion::known_param_keys());
 
+    // Same derivation for the run command's FLAG vocabulary: the declared
+    // spec flags (long forms + aliases), split by arity, become the
+    // runner's argv validation lists — parse_params accepts exactly what
+    // help/completion advertise, no hand-synced copy.
+    let mut bare: Vec<&'static str> = Vec::new();
+    let mut value: Vec<&'static str> = Vec::new();
+    for f in run::standard_run_flags() {
+        let dest = match f.arity {
+            cli_spec::Arity::Bool => &mut bare,
+            cli_spec::Arity::Value => &mut value,
+        };
+        dest.push(f.long);
+        dest.extend(f.aliases.iter().copied());
+    }
+    nmbrs_runtime::runner::install_known_flags(bare, value);
+
     // Shell-completion callback. Reads `_NMBRS_COMPLETE=bash`,
     // emits candidates, exits. Must run BEFORE any
     // arg-consuming logic so tab presses never touch adapters,

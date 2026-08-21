@@ -14,6 +14,26 @@ use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
 use nmbrs_runtime::session::{SessionReuse, init_empty_session, utc_datetime_fields};
 
 /// Spec for the `session` command tree.
+/// kv forms `handle_init` consumes.
+const INIT_KV: &[crate::cli_spec::KvParam] = &[
+    crate::cli_spec::KvParam {
+        key: "name=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "template=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "session-path=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "session-reuse=",
+        provider: crate::completion::session_reuse_values,
+    },
+];
+
 pub fn spec() -> Command {
     Command {
         name: "session",
@@ -33,7 +53,7 @@ pub fn spec() -> Command {
             category: Category::Tools,
             level: Level::Secondary,
             flags: Vec::new(),
-            kv_params: &[],
+            kv_params: INIT_KV,
             dynamic_options: None,
             positionals: Vec::new(),
             handler: Some(Handler::Sync(handle_init)),

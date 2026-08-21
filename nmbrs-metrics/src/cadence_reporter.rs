@@ -2086,10 +2086,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scope_close_gauge_partials_use_combine_rules() {
-        // Gauge combine is weighted-avg by interval. With two
-        // partials of equal interval and gauge values 4.0 and 8.0,
-        // the merged value must be 6.0 (mean) — the fold goes
-        // through coalesce, just like a normal cadence-pulse fold.
+        // Gauge combine is LAST-WRITE-WINS (the OpenMetrics/
+        // Prometheus gauge contract; summarization is a query-point
+        // concern). With two ingests of gauge values 4.0 then 8.0,
+        // the merged value must be 8.0 — the fold goes through
+        // coalesce, just like a normal cadence-pulse fold.
         let cadences = Cadences::new(&[Duration::from_secs(1)]).unwrap();
         let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
         let labels = Labels::of("phase", "g");
@@ -2128,7 +2129,10 @@ mod tests {
             MetricValue::Gauge(g) => g.value,
             _ => panic!("expected gauge, got {:?}", g),
         };
-        assert!((value - 6.0).abs() < 1e-9, "expected 6.0, got {value}");
+        assert!(
+            (value - 8.0).abs() < 1e-9,
+            "expected last-written 8.0, got {value}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

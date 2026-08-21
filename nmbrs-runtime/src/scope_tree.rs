@@ -1291,6 +1291,7 @@ mod tests {
             comprehension,
             children,
             continue_if: None,
+            anchor: None,
         }
     }
 
@@ -1412,6 +1413,7 @@ mod tests {
         let mut op = ParsedOp::simple("op", "noop");
         op.bindings = BindingsDef::PolydatSource(src.into());
         WorkloadPhase {
+            key_metrics: Vec::new(),
             cycles: None,
             concurrency: None,
             rate: None,
@@ -1754,6 +1756,7 @@ mod tests {
         phases.insert(
             "p".into(),
             WorkloadPhase {
+                key_metrics: Vec::new(),
                 dimensions: Default::default(),
                 cycles: None,
                 concurrency: None,
@@ -1810,6 +1813,7 @@ mod tests {
         phases.insert(
             "p".into(),
             WorkloadPhase {
+                key_metrics: Vec::new(),
                 dimensions: Default::default(),
                 cycles: None,
                 concurrency: None,
@@ -1857,6 +1861,7 @@ mod tests {
         phases.insert(
             "p".into(),
             WorkloadPhase {
+                key_metrics: Vec::new(),
                 dimensions: Default::default(),
                 cycles: None,
                 concurrency: None,

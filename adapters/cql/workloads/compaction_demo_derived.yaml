@@ -246,6 +246,14 @@ params:
   enable_finalize: 0   # the finalize_index phase (flush + sstable read + compaction)
   enable_compact: 0    # the forced major compaction (inside finalize_index)
 
+  # Terminal forced-major arm of the tail protocol (finalize_index +
+  # recall rounds 5,6 — the "compacted" state). OPT-IN: a whole-table
+  # major at 100M+ scale is an hours-long index rebuild (measured
+  # 2026-08-07: the 127M-node build ran ~401 nodes/s cache-cold), so
+  # the default tail ends at the settled state and the compacted arm
+  # is a deliberate spend: `enable_terminal_compact=1`.
+  enable_terminal_compact: 0
+
   # Proof-of-compaction bound. When `enable_compact=1`, the last finalize op
   # asserts the table settled to at most this many sstables; more than this
   # means the compaction never ran, died, or left the table unmerged, and the
@@ -395,6 +403,14 @@ bindings: |
   # scope init), read by the `continue_if: "end_of(part) <=
   # effective_max_size"` sweep gate on the tier loop below (SRD-101).
   const effective_max_size := if(max_size > 0, max_size, vector_count("{dataset}:{profile}"))
+  # Terminal forced-major arm toggle, frozen as a typed const: SRD-101
+  # sweep gates resolve outer-scope CONSTS through the per-iteration
+  # cascade (see continue_if_sweep.yaml). A bare param in a literal-list
+  # sweep's predicate fails CLOSED (measured 2026-08-08: `arm_pass <=
+  # param` never entered even at param=1) — while the tier loop's
+  # partition-sweep gate resolves its bare param fine, an inconsistency
+  # to be chased separately. The const form is correct in both shapes.
+  const terminal_compact_cap := enable_terminal_compact
   # Workload-root SHARED cell for the measured insert batch stride
   # (SRD-66/67). The early `measure_batch` phase writes THROUGH to this
   # cell its byte-budgeted batch's rows-written `count` (Change 1: a CQL
@@ -471,6 +487,8 @@ scenarios:
     # partition `part` spans `[previous tier size, this tier size)` — the
     # incremental range — and carries its masked position as `idx_of(part)`.
     - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
+      # SRD-109 — one report-table row per tier, in the `tier` view.
+      anchor: tier
       # SRD-101 — bound the sweep: a pre-entry gate on the tier iteration. The
       # walker evaluates this before entering each tier; the moment a tier's
       # cumulative base-vector count would exceed `effective_max_size` (the
@@ -587,6 +605,11 @@ scenarios:
           phases:
             - measure_batch
             - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
+              # SRD-109 — same `tier` view as the serialized loop:
+              # identical coordinate (part), so both flows share one
+              # per-tier table and empty columns mark the flow that
+              # doesn't emit a family.
+              anchor: tier
               continue_if: "end_of(part) <= adaptive_max_size"
               phases:
                 # The watch daemon lives at TIER scope — listed first so
@@ -604,9 +627,10 @@ scenarios:
         # along the way; this captures the tail so the terminal
         # recalls measure a fully on-disk table).
         - flush
-        # ── terminal recall protocol: 2 recalls × 3 table states ──
-        # Six recalls against the final tier's own ground truth, two
-        # at each post-ingest state the table passes through:
+        # ── terminal recall protocol: 2 recalls × 2–3 table states ──
+        # Recalls against the final tier's own ground truth, two at
+        # each post-ingest state the table passes through (the third
+        # state is opt-in, `enable_terminal_compact=1`):
         #   postflush  — right after the closing flush, while STCS
         #                reacts on its own schedule: the encumbered
         #                read, sampled deliberately (the tier-scope
@@ -628,6 +652,9 @@ scenarios:
             const profile_pattern := "{final_recall_pattern}"
           phases:
             - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
+              # SRD-109 — the terminal protocol's own row space (the
+              # final-recall partition; cardinality 1 per run).
+              anchor: tail
               phases:
                 # Tier-scope watch daemon spans the whole terminal
                 # protocol, so every recall window has pool/sstable
@@ -640,6 +667,7 @@ scenarios:
                     const recall_stage := "postflush"
                   phases:
                     - for: "recall_round in 1,2"
+                      anchor: terminal_recall
                       phases:
                         - recall_check
                 # Hold until sstable_tasks drains (same shape as
@@ -652,25 +680,46 @@ scenarios:
                     const recall_stage := "settled"
                   phases:
                     - for: "recall_round in 3,4"
+                      anchor: terminal_recall
                       phases:
                         - recall_check
-                # Forced major compaction: finalize_index with its
-                # toggles shadowed ON for this subtree only — the
-                # scenario-level enable_finalize=0/enable_compact=0
-                # posture stays authoritative everywhere else.
-                # verify_segments then asserts the table settled to
-                # ≤ {max_postfinal_segments} sstables, so the
-                # compacted-state recalls below run on a PROVEN
-                # merged shape.
+                # Forced major compaction — OPT-IN via
+                # enable_terminal_compact (default 0). When enabled,
+                # finalize_index's toggles are shadowed ON for this
+                # subtree only (the scenario-level enable_finalize=0/
+                # enable_compact=0 posture stays authoritative
+                # everywhere else) and verify_segments asserts the
+                # table settled to ≤ {max_postfinal_segments}
+                # sstables, so the compacted-state recalls run on a
+                # PROVEN merged shape. When disabled, finalize_index's
+                # ops are all if-gated off (the same mechanism the
+                # serialized flow uses) and the round 5,6 sweep is
+                # halted by its continue_if before any iteration runs.
                 - bindings: |
                     const recall_stage := "compacted"
                     const enable_finalize := 1
                     const enable_compact := 1
                   phases:
-                    - finalize_index
-                    - for: "recall_round in 5,6"
+                    # One-iteration sweep as the gate: the whole arm —
+                    # finalize AND its recalls — halts before any iteration
+                    # when the flag is 0. The predicate reads the ROOT
+                    # `const terminal_compact_cap` (params are frozen to
+                    # consts for gate use; see the root bindings note).
+                    # The literal toggle shadows above stay authoritative
+                    # for the enabled case. NOTE: dryrun=phase walks
+                    # declared iterations without evaluating this gate —
+                    # only execution shows the skip (`N not run`).
+                    - for: "terminal_compact_pass in 1"
+                      # SRD-109 — the opt-in arm's one-row view (holds
+                      # finalize's designations when the arm runs).
+                      anchor: terminal_compact
+                      continue_if: "terminal_compact_pass <= terminal_compact_cap"
                       phases:
-                        - recall_check
+                        - finalize_index
+                        - for: "recall_round in 5,6"
+                          anchor: terminal_recall
+                          phases:
+                            - recall_check
 
   # One adaptive tier's ingest scope: the latency probe spawns first
   # (off the foreground budget), then the servo'd loader runs; the
@@ -702,6 +751,8 @@ scenarios:
   # every decade tier in sequence — the `^900m$` filter pins it to 900M.)
   recall:
     - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
+      # SRD-109 — same per-tier row space as the sweep flows.
+      anchor: tier
       phases:
         - recall_check
 
@@ -868,6 +919,16 @@ phases:
   # (SRD-91) captures ANN query latency *while the tier is being ingested
   # and indexed* — the whole point of the probe.
   concurrent_query:
+    # SRD-109 — the encumbered-read price: ANN latency while the tier
+    # loads and indexes. p99 is worst-window deliberately (a mean of
+    # p99s launders exactly the stall this exists to surface);
+    # timeouts absorbed by retries land in attempt_failure.
+    key_metrics:
+      qps: rate(result_success)
+      q_p50: avg(result_success_p50)
+      q_p99_worst: max(result_success_p99)
+      probe_failures: last(result_failure)
+      probe_timeouts: last(attempt_failure)
     # Skip a completed tier's shadow daemon on resume (its tier_build is done); only
     # the failed/pending tier re-spawns it.
     checkpoint: idempotent
@@ -929,6 +990,16 @@ phases:
   # Reads are advisory: an errored poll warns and keeps the last
   # wire values; it must never fail a tier.
   compaction_watch:
+    # SRD-109 — the servo's INPUTS: what pressure each tier lived
+    # with (means) and its worst moments (maxes), plus the windowed
+    # backstop numerator (all-zero = healthy signature).
+    key_metrics:
+      comp_active: avg(compaction_pool_active)
+      comp_active_max: max(compaction_pool_active)
+      comp_pending_max: max(compaction_pool_pending)
+      flush_active_max: max(flush_pool_active)
+      sstables_max: max(table_sstables_live)
+      recent_fail_max: max(recent_result_failures)
     checkpoint: idempotent
     adapter: cql
     daemon: true
@@ -1042,6 +1113,19 @@ phases:
   # `rate: 100000` is deliberately far above capacity (≈ no
   # throttle) — the servo takes over at the first watch poll.
   load_increment_adaptive:
+    # SRD-109 key measurables: the tier's delivered rows (coverage),
+    # its failures, achieved throughput, per-batch tail latency, and
+    # the whole servo chain summarized. Attached to the `tier` view.
+    key_metrics:
+      rows: last(result_success)
+      failures: last(result_failure)
+      rows_per_s: rate(result_success)
+      insert_p99: max(result_success_p99)
+      weight: avg(load_weight)
+      weight_min: min(load_weight)
+      pressure: avg(servo_pressure)
+      flush_term: avg(servo_flush_term)
+      target_rate: avg(target_rows_rate)
     checkpoint: idempotent
     concurrency: concurrency
     rate: 100000
@@ -1192,6 +1276,12 @@ phases:
   # and the table ends each tier holding exactly [0, this_count).
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   load_increment:
+    # SRD-109 — the serialized loader's measurables (no servo).
+    key_metrics:
+      rows: last(result_success)
+      failures: last(result_failure)
+      rows_per_s: rate(result_success)
+      insert_p99: max(result_success_p99)
     # Completed tier loads skip on resume; the loads are idempotent re-inserts anyway.
     checkpoint: idempotent
     concurrency: concurrency
@@ -1369,6 +1459,15 @@ phases:
   # written in this scenario — referencing it would read a stale
   # default and release the drain instantly.
   settle_compactions:
+    # SRD-109 — the drain: how long the tail waited, what it waited
+    # on, and the terminal build's achieved rate (the capacity
+    # headline — ~11k nodes/s cache-hot vs the measured 401/s cliff).
+    key_metrics:
+      settle_wait: max(settle_wait_time_s)
+      drain_pending_max: max(settle_pending_tasks)
+      build_nodes: last(compaction_index_nodes_done)
+      build_nodes_total: last(compaction_index_nodes_total)
+      build_rate: rate(compaction_index_nodes_done)
     # A completed settle skips on resume; an interrupted one re-polls.
     # Both are correct — the poll is a pure read.
     checkpoint: idempotent
@@ -1487,6 +1586,14 @@ phases:
   #   await_compaction -> CQL system_views.sstable_tasks, op-level
   #                      `poll: await_empty`; live progress until idle
   finalize_index:
+    # SRD-109 — the forced major: merge shape (K and bytes), drain
+    # wall, and the proof-of-compaction segment count.
+    key_metrics:
+      finalize_ms: last(time_to_index)
+      segments: last(compaction_input_segments)
+      index_bytes: last(compaction_input_index_bytes)
+      drain_wait: max(compaction_wait_time_s)
+      postfinal_segments: last(compaction_postfinal_segments)
     # Completed tier finalize (flush + compaction drain) skips on resume; the failed
     # tier re-runs it.
     checkpoint: idempotent
@@ -1991,6 +2098,13 @@ phases:
   # metric carries the profile name as the in-scope `{tier}` label).
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   recall_check:
+    # SRD-109 — answer quality (per tier, and per terminal round).
+    key_metrics:
+      recall: avg(recall_mean)
+      recall_p50: avg(recall_p50)
+      recall_min: min(recall_min)
+      q_p99: max(result_success_p99)
+      rows_ret: avg(rows_per_op)
     # Completed tier recall measurement skips on resume (already recorded).
     checkpoint: idempotent
     concurrency: "{query_concurrency}"
@@ -2076,6 +2190,13 @@ phases:
               - recall
 
   recall_postload:
+    # SRD-109 — answer quality (serialized flow, pre-compaction).
+    key_metrics:
+      recall: avg(recall_mean)
+      recall_p50: avg(recall_p50)
+      recall_min: min(recall_min)
+      q_p99: max(result_success_p99)
+      rows_ret: avg(rows_per_op)
     # Completed tier recall measurement skips on resume (already recorded).
     checkpoint: idempotent
     # Surface the PRIMARY recall metrics on the readout while this
@@ -2166,6 +2287,13 @@ phases:
               - recall
 
   recall_postcompact:
+    # SRD-109 — answer quality (serialized flow, post-compaction).
+    key_metrics:
+      recall: avg(recall_mean)
+      recall_p50: avg(recall_p50)
+      recall_min: min(recall_min)
+      q_p99: max(result_success_p99)
+      rows_ret: avg(rows_per_op)
     # Completed tier recall measurement skips on resume (already recorded).
     checkpoint: idempotent
     # Surface the PRIMARY recall metrics on the readout while this
@@ -2274,156 +2402,3 @@ phases:
 # `workload=adapters/cql/workloads/compaction_demo_derived.yaml` to render the
 # current definition against the same data.
 # ---------------------------------------------------------------------------
-report:
-  compaction_shape_section: |
-    file compaction_shape.md as 'Compaction shape and throughput per tier'
-
-    text compaction_shape_heading as "What this shows":
-     One row per size tier, in tier order.
-
-     `segments` is how many vector-index sstables the tier's major compaction
-     merged — the K in cost-over-K, and the number that separates "one big
-     source plus a tail of flush segments" from "a dozen equal ones".
-     `vector_index_bytes` and `sai_shared_bytes` are the merged input sizes.
-
-     `finalize_time` is the finalize phase's wall clock — flush through drain —
-     and `index_bytes_per_ms` is achieved throughput over that span.
-     `age` is NOT that: it measures time since the tier started, so for a
-     finished tier it keeps growing. Read `finalize_time` for how long the work
-     took, `age` for how long ago it was.
-
-     Progress is reported PER UNIT, because the two tasks the drain watches are
-     not commensurable: `index_nodes_done`/`index_nodes_total` are the vector
-     index build in token range parts, `data_bytes_done` is the data compaction
-     in bytes. They were once a single summed column, which added bytes to nodes
-     and moved with how many tasks happened to be registered at sample time.
-     `live_nodes_per_s` divides nodes by `age`, so it means something only for
-     the tier still running.
-
-     `state` says whether a tier finished, and is derived from a datum that only
-     exists once it has — not from `done_pct`, which is a polled gauge.
-
-     Read K against throughput: at fixed segment count the per-byte rate should
-     hold, and where it falls off with size the merge has left the page cache
-     and gone IO-bound.
-
-    table compaction_shape:
-      group_by: part
-      # Complete vs active, keyed on a datum that only exists once a tier has
-      # finished. Not derived from done_pct: that gauge keeps its last polled
-      # value after the work ends, so a finished tier can read well below 100.
-      state: max(time_to_index) by (part)
-      # `round()` because this is a COUNT and the storage averages gauges: the
-      # cadence cascade coalesces a gauge as a weighted mean over its interval
-      # (`coalesce_gauges_weighted_average_by_interval`), so a tier whose count
-      # was set partway through a window reads 0.9994 rather than 1. Correct
-      # for a level gauge, wrong for a count — round recovers the integer.
-      query: segments: round(max(compaction_input_segments) by (part))
-      query: vector_index_bytes: max(compaction_input_index_bytes) by (part)
-      query: sai_shared_bytes: max(compaction_input_table_bytes) by (part)
-      # Rollups are wrapped in min()/max(): `by (part)` groups an AGGREGATION, and a
-      # bare rollup keeps every label, so an unwrapped t*_over_time silently fails
-      # to align with the aggregated columns it is combined with.
-      # WHEN each tier ran. `started` is the instance's first emission, which is
-      # when that tier's compaction began. `last_progress` is the last time the
-      # value MOVED -- not the last sample, because every instance keeps being
-      # re-sampled at its final value until the run ends, so "last sample" is the
-      # end of the run for every tier and says nothing. A tier whose last_progress
-      # is recent and whose done_pct is below 100 is the one still running.
-      query: started: min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)
-      query: last_progress: max(tlast_change_over_time(compaction_completion_ratio[7d])) by (part)
-      # How long this tier has been going (rendered HH:MM:SS), as of the most
-      # recent activity ANYWHERE
-      # in the run -- which, for the tier currently working, is now.
-      #
-      # The lookback must outlast the sweep: a tier whose start falls outside the
-      # window would report the window edge instead, silently understating its age.
-      # 7d covers a full 36-tier run with room to spare; the execution qualifier
-      # keeps earlier executions in the same session out of it.
-      #
-      # Deriving it from the tier's own samples does not work: that gives
-      # last-change minus first-sample, which is quantised to the metrics cadence
-      # and, for a tier less than one tick old, is exactly zero because no CHANGE
-      # has been recorded yet. The tier that just started is precisely the one an
-      # operator is watching, and it read 0.0s.
-      #
-      # `on() group_right()` broadcasts the single global maximum across the
-      # per-tier starts; without an explicit empty-on() join an unlabeled series
-      # matches no labeled one and the whole column comes back empty.
-      #
-      # The global term is the latest SAMPLE, not the latest change: every instance
-      # is re-sampled each tick, so the newest sample anywhere is "now" to within
-      # one tick. Using the latest change here read 0.0s on the tier that had just
-      # started, because a series with no change yet reports its own first sample
-      # and that then won the maximum.
-      #
-      # For a FINISHED tier this is its age rather than its duration -- read
-      # finalize_ms for that, which is exact. For the tier still running it is the
-      # elapsed time, accurate to the second.
-      query: age: max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)
-      # The live gauge already reaches a true 1.0: system_views.sstable_tasks
-      # keeps a completed task listed for a while after it finishes (verified
-      # on the node: kind=compaction at completion_ratio=1 alongside a still-
-      # running index build), so the drain's polls capture the finished state
-      # before the row ages out. 186 of 187 stored samples for tier 0 are
-      # exactly 1.0.
-      query: done_pct: 100 * max(compaction_completion_ratio) by (part)
-      # NOT "nodes". This is `:sum(progress)` over EVERY task row registered
-      # at sample time, and those rows are in DIFFERENT UNITS: the data
-      # compaction reports `unit=bytes`, the vector index build reports
-      # `unit=token range parts`. So the number is a sum of unlike quantities,
-      # and its magnitude depends on how many tasks happened to be registered
-      # when the sample was taken.
-      #
-      # Tier 16 is the proof: every tier peaks at 2 concurrent tasks, but 16's
-      # final sample landed after one deregistered, so it reports ~12.5G where
-      # its neighbours report 45-58G. It did not do less work.
-      #
-      # A per-kind capture is not expressible today — capture aggregates are
-      # `:min`/`:max`/`:sum` over a field with no predicate, and filtering the
-      # poll's query by kind breaks the drain (see the `raw:` note above).
-      query: index_nodes_done: max(compaction_index_nodes_done) by (part)
-      query: index_nodes_total: max(compaction_index_nodes_total) by (part)
-      query: data_bytes_done: max(compaction_data_bytes_done) by (part)
-      # Throughput over elapsed-so-far, so a running tier reports the rate it is
-      # achieving now instead of nothing. For a finished tier this equals the
-      # completed rate; `finalize_ms` is kept beside it as the completion-time
-      # figure, blank until the tier closes.
-      # Two throughput figures, because they answer different questions and only one
-      # of them exists while a tier is still working:
-      #   index_bytes_per_ms  completion-time rate, exact, blank until the tier ends
-      #   live_bytes_per_ms   work done so far over running_for, available at once
-      # On the long-running tier this table exists to measure, the live figure is
-      # the only rate there is.
-      query: index_bytes_per_ms: max(compaction_input_index_bytes) by (part) / max(time_to_index) by (part)
-      # Task units (mixed, see above) over AGE (not duration) — so for a
-      # finished tier the denominator keeps growing and this keeps falling.
-      # Meaningful only for the tier currently running.
-      # How long the compaction sat INVISIBLE before doing anything: the gap
-      # between the drain's first poll and the first poll that saw a task.
-      #
-      # This is real, not instrument error. forceKeyspaceCompaction submits its
-      # task to the CompactionExecutor — a bounded pool (concurrent_compactors:
-      # 4 here) backed by a BlockingQueue — and a task registers in
-      # system_views.sstable_tasks only when a thread PICKS IT UP and
-      # task.execute() runs. While the four slots are busy with flush-triggered
-      # compactions and SAI index builds, the major compaction is queued and
-      # nothing is observable: the JMX call has returned nothing, the drain
-      # polls an empty table, and the tier looks idle while work is pending.
-      # That window is what made a 2.2s "drain complete" possible, and it is
-      # the wait the start-evidence assertion exists to cover.
-      #
-      # 0 means the first poll already saw the task (grace covered the queue).
-      query: start_latency_s: tfirst_over_time((compaction_pending_tasks > 0)[7d]) - tfirst_over_time(compaction_pending_tasks[7d])
-
-      query: live_nodes_per_s: max(compaction_index_nodes_done) by (part) / (1000 * (max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)))
-      # ONE finalize column, in h:m:s like `elapsed_time`.
-      #
-      # There were two — `finalize_seconds` (mean per-cycle SERVICE time) and
-      # `finalize_ms` (phase WALL-CLOCK duration). Same-looking names, different
-      # measurements, and therefore numbers that never reconciled: 0.341 s
-      # against 2.17 s for the same tier, the gap being the 2 s `drain_grace`
-      # delay, which is wall time but not service time. Wall clock is the one
-      # this table is about, so the service-time column is gone rather than
-      # renamed; re-add it deliberately if per-cycle service time is wanted.
-      query: finalize_time: max(time_to_index) by (part) / 1000

@@ -2232,9 +2232,7 @@ fn op_spec() -> crate::cli_spec::Command {
             name: "workload",
             help: "Workload file or catalog name.",
             kind: crate::cli_spec::PositionalKind::One,
-            value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::workload_positional_provider,
-            ),
+            value: crate::completion::WORKLOAD_VALUE,
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

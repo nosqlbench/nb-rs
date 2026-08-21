@@ -91,6 +91,7 @@ pub mod model;
 pub mod parse;
 pub mod polydat_matter;
 pub mod report;
+pub mod report_synth;
 pub mod spectest;
 /// SRD-85 deep workload suggestions — the shared "did you mean"
 /// set over the local file hierarchy and the bundled catalog,

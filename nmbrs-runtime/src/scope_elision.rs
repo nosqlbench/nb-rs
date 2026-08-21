@@ -196,6 +196,7 @@ mod tests {
 
     fn empty_phase() -> WorkloadPhase {
         WorkloadPhase {
+            key_metrics: Vec::new(),
             dimensions: Default::default(),
             cycles: None,
             concurrency: None,
@@ -324,6 +325,7 @@ mod tests {
         let mut tree = ScopeTree::build(
             "default",
             &[ScenarioNode::Comprehension {
+                anchor: None,
                 comprehension: comp,
                 children: vec![ScenarioNode::Phase("p".into())],
                 continue_if: None,

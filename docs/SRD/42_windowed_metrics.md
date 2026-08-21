@@ -515,7 +515,15 @@ just at different points in time. Combining them is well-defined:
   `CounterValue::cumulative` (§"Histogram rank semantics", the
   cumulative-counter model).
 - **Counters** sum.
-- **Gauges** weighted-average by the originating window's interval.
+- **Gauges** are last-write-wins by timestamp — the OpenMetrics/
+  Prometheus/OTel gauge contract. A coalesced window's sample is the
+  last-written scalar as of window end; any summarization (avg/min/
+  max over time) is a query-point concern (`*_over_time` rollups),
+  never a storage-side one. (Amended 2026-08-08: gauges previously
+  weighted-averaged by interval, which stored values never written —
+  a set-once count read 0.9994 — and silently redefined what every
+  metricsql rollup meant against this store relative to every other
+  PromQL-speaking system.)
 
 Same rules wherever combining happens (cadence coalescing,
 `recent_window` splicing, cross-component roll-up). A consumer

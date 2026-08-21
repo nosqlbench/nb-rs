@@ -56,6 +56,45 @@ pub(crate) fn is_cli_param(name: &str) -> bool {
     known_params().map(|p| p.contains(&name)).unwrap_or(true)
 }
 
+/// Spec-derived flag vocabulary (SRD-15 CLI substrate): the run command's
+/// DECLARED flags, split by arity, installed at binary startup exactly like
+/// [`install_known_params`]. Before this, [`parse_params`] validated argv
+/// against its own hardcoded lists ([`RECOGNIZED_BARE_FLAGS`] /
+/// [`SESSION_DIR_FLAGS`]), which had drifted from the spec — declared flags
+/// like `--no-prompt` (bool) and the space forms of `--jit` / `--kernel-opt`
+/// / declared aliases like `--session-dir` were hard-rejected while help and
+/// completion advertised them. The hardcoded lists remain only as the
+/// library/test-driver fallback.
+static KNOWN_BARE_FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+static KNOWN_VALUE_FLAGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+
+/// Install the run-style flag vocabulary (long forms + aliases from the CLI
+/// command-spec, split by arity). Idempotent — first wins.
+pub fn install_known_flags(bare: Vec<&'static str>, value: Vec<&'static str>) {
+    let _ = KNOWN_BARE_FLAGS.set(bare);
+    let _ = KNOWN_VALUE_FLAGS.set(value);
+}
+
+/// Recognized bare (boolean) flag: the installed spec list, or the
+/// hardcoded fallback. `--refine` is runner-internal (injected by the
+/// refine command, never user-declared) so it is always recognized.
+pub(crate) fn is_recognized_bare_flag(arg: &str) -> bool {
+    arg == "--refine"
+        || KNOWN_BARE_FLAGS
+            .get()
+            .map(|v| v.iter().any(|f| *f == arg))
+            .unwrap_or_else(|| RECOGNIZED_BARE_FLAGS.contains(&arg))
+}
+
+/// Recognized value-taking flag (space form consumes the next token):
+/// the installed spec list, or the hardcoded session-flag fallback.
+pub(crate) fn known_value_flags() -> &'static [&'static str] {
+    KNOWN_VALUE_FLAGS
+        .get()
+        .map(|v| v.as_slice())
+        .unwrap_or(SESSION_DIR_FLAGS)
+}
+
 /// A CLI flag's value, accepting `--flag=value` and `--flag value`.
 ///
 /// The same two spellings [`crate::session::resolve_flag`] accepts, minus its
@@ -6230,20 +6269,9 @@ fn resolve_workload_file(name: &str) -> Option<String> {
 /// [`parse_params`] uses so the two surfaces agree on which
 /// flags consume their next token.
 pub fn normalize_args(args: &[String]) -> Vec<String> {
-    /// Long-form flags that consume the next arg as their value.
-    /// Mirror of the `SESSION_DIR_FLAGS` + `--readout` list inside
-    /// [`parse_params`]. Centralising this would mean exposing
-    /// `parse_params`'s constant, which is private; the redundant
-    /// copy here is small and the test below catches drift.
-    const VALUE_FLAGS: &[&str] = &[
-        "--session",
-        "--session-name",
-        "--session-path",
-        "--session-reuse",
-        "--session-keep",
-        "--session-shelflife",
-        "--readout",
-    ];
+    // Spec-derived value-taking flags (installed at startup); the
+    // session-flag fallback applies for library/test drivers.
+    let value_flags = known_value_flags();
 
     let mut result = Vec::new();
     let mut workload_seen = false;
@@ -6253,7 +6281,7 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
         // Pass through space-form flag + its value as a unit.
         // Equals-form (`--session-path=X`) is one token and
         // skips this branch.
-        if VALUE_FLAGS.iter().any(|f| *f == arg) {
+        if value_flags.iter().any(|f| *f == arg) {
             result.push(arg.clone());
             if let Some(next) = iter.next() {
                 result.push(next.clone());
@@ -6351,7 +6379,7 @@ pub fn detect_conflicting_duplicate_params(args: &[String]) -> Result<(), String
     while let Some(arg) = iter.next() {
         // Session-dir flags: consumed by the startup hook, absorb the
         // space-form value so it isn't mistaken for a param.
-        if SESSION_DIR_FLAGS
+        if known_value_flags()
             .iter()
             .any(|p| arg == p || arg.starts_with(&format!("{p}=")))
         {
@@ -6403,7 +6431,7 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
     while let Some(arg) = iter.next() {
         // Session-dir flags (consumed by the startup hook,
         // not stored in params).
-        if SESSION_DIR_FLAGS
+        if known_value_flags()
             .iter()
             .any(|p| arg == p || arg.starts_with(&format!("{p}=")))
         {
@@ -6434,8 +6462,7 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
             params.insert(key, value);
         } else if arg.ends_with(".yaml") || arg.ends_with(".yml") {
             // Workload file path — handled elsewhere
-        } else if RECOGNIZED_BARE_FLAGS.contains(&arg.as_str()) || arg.starts_with("--polydat-lib=")
-        {
+        } else if is_recognized_bare_flag(arg.as_str()) || arg.starts_with("--polydat-lib=") {
             // Bare runner flag — consumed elsewhere via `args`
             // scan (e.g. `--strict`, `--polydat-lib=path`).
         } else {
@@ -7085,6 +7112,7 @@ mod tests {
         use std::collections::HashMap;
 
         let phase = WorkloadPhase {
+            key_metrics: Vec::new(),
             dimensions: Default::default(),
             cycles: None,
             concurrency: None,

@@ -1,0 +1,46 @@
+#!/usr/bin/env nmbrs
+# vector_suite_cql_oss_sift1m.yaml — the vector suite, zero-config
+# form: SIFT1M against an OSS Cassandra on localhost (e.g. a stock
+# `docker run -p 9042:9042 cassandra` container).
+#
+#   ./adapters/cql/workloads/vector_suite/vector_suite_cql_oss_sift1m.yaml
+#
+# runs the canonical `traverse` scenario end to end with no options:
+# the shebang hands this file to `nmbrs`, the bare-workload shortcut
+# runs its `default` scenario, and every parameter below has a
+# working local-docker value. Anything is still overridable the
+# normal way (`./…yaml host=10.0.0.5 suite_time_budget=20m`).
+#
+# Composition: everything comes from vector_suite_cql_direct.yaml
+# (which itself extends full_cql_vector.yaml for schema/load/params).
+# This file only pins the zero-config choices:
+#
+#   dataset   sift-128-euclidean — SIFT1M from the public vectordata
+#             catalog (985k base / 10k query / GT); resolved and
+#             cached automatically on first run, no local files to
+#             prepare.
+#   host      localhost, OSS-safe defaults elsewhere: SimpleStrategy
+#             rf=1 replication and the `default` (empty) ann-options
+#             planner clause come from the parent — nothing
+#             cndb-specific is enabled.
+
+description: |
+  Zero-config form of the vector benchmarking suite: SIFT1M against
+  an OSS Cassandra on localhost. Pins the dataset, host, and keyspace
+  so the canonical `traverse` scenario runs end to end with no
+  options; every parameter stays overridable the normal way.
+
+extends: ../vector_suite_cql_direct.yaml
+
+params:
+  host: localhost
+  dataset: sift-128-euclidean
+  # The suite's destructive sections get their own namespaces from
+  # the parent; the measured target lives in vsuite_{profile} under
+  # this keyspace.
+  keyspace: vsuite_sift1m
+
+scenarios:
+  # Bare execution runs the full canonical traversal.
+  default:
+    - scenario: traverse

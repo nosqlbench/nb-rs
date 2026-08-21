@@ -1933,6 +1933,7 @@ fn execute_node<'a>(
                 comprehension,
                 children,
                 continue_if,
+                anchor: _,
             } => {
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),

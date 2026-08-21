@@ -119,26 +119,7 @@ fn format_completer(partial: &str, _ctx: &[&str]) -> Vec<String> {
 /// `match` / `groups` and the completion surface offers the
 /// same flags on each.
 fn execution_qualifier_flags() -> Vec<Flag> {
-    vec![
-        Flag {
-            long: "--execution",
-            short: None,
-            aliases: &[],
-            arity: Arity::Value,
-            value: ValueProvider::Custom(crate::completion::execution_id_provider),
-            help: "Filter to one execution_id (default: most recent).",
-            repeatable: false,
-        },
-        Flag {
-            long: "--all-executions",
-            short: None,
-            aliases: &[],
-            arity: Arity::Bool,
-            value: ValueProvider::None,
-            help: "Pull every execution's instances (aggregate read).",
-            repeatable: false,
-        },
-    ]
+    crate::completion::execution_flags()
 }
 
 /// The session-resolution flags every read-side metrics subcommand accepts.
@@ -152,10 +133,7 @@ fn execution_qualifier_flags() -> Vec<Flag> {
 /// The bare `session=<dir>` spelling, declared so completion offers it beside
 /// `--session`. The handlers accept it via `forward_session_flags`; declaring it
 /// here is what makes it discoverable rather than folklore.
-pub static SESSION_KV: &[crate::cli_spec::KvParam] = &[crate::cli_spec::KvParam {
-    key: "session=",
-    provider: crate::completion::session_name_provider,
-}];
+pub static SESSION_KV: &[crate::cli_spec::KvParam] = &[crate::completion::SESSION_KV_PARAM];
 
 fn session_resolution_flags() -> Vec<Flag> {
     vec![
@@ -164,7 +142,7 @@ fn session_resolution_flags() -> Vec<Flag> {
             short: None,
             aliases: &[],
             arity: Arity::Value,
-            value: ValueProvider::Custom(crate::completion::session_name_provider),
+            value: crate::completion::SESSION_NAME_VALUE,
             help: "Read this session instead of the latest (path or name).",
             repeatable: false,
         },
@@ -173,7 +151,7 @@ fn session_resolution_flags() -> Vec<Flag> {
             short: None,
             aliases: &[],
             arity: Arity::Value,
-            value: ValueProvider::Custom(crate::completion::session_name_provider),
+            value: crate::completion::SESSION_NAME_VALUE,
             help: "Read the session with this name.",
             repeatable: false,
         },
@@ -191,15 +169,7 @@ fn session_resolution_flags() -> Vec<Flag> {
 
 fn list_or_show_flags() -> Vec<Flag> {
     let mut out = vec![
-        Flag {
-            long: "--db",
-            short: None,
-            aliases: &[],
-            arity: Arity::Value,
-            value: ValueProvider::Path,
-            help: "Override metrics db. Default: sessions/latest/metrics.db",
-            repeatable: false,
-        },
+        crate::completion::db_flag(),
         Flag {
             long: "--format",
             short: None,
@@ -238,19 +208,6 @@ fn list_or_show_flags() -> Vec<Flag> {
             repeatable: false,
         },
     ];
-    out.extend(execution_qualifier_flags());
-    out.extend(session_resolution_flags());
-    out
-}
-
-/// `list`'s flag surface: the shared flags minus `--list` — a names
-/// view of a names view is a no-op, so completion doesn't offer it
-/// (the imperative parser still accepts it for old scripts).
-fn list_cmd_flags() -> Vec<Flag> {
-    let mut out: Vec<Flag> = list_or_show_flags()
-        .into_iter()
-        .filter(|f| f.long != "--list")
-        .collect();
     out.push(Flag {
         long: "--scope",
         short: None,
@@ -262,7 +219,19 @@ fn list_cmd_flags() -> Vec<Flag> {
                table. Plain format only; silent on pre-SRD-93 dbs.",
         repeatable: false,
     });
+    out.extend(execution_qualifier_flags());
+    out.extend(session_resolution_flags());
     out
+}
+
+/// `list`'s flag surface: the shared flags minus `--list` — a names
+/// view of a names view is a no-op, so completion doesn't offer it
+/// (the imperative parser still accepts it for old scripts).
+fn list_cmd_flags() -> Vec<Flag> {
+    list_or_show_flags()
+        .into_iter()
+        .filter(|f| f.long != "--list")
+        .collect()
 }
 
 /// The deprecated `show` alias's flag surface: `list`'s flags plus
@@ -279,6 +248,52 @@ fn show_flags() -> Vec<Flag> {
                `nmbrs metrics summarize`.",
         repeatable: false,
     });
+    out
+}
+
+/// `watch`'s flag surface — exactly what
+/// `metricsql_cmd::parse_watch_args` consumes.
+fn watch_flags() -> Vec<Flag> {
+    let mut out = vec![
+        crate::completion::db_flag(),
+        Flag {
+            long: "--interval",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Polling interval (e.g. 1s, 500ms). Default: 2s.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--warmup",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Delay before the first poll.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--all-samples",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
+            help: "Evaluate over every sample, not the live window.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--no-clear",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
+            help: "Append output instead of clearing the screen per poll.",
+            repeatable: false,
+        },
+    ];
+    out.extend(session_resolution_flags());
     out
 }
 
@@ -304,15 +319,7 @@ fn match_flags() -> Vec<Flag> {
 /// `metricsql_cmd::parse_args`.
 fn query_flags() -> Vec<Flag> {
     let mut out = vec![
-        Flag {
-            long: "--db",
-            short: None,
-            aliases: &[],
-            arity: Arity::Value,
-            value: ValueProvider::Path,
-            help: "Override metrics db. Default: sessions/latest/metrics.db",
-            repeatable: false,
-        },
+        crate::completion::db_flag(),
         Flag {
             long: "--range",
             short: None,
@@ -581,7 +588,7 @@ pub fn spec() -> Command {
                 help: "Live-update a metricsql expression on a polling interval.",
                 category: Category::Tools,
                 level: Level::Secondary,
-                flags: Vec::new(),
+                flags: watch_flags(),
                 kv_params: SESSION_KV,
                 dynamic_options: None,
                 // Completion-only positional — see the `query` note above.
@@ -738,15 +745,7 @@ fn forward_exec_qualifier_flags(p: &ParsedCommand, argv: &mut Vec<String>) {
 
 fn groups_flags() -> Vec<Flag> {
     let mut out = vec![
-        Flag {
-            long: "--db",
-            short: None,
-            aliases: &[],
-            arity: Arity::Value,
-            value: ValueProvider::Path,
-            help: "Override metrics db. Default: sessions/latest/metrics.db",
-            repeatable: false,
-        },
+        crate::completion::db_flag(),
         Flag {
             long: "--by",
             short: None,

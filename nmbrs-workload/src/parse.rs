@@ -932,6 +932,10 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                                 comprehension,
                                 children,
                                 continue_if: parse_continue_if(obj.get("continue_if")),
+                                anchor: obj
+                                    .get("anchor")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
                             }],
                             Err(e) => {
                                 eprintln!("warning: comprehension: {e}");
@@ -1013,6 +1017,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                         comprehension,
                         children,
                         continue_if: parse_continue_if(obj.get("continue_if")),
+                        anchor: obj.get("anchor").and_then(|v| v.as_str()).map(String::from),
                     }],
                     Err(e) => {
                         eprintln!("warning: for_combinations: {e}");
@@ -1259,10 +1264,12 @@ pub fn resolve_scenario_includes(
                 comprehension,
                 children,
                 continue_if,
+                anchor,
             } => Ok(ScenarioNode::Comprehension {
                 comprehension: comprehension.clone(),
                 children: resolve_nodes(children, input, out, stack)?,
                 continue_if: continue_if.clone(),
+                anchor: anchor.clone(),
             }),
             ScenarioNode::DoWhile {
                 condition,
@@ -1838,6 +1845,75 @@ fn parse_phases(
         // the label-ownership case, a runtime panic).
         validate_cell_dimensions(phase_name, &dimensions, &inline_ops, &metrics)?;
 
+        // SRD-109 — key-metric designations. Aggregate qualification is
+        // MANDATORY: an unqualified family is a parse error carrying the
+        // vocabulary, because there are no implied aggregates anywhere in
+        // the reporting pipeline.
+        let key_metrics: Vec<crate::model::KeyMetric> = match phase_obj.get("key_metrics") {
+            None => Vec::new(),
+            Some(v) => {
+                let map = v.as_object().ok_or_else(|| {
+                    format!(
+                        "phase '{phase_name}': key_metrics must be a mapping of \
+                     column: \"agg(family)\""
+                    )
+                })?;
+                let mut out = Vec::new();
+                for (col, spec) in map {
+                    let spec = spec.as_str().ok_or_else(|| {
+                        format!(
+                            "phase '{phase_name}' key_metrics.{col}: expected a \
+                         string \"agg(family)\""
+                        )
+                    })?;
+                    let (agg_name, family) = spec
+                        .trim()
+                        .strip_suffix(')')
+                        .and_then(|s| s.split_once('('))
+                        .ok_or_else(|| {
+                            format!(
+                                "phase '{phase_name}' key_metrics.{col}: '{spec}' — \
+                             aggregate qualification required; write agg(family). \
+                             Aggregates: {}",
+                                crate::model::KeyAgg::VOCAB
+                            )
+                        })?;
+                    let agg = crate::model::KeyAgg::parse(agg_name.trim()).ok_or_else(|| {
+                        format!(
+                            "phase '{phase_name}' key_metrics.{col}: unknown \
+                             aggregate '{}'. Aggregates: {}",
+                            agg_name.trim(),
+                            crate::model::KeyAgg::VOCAB
+                        )
+                    })?;
+                    let family = family.trim().to_string();
+                    match agg {
+                        crate::model::KeyAgg::Span if !family.is_empty() => {
+                            return Err(format!(
+                                "phase '{phase_name}' key_metrics.{col}: span() is \
+                                 family-less — it measures the activation wall clock"
+                            ));
+                        }
+                        crate::model::KeyAgg::Span => {}
+                        _ if family.is_empty() => {
+                            return Err(format!(
+                                "phase '{phase_name}' key_metrics.{col}: {}() needs \
+                                 a family name",
+                                agg_name.trim()
+                            ));
+                        }
+                        _ => {}
+                    }
+                    out.push(crate::model::KeyMetric {
+                        column: col.clone(),
+                        agg,
+                        family,
+                    });
+                }
+                out
+            }
+        };
+
         phases.insert(
             phase_name.clone(),
             WorkloadPhase {
@@ -1869,6 +1945,7 @@ fn parse_phases(
                 metrics,
                 poll: phase_poll,
                 optimize,
+                key_metrics,
             },
         );
         phase_order.push(phase_name.clone());

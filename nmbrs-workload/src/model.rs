@@ -364,6 +364,12 @@ pub struct SummaryConfig {
     /// 100 on a row that finished, because the last poll before completion is the
     /// value that persists.
     pub state_query: Option<String>,
+    /// Per-column header annotations (`header <col>: <text>`) —
+    /// rendered into the column's header stack under its name, so a
+    /// table can carry each column's DEFINITION (e.g. the SRD-113
+    /// designation `last(result_success)`) where the reader is
+    /// already looking.
+    pub header_notes: Vec<(String, String)>,
 }
 
 /// An aggregate expression: either
@@ -440,6 +446,7 @@ impl SummaryConfig {
         let mut metricsql_columns: Vec<(String, String)> = Vec::new();
         let mut group_by: Vec<String> = Vec::new();
         let mut state_query: Option<String> = None;
+        let mut header_notes: Vec<(String, String)> = Vec::new();
 
         // Strip `#` line comments before parsing (SRD-46:
         // report/plot/table bodies all support `#` comments).
@@ -478,6 +485,16 @@ impl SummaryConfig {
             // anonymous interpretation, which is what we want for
             // metricsql expressions whose label-literal `:` shows up
             // before a function-call `(`.
+            // `header <col>: <text>` — a column's header annotation.
+            if let Some(rest) = line.strip_prefix("header ") {
+                if let Some((col, note)) = rest.split_once(':') {
+                    let (col, note) = (col.trim(), note.trim());
+                    if !col.is_empty() && !note.is_empty() {
+                        header_notes.push((col.to_string(), note.to_string()));
+                    }
+                }
+                continue;
+            }
             // `state: <expr>` — completion test, rendered as a word.
             if let Some(rest) = line.strip_prefix("state:") {
                 let expr = rest.trim();
@@ -550,6 +567,7 @@ impl SummaryConfig {
             metricsql_columns,
             group_by,
             state_query,
+            header_notes,
         }
     }
 
@@ -920,6 +938,68 @@ pub struct BackoffSpec {
     pub max: Option<String>,
 }
 
+/// SRD-109 — the time-dimension aggregate a key-metric designation
+/// carries. MANDATORY on every designation: there are no implied
+/// aggregates, so `rows: result_success` (no qualifier) is a parse
+/// error naming this vocabulary. Defined over the stored samples of
+/// one instance within the row scope's activation window — which,
+/// per the SRD-42 amendment, are last-write-wins point samples with
+/// PromQL semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyAgg {
+    Min,
+    Max,
+    Avg,
+    Last,
+    First,
+    Median,
+    Stddev,
+    Sum,
+    Count,
+    /// Derived: increase over the activation span, per second.
+    Rate,
+    /// Derived: the activation's wall clock (family-less — `span()`).
+    Span,
+    /// Derived: last − first over the activation.
+    Delta,
+}
+
+impl KeyAgg {
+    /// The suggestion list every qualification error carries.
+    pub const VOCAB: &'static str = "min, max, avg, last, first, median, stddev, sum, count; \
+         derived: rate(F), span(), delta(F)";
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "min" => Self::Min,
+            "max" => Self::Max,
+            "avg" => Self::Avg,
+            "last" => Self::Last,
+            "first" => Self::First,
+            "median" => Self::Median,
+            "stddev" => Self::Stddev,
+            "sum" => Self::Sum,
+            "count" => Self::Count,
+            "rate" => Self::Rate,
+            "span" => Self::Span,
+            "delta" => Self::Delta,
+            _ => return None,
+        })
+    }
+}
+
+/// SRD-109 — one key-metric designation on an execution node:
+/// `column: agg(family)`. Designating key metrics both names the
+/// node's measurables and attaches the node to the table row of its
+/// nearest enclosing anchor (or the spine). `family` is empty for
+/// the family-less `span()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyMetric {
+    pub column: String,
+    pub agg: KeyAgg,
+    pub family: String,
+}
+
 /// A workload phase: runs as a separate Activity with its own
 /// cycle count, concurrency, rate limit, and op selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1168,6 +1248,14 @@ pub struct WorkloadPhase {
         skip_serializing_if = "Option::is_none"
     )]
     pub optimize: Option<OptimizeBlock>,
+    /// SRD-109 — key-metric designations: `key_metrics: {column:
+    /// "agg(family)", ...}`. Aggregate qualification is mandatory
+    /// (no implied aggregates); the report synthesizer attaches
+    /// these columns to the row of the phase's nearest enclosing
+    /// anchor, or the spine. Empty = spine-only via the SRD-91
+    /// instrument contract defaults.
+    #[serde(default)]
+    pub key_metrics: Vec<KeyMetric>,
 }
 
 /// A phase `optimize:` value: **either** a bare string — sugar for
@@ -1589,6 +1677,13 @@ pub enum ScenarioNode {
         /// halts the sweep at its `each` scope, gracefully.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         continue_if: Option<ContinueIfSpec>,
+        /// SRD-109 — table-row anchor: `anchor: <view>` declares one
+        /// report-table row per iteration of this sweep, in the view
+        /// of that name. Views sharing a name must share coordinate
+        /// label sets. Key metrics designated on phases beneath this
+        /// node attach to its rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<String>,
     },
     /// Execute children while condition is true (test after).
     DoWhile {

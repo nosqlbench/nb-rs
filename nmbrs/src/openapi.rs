@@ -244,20 +244,50 @@ pub async fn run_command(args: &[String]) {
 /// into the [`crate::cli_spec::Command`] surface used by the
 /// rest of the CLI (see `cli_spec/root.rs`).
 /// `spec=` names the OpenAPI document on disk.
-static OPENAPI_DESCRIBE_KV: &[crate::cli_spec::KvParam] = &[crate::cli_spec::KvParam {
+/// `spec=<file>` — defined once for both openapi commands.
+const SPEC_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
     key: "spec=",
     provider: crate::completion::spec_file_provider,
-}];
+};
+
+static OPENAPI_DESCRIBE_KV: &[crate::cli_spec::KvParam] = &[SPEC_KV_PARAM];
 
 static OPENAPI_RUN_KV: &[crate::cli_spec::KvParam] = &[
-    crate::cli_spec::KvParam {
-        key: "spec=",
-        provider: crate::completion::spec_file_provider,
-    },
+    SPEC_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "adapter=",
         provider: crate::completion::adapter_names_provider,
     },
+    // The rest of the surface run_openapi_command actually reads
+    // (openapi.rs parse sites) — registered so completion/help see it.
+    crate::cli_spec::KvParam {
+        key: "operations=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "base_url=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "host=",
+        provider: crate::completion::free_form,
+    },
+    crate::completion::CYCLES_KV_PARAM,
+    crate::completion::THREADS_KV_PARAM,
+    crate::completion::SEQ_KV_PARAM,
+    crate::completion::RATE_KV_PARAM,
+    crate::completion::ERRORS_KV_PARAM,
+    crate::completion::STANZA_CONCURRENCY_KV_PARAM,
+    crate::completion::DRIVER_KV_PARAM,
+    crate::cli_spec::KvParam {
+        key: "timeout=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "format=",
+        provider: crate::completion::free_form,
+    },
+    crate::completion::FILENAME_KV_PARAM,
 ];
 
 pub fn describe_spec() -> crate::cli_spec::Command {

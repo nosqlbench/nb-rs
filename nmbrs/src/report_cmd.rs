@@ -27,10 +27,15 @@ use std::path::{Path, PathBuf};
 /// list — it's pulled out for source resolution, then re-injected
 /// when forwarding render commands to plot_metrics / summary.
 pub fn report_command(args: &[String], kind_filter: KindFilter) {
-    let (workload_path, rest) = extract_workload(args);
-    let workload_arg = workload_path
-        .as_ref()
-        .map(|p| format!("workload={}", p.display()));
+    let (mut workload_path, rest) = extract_workload(args);
+    // SRD-109 — `--synthesized`: resolve items from the SYNTHESIZED
+    // section irrespective of any explicit `report:` block. The
+    // affine mirror is always renderable, not just dumpable. Exact
+    // spelling only — near-misses are rejected by the kindless
+    // flag-form path's closed-surface check with a "did you mean",
+    // never silently accepted or silently forwarded.
+    let synthesized_only = rest.iter().any(|a| a == "--synthesized");
+    let rest: Vec<String> = rest.into_iter().filter(|a| a != "--synthesized").collect();
     // Resolve `--session` once at the top so every downstream
     // path (item lookup in db, forwarded render commands,
     // markdown output, text-section writes) sees the same
@@ -62,6 +67,48 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         .clone()
         .unwrap_or_else(nmbrs_runtime::session::latest_session_dir);
 
+    // `--synthesized` synthesizes from workload FIXTURES, which live
+    // in the yaml — session-db report.* rows can't provide them.
+    // Without an explicit `workload=`, resolve the yaml the session
+    // itself records (`workload_file` execution metadata) rather than
+    // silently falling back to the db rows the flag exists to bypass.
+    if synthesized_only && workload_path.is_none() {
+        let db_path = session_db
+            .clone()
+            .unwrap_or_else(|| output_root.join("metrics.db"));
+        match workload_recorded_in(&db_path) {
+            Some(p) if p.exists() => {
+                eprintln!(
+                    "nmbrs report: --synthesized — using the session's \
+                    recorded workload ({})",
+                    p.display()
+                );
+                workload_path = Some(p);
+            }
+            Some(p) => {
+                eprintln!(
+                    "nmbrs report: --synthesized needs the workload yaml \
+                    (the session records `{}`, which does not exist from this \
+                    directory). Pass workload=<file>.",
+                    p.display()
+                );
+                std::process::exit(2);
+            }
+            None => {
+                eprintln!(
+                    "nmbrs report: --synthesized needs the workload yaml \
+                    and the session db ({}) records no workload_file. \
+                    Pass workload=<file>.",
+                    db_path.display()
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+    let workload_arg = workload_path
+        .as_ref()
+        .map(|p| format!("workload={}", p.display()));
+
     // Promote `nmbrs report plot ...` / `nmbrs report table ...` to
     // the kind-filtered form, peeling the kind keyword off so the
     // remaining arg list looks like a top-level `nmbrs plot ...`
@@ -76,13 +123,48 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         (kind_filter, rest)
     };
 
-    let items = match resolve_items(workload_path.as_deref(), session_db.as_deref()) {
+    // Kindless with a leading `--token`: that shape routes to the
+    // flag-form arm, whose classification is only honest for flags
+    // the surface actually has. Check the closed set NOW — before
+    // resolving items and printing the preamble — so a typo'd flag
+    // is the first and only thing reported.
+    if matches!(kind_filter, KindFilter::Any)
+        && let Some(first) = rest.first().filter(|a| a.starts_with("--"))
+    {
+        reject_if_unknown_flag(first);
+    }
+
+    // Artifact accounting: snapshot the output dir before dispatch so
+    // the closing summary can name exactly the files this invocation
+    // created or updated — regardless of which renderer wrote them.
+    let (items, items_synthesized) = match resolve_items(
+        workload_path.as_deref(),
+        session_db.as_deref(),
+        synthesized_only,
+    ) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("nmbrs report: {e}");
             std::process::exit(2);
         }
     };
+
+    // Synthesized reports land in `<session>/report/` — disentangled
+    // from tables and plots earlier hand-written renders left in the
+    // session root. Explicit `report:` blocks keep their historical
+    // root placement.
+    let output_root: PathBuf = if items_synthesized {
+        let dir = output_root.join("report");
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("nmbrs report: cannot create {}: {e}", dir.display());
+            std::process::exit(2);
+        }
+        dir
+    } else {
+        output_root
+    };
+
+    let artifacts_before = artifact_snapshot(&output_root);
 
     // Operator-visible summary of what's about to happen.
     // The prior silent zero-items behaviour was the
@@ -91,6 +173,10 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     // report-items rows) produced no output AND no
     // diagnostic. Surface every relevant input now so the
     // operator can correct course without guessing.
+    // (`report synth` is a pure stdout dump — it renders
+    // nothing and touches no session dir, so the resolved/
+    // output preamble would only mislead.)
+    let is_synth_dump = rest.first().map(String::as_str) == Some("synth");
     let source_kind = if workload_path.is_some() {
         "workload yaml"
     } else {
@@ -109,13 +195,15 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
                         .to_string()
                 })
         });
-    eprintln!(
-        "nmbrs report: {} item(s) resolved from {} ({})",
-        items.len(),
-        source_kind,
-        source_path
-    );
-    eprintln!("nmbrs report: output → {}", output_root.display());
+    if !is_synth_dump {
+        eprintln!(
+            "nmbrs report: {} item(s) resolved from {} ({})",
+            items.len(),
+            source_kind,
+            source_path
+        );
+        eprintln!("nmbrs report: output → {}", output_root.display());
+    }
     if items.is_empty() {
         // The two paths that yield zero items are
         // distinguishable; flag the most common one so the
@@ -207,8 +295,52 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             crate::report_scratch::scratch_subcommand(&output_root, &rest[1..]);
             Vec::new()
         }
+        // Declared subcommand `show`: render one stored item by name.
+        // (Previously fell through to the glob arm carrying the literal
+        // token "show", which matched nothing.)
+        Some("show") => match rest.get(1).cloned() {
+            Some(name) => render_by_glob(
+                &items,
+                kind_filter,
+                &name,
+                &rest[2..],
+                workload_arg.as_deref(),
+                &output_root,
+                session_db.as_deref(),
+                strict,
+            ),
+            None => {
+                eprintln!("nmbrs report show: needs an item name");
+                std::process::exit(2);
+            }
+        },
         Some("rename") => {
             run_rename(&rest[1..], &output_root, workload_path.as_deref());
+            Vec::new()
+        }
+        // SRD-109 — dump the synthesized report section as a
+        // `report:` YAML block: the affine round-trip surface. Copy
+        // it into the workload and edit to hand-tune. An explicit
+        // block suppresses only the IMPLICIT render path — this dump
+        // (and `--synthesized` rendering) always reflect the fixtures.
+        Some("synth") => {
+            match workload_path.as_deref() {
+                None => eprintln!("nmbrs report synth: needs --workload <file>"),
+                Some(p) => {
+                    match nmbrs_workload::parse::parse_workload_from_path(
+                        p,
+                        &std::collections::HashMap::new(),
+                    )
+                    .and_then(|w| nmbrs_workload::report_synth::synthesize_yaml(&w))
+                    {
+                        // Forced by design: the affine mirror dumps even when
+                        // an explicit report: block exists (which suppresses
+                        // only the IMPLICIT render path, not inspection).
+                        Ok(yaml) => print!("{yaml}"),
+                        Err(e) => eprintln!("nmbrs report synth: {e}"),
+                    }
+                }
+            }
             Vec::new()
         }
         // Flag-form: `nmbrs plot --name X --series Y ...` — the
@@ -278,6 +410,20 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             }
         }
     };
+
+    // Closing file inventory: everything new or modified under the
+    // output root since dispatch (index.md excluded — it is rewritten
+    // below on every invocation and would always appear).
+    let written = artifacts_written_since(&output_root, &artifacts_before);
+    if !written.is_empty() {
+        let listing = written.join(", ");
+        let prefix = format!(
+            "nmbrs report: wrote {} file(s) under {}: ",
+            written.len(),
+            output_root.display()
+        );
+        eprintln!("{prefix}{}", wrap_hint(&listing, prefix.chars().count()));
+    }
 
     // Refresh the session directory's `index.md` after every
     // `nmbrs report` invocation — even on partial-failure runs.
@@ -879,6 +1025,14 @@ fn forward_renderer_flags(
         KindFilter::Plot => crate::plot_metrics::plot_metrics_command(&full),
         KindFilter::Table => crate::summary::summary_command(&full),
         KindFilter::Any => {
+            // Normally pre-empted by the dispatch-time check in
+            // `report_command`; kept for callers that reach the
+            // kindless arm some other way. Same contract: an unknown
+            // flag is named as the mistake, not wrapped in dispatch
+            // guidance about a form the user wasn't using.
+            if let Some(first) = args.iter().find(|a| a.starts_with("--")) {
+                reject_if_unknown_flag(first);
+            }
             eprintln!(
                 "nmbrs report: flag-form selection requires a kind \
                 (use `nmbrs plot --<flag>...` or `nmbrs table --<flag>...`)"
@@ -886,6 +1040,30 @@ fn forward_renderer_flags(
             std::process::exit(2);
         }
     }
+}
+
+/// Exit(2) with an "unknown option" error when `token` (a `--flag` or
+/// `--flag=value` spelling) is in NO vocabulary the CLI accepts —
+/// checked against the derived closed surface
+/// ([`crate::completion::known_flags`]: the spec walk, the SRD-64
+/// report vocab, and the renderer flag lists), with prefix
+/// suggestions drawn from that same set. No-op for known flags.
+fn reject_if_unknown_flag(token: &str) {
+    let flag = token.split('=').next().unwrap_or(token);
+    if crate::completion::known_flags().contains(flag) {
+        return;
+    }
+    let mut hits: Vec<String> = crate::completion::known_flags()
+        .iter()
+        .filter(|c| c.starts_with(flag))
+        .cloned()
+        .collect();
+    hits.sort();
+    eprintln!(
+        "nmbrs report: unknown option '{flag}'.{}",
+        nmbrs_workload::suggest::did_you_mean(&hits)
+    );
+    std::process::exit(2);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -973,6 +1151,30 @@ fn db_flag_path(args: &[String]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// The workload yaml a session's runs recorded. `workload_file`
+/// (a path, persisted at end-of-run) wins; a LIVE session only has
+/// the start-of-run `workload` row — the arg as passed, often a
+/// bare name — which goes through the same name→path search `nmbrs
+/// run` uses (cwd, `workloads/`, `adapters/*/workloads/`,
+/// `examples/workloads/`). `None` when the db is absent/unreadable
+/// or no run recorded either row; an unresolvable name is returned
+/// as-is so the caller's error can say what the session recorded.
+fn workload_recorded_in(db_path: &Path) -> Option<PathBuf> {
+    if !db_path.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open(db_path).ok()?;
+    let meta =
+        |key: &str| nmbrs_metrics::reporters::sqlite::latest_execution_metadata_value(&conn, key);
+    if let Some(path) = meta("workload_file") {
+        return Some(PathBuf::from(path));
+    }
+    let name = meta("workload")?;
+    Some(PathBuf::from(
+        crate::cli::resolve_workload_path(&name).unwrap_or(name),
+    ))
 }
 
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
@@ -1107,7 +1309,7 @@ pub(crate) fn plot_body_specs(
     session_db: Option<&Path>,
 ) -> Result<Vec<(String, String)>, String> {
     use nmbrs_workload::report::Kind;
-    let items = resolve_items(workload_path, session_db)?;
+    let (items, _) = resolve_items(workload_path, session_db, false)?;
     Ok(items
         .into_iter()
         .filter(|i| matches!(i.kind, Kind::Plot))
@@ -1154,26 +1356,68 @@ pub(crate) fn plot_body_specs(
 /// `workload_yaml` is identical to one resolved from the file on disk — the two
 /// must not drift, or the same report would render differently depending on how
 /// it was reached.
-fn items_from_workload(workload: &nmbrs_workload::model::Workload) -> Vec<ResolvedItem> {
+fn items_from_workload(
+    workload: &nmbrs_workload::model::Workload,
+    synthesized_only: bool,
+    scenario: Option<&str>,
+) -> Result<(Vec<ResolvedItem>, bool), String> {
     // Report items routinely contain `{cql_dialect}`-style placeholders that
     // operators expect rendered with the workload's declared values. Expand once
     // here so every downstream consumer (markdown assembler, plot renderer) sees
     // resolved literals.
     let params: std::collections::HashMap<String, String> = workload.params.clone();
+    // SRD-109 — no explicit `report:` block ⇒ SYNTHESIZE one from the
+    // workload's structural fixtures (key_metrics designations +
+    // anchors) and feed it through the SAME parse_report entry the
+    // YAML path uses. Well-formedness violations (unknown family,
+    // silent flatten through a non-anchored sweep) are report-time
+    // errors by contract — never warnings.
+    let synthesized;
+    let was_synthesized = synthesized_only || workload.report.groups.is_empty();
+    let report: &nmbrs_workload::report::Report =
+        if synthesized_only || workload.report.groups.is_empty() {
+            let mapping = nmbrs_workload::report_synth::synthesize_forced_for(workload, scenario)?;
+            let parsed = nmbrs_workload::report::parse_report(&mapping).map_err(|e| {
+                format!(
+                    "synthesized report failed its own \
+                                      grammar (bug in synthesis): {e}"
+                )
+            })?;
+            synthesized = parsed.report;
+            &synthesized
+        } else {
+            &workload.report
+        };
     let mut out: Vec<ResolvedItem> = Vec::new();
-    for group in &workload.report.groups {
+    for group in &report.groups {
         for item in &group.items {
-            let style = workload.report.effective_style(group, item);
+            let style = report.effective_style(group, item);
             out.push(resolve_item(item, &style, &params));
         }
     }
-    out
+    Ok((out, was_synthesized))
 }
 
 pub(crate) fn resolve_items(
     workload_path: Option<&Path>,
     session_db: Option<&Path>,
-) -> Result<Vec<ResolvedItem>, String> {
+    synthesized_only: bool,
+) -> Result<(Vec<ResolvedItem>, bool), String> {
+    // The executed scenario, when a session db is reachable: scopes
+    // synthesis to what actually ran, so views don't carry
+    // structurally-empty columns from sibling scenarios.
+    let scenario: Option<String> = {
+        let db = session_db
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(nmbrs_runtime::session::latest_metrics_db);
+        db.exists()
+            .then(|| rusqlite::Connection::open(&db).ok())
+            .flatten()
+            .and_then(|c| {
+                nmbrs_metrics::reporters::sqlite::latest_execution_metadata_value(&c, "scenario")
+            })
+    };
+    let scenario = scenario.as_deref();
     if let Some(p) = workload_path {
         let resolved = crate::cli::resolve_workload_path(&p.to_string_lossy())
             .map(PathBuf::from)
@@ -1193,7 +1437,7 @@ pub(crate) fn resolve_items(
         // every downstream consumer (the markdown
         // assembler, the plot renderer that parses the
         // body) sees the resolved literals.
-        Ok(items_from_workload(&workload))
+        items_from_workload(&workload, synthesized_only, scenario)
     } else {
         // Db fallback: read `report.<name>` rows from the
         // session db's session_metadata table (SRD-46). Each
@@ -1204,11 +1448,11 @@ pub(crate) fn resolve_items(
             .map(PathBuf::from)
             .unwrap_or_else(nmbrs_runtime::session::latest_metrics_db);
         if !db_path.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
-            Err(_) => return Ok(Vec::new()),
+            Err(_) => return Ok((Vec::new(), false)),
         };
         // Pull the workload's persisted params first so we
         // can expand `{name}` placeholders in stored item
@@ -1253,7 +1497,7 @@ pub(crate) fn resolve_items(
             // their key order, after every ordered item (stable
             // sort).
             out.sort_by_key(|(order, _)| order.unwrap_or(usize::MAX));
-            return Ok(out.into_iter().map(|(_, item)| item).collect());
+            return Ok((out.into_iter().map(|(_, item)| item).collect(), false));
         }
         // LIVE-SESSION fallback: no `report.*` rows yet. Those are persisted when
         // a run ENDS, so during a run the db has none — which used to force
@@ -1275,7 +1519,7 @@ pub(crate) fn resolve_items(
         .map(|(_, v)| v);
         if let Some(yaml) = yaml {
             match nmbrs_workload::parse::parse_workload(&yaml, &std::collections::HashMap::new()) {
-                Ok(w) => return Ok(items_from_workload(&w)),
+                Ok(w) => return items_from_workload(&w, false, scenario),
                 Err(e) => {
                     eprintln!(
                         "nmbrs report: stored workload_yaml did not parse \
@@ -1284,7 +1528,7 @@ pub(crate) fn resolve_items(
                 }
             }
         }
-        Ok(out.into_iter().map(|(_, item)| item).collect())
+        Ok((out.into_iter().map(|(_, item)| item).collect(), false))
     }
 }
 
@@ -1357,6 +1601,79 @@ fn content_hint(item: &ResolvedItem) -> String {
     }
 }
 
+/// Flat (name → mtime) snapshot of the files directly under the
+/// report output root. Input to [`artifacts_written_since`].
+fn artifact_snapshot(
+    root: &Path,
+) -> std::collections::HashMap<std::path::PathBuf, std::time::SystemTime> {
+    let mut out = std::collections::HashMap::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file()
+                && let Ok(md) = e.metadata()
+                && let Ok(mtime) = md.modified()
+            {
+                out.insert(p, mtime);
+            }
+        }
+    }
+    out
+}
+
+/// File names (relative to the root) created or modified since the
+/// snapshot, sorted. `index.md` is excluded — the per-invocation
+/// index rewrite would name it every time.
+fn artifacts_written_since(
+    root: &Path,
+    before: &std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
+) -> Vec<String> {
+    let mut out: Vec<String> = artifact_snapshot(root)
+        .into_iter()
+        .filter(|(p, mtime)| before.get(p) != Some(mtime))
+        .filter_map(|(p, _)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .filter(|n| n != "index.md")
+        .collect();
+    out.sort();
+    out
+}
+
+/// Wrap a listing hint at its comma boundaries so long column lists
+/// never wrap mid-name in the terminal; continuation lines align
+/// under the hint column. Width comes from the tty (single line when
+/// stderr isn't one — piped output stays grep-friendly).
+fn wrap_hint(text: &str, indent: usize) -> String {
+    match nmbrs_runtime::activity::terminal_cols() {
+        Some(width) => wrap_hint_to(text, indent, width),
+        None => text.to_string(),
+    }
+}
+
+fn wrap_hint_to(text: &str, indent: usize, width: usize) -> String {
+    let avail = width.saturating_sub(indent).max(20);
+    if text.chars().count() <= avail {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut line_len = 0usize;
+    for (i, part) in text.split(", ").enumerate() {
+        let plen = part.chars().count();
+        if i > 0 {
+            if line_len + 2 + plen > avail {
+                out.push_str(",\n");
+                out.push_str(&" ".repeat(indent));
+                line_len = 0;
+            } else {
+                out.push_str(", ");
+                line_len += 2;
+            }
+        }
+        out.push_str(part);
+        line_len += plen;
+    }
+    out
+}
+
 fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
     use nmbrs_workload::report::Kind;
     let kind_label = match filter {
@@ -1403,11 +1720,13 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
                     Some(l) if !l.is_empty() => format!("\"{l}\" — {hint}"),
                     _ => hint,
                 };
-                println!(
-                    "  {fig_num:3} — {name:24} {kind:6} {display}",
+                let prefix = format!(
+                    "  {fig_num:3} — {name:24} {kind:6} ",
                     name = item.name,
                     kind = item.kind.as_str()
                 );
+                let indent = prefix.chars().count();
+                println!("{prefix}{}", wrap_hint(&display, indent));
             }
             Kind::Text => {
                 let label = item.label.as_deref().unwrap_or("");
@@ -1495,6 +1814,40 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
     }
     if !parts.is_empty() {
         println!("\n{} figure(s): {}", tables + plots, parts.join(", "));
+    }
+
+    // Name the files rendering will produce: every item's target
+    // markdown (default summary.md) plus each table's own
+    // `<name>_table.md`. Plot image names depend on renderer flags,
+    // so they are counted, not guessed.
+    let mut outputs: Vec<String> = Vec::new();
+    for i in &shown {
+        let target = i
+            .target_file
+            .clone()
+            .unwrap_or_else(|| "summary.md".to_string());
+        if !outputs.contains(&target) {
+            outputs.push(target);
+        }
+        if matches!(i.kind, Kind::Table) {
+            let t = format!("{}_table.md", i.name);
+            if !outputs.contains(&t) {
+                outputs.push(t);
+            }
+        }
+    }
+    if !outputs.is_empty() {
+        outputs.sort();
+        let listing = outputs.join(", ");
+        let prefix = "renders to: ";
+        let mut tail = String::new();
+        if plots > 0 {
+            tail = format!(" (+{plots} plot image(s), named per figure)");
+        }
+        println!(
+            "{prefix}{}{tail}",
+            wrap_hint(&listing, prefix.chars().count())
+        );
     }
 }
 
@@ -1706,7 +2059,7 @@ fn rebuild_wipe_targets(items: &[ResolvedItem], output_root: &Path) {
 /// (unless NMBRS_STRICT) and real render failures come back to the
 /// caller instead of `process::exit`-ing.
 pub fn render_session_reports(db_path: &Path) -> Result<usize, Vec<String>> {
-    let items = resolve_items(None, Some(db_path)).map_err(|e| vec![e])?;
+    let (items, _) = resolve_items(None, Some(db_path), false).map_err(|e| vec![e])?;
     if items.is_empty() {
         return Ok(0);
     }
@@ -1979,10 +2332,19 @@ fn render_one(
         base.push("--label".into());
         base.push(l.to_string());
     }
-    if let Some(t) = item.target_file.as_deref() {
-        base.push("--report".into());
-        base.push(output_root.join(t).to_string_lossy().into_owned());
-    }
+    // Every figure upserts its section into a target markdown — the
+    // declared `file` target, or the default `summary.md` the listing
+    // footer advertises. (Previously only declared targets got the
+    // `--report` upsert, so synthesized tables landed ONLY in their
+    // standalone sidecars and summary.md held just the text sections.)
+    let report_target = item.target_file.as_deref().unwrap_or("summary.md");
+    base.push("--report".into());
+    base.push(
+        output_root
+            .join(report_target)
+            .to_string_lossy()
+            .into_owned(),
+    );
     // Plot-only style flags — appended only when forwarding to
     // the plot renderer. The summary (table) renderer doesn't
     // know `--palette` / `--line` / etc. and would mis-capture
@@ -2121,15 +2483,16 @@ fn render_one(
             // Standalone table naming convention:
             // `<item.name>_table.md`. Bypasses summary's
             // default `<name>_summary.<format>` suffix by
-            // passing an explicit `--output`. Anchored at the
-            // db's directory when known, otherwise at
-            // `output_root` (which itself resolves to
-            // `logs/latest` for the default `nmbrs report` flow).
+            // passing an explicit `--output`. Anchored at
+            // `output_root` — the directory the preamble
+            // advertises and the closing inventory diffs —
+            // which is `<session>/report/` for synthesized
+            // reports and the session root otherwise.
+            // (Previously anchored at the db's directory,
+            // which scattered sidecars outside the declared
+            // output dir whenever the two differed.)
             let mut argv = base;
-            let out_dir = session_db
-                .and_then(|d| d.parent().map(|p| p.to_path_buf()))
-                .unwrap_or_else(|| output_root.to_path_buf());
-            let out = out_dir.join(format!("{}_table.md", item.name));
+            let out = output_root.join(format!("{}_table.md", item.name));
             argv.push("--output".into());
             argv.push(out.to_string_lossy().into_owned());
             // Pass the item's own spec body, the way `plot_body_specs` does for
@@ -2791,6 +3154,10 @@ fn report_subleaf(subname: &'static str, help: &'static str) -> crate::cli_spec:
                 dispatch(p, "scratch");
                 Ok(())
             },
+            "synth" => |p| {
+                dispatch(p, "synth");
+                Ok(())
+            },
             _ => |_| Err("report: unknown subcommand".to_string()),
         }
     }
@@ -2816,21 +3183,11 @@ fn report_subleaf(subname: &'static str, help: &'static str) -> crate::cli_spec:
             short: None,
             aliases: &[],
             arity: crate::cli_spec::Arity::Value,
-            value: crate::cli_spec::ValueProvider::Custom(crate::completion::session_name_provider),
+            value: crate::completion::SESSION_NAME_VALUE,
             help: "Session name or path.",
             repeatable: false,
         },
-        crate::cli_spec::Flag {
-            long: "--workload",
-            short: None,
-            aliases: &[],
-            arity: crate::cli_spec::Arity::Value,
-            value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::workload_positional_provider,
-            ),
-            help: "Workload file providing the report: block.",
-            repeatable: false,
-        },
+        crate::completion::workload_flag("Workload file providing the report: block."),
     ];
     if subname == "show" {
         flags.push(crate::cli_spec::Flag {
@@ -2851,7 +3208,7 @@ fn report_subleaf(subname: &'static str, help: &'static str) -> crate::cli_spec:
         category: Category::Tools,
         level: Level::Secondary,
         flags,
-        kv_params: &[],
+        kv_params: crate::completion::REPORT_KV,
         dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
@@ -2892,8 +3249,42 @@ pub fn spec() -> crate::cli_spec::Command {
         help: "Render report items defined in a workload's `report:` block.",
         category: Category::Tools,
         level: Level::Secondary,
-        flags: Vec::new(),
-        kv_params: &[],
+        // Declared even though `raw_args` skips the walker's parse:
+        // help/completion advertise from here, and the dispatcher's
+        // closed-surface check (`crate::completion::known_flags`)
+        // derives from this spec — an undeclared flag is invisible
+        // to all three.
+        flags: vec![
+            crate::cli_spec::Flag {
+                long: "--synthesized",
+                short: None,
+                aliases: &[],
+                arity: crate::cli_spec::Arity::Bool,
+                value: crate::cli_spec::ValueProvider::None,
+                help: "Render the SRD-109 synthesized section even when an \
+                       explicit `report:` block exists.",
+                repeatable: false,
+            },
+            crate::cli_spec::Flag {
+                long: "--rebuild",
+                short: None,
+                aliases: &[],
+                arity: crate::cli_spec::Arity::Bool,
+                value: crate::cli_spec::ValueProvider::None,
+                help: "Wipe declared target markdown files before rendering.",
+                repeatable: false,
+            },
+            crate::cli_spec::Flag {
+                long: "--clean",
+                short: None,
+                aliases: &[],
+                arity: crate::cli_spec::Arity::Bool,
+                value: crate::cli_spec::ValueProvider::None,
+                help: "Remove rendered report outputs and exit.",
+                repeatable: false,
+            },
+        ],
+        kv_params: crate::completion::REPORT_KV,
         dynamic_options: None,
         positionals: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -2931,6 +3322,7 @@ pub fn spec() -> crate::cli_spec::Command {
             report_subleaf("all", "Render every report item."),
             report_subleaf("show", "Render one stored item by name."),
             report_subleaf("figure", "Render by figure number / range."),
+            report_subleaf("synth", "Dump the SRD-109 synthesized report: block."),
             rename_subleaf(),
             scratch_subleaf(),
         ],
@@ -3037,15 +3429,7 @@ fn rename_subleaf() -> crate::cli_spec::Command {
         category: Category::Tools,
         level: Level::Secondary,
         flags: vec![
-            Flag {
-                long: "--workload",
-                short: None,
-                aliases: &[],
-                arity: Arity::Value,
-                value: ValueProvider::Path,
-                help: "Override the workload file to mutate.",
-                repeatable: false,
-            },
+            crate::completion::workload_flag("Override the workload file to mutate."),
             Flag {
                 long: "--replace",
                 short: None,
@@ -3196,6 +3580,32 @@ pub fn table_alias_spec() -> crate::cli_spec::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hint_wrapping_breaks_at_column_names_only() {
+        let cols: Vec<String> = (0..12).map(|i| format!("col_{i:02}")).collect();
+        let text = format!("by part: {}", cols.join(", "));
+        let wrapped = wrap_hint_to(&text, 8, 60);
+        for line in wrapped.split('\n') {
+            // Content after the alignment indent fits the available
+            // width (+1 for a wrap-point trailing comma).
+            assert!(
+                line.trim_start().chars().count() <= 53,
+                "line overruns width: {line:?}"
+            );
+        }
+        // Every column name survives intact — no mid-name breaks.
+        for c in &cols {
+            assert!(wrapped.contains(c.as_str()));
+        }
+        // Continuation lines align under the hint column.
+        assert!(
+            wrapped.contains("\n        col_"),
+            "aligned continuation: {wrapped}"
+        );
+        // Short hints stay single-line.
+        assert_eq!(wrap_hint_to("by phase: a, b", 8, 60), "by phase: a, b");
+    }
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

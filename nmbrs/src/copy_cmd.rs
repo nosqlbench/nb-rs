@@ -15,6 +15,23 @@
 
 /// Handle `nmbrs copy <name> [to=<path>]`.
 pub fn copy_command(args: &[String]) -> Result<(), String> {
+    // Closed surface: one bundled name plus optional `to=<path>`. Unknown
+    // `--flags` and `key=` forms used to be silently ignored (a typo'd
+    // `dest=x.yaml` wrote to the default path with no warning).
+    for a in args {
+        if a.starts_with('-') {
+            return Err(format!(
+                "unknown option '{a}'. usage: nmbrs copy <name> [to=<path>]"
+            ));
+        }
+        if let Some((key, _)) = a.split_once('=')
+            && key != "to"
+        {
+            return Err(format!(
+                "unknown parameter '{key}='. usage: nmbrs copy <name> [to=<path>]"
+            ));
+        }
+    }
     let name = args
         .iter()
         .find(|a| !a.starts_with('-') && !a.contains('='))

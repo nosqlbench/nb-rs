@@ -1067,6 +1067,12 @@ fn applies_counted(t: &str) -> bool {
     )
 }
 
+fn applies_any(_t: &str) -> bool {
+    // Every `sample_value` row carries `interval_ms` regardless of
+    // family type — the accumulated window this sample covers.
+    true
+}
+
 const STAT_SUFFIXES: &[StatSuffix] = &[
     StatSuffix {
         text: "_p999",
@@ -1152,6 +1158,20 @@ const STAT_SUFFIXES: &[StatSuffix] = &[
                     OVER (PARTITION BY sv.instance_id ORDER BY sv.timestamp_ms), 0)) \
                * 1000.0 / NULLIF(sv.interval_ms, 0))",
         applies_to_fn: applies_counted,
+    },
+    // Synthetic active-window length. Every sample records the wall
+    // clock its window accumulated (`interval_ms`), so
+    // `sum_over_time(F_interval_ns[…])` is a series' total ACTIVE
+    // time — exact even for the single close-flush sample a
+    // sub-cadence phase leaves behind, where first/last timestamp
+    // arithmetic degenerates to zero. Exposed in nanoseconds to
+    // match the ecosystem's raw-ns + display-scaling convention
+    // (`TimeUnit::for_max_nanos`); precision is honest to the
+    // stored millisecond.
+    StatSuffix {
+        text: "_interval_ns",
+        expr: "(CAST(sv.interval_ms AS REAL) * 1000000.0)",
+        applies_to_fn: applies_any,
     },
 ];
 

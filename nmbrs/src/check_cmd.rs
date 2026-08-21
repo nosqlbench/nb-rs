@@ -29,16 +29,14 @@ pub fn spec() -> Command {
         category: Category::Workloads,
         level: Level::Workload,
         flags: Vec::new(),
-        kv_params: &[],
+        kv_params: crate::completion::WORKLOAD_KV,
         dynamic_options: None,
         positionals: vec![crate::cli_spec::Positional {
             name: "workload",
             help: "Workload file, directory, or bundled catalog name to verify \
                    (or `workload=<ref>`).",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
-            value: crate::cli_spec::ValueProvider::Custom(
-                crate::completion::workload_positional_provider,
-            ),
+            value: crate::completion::WORKLOAD_VALUE,
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -52,13 +50,56 @@ fn handle(p: ParsedCommand) -> Result<(), String> {
 }
 
 fn check_command(args: &[String]) -> Result<(), String> {
+    // Closed surface: `check` takes one target and nothing else. Before
+    // this guard, any `--flag` fell into the positional search and became
+    // the WORKLOAD NAME (`nmbrs check --strict` → "no such workload
+    // '--strict'"), and unknown `key=` forms were silently dropped. The
+    // session-lifecycle family stays legal — the startup purge hook
+    // consumes it globally.
+    let session_ok = |k: &str| {
+        k == "session"
+            || k.starts_with("session-")
+            || k.starts_with("sessions-")
+            || k == "session_path"
+    };
+    let mut skip_next = false;
+    for a in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if let Some(flag) = a.strip_prefix("--") {
+            let key = flag.split('=').next().unwrap_or(flag);
+            if session_ok(key) {
+                if !flag.contains('=') {
+                    skip_next = true;
+                }
+                continue;
+            }
+            return Err(format!(
+                "unknown option '--{key}'. `nmbrs check` takes one target:                  workload=<file|dir|name> or a bare <file|dir|name>."
+            ));
+        }
+        if let Some((key, _)) = a.split_once('=')
+            && key != "workload"
+            && !session_ok(key)
+        {
+            return Err(format!(
+                "unknown parameter '{key}='. `nmbrs check` takes one target:                  workload=<file|dir|name> or a bare <file|dir|name>."
+            ));
+        }
+    }
     // Target from `workload=<ref>` or the first bare positional — a file, a
     // directory, or a bundled catalog name, resolved by the verifier exactly
     // the way `nmbrs run` resolves `workload=…`.
     let target = args
         .iter()
         .find_map(|a| a.strip_prefix("workload=").map(String::from))
-        .or_else(|| args.iter().find(|a| !a.contains('=')).cloned())
+        .or_else(|| {
+            args.iter()
+                .find(|a| !a.contains('=') && !a.starts_with('-'))
+                .cloned()
+        })
         .ok_or("usage: nmbrs check workload=<file|dir|name>  (or: nmbrs check <file|dir|name>)")?;
 
     let binary =

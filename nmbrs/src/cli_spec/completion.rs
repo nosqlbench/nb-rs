@@ -40,27 +40,12 @@ fn to_strict_node(cmd: &Command) -> StrictNode<true, true> {
     // `nmbrs report table` (a deeper child, built by `to_node`) worked.
     let strict: StrictNode<false, false> = if let Some(provider) = cmd.completion_override {
         StrictNode::from_node(provider())
-    } else if cmd.subcommands.is_empty() {
-        leaf_strict(cmd)
     } else {
-        let children: Vec<(&str, Node)> = cmd
-            .subcommands
-            .iter()
-            .map(|s| (s.name, to_node(s)))
-            .collect();
-        StrictNode::group(children)
+        StrictNode::from_node(hybrid_node(cmd))
     };
     strict
         .with_category(cmd.category.tag())
         .with_level(cmd.level.rank())
-}
-
-fn leaf_strict(cmd: &Command) -> StrictNode<false, false> {
-    // One leaf builder: the strict wrapper starts from the same
-    // fully-equipped Node (flags, kv params, providers, dynamic
-    // options, positional provider) and only adds the type-state
-    // metadata gates.
-    StrictNode::from_node(leaf_node(cmd))
 }
 
 fn to_node(cmd: &Command) -> Node {
@@ -69,18 +54,27 @@ fn to_node(cmd: &Command) -> Node {
             .with_category(cmd.category.tag())
             .with_level(cmd.level.rank());
     }
-    let node = if cmd.subcommands.is_empty() {
-        leaf_node(cmd)
-    } else {
-        Node::group(
-            cmd.subcommands
-                .iter()
-                .map(|s| (s.name, to_node(s)))
-                .collect(),
-        )
-    };
-    node.with_category(cmd.category.tag())
+    hybrid_node(cmd)
+        .with_category(cmd.category.tag())
         .with_level(cmd.level.rank())
+}
+
+/// The node carrying a command's OWN surface — flags, kv params,
+/// value providers, dynamic options, positional provider
+/// ([`leaf_node`]) — PLUS its subcommands as children. Leaf
+/// commands come out leaf-shaped; group commands come out HYBRID,
+/// so a group's own declared flags complete alongside its
+/// subcommand names (`nmbrs report --synthesized` next to
+/// `nmbrs report all`). The previous shape-split built groups from
+/// children alone, silently dropping every flag a group command
+/// declared — breaking the module contract that a spec declaration
+/// is sufficient for tab completion.
+fn hybrid_node(cmd: &Command) -> Node {
+    let mut node = leaf_node(cmd);
+    for s in &cmd.subcommands {
+        node = node.with_child(s.name, to_node(s));
+    }
+    node
 }
 
 fn leaf_node(cmd: &Command) -> Node {
@@ -182,6 +176,26 @@ mod tests {
         assert!(
             got.iter().any(|c| c == "--only-via-override"),
             "root-level override node must supply completions, got {got:?}"
+        );
+    }
+
+    /// A group command's OWN flags must complete alongside its
+    /// subcommand names — the spec declaration is the single source
+    /// for tab. The group path used to build from children alone,
+    /// dropping declared flags (`nmbrs report --synthesized` was
+    /// invisible to tab while `nmbrs report all` completed fine).
+    #[test]
+    fn group_commands_complete_their_own_flags() {
+        let tree = build_command_tree(&crate::cli_spec::root::root());
+        let got = veks_completion::complete(&tree, &["nmbrs", "report", "--synthesi"]);
+        assert!(
+            got.iter().any(|c| c == "--synthesized"),
+            "group-level flag must complete, got {got:?}"
+        );
+        let got = veks_completion::complete(&tree, &["nmbrs", "report", "a"]);
+        assert!(
+            got.iter().any(|c| c == "all"),
+            "subcommand names still complete on the hybrid, got {got:?}"
         );
     }
 }

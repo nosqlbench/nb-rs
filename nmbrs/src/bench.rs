@@ -429,6 +429,11 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.explain = true;
         } else if arg == "--cones" {
             ba.cones = true;
+        } else if arg == "--engine" {
+            i += 1;
+            if i < args.len() {
+                ba.engine = Some(args[i].to_string());
+            }
         } else if let Some(val) = arg.strip_prefix("--engine=") {
             ba.engine = Some(val.to_string());
         } else if let Some(val) = arg.strip_prefix("engine=") {
@@ -437,6 +442,11 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.iters = val.parse().unwrap_or(5);
         } else if let Some(val) = arg.strip_prefix("--iters=") {
             ba.iters = val.parse().unwrap_or(5);
+        } else if arg == "--iters" {
+            i += 1;
+            if i < args.len() {
+                ba.iters = args[i].parse().unwrap_or(5);
+            }
         } else if arg == "--no-provenance" {
             ba.provenance = false;
         } else if arg == "--provenance" {
@@ -1435,6 +1445,80 @@ pub fn bench_command(args: &[String]) {
 /// parser surface. raw_args=true to keep the existing
 /// per-topic flag handling. Per-topic specs are an open gap
 /// (see `describe::spec` doc).
+/// kv forms `parse_bench_args` plucks (bench.rs parser).
+const BENCH_KV: &[crate::cli_spec::KvParam] = &[
+    crate::completion::CYCLES_KV_PARAM,
+    crate::completion::THREADS_KV_PARAM,
+    crate::cli_spec::KvParam {
+        key: "engine=",
+        provider: crate::completion::free_form,
+    },
+    crate::cli_spec::KvParam {
+        key: "iters=",
+        provider: crate::completion::free_form,
+    },
+];
+
+/// The flag surface `parse_bench_args` consumes — declared so help,
+/// completion, and the closed-surface check all see it.
+fn bench_flags() -> Vec<crate::cli_spec::Flag> {
+    use crate::cli_spec::{Arity, Flag, ValueProvider};
+    let b = |long: &'static str, help: &'static str| Flag {
+        long,
+        short: None,
+        aliases: &[],
+        arity: Arity::Bool,
+        value: ValueProvider::None,
+        help,
+        repeatable: false,
+    };
+    vec![
+        Flag {
+            long: "--cycles",
+            short: Some("-c"),
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Cycles per iteration.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--threads",
+            short: Some("-t"),
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Worker threads.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--engine",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Engine to bench (or `all`).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--iters",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Fixed iteration count.",
+            repeatable: false,
+        },
+        b("--explain", "Print the compiled plan before running."),
+        b("--cones", "Include cone-shaped workloads."),
+        b("--compare", "Compare engines side by side."),
+        b("--compare-modes", "Compare execution modes."),
+        b("--profile", "Emit profiling output."),
+        b("--provenance", "Show value provenance."),
+        b("--no-provenance", "Suppress value provenance."),
+    ]
+}
+
 pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
     fn handle(p: ParsedCommand) -> Result<(), String> {
@@ -1446,8 +1530,8 @@ pub fn spec() -> crate::cli_spec::Command {
         help: "Micro-benchmarks (`bench <topic>`).",
         category: Category::Benchmark,
         level: Level::FullSurface,
-        flags: Vec::new(),
-        kv_params: &[],
+        flags: bench_flags(),
+        kv_params: BENCH_KV,
         dynamic_options: None,
         positionals: vec![crate::cli_spec::Positional {
             name: "topic",

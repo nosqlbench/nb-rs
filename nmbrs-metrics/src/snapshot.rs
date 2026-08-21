@@ -101,8 +101,8 @@ pub struct MetricSet {
     /// component owning the contributing instruments is being torn
     /// down between cadence pulses. Partial snapshots fold into the
     /// next full window via the same `coalesce` rules as normal
-    /// pulse-flushed samples (Counter sum, Gauge weighted-avg with
-    /// last-write fallback, Histogram HDR-merge); the flag is
+    /// pulse-flushed samples (Counter latest-cumulative, Gauge
+    /// last-write-wins, Histogram HDR-merge); the flag is
     /// preserved so downstream tooling can distinguish the
     /// scope-close contribution if needed. Coalesce result is
     /// partial whenever **any** contributing input was partial.
@@ -308,7 +308,14 @@ impl MetricSet {
     ///
     /// - Counter `total` sums; `created` keeps the earliest;
     ///   exemplar most-recent-wins.
-    /// - Gauge values weighted-average by `interval`.
+    /// - Gauge values are LAST-WRITE-WINS by timestamp — the
+    ///   OpenMetrics/Prometheus/OTel gauge contract: a sample is the
+    ///   last-written scalar as of window end, and any summarization
+    ///   (avg/min/max over time) happens at the query point via
+    ///   `*_over_time` rollups. (Until 2026-08-08 gauges coalesced as
+    ///   interval-weighted means, which silently redefined what every
+    ///   metricsql rollup meant against this store — and turned
+    ///   set-once facts stored as gauges into fractions.)
     /// - Histogram reservoirs add (`HdrHistogram::add`); `count`/`sum`
     ///   re-derive from the merged reservoir; bucket exemplars
     ///   most-recent-wins per index.
@@ -373,138 +380,47 @@ impl MetricSet {
 
         for fname in seen_family {
             let mut acc: Option<MetricFamily> = None;
-            // Total interval used as denominator for weighted gauges.
-            let total_seconds: f64 = snapshots
-                .iter()
-                .filter(|s| s.families.iter().any(|f| f.name == fname))
-                .map(|s| s.interval.as_secs_f64())
-                .sum();
-            // Per-LabelSet weighted gauge accumulator.
-            let mut gauge_acc: Vec<(Labels, f64, f64)> = Vec::new();
 
             for s in snapshots {
                 let Some(src_family) = s.families.iter().find(|f| f.name == fname) else {
                     continue;
                 };
                 if acc.is_none() {
-                    let mut seed = MetricFamily {
+                    // Every kind takes the uniform fold path. Gauges
+                    // included: `combine_into`'s gauge arm is
+                    // most-recent-wins by timestamp, which — folded in
+                    // snapshot order — IS last-write-wins over the
+                    // coalesced window. A series absent from later
+                    // snapshots keeps its previously-written value,
+                    // exactly as a Prometheus scrape would report it.
+                    acc = Some(MetricFamily {
                         name: src_family.name.clone(),
                         r#type: src_family.r#type,
                         unit: src_family.unit.clone(),
                         help: src_family.help.clone(),
-                        metrics: Vec::new(),
-                    };
-                    if seed.r#type != MetricType::Gauge {
-                        seed.metrics = src_family.metrics.clone();
-                    }
-                    acc = Some(seed);
-                    if src_family.r#type == MetricType::Gauge {
-                        // Seed gauge_acc from this snapshot's gauge points.
-                        for m in &src_family.metrics {
-                            if let Some(point) = m.points.first()
-                                && let MetricValue::Gauge(g) = &point.value
-                            {
-                                let weight = s.interval.as_secs_f64();
-                                gauge_acc.push((m.labels.clone(), g.value * weight, weight));
-                            }
-                        }
-                    }
+                        metrics: src_family.metrics.clone(),
+                    });
                     continue;
                 }
                 let dst = acc.as_mut().unwrap();
-                if dst.r#type == MetricType::Gauge {
-                    for m in &src_family.metrics {
-                        if let Some(point) = m.points.first()
-                            && let MetricValue::Gauge(g) = &point.value
-                        {
-                            let weight = s.interval.as_secs_f64();
-                            if let Some(entry) =
-                                gauge_acc.iter_mut().find(|(l, _, _)| l == &m.labels)
-                            {
-                                entry.1 += g.value * weight;
-                                entry.2 += weight;
-                            } else {
-                                gauge_acc.push((m.labels.clone(), g.value * weight, weight));
-                            }
+                for m in &src_family.metrics {
+                    let dst_metric = dst.metrics.iter_mut().find(|d| d.labels == m.labels);
+                    match dst_metric {
+                        Some(dm) => {
+                            let (Some(dp), Some(sp)) = (dm.points.first_mut(), m.points.first())
+                            else {
+                                continue;
+                            };
+                            combine_into(dp, sp, mode).expect("matching identity must combine");
                         }
-                    }
-                } else {
-                    for m in &src_family.metrics {
-                        let dst_metric = dst.metrics.iter_mut().find(|d| d.labels == m.labels);
-                        match dst_metric {
-                            Some(dm) => {
-                                let (Some(dp), Some(sp)) =
-                                    (dm.points.first_mut(), m.points.first())
-                                else {
-                                    continue;
-                                };
-                                combine_into(dp, sp, mode).expect("matching identity must combine");
-                            }
-                            None => {
-                                dst.metrics.push(m.clone());
-                            }
+                        None => {
+                            dst.metrics.push(m.clone());
                         }
                     }
                 }
             }
 
-            if let Some(mut family) = acc {
-                if family.r#type == MetricType::Gauge {
-                    for (labels, weighted_sum, weight) in gauge_acc {
-                        // Weighted-average when at least one snapshot
-                        // contributed positive interval. If every input
-                        // snapshot had `Duration::ZERO` (e.g. a point-
-                        // in-time lifecycle flush like a validation
-                        // summary frame), fall back to last-write-wins
-                        // using the newest non-zero reading — otherwise
-                        // the gauge would silently collapse to 0 and
-                        // we'd lose what the metric actually reported.
-                        let value = if weight > 0.0 {
-                            weighted_sum / weight
-                        } else {
-                            snapshots
-                                .iter()
-                                .rev()
-                                .filter_map(|s| {
-                                    s.families
-                                        .iter()
-                                        .find(|f| f.name == family.name)?
-                                        .metrics
-                                        .iter()
-                                        .find(|m| m.labels == labels)?
-                                        .points
-                                        .first()
-                                        .and_then(|p| match &p.value {
-                                            MetricValue::Gauge(g) => Some(g.value),
-                                            _ => None,
-                                        })
-                                })
-                                .next()
-                                .unwrap_or(0.0)
-                        };
-                        let last_ts = snapshots
-                            .iter()
-                            .rev()
-                            .filter_map(|s| {
-                                s.families
-                                    .iter()
-                                    .find(|f| f.name == family.name)?
-                                    .metrics
-                                    .iter()
-                                    .find(|m| m.labels == labels)?
-                                    .points
-                                    .first()
-                                    .and_then(|p| p.timestamp)
-                            })
-                            .next()
-                            .unwrap_or(captured_at);
-                        family.insert(Metric::single(
-                            labels,
-                            MetricPoint::new(MetricValue::Gauge(GaugeValue::new(value)), last_ts),
-                        ));
-                    }
-                    let _ = total_seconds; // silence unused
-                }
+            if let Some(family) = acc {
                 out.families.push(family);
             }
         }
@@ -1137,10 +1053,9 @@ pub enum CombineMode {
 /// - Counter `total` (delta) sums in both modes; `cumulative` folds per
 ///   `mode` (latest on `Coalesce`, sum on `Aggregate`); `created` keeps
 ///   the earliest; exemplar most-recent-wins by `MetricPoint.timestamp`.
-/// - Gauge values weighted-average — but values alone don't carry
-///   a weight, so `combine_into` here just keeps the most recent
-///   (newer timestamp wins). Use [`combine_gauge_weighted`] for the
-///   interval-weighted form.
+/// - Gauge values are last-write-wins (newer timestamp wins) — the
+///   OpenMetrics/Prometheus gauge contract; summarization belongs at
+///   the query point (`*_over_time`).
 /// - Histogram reservoirs add via `HdrHistogram::add`; sum/count
 ///   re-derive; bucket exemplars most-recent-wins per index.
 pub fn combine_into(
@@ -1846,9 +1761,15 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_gauges_weighted_average_by_interval() {
-        // Two snapshots: (1s @ 10.0) and (2s @ 20.0). Weighted avg
-        // = (10*1 + 20*2) / 3 = 50/3 ≈ 16.67.
+    fn coalesce_gauges_last_write_wins() {
+        // Two snapshots: (1s @ 10.0) then (2s @ 20.0). The coalesced
+        // window's sample is the LAST-WRITTEN value — the
+        // OpenMetrics/Prometheus/OTel gauge contract: a sample is the
+        // scalar as of window end; summarization happens at the query
+        // point via *_over_time. (This replaced interval-weighted
+        // averaging, which stored 16.67 here — a value never written —
+        // and turned set-once facts stored as gauges into fractions,
+        // 2026-08-08.)
         let merged = MetricSet::coalesce(&[
             make_gauge_set(Duration::from_secs(1), 10.0),
             make_gauge_set(Duration::from_secs(2), 20.0),
@@ -1866,7 +1787,7 @@ mod tests {
             MetricValue::Gauge(g) => g.value,
             _ => panic!("wrong type"),
         };
-        assert!((v - 50.0 / 3.0).abs() < 0.01, "weighted gauge avg = {v}");
+        assert_eq!(v, 20.0, "last written value wins, got {v}");
     }
 
     #[test]

@@ -96,6 +96,54 @@ fn read_expr_or_file(arg: &str) -> Result<String, String> {
 /// `nmbrs wiring visualize <expr|file>` — sugar over
 /// `nmbrs run adapter=plotter render=single`. The leaf parses raw
 /// (`raw_args=true`), translates to run argv, and drives the engine.
+const VISUALIZE_KV: &[crate::cli_spec::KvParam] = &[
+    crate::completion::CYCLES_KV_PARAM,
+    crate::completion::OUTPUT_KV_PARAM,
+];
+
+/// The flag surface `build_run_args` consumes.
+fn visualize_flags() -> Vec<crate::cli_spec::Flag> {
+    use crate::cli_spec::{Arity, Flag, ValueProvider};
+    vec![
+        Flag {
+            long: "--mode",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "auto | plot | parametric | xy | polar.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--width",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Plot width in characters.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--height",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::None,
+            help: "Plot height in characters.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--no-color",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
+            help: "Disable ANSI color output.",
+            repeatable: false,
+        },
+    ]
+}
+
 pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
     fn handle_visualize(p: ParsedCommand) -> Result<(), String> {
@@ -125,8 +173,8 @@ pub fn spec() -> crate::cli_spec::Command {
             help: "Plot a wiring expression in the terminal (sugar for run adapter=plotter).",
             category: Category::Tools,
             level: Level::FullSurface,
-            flags: Vec::new(),
-            kv_params: &[],
+            flags: visualize_flags(),
+            kv_params: VISUALIZE_KV,
             dynamic_options: None,
             positionals: Vec::new(),
             subcommands: Vec::new(),

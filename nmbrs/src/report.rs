@@ -684,11 +684,18 @@ fn split_heading(heading: &str) -> Vec<String> {
         Some((n, u)) => (n, Some(format!("({u}"))),
         None => (heading, None),
     };
-    let mut words: Vec<String> = name
-        .split('_')
-        .filter(|w| !w.is_empty())
-        .map(str::to_string)
-        .collect();
+    // Whitespace splits first; snake_case then splits per word — but
+    // definition tokens (`last(result_success)`, `span()`) and
+    // provenance tokens (`@phase_name`) stay ATOMIC, or the header
+    // stack would shred the very definition it exists to show.
+    let mut words: Vec<String> = Vec::new();
+    for tok in name.split_whitespace() {
+        if tok.contains('(') || tok.starts_with('@') {
+            words.push(tok.to_string());
+        } else {
+            words.extend(tok.split('_').filter(|w| !w.is_empty()).map(str::to_string));
+        }
+    }
     if words.is_empty() {
         words.push(name.to_string());
     }

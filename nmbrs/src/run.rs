@@ -967,7 +967,7 @@ pub fn standard_run_flags() -> Vec<Flag> {
             short: None,
             aliases: &[],
             arity: Arity::Value,
-            value: ValueProvider::Custom(crate::completion::session_name_provider),
+            value: crate::completion::SESSION_NAME_VALUE,
             help: "SRD-04 session umbrella (path or name).",
             repeatable: false,
         },

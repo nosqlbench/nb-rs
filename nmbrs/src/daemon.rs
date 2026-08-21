@@ -85,28 +85,43 @@ pub fn web_command(args: &[String]) {
         }
     }
 
-    // Warn about unrecognized --flags.
-    let known_flags = ["--daemon", "--stop", "--restart"];
+    // Reject unrecognized --flags. Warning-and-proceed silently ran the
+    // daemon on defaults after a typo; a bind/port mistake is exactly the
+    // input that must not degrade quietly.
+    let known_flags = ["--daemon", "--stop", "--restart", "--bind", "--port"];
     for a in args.iter().filter(|a| a.starts_with("--")) {
         let key = a.split('=').next().unwrap_or(a);
-        if !known_flags.contains(&key) && key != "--bind" && key != "--port" {
+        if !known_flags.contains(&key) {
             eprintln!(
-                "warning: unrecognized option '{a}' (known: --daemon, --stop, --restart, --bind=, --port=)"
+                "error: unrecognized option '{a}' (known: --daemon, --stop, --restart, --bind, --port)"
             );
+            std::process::exit(2);
         }
     }
 
+    // `--bind`/`--port` accept both spellings the spec advertises
+    // (`--bind <addr>` and `--bind=<addr>`), plus the bare kv forms.
+    let space_value = |flag: &str| -> Option<&str> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+    };
     let bind_raw = args
         .iter()
         .find_map(|a| {
             a.strip_prefix("bind=")
                 .or_else(|| a.strip_prefix("--bind="))
         })
+        .or_else(|| space_value("--bind"))
         .unwrap_or("0.0.0.0");
-    let port_raw = args.iter().find_map(|a| {
-        a.strip_prefix("port=")
-            .or_else(|| a.strip_prefix("--port="))
-    });
+    let port_raw = args
+        .iter()
+        .find_map(|a| {
+            a.strip_prefix("port=")
+                .or_else(|| a.strip_prefix("--port="))
+        })
+        .or_else(|| space_value("--port"));
 
     // Parse bind flexibly: accept bare IP, host:port, or full URL
     let (bind, port) = cli::parse_bind_address(bind_raw, port_raw);

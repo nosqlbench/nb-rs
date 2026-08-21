@@ -362,9 +362,7 @@ pub fn spec() -> crate::cli_spec::Command {
                 positionals: vec![Positional {
                     name: "session",
                     help: "Session id (under logs/), session dir, or path to checkpoint.jsonl.",
-                    value: crate::cli_spec::ValueProvider::Custom(
-                        crate::completion::session_name_provider,
-                    ),
+                    value: crate::completion::SESSION_NAME_VALUE,
                     kind: PositionalKind::One,
                 }],
                 subcommands: Vec::new(),
@@ -383,9 +381,7 @@ pub fn spec() -> crate::cli_spec::Command {
                 positionals: vec![Positional {
                     name: "session",
                     help: "Session id (under logs/), session dir, or path to checkpoint.jsonl.",
-                    value: crate::cli_spec::ValueProvider::Custom(
-                        crate::completion::session_name_provider,
-                    ),
+                    value: crate::completion::SESSION_NAME_VALUE,
                     kind: PositionalKind::One,
                 }],
                 subcommands: Vec::new(),

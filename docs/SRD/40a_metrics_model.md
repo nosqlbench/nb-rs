@@ -329,7 +329,7 @@ Two MetricPoints with the same identity MAY be combined
 | Type        | Combine rule                              |
 |-------------|-------------------------------------------|
 | Counter     | totals add; `created` keeps earliest; exemplar most-recent-wins |
-| Gauge       | weighted-average (interval-weighted) or most-recent-wins |
+| Gauge       | last-write-wins (most-recent timestamp; OpenMetrics/Prometheus contract — amended 2026-08-08) |
 | Histogram (HDR-backed) | reservoirs add via `HdrHistogram::add`; sum/count re-derive; bucket exemplars most-recent-wins per index |
 
 Cross-type combines are forbidden — `combine_into` errors

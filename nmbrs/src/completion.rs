@@ -134,10 +134,7 @@ pub fn build_tree() -> CommandTree {
 /// space is free-form (cycles, rate, tags, …) carry
 /// [`free_form`] so they still appear as option tokens.
 pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
-    crate::cli_spec::KvParam {
-        key: "workload=",
-        provider: workload_provider,
-    },
+    WORKLOAD_KV_PARAM,
     // SRD-108 — the implementation module bound into a logical
     // workload's abstract op slots.
     crate::cli_spec::KvParam {
@@ -148,14 +145,8 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
         key: "scenario=",
         provider: scenario_provider,
     },
-    crate::cli_spec::KvParam {
-        key: "adapter=",
-        provider: adapter_provider,
-    },
-    crate::cli_spec::KvParam {
-        key: "driver=",
-        provider: adapter_provider,
-    },
+    ADAPTER_KV_PARAM,
+    DRIVER_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "profiler=",
         provider: static_profiler,
@@ -188,10 +179,7 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
         key: "on_removed=",
         provider: static_on_removed,
     },
-    crate::cli_spec::KvParam {
-        key: "seq=",
-        provider: static_seq,
-    },
+    SEQ_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "kernel_opt=",
         provider: static_kernel_opt,
@@ -256,22 +244,13 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
         key: "op=",
         provider: free_form,
     },
-    crate::cli_spec::KvParam {
-        key: "cycles=",
-        provider: free_form,
-    },
+    CYCLES_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "concurrency=",
         provider: free_form,
     },
-    crate::cli_spec::KvParam {
-        key: "rate=",
-        provider: free_form,
-    },
-    crate::cli_spec::KvParam {
-        key: "errors=",
-        provider: free_form,
-    },
+    RATE_KV_PARAM,
+    ERRORS_KV_PARAM,
     // SRD-82 Part 3b — workload-root total-attempts budget (the `tries`
     // sigil for the conditional tries wrapper). Absent → single attempt.
     crate::cli_spec::KvParam {
@@ -286,18 +265,12 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
         key: "tags=",
         provider: free_form,
     },
-    crate::cli_spec::KvParam {
-        key: "filename=",
-        provider: free_form,
-    },
+    FILENAME_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "separator=",
         provider: free_form,
     },
-    crate::cli_spec::KvParam {
-        key: "stanza_concurrency=",
-        provider: free_form,
-    },
+    STANZA_CONCURRENCY_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "sc=",
         provider: free_form,
@@ -397,10 +370,7 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     // Bare `session=<path|name>`, the sibling of `--session`. Accepted by
     // `resolve_session_dir` for every command, run included, so it must be a
     // known param here or a run that honours it also warns that it is unknown.
-    crate::cli_spec::KvParam {
-        key: "session=",
-        provider: session_name_provider,
-    },
+    SESSION_KV_PARAM,
     // The runner reads a bare `report-openmetrics-to=<url>` beside the
     // `--report-openmetrics-to` flag spelling, so it is a known param too.
     crate::cli_spec::KvParam {
@@ -685,10 +655,6 @@ pub(crate) fn adapter_names_provider(partial: &str, ctx: &[&str]) -> Vec<String>
 
 /// Workload positional (file or catalog name) — `nmbrs describe
 /// op <workload> …`.
-pub(crate) fn workload_positional_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
-    workload_provider(partial, ctx)
-}
-
 /// Dynamic-control names — `nmbrs describe controls <TAB>`. Drawn from the
 /// static capability catalog (SRD-23) so every control the binary can declare
 /// is completable, conditional ones included.
@@ -985,6 +951,141 @@ fn detect_tap(app: &str, input_key: &str, max_level: u32) -> u32 {
 /// [`kind_subcommand_node`] (which advertises them) and
 /// [`value_taking_flags`] (which treats them as value-taking), so the two cannot
 /// disagree about what the surface is.
+/// Boolean flags the plot/table RENDERERS consume that live in no spec walk
+/// (`summary::parse_args` / `plot_metrics::parse_args`). Unioned into
+/// [`known_flags`] so the report dispatcher's closed-surface check accepts
+/// what the renderers implement.
+/// kv forms every `nmbrs report` path consumes (`extract_workload` plucks
+/// `workload=` anywhere in the args; `session=` resolves via
+/// `read_session_dir`). Declared on the report group AND its verb
+/// subleafs so `nmbrs report [--synthesized] workload=<TAB>` completes
+/// workload references the same way `nmbrs run workload=<TAB>` does.
+// ─── Canonical parameter definitions (define once, reference everywhere) ──
+//
+// A parameter that appears on more than one command is defined HERE —
+// key/flag spelling AND its dynamic lookup — and every declaring site
+// references the definition. No site re-states a provider, so a new
+// command accepting the parameter gets identical completion by
+// construction.
+
+/// `workload=<ref>` — dynamic SRD-85 lookup (local files + catalog).
+pub(crate) const WORKLOAD_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
+    key: "workload=",
+    provider: workload_provider,
+};
+
+/// `session=<name>` — completes session names.
+pub(crate) const SESSION_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
+    key: "session=",
+    provider: session_name_provider,
+};
+
+/// The workload reference as a flag/positional VALUE.
+pub(crate) const WORKLOAD_VALUE: crate::cli_spec::ValueProvider =
+    crate::cli_spec::ValueProvider::Custom(workload_provider);
+
+/// `--workload <ref>` — the flag spelling. Help is per-site; lookup is not.
+pub(crate) fn workload_flag(help: &'static str) -> crate::cli_spec::Flag {
+    crate::cli_spec::Flag {
+        long: "--workload",
+        short: None,
+        aliases: &[],
+        arity: crate::cli_spec::Arity::Value,
+        value: WORKLOAD_VALUE,
+        help,
+        repeatable: false,
+    }
+}
+
+/// `--db <path>` — metrics-db override, shared by every read-side command.
+pub(crate) fn db_flag() -> crate::cli_spec::Flag {
+    crate::cli_spec::Flag {
+        long: "--db",
+        short: None,
+        aliases: &[],
+        arity: crate::cli_spec::Arity::Value,
+        value: crate::cli_spec::ValueProvider::Path,
+        help: "Override metrics db. Default: sessions/latest/metrics.db",
+        repeatable: false,
+    }
+}
+
+/// A session name/path as a flag or positional VALUE.
+pub(crate) const SESSION_NAME_VALUE: crate::cli_spec::ValueProvider =
+    crate::cli_spec::ValueProvider::Custom(session_name_provider);
+
+/// An execution id as a flag VALUE.
+pub(crate) const EXECUTION_ID_VALUE: crate::cli_spec::ValueProvider =
+    crate::cli_spec::ValueProvider::Custom(execution_id_provider);
+
+/// `--execution <id>` / `--all-executions` — the SRD-77 execution
+/// qualifier pair, shared by every command that reads a multi-execution
+/// session db (metrics subcommands, replay).
+pub(crate) fn execution_flags() -> Vec<crate::cli_spec::Flag> {
+    use crate::cli_spec::{Arity, Flag, ValueProvider};
+    vec![
+        Flag {
+            long: "--execution",
+            short: None,
+            aliases: &[],
+            arity: Arity::Value,
+            value: EXECUTION_ID_VALUE,
+            help: "Filter to one execution_id (default: most recent).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--all-executions",
+            short: None,
+            aliases: &[],
+            arity: Arity::Bool,
+            value: ValueProvider::None,
+            help: "Pull every execution's instances (aggregate read).",
+            repeatable: false,
+        },
+    ]
+}
+
+/// Free-form shared kv keys (no enumerable values, one definition each).
+macro_rules! ff_kv {
+    ($name:ident, $key:literal) => {
+        pub(crate) const $name: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
+            key: $key,
+            provider: free_form,
+        };
+    };
+}
+ff_kv!(CYCLES_KV_PARAM, "cycles=");
+ff_kv!(THREADS_KV_PARAM, "threads=");
+ff_kv!(RATE_KV_PARAM, "rate=");
+ff_kv!(ERRORS_KV_PARAM, "errors=");
+ff_kv!(FILENAME_KV_PARAM, "filename=");
+ff_kv!(OUTPUT_KV_PARAM, "output=");
+ff_kv!(STANZA_CONCURRENCY_KV_PARAM, "stanza_concurrency=");
+
+/// `adapter=` / `driver=` — adapter inventory lookup.
+pub(crate) const ADAPTER_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
+    key: "adapter=",
+    provider: adapter_provider,
+};
+pub(crate) const DRIVER_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
+    key: "driver=",
+    provider: adapter_provider,
+};
+
+/// `seq=` — the SRD sequencer type, one closed set everywhere.
+pub(crate) const SEQ_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
+    key: "seq=",
+    provider: static_seq,
+};
+
+/// The lone `workload=` kv, for commands whose runtime plucks it but
+/// whose surface has no other kv (check).
+pub(crate) static WORKLOAD_KV: &[crate::cli_spec::KvParam] = &[WORKLOAD_KV_PARAM];
+
+pub(crate) static REPORT_KV: &[crate::cli_spec::KvParam] = &[WORKLOAD_KV_PARAM, SESSION_KV_PARAM];
+
+pub(crate) const RENDERER_BOOL_FLAGS: &[&str] = &["--no-report", "--verbose", "--create", "--tree"];
+
 pub(crate) const REPORT_DISPATCH_VALUE_FLAGS: &[&str] = &[
     "--name",
     "--at",
@@ -1066,6 +1167,61 @@ fn flag_takes_value(cur: &str) -> bool {
     value_taking_flags().contains(cur)
 }
 
+/// Every `--flag` spelling the CLI accepts ANYWHERE — the spec walk
+/// (both arities, shorts and aliases included) unioned with the report
+/// vocab and the plot parser's own list, derived exactly as
+/// [`value_taking_flags`] is so there is no hand-synced copy to drift.
+///
+/// This is the closed surface `report_command`'s kindless dispatch
+/// checks before classifying a leading `--token` as renderer
+/// flag-form: a token in NO vocabulary is a typo to reject by name
+/// (with prefix suggestions drawn from this same set), not a
+/// selection to silently forward into an unrelated complaint.
+pub(crate) fn known_flags() -> &'static std::collections::HashSet<String> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        fn walk(cmd: &crate::cli_spec::Command, out: &mut std::collections::HashSet<String>) {
+            for f in &cmd.flags {
+                out.insert(f.long.to_string());
+                if let Some(short) = f.short {
+                    out.insert(short.to_string());
+                }
+                for a in f.aliases {
+                    out.insert(a.to_string());
+                }
+            }
+            for sub in &cmd.subcommands {
+                walk(sub, out);
+            }
+        }
+        walk(&crate::cli_spec::root::root(), &mut out);
+
+        for kind in [
+            nmbrs_workload::report::Kind::Plot,
+            nmbrs_workload::report::Kind::Table,
+            nmbrs_workload::report::Kind::Text,
+            nmbrs_workload::report::Kind::File,
+            nmbrs_workload::report::Kind::Details,
+        ] {
+            for f in nmbrs_workload::report::vocab::cli_flags_for(kind) {
+                out.insert(f.to_string());
+            }
+        }
+        for f in REPORT_DISPATCH_VALUE_FLAGS {
+            out.insert((*f).to_string());
+        }
+        for f in RENDERER_BOOL_FLAGS {
+            out.insert((*f).to_string());
+        }
+        for f in crate::plot_metrics::FLAGS_TAKING_VALUE {
+            out.insert((*f).to_string());
+        }
+        out
+    })
+}
+
 /// Split an attached `--flag=<partial>` into its flag and partial value, when the
 /// flag is one that takes a value.
 ///
@@ -1097,7 +1253,9 @@ fn split_attached_value(cur: &str) -> Option<(String, String)> {
 /// plumbing.
 /// First-positional words `report_command` accepts besides an item name, so tab
 /// offers the whole vocabulary of that slot rather than only half of it.
-const REPORT_POSITIONAL_WORDS: &[&str] = &["all", "list", "figure", "rename", "scratch"];
+const REPORT_POSITIONAL_WORDS: &[&str] = &[
+    "all", "list", "show", "figure", "rename", "scratch", "synth",
+];
 
 fn with_report_words(mut names: Vec<String>, partial: &str) -> Vec<String> {
     names.extend(
@@ -1175,7 +1333,7 @@ pub(crate) fn kind_subcommand_node(kind: nmbrs_workload::report::Kind) -> Node {
     // forms. Undeclared, they completed as nothing and read as an unrecognised
     // token, so `table x session=<dir>` silently reported on `sessions/latest`
     // while naming another directory.
-    all_value_flags.extend(["workload=", "session="]);
+    all_value_flags.extend(REPORT_KV.iter().map(|kv| kv.key));
     let bool_flags: &[&str] = &[
         // `--create` persists the spec under `--name`; it takes no value
         // (`opts.create = true` in summary's parser). The retired
@@ -1228,11 +1386,12 @@ pub(crate) fn kind_subcommand_node(kind: nmbrs_workload::report::Kind) -> Node {
         .with_value_provider("--at", fn_provider(at_anchor_provider))
         .with_value_provider("--contextual", fn_provider(contextual_mode_provider))
         .with_value_provider("--session", fn_provider(session_name_provider))
-        .with_value_provider("--workload", fn_provider(workload_positional_provider))
-        // Same providers behind the bare spellings, so both forms complete
-        // identically rather than one being second-class.
-        .with_value_provider("session=", fn_provider(session_name_provider))
-        .with_value_provider("workload=", fn_provider(workload_positional_provider));
+        .with_value_provider("--workload", fn_provider(workload_provider));
+    // The bare kv spellings complete via the canonical definitions —
+    // the same provider the kv surface everywhere else uses.
+    for kv in REPORT_KV {
+        node = node.with_value_provider(kv.key, fn_provider(kv.provider));
+    }
 
     // The POSITIONAL — the item name. Only `--name` carried a provider, so
     // `nmbrs table <TAB>` offered nothing even though `nmbrs table --name <TAB>`
@@ -1484,7 +1643,7 @@ fn completions_node() -> StrictNode<true, true> {
 // Value providers (hoisted from nmbrs-runtime::completions)
 // ---------------------------------------------------------------------------
 
-fn workload_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+pub(crate) fn workload_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     // Tier 1 — the obvious candidates: local files and catalog
     // names whose full reference begins with what's typed. SRD-85:
     // bundled workloads run by catalog name from any directory, so

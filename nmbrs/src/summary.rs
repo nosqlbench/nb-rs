@@ -494,6 +494,14 @@ fn render_metricsql_table(
         .zip(column_units.iter())
         .enumerate()
         .map(|(idx, ((name, _expr), unit))| {
+            // `header <col>: <note>` — the column's definition joins
+            // the header stack under its name (word-wrap turns each
+            // space into a header line), so the table explains its
+            // own values where the reader is looking.
+            let name: String = match cfg.header_notes.iter().find(|(c, _)| c == name) {
+                Some((_, note)) => format!("{name} {note}"),
+                None => name.clone(),
+            };
             if timestamp_columns[idx] {
                 return format!("{name} (UTC)");
             }
@@ -502,7 +510,7 @@ fn render_metricsql_table(
                 None => match (column_secs[idx], column_si[idx]) {
                     (true, _) => format!("{name} (h:m:s)"),
                     (false, Some(si)) => format!("{name} ({})", si.symbol),
-                    (false, None) => name.clone(),
+                    (false, None) => name,
                 },
             }
         })
@@ -744,8 +752,10 @@ fn is_seconds_domain_query(expr: &str) -> bool {
     // DIVIDES by such a difference is not itself a duration — it carries the
     // units of its numerator, and labelling one "(h)" because the elapsed time
     // appears in its denominator turns bytes-per-millisecond into hours.
+    // Unwrap whole-expression parens first so `(tlast(...) - tfirst(...))`
+    // classifies the same as its bare form.
     let mut depth = 0i32;
-    for c in lower.chars() {
+    for c in strip_outer_parens(lower.trim()).chars() {
         match c {
             '(' => depth += 1,
             ')' => depth -= 1,
@@ -862,9 +872,12 @@ fn is_timestamp_query(expr: &str) -> bool {
     // Only a BARE timestamp rollup is a moment. `tlast - tfirst` is an elapsed
     // duration and must scale like one; formatting it as a clock time turns
     // "5h25m of compaction" into a date in 1970. Any top-level arithmetic means
-    // the value is derived, so look for an operator outside parentheses.
+    // the value is derived, so look for an operator outside parentheses —
+    // after unwrapping redundant whole-expression parens, which otherwise
+    // hide the arithmetic at depth 1 (`(tlast(...) - tfirst(...))` is still
+    // a duration).
     let mut depth = 0i32;
-    for c in lower.chars() {
+    for c in strip_outer_parens(lower.trim()).chars() {
         match c {
             '(' => depth += 1,
             ')' => depth -= 1,
@@ -873,6 +886,34 @@ fn is_timestamp_query(expr: &str) -> bool {
         }
     }
     true
+}
+
+/// Strip paren pairs that wrap the ENTIRE expression, so depth-0
+/// operator scans see through `(a - b)`. Only a pair whose opener
+/// matches the final char is removed — `(a) - (b)` is untouched.
+fn strip_outer_parens(mut s: &str) -> &str {
+    while s.starts_with('(') && s.ends_with(')') {
+        let mut depth = 0i32;
+        let mut wraps_whole = true;
+        for (i, c) in s.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 && i != s.len() - 1 {
+                        wraps_whole = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !wraps_whole {
+            break;
+        }
+        s = s[1..s.len() - 1].trim();
+    }
+    s
 }
 
 fn is_time_domain_query(expr: &str) -> bool {
@@ -894,6 +935,25 @@ fn is_time_domain_query(expr: &str) -> bool {
     for tok in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
         for suffix in ["_ns", "_seconds", "_ms", "_us"] {
             if tok.ends_with(suffix) {
+                return true;
+            }
+        }
+        // SRD-91 outcome instruments: the `result_*` summaries record
+        // op service time in NANOSECONDS, so their stat columns
+        // (`result_success_p99`, `_mean`, …) are durations by
+        // contract. Without this, those columns fell through to the
+        // generic SI scaler and rendered as tera-nanosecond
+        // absurdities ("3.026 (T)" for a 50-minute p99). Bare
+        // `result_success` (a count) and `_rate` (per-second) don't
+        // match — only the stat suffixes.
+        if let Some(stat) = tok
+            .strip_prefix("result_")
+            .and_then(|t| t.rsplit('_').next())
+        {
+            let is_pct = stat.len() >= 2
+                && stat.starts_with('p')
+                && stat[1..].chars().all(|c| c.is_ascii_digit());
+            if is_pct || matches!(stat, "mean" | "min" | "max" | "stddev" | "sum") {
                 return true;
             }
         }
@@ -931,10 +991,51 @@ mod time_unit_tests {
     }
 
     #[test]
+    fn outcome_instrument_stats_are_durations() {
+        // SRD-91: result_* summary stats are nanoseconds by contract.
+        assert!(is_time_domain_query(
+            "max(max_over_time(result_success_p99{phase=\"x\"}[30d])) by (phase)"
+        ));
+        assert!(is_time_domain_query("avg(result_failure_mean)"));
+        // The bare counter and the per-second rate are NOT durations.
+        assert!(!is_time_domain_query(
+            "max(last_over_time(result_success[30d]))"
+        ));
+        assert!(!is_time_domain_query(
+            "avg(avg_over_time(result_success_rate[30d]))"
+        ));
+        // recall_* stats are ratios, not times.
+        assert!(!is_time_domain_query(
+            "avg(avg_over_time(recall_p50[30d])) by (r)"
+        ));
+    }
+
+    #[test]
     fn is_time_domain_query_rejects_dimensionless() {
         assert!(!is_time_domain_query("avg(recall_mean) by (profile)"));
         assert!(!is_time_domain_query("count(rows_total)"));
         assert!(!is_time_domain_query("max(connection_errors)"));
+    }
+
+    #[test]
+    fn moment_classifiers_see_through_whole_expression_parens() {
+        // A wrapped moment difference is still a DURATION, not a moment —
+        // without the unwrap it rendered as a UTC date.
+        let wrapped = "(max(tlast_over_time(x{p=\"a\"}[1d])) by (p) - \
+                       min(tfirst_over_time(x{p=\"a\"}[1d])) by (p))";
+        assert!(
+            !is_timestamp_query(wrapped),
+            "wrapped difference is not a moment"
+        );
+        assert!(
+            is_seconds_domain_query(wrapped),
+            "wrapped difference is seconds"
+        );
+        // A wrapped BARE rollup stays a moment.
+        assert!(is_timestamp_query("(tlast_over_time(x[1d]))"));
+        // Adjacent groups are not whole-expression wrapping.
+        assert_eq!(strip_outer_parens("(a) - (b)"), "(a) - (b)");
+        assert_eq!(strip_outer_parens("((a - b))"), "a - b");
     }
 }
 

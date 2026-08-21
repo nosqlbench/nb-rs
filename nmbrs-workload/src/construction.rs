@@ -384,6 +384,11 @@ pub static PHASE_ELEMENTS: &[ElementSpec] = &[
         &[Form::GkExpr, Form::Node(&OPTIMIZE)],
         "SRD-86 optimizer dispatch (string = objective sugar)",
     ),
+    el(
+        "key_metrics",
+        &[Form::FreeMap],
+        "SRD-113 key-metric designations: column -> agg(family), aggregate mandatory",
+    ),
 ];
 
 pub static OP_MODEL_ELEMENTS: &[ElementSpec] = &[
@@ -608,6 +613,11 @@ pub static SCENARIO_NODE_ELEMENTS: &[ElementSpec] = &[
         "for",
         &[Form::Str, Form::StrList],
         "alias of for_each (list = union of sub-spaces)",
+    ),
+    el(
+        "anchor",
+        &[Form::Str],
+        "SRD-113 view anchor: one synthesized table row per iteration",
     ),
     el("scenario", &[Form::Str], "include another scenario by name"),
     el(
