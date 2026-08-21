@@ -167,6 +167,7 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
         key: "sysmon=",
         provider: static_sysmon,
     },
+    SYSMON_INTERVAL_KV_PARAM,
     crate::cli_spec::KvParam {
         key: "watch=",
         provider: static_watch,
@@ -1061,6 +1062,13 @@ ff_kv!(ERRORS_KV_PARAM, "errors=");
 ff_kv!(FILENAME_KV_PARAM, "filename=");
 ff_kv!(OUTPUT_KV_PARAM, "output=");
 ff_kv!(STANZA_CONCURRENCY_KV_PARAM, "stanza_concurrency=");
+// Seconds. `sysmon=` names the categories; this sets the sample
+// window. The runtime has always read it (`runner.rs`, and it is
+// documented on the sysmon module and in its error text), but it
+// was never declared here — so the spec-derived argv validation
+// hard-rejected a parameter the tool advertises. Free-form: a
+// duration in seconds has no closed set to offer.
+ff_kv!(SYSMON_INTERVAL_KV_PARAM, "sysmon-interval=");
 
 /// `adapter=` / `driver=` — adapter inventory lookup.
 pub(crate) const ADAPTER_KV_PARAM: crate::cli_spec::KvParam = crate::cli_spec::KvParam {
