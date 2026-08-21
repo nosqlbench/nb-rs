@@ -16,11 +16,21 @@
 //!
 //! The categories:
 //!
-//! - **cpu** — `/proc/stat`. Two separate measures: the MEAN utilization
-//!   from the aggregate `cpu ` line, and the MAXIMUM single-core saturation
-//!   from the `cpuN` lines (with the core named). A pinned compaction thread
+//! - **cpu** — `/proc/stat`. Three separate measures: the MEAN utilization
+//!   from the aggregate `cpu ` line, the MAXIMUM single-core saturation
+//!   from the `cpuN` lines (with the core named), and the QUARTILES of the
+//!   per-core distribution (`p25`/`p50`/`p75`). A pinned compaction thread
 //!   can saturate one core while the mean reads 3% — both facts matter and
 //!   neither substitutes for the other.
+//!
+//!   The quartiles exist because neither the mean nor the max answers "is
+//!   there headroom". The max says 100% for a single hot thread on an idle
+//!   box; the mean says 3% for a box where every core is at 3% and for a
+//!   box with one pegged core, without distinguishing them. `p50` low with
+//!   `max_core` pegged is one hot thread with headroom to spare; `p50` high
+//!   is genuine saturation. Any adaptive guard that throttles on CPU wants
+//!   the quartile, not the max. The per-core vector is already built to
+//!   find the max, so the shape costs one sort per window.
 //! - **io** — `/proc/diskstats`, every line. Utilization per device is
 //!   `Δio_ticks / Δwall` (io_ticks is the 10th stat field: milliseconds the
 //!   device had I/O in flight — the same quantity `iostat -x %util`
@@ -150,12 +160,34 @@ pub fn parse_categories(value: &str) -> Result<Categories, String> {
     Ok(cats)
 }
 
-/// Per-category CPU readings: the mean and the hottest core, separately.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Per-category CPU readings: the mean, the hottest core, and the
+/// SHAPE of the per-core distribution.
+///
+/// The hottest core alone cannot answer "is there headroom": one
+/// pegged core on an otherwise idle box reads identically to a box
+/// that is genuinely out of CPU. Measured 2026-08-21 on a live
+/// `stcs_adaptive` run — `max_core` p90 = 1.000 while `mean` sat at
+/// 0.183 — so any guard keyed on the max would throttle at 18% host
+/// utilization. The quartiles separate the two cases: `p50` low with
+/// `max_core` pegged is a single hot thread (headroom remains); `p50`
+/// high is real saturation.
+///
+/// `max_core` is kept, not replaced — it remains the right signal for
+/// spotting a single-threaded bottleneck, which is a different
+/// question from headroom.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct CpuReading {
     pub mean: f64,
     pub max_core: f64,
     pub top_core: usize,
+    /// Per-core utilization quartiles across all online cores.
+    pub p25: f64,
+    pub p50: f64,
+    pub p75: f64,
+    /// How many cores the quartiles were computed over — the sample
+    /// size behind the shape, so a reader can tell a 2-core box's
+    /// "quartiles" from a 96-core box's.
+    pub cores: usize,
 }
 
 /// One completed sample window. Each field is `Some` exactly when its
@@ -347,6 +379,36 @@ pub fn max_core_util(prev: &[CpuTicks], cur: &[CpuTicks]) -> Option<(usize, f64)
         .enumerate()
         .map(|(i, (p, c))| (i, cpu_util(*p, *c)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// Per-core utilization quartiles between two snapshots: `(p25, p50,
+/// p75, cores)`. Same shared-prefix rule as [`max_core_util`].
+///
+/// The per-core vector is already built to find the max; the quartiles
+/// are a sort of that same vector, so the shape costs one sort per
+/// sample window and no extra reads of `/proc/stat`.
+///
+/// Nearest-rank on the sorted ascending vector (no interpolation): the
+/// quantile of a core count is a real core's utilization, which is the
+/// honest reading when the population is small — an interpolated "p75"
+/// across 4 cores would name a utilization no core actually had.
+pub fn core_util_quartiles(prev: &[CpuTicks], cur: &[CpuTicks]) -> Option<(f64, f64, f64, usize)> {
+    let mut utils: Vec<f64> = prev
+        .iter()
+        .zip(cur.iter())
+        .map(|(p, c)| cpu_util(*p, *c))
+        .collect();
+    if utils.is_empty() {
+        return None;
+    }
+    utils.sort_by(f64::total_cmp);
+    let n = utils.len();
+    let at = |q: f64| -> f64 {
+        // Nearest-rank, clamped: ceil(q*n) - 1 over 1-based ranks.
+        let rank = (q * n as f64).ceil().max(1.0) as usize;
+        utils[rank.min(n) - 1]
+    };
+    Some((at(0.25), at(0.50), at(0.75), n))
 }
 
 /// The three `/proc/meminfo` fields the two utilization measures need,
@@ -551,6 +613,14 @@ struct Gauges {
     /// Host-scalar measures — no subject, so they live on the session root
     /// itself and carry exactly its labels.
     cpu_mean: Option<Arc<ValueGauge>>,
+    /// Per-core distribution shape. Plain (not subject-dimensioned)
+    /// gauges: they describe the HOST, the same dimensional cell as
+    /// `cpu_mean`. Fanning them out per core — as `cpu_core_max` does
+    /// via its `core` label — would scatter one number across as many
+    /// instances as the box has cores and make aggregation a join.
+    cpu_core_p25: Option<Arc<ValueGauge>>,
+    cpu_core_p50: Option<Arc<ValueGauge>>,
+    cpu_core_p75: Option<Arc<ValueGauge>>,
     ram_committed: Option<Arc<ValueGauge>>,
     ram_cached: Option<Arc<ValueGauge>>,
     rambw: Option<Arc<ValueGauge>>,
@@ -577,6 +647,9 @@ fn register_gauges(component: &Arc<RwLock<Component>>, cats: Categories) -> Resu
     };
     let mut gauges = Gauges {
         cpu_mean: None,
+        cpu_core_p25: None,
+        cpu_core_p50: None,
+        cpu_core_p75: None,
         ram_committed: None,
         ram_cached: None,
         rambw: None,
@@ -586,6 +659,9 @@ fn register_gauges(component: &Arc<RwLock<Component>>, cats: Categories) -> Resu
     };
     if cats.cpu {
         gauges.cpu_mean = mk("sysmon_cpu_util")?;
+        gauges.cpu_core_p25 = mk("sysmon_cpu_core_p25")?;
+        gauges.cpu_core_p50 = mk("sysmon_cpu_core_p50")?;
+        gauges.cpu_core_p75 = mk("sysmon_cpu_core_p75")?;
     }
     if cats.ram {
         gauges.ram_committed = mk("sysmon_ram_util")?;
@@ -679,10 +755,16 @@ pub fn spawn(
                     .and_then(|t| parse_proc_stat(&t));
                 if let (Some((pa, pc)), Some((ca, cc))) = (&prev_cpu, &cur) {
                     let (top_core, max_core) = max_core_util(pc, cc).unwrap_or((0, 0.0));
+                    let (p25, p50, p75, cores) =
+                        core_util_quartiles(pc, cc).unwrap_or((0.0, 0.0, 0.0, 0));
                     sample.cpu = Some(CpuReading {
                         mean: cpu_util(*pa, *ca),
                         max_core,
                         top_core,
+                        p25,
+                        p50,
+                        p75,
+                        cores,
                     });
                 }
                 prev_cpu = cur;
@@ -714,6 +796,15 @@ pub fn spawn(
             }
             if let (Some(g), Some(c)) = (&gauges.cpu_mean, &sample.cpu) {
                 g.set(c.mean);
+            }
+            if let (Some(g), Some(c)) = (&gauges.cpu_core_p25, &sample.cpu) {
+                g.set(c.p25);
+            }
+            if let (Some(g), Some(c)) = (&gauges.cpu_core_p50, &sample.cpu) {
+                g.set(c.p50);
+            }
+            if let (Some(g), Some(c)) = (&gauges.cpu_core_p75, &sample.cpu) {
+                g.set(c.p75);
             }
             if let (Some(g), Some(c)) = (&mut gauges.cpu_core_max, &sample.cpu) {
                 g.set(&c.top_core.to_string(), c.max_core);
@@ -927,6 +1018,67 @@ cpu2 0 0 0 8000 0 0 0 0 0 0";
         assert!((mean - 1000.0 / 9000.0).abs() < 1e-9, "mean {mean}");
         assert_eq!(core, 0);
         assert!((max - 1.0).abs() < 1e-9, "core0 fully busy, got {max}");
+
+        // The quartiles are what separate THIS box — one pegged core, two
+        // idle — from a box where every core is genuinely busy. Both read
+        // max_core = 1.0; only the median tells them apart.
+        let (p25, p50, p75, cores) = core_util_quartiles(&c0, &c1).unwrap();
+        assert_eq!(cores, 3);
+        assert!((p25 - 0.0).abs() < 1e-9, "p25 {p25}");
+        assert!((p50 - 0.0).abs() < 1e-9, "median core is IDLE, got {p50}");
+        assert!((p75 - 1.0).abs() < 1e-9, "p75 {p75}");
+    }
+
+    /// The saturation case the quartiles must NOT confuse with one hot
+    /// core: every core busy reads max_core = 1.0 just like a single
+    /// pegged core, but the median moves with it.
+    #[test]
+    fn quartiles_separate_broad_saturation_from_one_hot_core() {
+        let stat_t0 = "\
+cpu  0 0 0 12000 0 0 0 0 0 0
+cpu0 0 0 0 4000 0 0 0 0 0 0
+cpu1 0 0 0 4000 0 0 0 0 0 0
+cpu2 0 0 0 4000 0 0 0 0 0 0";
+        let stat_t1 = "\
+cpu  12000 0 0 12000 0 0 0 0 0 0
+cpu0 4000 0 0 4000 0 0 0 0 0 0
+cpu1 4000 0 0 4000 0 0 0 0 0 0
+cpu2 4000 0 0 4000 0 0 0 0 0 0";
+        let (_, c0) = parse_proc_stat(stat_t0).unwrap();
+        let (_, c1) = parse_proc_stat(stat_t1).unwrap();
+        let (_, max) = max_core_util(&c0, &c1).unwrap();
+        let (p25, p50, p75, cores) = core_util_quartiles(&c0, &c1).unwrap();
+        assert_eq!(cores, 3);
+        // EXACTLY the max the one-hot-core case reports — 1.0 there, 1.0
+        // here. On the max alone the two boxes are indistinguishable.
+        assert!((max - 1.0).abs() < 1e-9, "max {max}");
+        // The median is what tells them apart: 0.0 when one core is hot
+        // and the rest idle, 1.0 when the whole box is saturated.
+        assert!((p25 - 1.0).abs() < 1e-9, "p25 {p25}");
+        assert!((p50 - 1.0).abs() < 1e-9, "p50 {p50}");
+        assert!((p75 - 1.0).abs() < 1e-9, "p75 {p75}");
+    }
+
+    /// Nearest-rank, not interpolation: every quartile of a small core
+    /// count must be a utilization some real core actually had.
+    #[test]
+    fn quartiles_are_nearest_rank_over_real_cores() {
+        let single = vec![CpuTicks {
+            busy: 0,
+            total: 1000,
+        }];
+        let single_end = vec![CpuTicks {
+            busy: 250,
+            total: 2000,
+        }];
+        let (p25, p50, p75, cores) = core_util_quartiles(&single, &single_end).unwrap();
+        assert_eq!(cores, 1);
+        // One core: every quantile is that core.
+        assert!((p25 - 0.25).abs() < 1e-9);
+        assert!((p50 - 0.25).abs() < 1e-9);
+        assert!((p75 - 0.25).abs() < 1e-9);
+        // No cores at all is None, not a fabricated zero.
+        assert!(core_util_quartiles(&[], &[]).is_none());
     }
 
     /// iowait is idle-with-an-excuse: an I/O-bound stall must not read as

@@ -194,6 +194,10 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
                     mean: cpu,
                     max_core: maxcore,
                     top_core: 7,
+                    // No display surface reads the per-core quartiles
+                    // yet; whoever adds one should give the harness
+                    // representative values rather than these zeros.
+                    ..Default::default()
                 }),
                 io: Some(("nvme1n1".into(), disk)),
                 ram: Some((mem, cache)),

@@ -718,6 +718,7 @@ mod tests {
                 mean: 0.34,
                 max_core: 0.89,
                 top_core: 7,
+                ..Default::default()
             }),
             io: Some(("nvme1n1".into(), 0.97)),
             ram: Some((0.41, 0.93)),
@@ -766,6 +767,7 @@ mod tests {
                 mean: 0.02,
                 max_core: 0.70,
                 top_core: 5,
+                ..Default::default()
             }),
             io: Some(("loop0".into(), 0.0)),
             ram: Some((0.22, 0.61)),
@@ -806,6 +808,7 @@ mod tests {
                 mean: 0.5,
                 max_core: 0.5,
                 top_core: 0,
+                ..Default::default()
             }),
             io: None,
             ram: None,
@@ -829,6 +832,7 @@ mod tests {
                 mean: 0.2,
                 max_core: 0.3,
                 top_core: 0,
+                ..Default::default()
             }),
             io: Some(("sda".into(), 0.5)),
             ram: Some((0.4, 0.8)),
