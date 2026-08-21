@@ -354,8 +354,44 @@ params:
   # pending_weight: work the pipeline cannot start counts double.
   # With the defaults: FA=2 → w 0.33, FA=3 → w 0.10, FA=4 → w
   # 0.05 ≈ floor; combined A=1+FA=2 → pressure 3 → w 0.21.
+  #
+  # ── RECALIBRATED 2026-08-21 (sessions/stcs_adaptive_20260821_194852) ──
+  # grace 1.0 → 2.0. The FA=2..3 band above was interpolated from
+  # n=2 and n=1 samples on the assumption that it is a TRANSIENT
+  # excursion toward the FA=4 cliff. Post-jvector-changes it is the
+  # STEADY STATE, and the interpolation was throttling a healthy
+  # pipeline continuously. Measured over 53 windows of that run:
+  #
+  #   flush_pool_active   = 2 or 3 in 48/53 windows (90.6%)
+  #   flush_pool_pending  = 0 in ALL 53
+  #   flush_pool_blocked  = 0 in ALL 53
+  #   compaction_active   = 0 in 48/53 (the compaction servo this
+  #                         workload is NAMED for contributed nothing)
+  #   host cpu_util       median 0.183, io_util median 0.008
+  #
+  # So ~all backoff came from the flush term, on a flush pipeline
+  # that was keeping up perfectly, on an 18%-CPU host: A=0 FA=2 →
+  # pressure 2 → w 0.331 → 3,968 rows/s for 52.9% of the run, and
+  # A=0 FA=3 → pressure 4 → w 0.149 → 1,783 rows/s for 29.4%.
+  #
+  # grace 2.0 frees the now-normal FA=2 while KEEPING a pre-cliff
+  # taper (FA=3 → w 0.331, FA=4 → w 0.149). It is deliberately not
+  # 3.0: the FA=4 cliff is real (0 rows/s, n=32) and this term's job
+  # is to taper before reaching it — freeing FA=3 as well would
+  # leave nothing between normal and the cliff.
+  #
+  # NOT keyed on pending/blocked, though those are the textbook
+  # backlog signals: this pool does not report distress that way.
+  # See the capture comment on `flush_active_live` — 2026-08-04, a
+  # single active MemtableFlushWriter (serial SAI graph
+  # serialization) stalled ingest for minutes with pending and
+  # blocked both reading 0.
+  #
+  # Revert = this one line. Watch the FA distribution after the
+  # change: if FA=4 starts appearing, the early taper was load-
+  # bearing after all and grace belongs back at 1.0.
   flush_weight: 2.0
-  flush_grace: 1.0
+  flush_grace: 2.0
   # base_rows_rate ≈ 80% of the measured unthrottled capacity —
   # nominal utilization with steady headroom, instead of the
   # saturation point where read latency sat at ~766ms. floor keeps a
