@@ -126,6 +126,17 @@ const NOT_YET_SYNTHESIZED: &[(&str, &str)] = &[
         "needs ground-truth wires over testkit bodies",
     ),
     ("evaluations:verify", "needs verify field synthesis"),
+    (
+        "phase:key_metrics",
+        "SRD-113 designations must name families the phase actually \
+         emits and carry a valid aggregate; a random column -> agg(family) \
+         map is a report-time well-formedness error, not a fuzzable shape",
+    ),
+    (
+        "scenario:anchor",
+        "SRD-113 anchors are only meaningful under a sweep whose \
+         iterations become table rows; rides on comprehension synthesis",
+    ),
 ];
 
 /// The full vocabulary universe, qualified by plane, derived
