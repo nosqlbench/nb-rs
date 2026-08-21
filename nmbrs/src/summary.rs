@@ -1250,6 +1250,13 @@ pub fn summary_command(args: &[String]) {
     }
 
     let cli_format = opts.format.clone();
+    // SRD-46 routing, resolved once for this invocation. `none`
+    // suppresses every sink — the item still resolves and still
+    // reports "no rows" diagnostics, it just isn't delivered.
+    let dests = opts.destinations();
+    let to_session = dests.contains(&nmbrs_workload::report::Destination::SessionDir);
+    let to_stdout = dests.contains(&nmbrs_workload::report::Destination::Stdout);
+    let to_stderr = dests.contains(&nmbrs_workload::report::Destination::Stderr);
     let mut any_nonempty = false;
     for (name, cfg) in &to_render {
         // Format precedence: CLI `--format` wins; otherwise
@@ -1304,33 +1311,35 @@ pub fn summary_command(args: &[String]) {
         } else {
             default_output_path(&basename, &format, &output_anchor)
         };
-        if let Some(parent) = output_path.parent()
-            && !parent.as_os_str().is_empty()
-            && !parent.exists()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            eprintln!(
-                "nmbrs summary: failed to create output dir '{}': {e}",
-                parent.display()
-            );
-            std::process::exit(1);
+        if to_session {
+            if let Some(parent) = output_path.parent()
+                && !parent.as_os_str().is_empty()
+                && !parent.exists()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                eprintln!(
+                    "nmbrs summary: failed to create output dir '{}': {e}",
+                    parent.display()
+                );
+                std::process::exit(1);
+            }
+            // The artifact gets the GFM form — one header row, `<br>`-wrapped
+            // headings — so it stays a real table when rendered. No fence needed.
+            if let Err(e) = std::fs::write(&output_path, &rendered.markdown) {
+                eprintln!(
+                    "nmbrs summary: failed to write '{}': {e}",
+                    output_path.display()
+                );
+                std::process::exit(1);
+            }
+            eprintln!("summary: {}", output_path.display());
         }
-        // The artifact gets the GFM form — one header row, `<br>`-wrapped
-        // headings — so it stays a real table when rendered. No fence needed.
-        if let Err(e) = std::fs::write(&output_path, &rendered.markdown) {
-            eprintln!(
-                "nmbrs summary: failed to write '{}': {e}",
-                output_path.display()
-            );
-            std::process::exit(1);
-        }
-        eprintln!("summary: {}", output_path.display());
 
         // Upsert into the framing markdown report (default
         // `<db_dir>/summary.md`). Only Markdown summaries embed
         // inline; CSV/other formats record a link to the file
         // since rendering them inline would be unreadable.
-        if !opts.report_disabled {
+        if to_session && !opts.report_disabled {
             let report_path = opts.report.clone().unwrap_or_else(|| {
                 let dir = output_anchor
                     .parent()
@@ -1380,13 +1389,21 @@ pub fn summary_command(args: &[String]) {
             }
         }
 
-        // Echo to stdout for redirection-friendly use. With
-        // multiple reports, prefix each with a separator banner
-        // so a piped consumer can distinguish them.
-        if multiple {
-            println!("=== {name} → {} ===", output_path.display());
+        // Console form, on whichever stream the routing named.
+        // With multiple reports, prefix each with a separator
+        // banner so a piped consumer can distinguish them.
+        if to_stdout {
+            if multiple {
+                println!("=== {name} → {} ===", output_path.display());
+            }
+            print!("{}", rendered.console);
         }
-        print!("{}", rendered.console);
+        if to_stderr {
+            if multiple {
+                eprintln!("=== {name} → {} ===", output_path.display());
+            }
+            eprint!("{}", rendered.console);
+        }
     }
     if !any_nonempty && !opts.empty_ok {
         std::process::exit(1);
@@ -1505,6 +1522,24 @@ struct SummaryOpts {
     /// run this session legitimately has no rows, and one empty
     /// table must not abort the remaining items — or the process.
     empty_ok: bool,
+    /// SRD-46 `--to` — where this render is delivered. `None` ⇒
+    /// the historical default (session dir + stdout), which is
+    /// what a hand-typed `nmbrs summary` should do. The `nmbrs
+    /// report` pipeline forwards the workload's declared routing
+    /// here for the automatic end-of-run render, where stdout is
+    /// NOT part of the default.
+    to: Option<Vec<nmbrs_workload::report::Destination>>,
+}
+
+impl SummaryOpts {
+    /// The effective destination set: the declared routing, or
+    /// the hand-typed default.
+    fn destinations(&self) -> Vec<nmbrs_workload::report::Destination> {
+        use nmbrs_workload::report::Destination as D;
+        self.to
+            .clone()
+            .unwrap_or_else(|| vec![D::SessionDir, D::Stdout])
+    }
 }
 
 /// Whether a token is a `key=value` run/read param (`session=…`, `phases=…`,
@@ -1568,6 +1603,20 @@ fn parse_args(args: &[String]) -> SummaryOpts {
             "--label" => {
                 if let Some(v) = iter.next() {
                     opts.label = Some(v.clone());
+                }
+            }
+            // SRD-46 output routing. Absent ⇒ the historical
+            // default (session dir + stdout), which is what an
+            // operator typing `nmbrs summary` expects to see.
+            "--to" => {
+                if let Some(v) = iter.next() {
+                    match nmbrs_workload::report::Destination::parse_list(v) {
+                        Ok(d) => opts.to = Some(d),
+                        Err(e) => {
+                            eprintln!("nmbrs summary: --to: {e}");
+                            std::process::exit(2);
+                        }
+                    }
                 }
             }
             "--figure-num" => {

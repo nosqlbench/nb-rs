@@ -145,6 +145,88 @@ Concretely:
 
 ---
 
+## Output routing — the `to` directive
+
+An item declares where its rendered form is delivered:
+
+```yaml
+report:
+  defaults:
+    to: sessiondir          # cascades to every item below
+
+  phases_block: |
+    table phases
+      to stdout, sessiondir
+      query: rows: last(result_success)
+
+  noisy_block: |
+    table debug_detail
+      to none               # keep the declaration, suppress the output
+```
+
+Destinations:
+
+| destination  | effect |
+|--------------|--------------------------------------------------|
+| `sessiondir` | the standalone artifact plus the markdown upsert into `summary.md` (or the item's `file` target) |
+| `stdout`     | the console form on stdout |
+| `stderr`     | the console form on stderr |
+| `none`       | render nothing — suppresses the item without deleting it |
+
+`session` and `session_dir` are accepted spellings of
+`sessiondir`; `off` is accepted for `none`. A list is comma- or
+whitespace-separated. `none` anywhere in a list wins outright —
+it is a suppression, not a peer.
+
+`to` rides the same cascade as the style directives (report
+`defaults` → group `defaults` → item), so one line can route a
+whole report. Unlike a style field, an inner declaration
+**replaces** the outer set rather than unioning with it: routing
+you cannot take back would make an outer default a trap.
+
+### The default is files, never stdout
+
+**An item that declares no `to` goes to `sessiondir` only.**
+
+Automatic end-of-run rendering never writes a report to a
+terminal unless the workload asked for it. A run's stdout is its
+*op output* — the thing a workload exists to emit — and a report
+carries wall-clock values (`span()`, latency percentiles) that
+differ between any two runs. Appending one to stdout by default
+makes a workload's output non-reproducible, which breaks every
+consumer that compares two runs of the same workload (the SRD-105
+differential battery is one such consumer).
+
+Two consequences worth stating plainly:
+
+- Presence of a `_summary.md` artifact in the session directory
+  means the `sessiondir` destination was selected, and **nothing
+  more**. It never by itself implies a stdout write.
+- Output routed to `stdout` while a TUI owns the terminal is
+  deferred to `.report_stdout.md` in the session directory and
+  flushed by the post-run printer once the terminal is back in
+  cooked mode. Routing is decided in one place; the flush is
+  mechanical.
+
+### Explicit invocation
+
+`to` governs *automatic* rendering. Typing `nmbrs report` is a
+request to see the report, so an explicit invocation renders to
+the session directory **and** stdout regardless of what the
+workload declared — otherwise a workload declaring
+`to: sessiondir` would make an explicit report command appear to
+do nothing.
+
+`--to <list>` overrides on either path, and takes the same
+vocabulary:
+
+```
+nmbrs report all session=<dir> --to sessiondir   # write, don't print
+nmbrs summary ... --to stderr                    # keep stdout clean
+```
+
+---
+
 ## Hierarchical placement
 
 `report:` blocks may appear at four scopes, each obeying the
@@ -369,6 +451,10 @@ At end-of-run:
   attached to *active* components.
 - If the workload aborted, render nothing. The workload didn't
   trust its own outputs, so neither does the runtime.
+- Each rendered item is delivered to the destinations its `to`
+  directive names, defaulting to `sessiondir` — see
+  [Output routing](#output-routing--the-to-directive). Nothing
+  reaches stdout here that the workload did not ask for.
 
 ---
 

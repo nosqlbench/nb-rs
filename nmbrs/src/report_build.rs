@@ -383,6 +383,9 @@ fn apply_directive(d: &Directive, value: &str, item: &mut ReportItem) -> Result<
         DirectiveTarget::ItemLabel => item.label = Some(value.to_string()),
         DirectiveTarget::ItemAsStem => item.as_stem = Some(value.to_string()),
         DirectiveTarget::StyleField => apply_style_field(d, value, &mut item.style)?,
+        DirectiveTarget::Destinations => {
+            item.style.destinations = Some(nmbrs_workload::report::Destination::parse_list(value)?)
+        }
         DirectiveTarget::Body => append_body_directive(d, value, &mut item.body),
         DirectiveTarget::StyleSeries => unreachable!("series flag handled in build_item directly"),
     }

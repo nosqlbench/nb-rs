@@ -134,6 +134,11 @@ pub enum DirectiveTarget {
     StyleField,
     /// `ReportItem::style.series` (one entry per `--series`).
     StyleSeries,
+    /// [`super::Style::destinations`] — the output routing set
+    /// (`to stdout, sessiondir`). Rides the style cascade so a
+    /// `defaults:` mapping can route a whole report or group at
+    /// once, but it is routing, not cosmetics.
+    Destinations,
     /// `ReportItem::body` line — the renderer-consumed
     /// directives (`over`, `by`, `where`, `agg`, `xlabel`,
     /// `ylabel`, `xscale`, `yscale`, `metric`).
@@ -223,6 +228,22 @@ pub const MARKER_SHAPES: &[&str] = &[
 ///   `limit=` or `concurrency=` swept by doubling.
 pub const AXIS_SCALES: &[&str] = &["linear", "log", "dec", "bin"];
 
+/// SRD-46 output destinations — where a rendered item is
+/// delivered (`to stdout, sessiondir`).
+///
+/// - `sessiondir` — the session directory: the standalone
+///   artifact plus the markdown upsert into `summary.md` (or
+///   the item's `file` target). The default when nothing is
+///   declared, so a run's report is always durable.
+/// - `stdout` / `stderr` — the console form on that stream.
+///   NEVER implied: end-of-run rendering writes to a terminal
+///   only when the workload asks, because stdout is a
+///   workload's op output and a report carries wall-clock
+///   values that make it non-reproducible.
+/// - `none` — render nothing. Suppresses the item without
+///   deleting its declaration.
+pub const DESTINATION_NAMES: &[&str] = &["sessiondir", "stdout", "stderr", "none"];
+
 // ---------------------------------------------------------------------------
 // The directive table — one entry per CLI flag / YAML
 // directive pair. Adding a new directive starts here.
@@ -255,6 +276,21 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         applies_to: KindMask::FIGURES,
         target: DirectiveTarget::ItemAsStem,
         value: ValueProvider::Text,
+        repeatable: false,
+    },
+    // ── Output routing ───────────────────────────────────
+    // `to <dest>[, <dest>…]` — where a rendered item is
+    // delivered. One directive carrying the whole comma list
+    // (not repeatable) so the declaration reads as a set and
+    // an inner scope REPLACES an outer one rather than
+    // accumulating destinations the operator can't take back.
+    Directive {
+        cli_flag: "--to",
+        yaml_directive: "to",
+        yaml_form: YamlForm::Whitespace,
+        applies_to: KindMask::ALL,
+        target: DirectiveTarget::Destinations,
+        value: ValueProvider::Closed(DESTINATION_NAMES),
         repeatable: false,
     },
     // ── Style / cosmetics ────────────────────────────────

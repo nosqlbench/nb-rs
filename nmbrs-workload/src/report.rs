@@ -194,6 +194,82 @@ impl Kind {
     }
 }
 
+/// SRD-46 output destination for a rendered report item.
+///
+/// The set is declared with `to <dest>[, <dest>…]` and rides the
+/// style cascade (report defaults → group defaults → item), so a
+/// whole report can be routed in one line. An inner declaration
+/// REPLACES an outer one rather than unioning with it — routing
+/// you can't take back would make the outer default a trap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Destination {
+    /// The session directory: standalone artifact + markdown
+    /// upsert. The default when nothing is declared.
+    SessionDir,
+    /// The console form on stdout. Never implied — see
+    /// [`vocab::DESTINATION_NAMES`].
+    Stdout,
+    /// The console form on stderr.
+    Stderr,
+    /// Render nothing.
+    None,
+}
+
+impl Destination {
+    /// Parse one destination name. `session` and `session_dir`
+    /// are accepted spellings of `sessiondir` — the concept has
+    /// three natural spellings and rejecting two of them buys
+    /// nothing.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "sessiondir" | "session" | "session_dir" => Self::SessionDir,
+            "stdout" => Self::Stdout,
+            "stderr" => Self::Stderr,
+            "none" | "off" => Self::None,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionDir => "sessiondir",
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::None => "none",
+        }
+    }
+
+    /// Parse a comma- (or whitespace-) separated destination
+    /// list. `none` anywhere in the list wins outright: it is a
+    /// suppression, not a peer.
+    pub fn parse_list(s: &str) -> Result<Vec<Self>, String> {
+        let mut out: Vec<Self> = Vec::new();
+        for tok in s.split([',', ' ', '\t']).filter(|t| !t.trim().is_empty()) {
+            let d = Self::parse(tok).ok_or_else(|| {
+                format!(
+                    "unknown destination '{}' — expected one of: {}",
+                    tok.trim(),
+                    vocab::DESTINATION_NAMES.join(", ")
+                )
+            })?;
+            if d == Self::None {
+                return Ok(vec![Self::None]);
+            }
+            if !out.contains(&d) {
+                out.push(d);
+            }
+        }
+        if out.is_empty() {
+            return Err(format!(
+                "`to` needs at least one destination — expected one of: {}",
+                vocab::DESTINATION_NAMES.join(", ")
+            ));
+        }
+        Ok(out)
+    }
+}
+
 /// Style and figure-metadata bag. Every field optional; cascade
 /// is "first non-`None` wins outer-to-inner".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -230,6 +306,12 @@ pub struct Style {
     /// fields they recognise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub series: Vec<SeriesOverride>,
+    /// SRD-46 output routing (`to stdout, sessiondir`). `None`
+    /// means "not declared at this level" — the cascade keeps
+    /// looking outward, and the render entry point supplies the
+    /// default when nothing declared it anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destinations: Option<Vec<Destination>>,
 }
 
 /// One `series <key>=<value> {...}` directive.
@@ -301,6 +383,20 @@ impl ReportItem {
         if let Some(target) = &self.target_file {
             out.push_str("  target ");
             out.push_str(target);
+            out.push('\n');
+        }
+        // Routing travels with the item so a persisted item
+        // replayed by `nmbrs report` lands where it was declared
+        // to land, not where the replaying command defaults.
+        if let Some(dests) = &self.style.destinations {
+            out.push_str("  to ");
+            out.push_str(
+                &dests
+                    .iter()
+                    .map(|d| d.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
             out.push('\n');
         }
         if let Some(order) = self.order {
@@ -433,6 +529,24 @@ impl Style {
                 self.series.push(s.clone());
             }
         }
+        // Routing REPLACES rather than unions: an item declaring
+        // `to stdout` means stdout, not "stdout on top of
+        // whatever the group defaulted to".
+        if other.destinations.is_some() {
+            self.destinations = other.destinations.clone();
+        }
+    }
+
+    /// The declared destination set, or `default_to` when no
+    /// level of the cascade declared one. Callers pass the
+    /// default their entry point implies — files-only for
+    /// automatic end-of-run rendering, files+stdout for an
+    /// explicit `nmbrs report` invocation.
+    pub fn destinations_or(&self, default_to: &[Destination]) -> Vec<Destination> {
+        match &self.destinations {
+            Some(d) => d.clone(),
+            None => default_to.to_vec(),
+        }
     }
 }
 
@@ -457,6 +571,7 @@ const STYLE_DIRECTIVE_KEYWORDS: &[&str] = &[
     "style",
     "label",
     "as",
+    "to",
 ];
 
 const ITEM_KIND_KEYWORDS: &[&str] = &["plot", "table", "text", "file"];
@@ -478,6 +593,7 @@ const ALL_RESERVED_DIRECTIVES: &[&str] = &[
     "style",
     "label",
     "as",
+    "to",
 ];
 
 /// Parse a `report:` value (a YAML mapping) into a [`Report`].
@@ -863,6 +979,13 @@ impl PartialItem {
                     item.label = Some(parse_quoted_or_bare(rest));
                     continue;
                 }
+                if let Some(rest) = strip_directive_keyword(trimmed, "to") {
+                    item.style.destinations = Some(
+                        Destination::parse_list(rest)
+                            .map_err(|e| format!("text '{}': {e}", self.name))?,
+                    );
+                    continue;
+                }
                 if let Some(rest) = strip_directive_keyword(trimmed, "target") {
                     let rest = rest.trim();
                     if !rest.is_empty() && !rest.contains(char::is_whitespace) {
@@ -891,6 +1014,13 @@ impl PartialItem {
 
             if let Some(rest) = strip_directive_keyword(line, "label") {
                 item.label = Some(parse_quoted_or_bare(rest));
+                continue;
+            }
+            if let Some(rest) = strip_directive_keyword(line, "to") {
+                item.style.destinations = Some(
+                    Destination::parse_list(rest)
+                        .map_err(|e| format!("{} '{}': {e}", self.kind.as_str(), self.name))?,
+                );
                 continue;
             }
             if let Some(rest) = strip_directive_keyword(line, "as") {
@@ -1150,6 +1280,9 @@ fn apply_one_style_kv(k: &str, v: &str, style: &mut Style) -> Result<(), String>
                     .map_err(|_| format!("`figure_height={v}` is not an integer"))?,
             )
         }
+        // Routing, not cosmetics — but it cascades through the
+        // same `defaults:` mapping, so it is applied here.
+        "to" => style.destinations = Some(Destination::parse_list(v)?),
         _ => return Err(format!("unknown style directive `{k}`")),
     }
     Ok(())
@@ -1512,6 +1645,135 @@ empty_block: ""
         // Prose survives verbatim — including a line that merely
         // STARTS with the word `target` (multi-token ⇒ prose).
         assert_eq!(back.body, item.body);
+    }
+
+    #[test]
+    fn destination_list_parses_spellings_and_rejects_junk() {
+        use Destination::*;
+        assert_eq!(Destination::parse_list("stdout").unwrap(), vec![Stdout]);
+        // Comma, whitespace, and mixed separators all work; the
+        // three spellings of the session dir are one destination.
+        assert_eq!(
+            Destination::parse_list("stdout, sessiondir").unwrap(),
+            vec![Stdout, SessionDir]
+        );
+        assert_eq!(
+            Destination::parse_list("session_dir stderr").unwrap(),
+            vec![SessionDir, Stderr]
+        );
+        assert_eq!(
+            Destination::parse_list("session").unwrap(),
+            vec![SessionDir]
+        );
+        // Duplicates collapse rather than double-delivering.
+        assert_eq!(
+            Destination::parse_list("stdout,stdout").unwrap(),
+            vec![Stdout]
+        );
+        // `none` is a suppression, not a peer — it wins outright.
+        assert_eq!(
+            Destination::parse_list("stdout, none, sessiondir").unwrap(),
+            vec![None]
+        );
+        // An unknown destination names the vocabulary.
+        let err = Destination::parse_list("syslog").unwrap_err();
+        assert!(err.contains("syslog"), "{err}");
+        assert!(err.contains("sessiondir"), "names the vocabulary: {err}");
+        // An empty list is an error, not a silent no-op.
+        assert!(Destination::parse_list("  ").is_err());
+    }
+
+    #[test]
+    fn to_directive_parses_and_cascades_replacing_outer() {
+        let yaml: serde_json::Value = serde_yaml::from_str(
+            r#"
+defaults:
+  to: sessiondir
+routed: |
+  table alpha:
+    to stdout
+    query: v: avg(x)
+  table beta:
+    query: v: avg(y)
+"#,
+        )
+        .expect("yaml");
+        let parsed = parse_report(&yaml).expect("parse report");
+        let group = &parsed.report.groups[0];
+        let alpha = parsed.report.find("alpha").expect("alpha");
+        let beta = parsed.report.find("beta").expect("beta");
+
+        // The item declaration REPLACES the report default rather
+        // than unioning with it — `to stdout` means stdout, not
+        // "stdout on top of sessiondir".
+        assert_eq!(
+            parsed.report.effective_style(group, alpha).destinations,
+            Some(vec![Destination::Stdout])
+        );
+        // An item that declared nothing inherits the cascade.
+        assert_eq!(
+            parsed.report.effective_style(group, beta).destinations,
+            Some(vec![Destination::SessionDir])
+        );
+    }
+
+    #[test]
+    fn undeclared_routing_stays_none_so_the_caller_supplies_the_default() {
+        // Nothing anywhere in the cascade declared `to`, so the
+        // parsed style carries `None` — the render entry point
+        // decides, and the two entry points differ (files-only for
+        // the automatic run-end render, files+stdout for an
+        // explicit `nmbrs report`).
+        let yaml: serde_json::Value = serde_yaml::from_str(
+            r#"
+plain: |
+  table alpha:
+    query: v: avg(x)
+"#,
+        )
+        .expect("yaml");
+        let parsed = parse_report(&yaml).expect("parse report");
+        let group = &parsed.report.groups[0];
+        let alpha = parsed.report.find("alpha").expect("alpha");
+        assert_eq!(
+            parsed.report.effective_style(group, alpha).destinations,
+            Option::None
+        );
+        assert_eq!(
+            parsed
+                .report
+                .effective_style(group, alpha)
+                .destinations_or(&[Destination::SessionDir]),
+            vec![Destination::SessionDir]
+        );
+    }
+
+    #[test]
+    fn routing_round_trips_through_the_persisted_form() {
+        // `to` must survive the db round-trip, or an item replayed
+        // by `nmbrs report` would land where the replaying command
+        // defaults instead of where it was declared.
+        let yaml: serde_json::Value = serde_yaml::from_str(
+            r#"
+routed: |
+  table alpha:
+    to stdout, sessiondir
+    query: v: avg(x)
+"#,
+        )
+        .expect("yaml");
+        let parsed = parse_report(&yaml).expect("parse report");
+        let item = parsed.report.find("alpha").expect("alpha");
+        let persisted = item.to_yaml_directive_string();
+        assert!(
+            persisted.contains("to stdout, sessiondir"),
+            "persisted form carries routing: {persisted}"
+        );
+        let back = parse_persisted_item(&persisted).expect("round-trip");
+        assert_eq!(
+            back.style.destinations,
+            Some(vec![Destination::Stdout, Destination::SessionDir])
+        );
     }
 
     #[test]

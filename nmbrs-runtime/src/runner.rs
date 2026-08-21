@@ -117,6 +117,16 @@ fn cli_flag_value(args: &[String], flag: &str) -> Option<String> {
     None
 }
 
+/// Session-dir file holding end-of-run summary output that is
+/// routed to stdout (SRD-46 `to stdout`) but could not be written
+/// inline because a TUI owned the terminal. The post-run printer
+/// flushes it verbatim once the terminal is back in cooked mode.
+///
+/// Dot-prefixed, and deliberately NOT matching the `_summary.`
+/// artifact pattern: artifacts are the `sessiondir` destination,
+/// and their presence must never by itself imply a stdout write.
+pub const DEFERRED_STDOUT_FILE: &str = ".report_stdout.md";
+
 /// Convert the workload-model `SummaryConfig` (parsed from the
 /// `summary:` workload field or the `--summary` CLI flag) into
 /// the SQLite reporter's `ReportConfig`. Used by both the
@@ -4077,6 +4087,38 @@ async fn run_execution(
             workload_summaries.clone()
         };
 
+    // SRD-46 output routing for the in-run summary, by item name.
+    //
+    // A CLI `summary=<spec>` is an explicit operator request —
+    // they typed it, so it still echoes to the terminal. A
+    // workload-declared table goes where its `to:` says, and one
+    // that declared nothing goes to the session directory ONLY.
+    // stdout is never implied for automatic rendering: a run's
+    // stdout is its op output, and a summary carries wall-clock
+    // values that would make that output differ run to run.
+    let summary_destinations: HashMap<String, Vec<nmbrs_workload::report::Destination>> = {
+        use nmbrs_workload::report::Destination as D;
+        if merged_params.contains_key("summary") {
+            let mut m = HashMap::new();
+            m.insert("default".to_string(), vec![D::SessionDir, D::Stdout]);
+            m
+        } else {
+            workload_report
+                .items()
+                .filter(|i| matches!(i.kind, nmbrs_workload::report::Kind::Table))
+                .map(|i| {
+                    (
+                        i.name.clone(),
+                        i.style
+                            .destinations
+                            .clone()
+                            .unwrap_or_else(|| vec![D::SessionDir]),
+                    )
+                })
+                .collect()
+        }
+    };
+
     // SRD-46 Details auto-injection: persist run-wide context
     // (end time, phase + scenario counts, adapter, …) into
     // session_metadata regardless of whether the workload
@@ -4155,20 +4197,32 @@ async fn run_execution(
                 if rendered.is_empty() {
                     continue;
                 }
+                // SRD-46 routing for this item. Undeclared ⇒
+                // session directory only.
+                let dests = summary_destinations
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| vec![nmbrs_workload::report::Destination::SessionDir]);
+                let to_session = dests.contains(&nmbrs_workload::report::Destination::SessionDir);
+                let to_stdout = dests.contains(&nmbrs_workload::report::Destination::Stdout);
+                let to_stderr = dests.contains(&nmbrs_workload::report::Destination::Stderr);
+
                 let filename = format!("{basename}_summary.{format}");
                 let summary_path = session.output_dir.join(&filename);
-                if let Err(e) = std::fs::write(&summary_path, &rendered) {
-                    crate::diag!(
-                        crate::observer::LogLevel::Warn,
-                        "warning: failed to write summary to {}: {e}",
-                        summary_path.display()
-                    );
-                } else {
-                    crate::diag!(
-                        crate::observer::LogLevel::Info,
-                        "summary: {}",
-                        summary_path.display()
-                    );
+                if to_session {
+                    if let Err(e) = std::fs::write(&summary_path, &rendered) {
+                        crate::diag!(
+                            crate::observer::LogLevel::Warn,
+                            "warning: failed to write summary to {}: {e}",
+                            summary_path.display()
+                        );
+                    } else {
+                        crate::diag!(
+                            crate::observer::LogLevel::Info,
+                            "summary: {}",
+                            summary_path.display()
+                        );
+                    }
                 }
                 // Inline print only when the observer is
                 // not suppressing stderr — i.e. we're in
@@ -4179,8 +4233,37 @@ async fn run_execution(
                 // discarded on teardown. The persona reads
                 // the *_summary.* files and prints them
                 // post-shutdown (see `nmbrs/src/run.rs`).
-                if !observer.suppresses_stderr() {
-                    print!("{rendered}");
+                if to_stderr {
+                    eprint!("{rendered}");
+                }
+                if to_stdout {
+                    // In TUI mode the alternate screen is up, so an
+                    // inline `print!` would be buffered behind the
+                    // TUI rendering and discarded on teardown.
+                    // Defer it to a file the post-run printer
+                    // flushes once the terminal is back in cooked
+                    // mode. Routing is decided HERE either way —
+                    // the post-run printer no longer infers "goes
+                    // to stdout" from the presence of an artifact.
+                    if observer.suppresses_stderr() {
+                        let deferred = session.output_dir.join(DEFERRED_STDOUT_FILE);
+                        if let Err(e) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&deferred)
+                            .and_then(|mut f| {
+                                std::io::Write::write_all(&mut f, rendered.as_bytes())
+                            })
+                        {
+                            crate::diag!(
+                                crate::observer::LogLevel::Warn,
+                                "warning: failed to defer summary stdout to {}: {e}",
+                                deferred.display()
+                            );
+                        }
+                    } else {
+                        print!("{rendered}");
+                    }
                 }
             }
         }

@@ -717,21 +717,37 @@ fn print_post_run_reports(
             })
             .collect();
         summary_paths.sort();
+        // SRD-46: an artifact in the session dir is the
+        // `sessiondir` destination and NOTHING more. Echoing every
+        // `_summary.md` here is what used to put a report on
+        // stdout that no workload asked for — and, because those
+        // tables carry wall-clock values, made a run's stdout
+        // differ from itself run to run. Markdown bodies now reach
+        // stdout only via the deferred file below, which the
+        // runtime writes when (and only when) routing said stdout.
+        // Non-markdown artifacts are still announced by path, on
+        // the log stream, so the operator knows they exist.
         for path in &summary_paths {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext == "md" {
-                if let Ok(rendered) = std::fs::read_to_string(path)
-                    && !rendered.is_empty()
-                {
-                    print!("{rendered}");
-                }
-            } else {
+            if ext != "md" {
                 nmbrs_runtime::diag!(
                     nmbrs_runtime::observer::LogLevel::Info,
                     "summary ({ext}): {}",
                     path.display()
                 );
             }
+        }
+    }
+
+    // Flush stdout-routed summary output the runner deferred
+    // because a TUI owned the terminal at the time.
+    if let Some(dir) = session_dir.as_deref() {
+        let deferred = dir.join(nmbrs_runtime::runner::DEFERRED_STDOUT_FILE);
+        if let Ok(rendered) = std::fs::read_to_string(&deferred)
+            && !rendered.is_empty()
+        {
+            print!("{rendered}");
+            let _ = std::fs::remove_file(&deferred);
         }
     }
     // The post-run summary is an nmbrs system signal, not adapter
