@@ -66,6 +66,13 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     let output_root: PathBuf = session_dir
         .clone()
         .unwrap_or_else(nmbrs_runtime::session::latest_session_dir);
+    // The SESSION root, kept separate from the render output root
+    // below. Rendered report artifacts may be redirected into
+    // `<session>/report/`, but session-local machinery — the
+    // `scratch/` area, `metrics.db`, workload resolution for
+    // `--add` / `rename` — is anchored to the session itself and
+    // must not follow that redirect.
+    let session_root: PathBuf = output_root.clone();
 
     // `--synthesized` synthesizes from workload FIXTURES, which live
     // in the yaml — session-db report.* rows can't provide them.
@@ -137,7 +144,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     // Artifact accounting: snapshot the output dir before dispatch so
     // the closing summary can name exactly the files this invocation
     // created or updated — regardless of which renderer wrote them.
-    let (items, items_synthesized) = match resolve_items(
+    let (mut items, items_synthesized) = match resolve_items(
         workload_path.as_deref(),
         session_db.as_deref(),
         synthesized_only,
@@ -148,6 +155,19 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             std::process::exit(2);
         }
     };
+
+    // SRD-46 routing — EXPLICIT invocation. `to:` governs the
+    // automatic end-of-run render; typing `nmbrs report` is a
+    // request to SEE the report, so the declaration is dropped
+    // here and the renderer's own default (session dir + stdout)
+    // applies. An operator who wants something else says so with
+    // `--to`, which reaches the renderer through `passthrough`.
+    // Without this, a workload declaring `to: sessiondir` would
+    // make an explicit report command print nothing at all.
+    for it in &mut items {
+        it.destinations = None;
+    }
+    let items = items;
 
     // Synthesized reports land in `<session>/report/` — disentangled
     // from tables and plots earlier hand-written renders left in the
@@ -292,7 +312,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             )
         }
         Some("scratch") => {
-            crate::report_scratch::scratch_subcommand(&output_root, &rest[1..]);
+            crate::report_scratch::scratch_subcommand(&session_root, &rest[1..]);
             Vec::new()
         }
         // Declared subcommand `show`: render one stored item by name.
@@ -315,7 +335,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             }
         },
         Some("rename") => {
-            run_rename(&rest[1..], &output_root, workload_path.as_deref());
+            run_rename(&rest[1..], &session_root, workload_path.as_deref());
             Vec::new()
         }
         // SRD-109 — dump the synthesized report section as a
@@ -374,7 +394,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
                 KindFilter::Table => nmbrs_workload::report::Kind::Table,
                 _ => unreachable!(),
             };
-            dispatch_new_item(kind, &rest, &output_root, workload_path.as_deref());
+            dispatch_new_item(kind, &rest, &session_root, workload_path.as_deref());
             Vec::new()
         }
         Some(arg) => {
@@ -1129,6 +1149,12 @@ pub(crate) struct ResolvedItem {
     /// table per distinct value tuple of the listed labels
     /// (in addition to / replacing the singular form).
     pub with_tables: Vec<String>,
+    /// SRD-46 output routing after the cascade (workload
+    /// `defaults` → group `defaults` → item `to`). `None` ⇒
+    /// nothing declared it; the render entry point supplies
+    /// the default, which differs between automatic
+    /// end-of-run rendering and an explicit `nmbrs report`.
+    pub destinations: Option<Vec<nmbrs_workload::report::Destination>>,
 }
 
 /// The first db named by a `--db` flag, or `None`.
@@ -1294,6 +1320,7 @@ fn resolve_item(
         series_overrides: style.series.clone(),
         with_table: item.with_table,
         with_tables: item.with_tables.clone(),
+        destinations: style.destinations.clone(),
     }
 }
 
@@ -2059,10 +2086,25 @@ fn rebuild_wipe_targets(items: &[ResolvedItem], output_root: &Path) {
 /// (unless NMBRS_STRICT) and real render failures come back to the
 /// caller instead of `process::exit`-ing.
 pub fn render_session_reports(db_path: &Path) -> Result<usize, Vec<String>> {
-    let (items, _) = resolve_items(None, Some(db_path), false).map_err(|e| vec![e])?;
+    let (mut items, _) = resolve_items(None, Some(db_path), false).map_err(|e| vec![e])?;
     if items.is_empty() {
         return Ok(0);
     }
+    // SRD-46 routing — AUTOMATIC end-of-run render. This is the
+    // path the workload governs: an item goes where its `to:`
+    // says, and an item that declared nothing goes to the session
+    // directory ONLY. stdout is never implied here, because a
+    // run's stdout is its op output — appending a report that
+    // carries wall-clock values would make that output
+    // non-reproducible for anything comparing two runs.
+    for it in &mut items {
+        it.destinations = Some(
+            it.destinations
+                .clone()
+                .unwrap_or_else(|| vec![nmbrs_workload::report::Destination::SessionDir]),
+        );
+    }
+    let items = items;
     let output_root = db_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -2328,6 +2370,25 @@ fn render_one(
     base.push(format!("--name={}", item.name));
     base.push("--figure-num".into());
     base.push(n.to_string());
+    // SRD-46 output routing. Forwarded only when the entry point
+    // resolved a set (the automatic end-of-run path does; the
+    // explicit command leaves it unset so the renderer default
+    // applies). Skipped when the operator already passed `--to`,
+    // the same guard `--db` uses, so an explicit override is
+    // never shadowed by a second flag.
+    let passthrough_has_to = passthrough
+        .iter()
+        .any(|a| a == "--to" || a.starts_with("--to="));
+    if let (Some(dests), false) = (item.destinations.as_deref(), passthrough_has_to) {
+        base.push("--to".into());
+        base.push(
+            dests
+                .iter()
+                .map(|d| d.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
     if let Some(l) = item.label.as_deref() {
         base.push("--label".into());
         base.push(l.to_string());
