@@ -520,3 +520,54 @@ comparable; only merge rate at equivalent table size.
 
 Status unchanged: the arm cannot answer the question. Cassandra-side
 `ReaderSupplier` must implement prefetch/willNeed first.
+
+---
+
+### 18:34 — cycle 2 STOPPED. Monitor cancelled. Fix drafted.
+
+Client stopped cleanly ("shutdown complete", 18:33:53); hourly cron `65c6379a`
+cancelled. Cycle 2 ended at 3h 46m, 385 GB, healthy throughout — and, as
+established at 15:59, measuring nothing: 15 pretouch calls, all `0 ms`.
+
+**Cycle 2's verdict: void as an arm, but useful as corroboration.** Its four
+~31k merges (4,048 / 4,588 / 9,455 / 17,717 b/min) match cycle 1's
+(5,976-16,079) closely enough that "the flag changed nothing" is the simplest
+reading — which is what a no-op predicts.
+
+## The fix — Cassandra fork, `experiment/sai-vector-reader-prefetch-20260823`
+
+Commit `80064aa109`. `ant jar` builds clean. **Not deployed.**
+
+| change | file |
+|---|---|
+| `tryWillNeed(fd, offset, len, name)` — POSIX_FADV_WILLNEED counterpart to the existing `trySkipCache` (DONTNEED), over the same `callPosixFadvise` plumbing | `INativeLibrary`, `NativeLibrary` |
+| `FileHandleReaderSupplier` — wraps a `FileHandle`, implements `prefetch` (streams the range, blocking) and `willNeed` (fadvise, non-blocking) | new, 210 lines |
+| use it instead of `graphHandle::createReader`; close it | `CassandraDiskAnn` |
+
+`POSIX_FADV_WILLNEED` was already defined in `NativeLibrary` and unused, so the
+native side needed no new JNA surface.
+
+Details worth remembering:
+
+- jvector offsets are **absolute** (`OnDiskGraphIndex` seeks to
+  `neighborsOffset + ...`), so no rebasing is needed even though an SAI graph
+  sits at an offset inside TERMS_DATA.
+- The advice channel is **private to the supplier**, off the read path, so
+  hints cannot perturb a reader's position.
+- `close()` closes **only** that channel — the `FileHandle` belongs to
+  `PerIndexFiles` and outlives the supplier.
+- If the advice channel cannot be opened, both hooks degrade to the previous
+  no-op rather than failing a query.
+
+**This does not fix the collapse.** It makes the prefetch knobs testable, which
+they were not. The real A/B — pretouch on vs off, frontier width 3 vs 8 — can
+only start after this is deployed and `Source pretouch: warmed ... in N ms`
+shows a non-zero N.
+
+## Next
+
+1. Deploy: `build-cassandra.sh` (node must be down), restart, start a run.
+2. **First check is the elapsed time in the pretouch log line.** Non-zero means
+   the plumbing works; another `0 ms` means something else is still swallowing
+   it.
+3. Only then are cycle-1/cycle-2 style arms meaningful.
