@@ -774,3 +774,46 @@ lesson above applies to good news as well.
 Device eased (iowait 22 -> 8%, CPU user 42 -> 68%): compute-bound again.
 Cycle 2 at a comparable 255 GB was also healthy, so nothing separates the arms
 yet. No settle. Pretouch mechanism still working (9 calls, 0 at 0 ms).
+
+### 22:00 — quiet interval; no new large merges. Cycle 3 at 2h25m / 268 GB.
+
+| | 21:30 | 22:00 |
+|---|---|---|
+| merges | 193 | **223** |
+| large (~31k) merges | 4 | 4 — **none new** |
+| large median | — | **5,694 b/min** (n=4) |
+| small median | 8,751 | 9,868 b/min |
+| md0 rareq-sz | 6.26–6.88 KB | 5.78–6.78 KB |
+| md0 %util | 90.4–93.6% | 16.6–99.4% (variable) |
+| iowait | 8.2% | **0.1%** |
+| CPU user | 67.5% | **78.0%** |
+| table live | 216 GB | **268 GB** |
+| pending | 3 | 4 |
+
+No new large merge this interval, so the result set is unchanged at four.
+Reporting their **median (5,694 b/min)** rather than the range, per the lesson
+twice-learned this session — extremes here have twice produced trends that
+reversed.
+
+Device is compute-bound: iowait 0.1%, CPU user 78%. Client at phase 21/86.
+
+**Pretouch: 10 calls, none at 0 ms, cumulative 112.1 s.** Distribution now
+worth stating properly instead of by consecutive pairs:
+**median 1,327,539 ord/s, min 219,104, max 1,547,541**. The 21:59 call at
+754,863 ord/s sits inside that spread; two entries ago I would have called it
+a decline. Cumulative cost is ~112 s over 2h25m of runtime — under 1.3% of
+wall clock.
+
+### Head-to-head, size-matched
+
+| table size | cycle 2 | cycle 3 |
+|---|---|---|
+| 255 GB | healthy | — |
+| 268 GB | — | healthy, large median 5,694 |
+| 385 GB | healthy | pending |
+
+Cycle 2's four ~31k merges spanned 4,048–17,717 (median ~7,000); cycle 3's four
+span 3,997–14,606 (median 5,694). **Statistically indistinguishable on four
+points each.** The prefetch is now genuinely running in cycle 3 and has not
+yet produced a measurable difference — which is a real, if unwelcome, interim
+result. Cycle 1 ran 9h25m before collapsing; cycle 3 is at 2h25m.
