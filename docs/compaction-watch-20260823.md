@@ -571,3 +571,42 @@ shows a non-zero N.
    the plumbing works; another `0 ms` means something else is still swallowing
    it.
 3. Only then are cycle-1/cycle-2 style arms meaningful.
+
+---
+
+## Cycle 3 — the ReaderSupplier fix deployed (2026-08-23 19:35)
+
+First cycle in which jvector's prefetch hooks can actually reach the device.
+
+| | |
+|---|---|
+| Cassandra | `experiment/sai-vector-reader-prefetch-20260823` @ `80064aa109` |
+| jar | `dse-db-4.0.11.0-SNAPSHOT.jar`, 11,327,916 bytes (was 11,325,216) |
+| verified in jar | `FileHandleReaderSupplier.class` (4,692 b); `tryWillNeed` x2 in `NativeLibrary.class` |
+| jvector | unchanged, `f97b7ad3f072`; staleness guard passed |
+| node up | 19:35, table **wiped** via `new_cass` |
+| client | `./run_200m`, pid 1913972, log `run_200m_20260823_cycle3.log` |
+
+Flags unchanged from cycle 2 — `sourcePretouchMaxNodes=-1`,
+`sourcePretouchWindowNodes=1048576`, `crossSourceSeedPrefetch` ON,
+`frontierPrefetch` 3, `batchPrefetchDensity` 8, `adviseRandom` true. So cycle 3
+differs from cycle 2 by exactly one thing: **the hooks are no longer no-ops.**
+
+### The first question, and it is not the merge rate
+
+**Does `Source pretouch: warmed N ordinals ... in M ms` report a NON-ZERO M?**
+
+- Non-zero -> the plumbing works and the prefetch knobs become testable for the
+  first time in this whole investigation.
+- Another `0 ms` -> something else is still swallowing it, and the
+  `FileHandleReaderSupplier` diagnosis is incomplete.
+
+Only after a non-zero M do arm comparisons (pretouch on/off, frontier 3 vs 8)
+mean anything.
+
+### Comparability
+
+Cycles 2 and 3 both start from an empty table, so they ARE comparable to each
+other — unlike cycle 1, which started populated and collapsed at 9h 25m. The
+size-matched reference points from cycle 2: 255 GB at 16:59 and 385 GB at
+17:59, both healthy, four ~31k merges at 4,048-17,717 b/min.
