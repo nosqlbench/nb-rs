@@ -719,3 +719,58 @@ Device note: md0 is at 4.17-4.23 KB / 99% util / 22.1% iowait — the signature
 shape, but iowait is 22% not ~50%, merges are running at thousands of b/min,
 and cycle 1 produced this pattern three times without collapsing. Context, not
 a flag.
+
+### 21:30 — **RETRACTION: the pretouch "super-linear cost" was a transient, not a trend**
+
+Last entry claimed pretouch throughput was collapsing (1.52M -> 0.22M ord/s,
+"7x throughput loss") and concluded `sourcePretouchMaxNodes=-1` was "the
+suspect setting, not the safe one". **That was an overread of two points.**
+
+| time | ordinals | elapsed | ord/s |
+|---|---|---|---|
+| 20:38:32 | 3,966,109 | 11,361 ms | 349,099 |
+| 20:38:51 | 16,013,399 | 73,086 ms | 219,104 |
+| 21:12:21 | 3,966,157 | 5,772 ms | 687,137 |
+| 21:20:41 | 3,966,482 | 2,955 ms | **1,342,295** |
+| 21:29:13 | 3,967,227 | 3,022 ms | **1,312,782** |
+
+Throughput went 219k -> 687k -> 1.34M -> 1.31M ord/s: **recovered to its
+starting level.** The two slow calls were a momentary cache-pressure episode
+(and the 73 s one did 4x the work of the others), not a scaling law. Same
+error shape as cycle 1's "declining merge-rate floor", which also reversed:
+reading a trend from consecutive extremes rather than waiting for a
+distribution. Cumulative pretouch cost so far is **106.8 s across 9 calls** —
+real but not alarming.
+
+**The `-1` cap recommendation is withdrawn.** There is no evidence yet that
+warming everything is too expensive.
+
+### Large merges — all four completed, rates improving
+
+| total | rate | verdict |
+|---|---|---|
+| 30,987 @20:44 | 3,997 b/min | between |
+| 30,996 @20:52 | 4,188 b/min | between |
+| 31,216 @21:00 | 7,200 b/min | HEALTHY |
+| 31,908 @21:05 | **14,606 b/min** | HEALTHY |
+
+Rising monotonically, though four points and a plausible confound (each merge
+runs at a different table size) mean this is not yet a trend either — the
+lesson above applies to good news as well.
+
+| | 21:00 | 21:30 |
+|---|---|---|
+| merges | 130 | **193** |
+| small median | 8,916 | 8,751 b/min |
+| md0 rareq-sz | 4.17–4.23 KB | 6.26–6.88 KB |
+| md0 r/s | 110k–150k | 22k–44k |
+| md0 %util | 99.1–99.5% | 90.4–93.6% |
+| iowait | 22.1% | **8.2%** |
+| CPU user | 41.7% | **67.5%** |
+| table live | 163 GB | **216 GB** |
+| free | 7 GB | 5 GB |
+| pending | 5 | 3 |
+
+Device eased (iowait 22 -> 8%, CPU user 42 -> 68%): compute-bound again.
+Cycle 2 at a comparable 255 GB was also healthy, so nothing separates the arms
+yet. No settle. Pretouch mechanism still working (9 calls, 0 at 0 ms).
