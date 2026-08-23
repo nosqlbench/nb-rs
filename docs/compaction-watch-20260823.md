@@ -219,3 +219,54 @@ Two compactions in flight, 199.1 GB at 22.5% and 24.9 GB at 70.4%.
 
 **Table passed 1 TB** (1,037 GB) against 336 GB cache — 3.1x. Still healthy.
 Tier 1 of 18, no settle, pretouch 0. **No new ~31k merge in 7h 8m.**
+
+### 13:03 — **COLLAPSE REPRODUCED.** Both flag conditions met.
+
+The ~31k merge that had been absent for 8 hours arrived at 12:58 and is in
+the bad band. This is not a device false-positive: the batch rate confirms it.
+
+**Condition 1 — large merge in the bad band:**
+
+| | |
+|---|---|
+| merge | total 30,985 batches |
+| window | 12:58:45 -> 13:03:56, 24 samples, 5.2 min |
+| progress | 10 -> 240 batches (**0.77%**) |
+| rate | **44.4 b/min** — inside the 39–46 bad band |
+| ETA at this rate | **11.5 hours** |
+
+Reference: healthy for this size class is 5,387–27,530 b/min (minutes per
+merge). The four earlier ones this run did 5,976–16,079.
+
+**Condition 2 — sustained high iowait:** 48.6% / 45.1% / 45.9% across three
+samples (real bad state: 50.1%).
+
+**Device signature exact, and worse than the original:**
+
+| | 2026-08-23 bad state | now |
+|---|---|---|
+| md0 r/s | 113,136 | **170,994 – 177,395** |
+| rareq-sz | 4.00 KB | **4.02 – 4.03 KB** |
+| %util | 99.1% | **99.43%** (all three windows) |
+| iowait | 50.1% | **45.1 – 48.6%** |
+| CPU user | 4.4% | 11.1 – 15.6% |
+
+**Pool shape matches the stall:** 199.1 GB merge parked at completed==total,
+two merges at ~1.6 KB of 6.2/31.1 GB (~0%), and the 126,918,113-token-range
+index build at 35,584 (0.03%) — the same build that carried a 15-day ETA on
+2026-08-22.
+
+Table 1,102 GB, cache 339 GB, free 3 GB. 5 pending. Tier 1 of 18, no settle.
+
+**What this establishes:** the collapse reproduces on
+`experiment/compaction-io-prefetch-20260823` with `crossSourceSeedPrefetch`
+ON (the default). **The seed prefetch alone does not prevent it.** That is a
+real negative result, and it is the first thing this run has actually proven.
+
+**What it does NOT test:** `sourcePretouchMaxNodes` is 0 — the source pretouch,
+the main fix, never ran (`Source pretouch: warmed` count is 0). Testing it
+requires a restart with a cap set.
+
+Time to collapse: **9h 25m** from node start (03:35), vs ~24h on the
+2026-08-21 run — faster because this cycle began against an already-populated
+table.
