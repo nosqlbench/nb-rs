@@ -326,6 +326,35 @@ ignored rather than refusing startup. Check the startup log for
 `jvector.disk.adviseRandom=false: mapping left on the kernel default` to
 confirm arm E actually took.
 
+### Results so far
+
+**Cycle 1 (2026-08-23 03:35 → 14:46) — `crossSourceSeedPrefetch` ON, pretouch
+OFF. NEGATIVE.** The collapse reproduced after 9h 25m of healthy running: a
+30,985-batch merge pinned at ~39–44 b/min for 97 minutes, against
+5,976–16,079 b/min for the same size class earlier in the same run. Device
+matched the original bad state (4.02–4.03 KB mean request, 99% util, iowait
+50.1–50.8%).
+
+Two findings from the live thread dump, beyond the bare negative:
+
+1. **`FrontierPrefetchingView` is in every blocked stack and the threads block
+   in `readFully` anyway.** The frontier prefetch runs and does not cover
+   these reads — direct evidence the hardcoded `WIDTH = 3` is too shallow
+   above RAM, and the reason `jvector.compaction.frontierPrefetch` was made
+   configurable.
+2. **All blocked threads are in the `clusterSearchL0` branch** of
+   `gatherFromOtherSource` — the branch the seed hint never touches, since the
+   hint only covers the *seeded* branch. That explains the negative result
+   mechanically rather than empirically.
+
+Full capture: `docs/collapse-20260823-1403.md`, `docs/collapse-20260823-hotpath.txt`,
+`docs/collapse-20260823-merge-rates.txt`; hour-by-hour trend in
+`docs/compaction-watch-20260823.md`.
+
+**Cycle 2 (from 2026-08-23 ~14:59) — pretouch ON (`sourcePretouchMaxNodes=-1`),
+running.** Table wiped via `new_cass`, so it starts empty; differs from cycle 1
+by exactly one variable. In flight at time of writing.
+
 ### Not done
 
 `670f5588` (source pretouch before bulk phases) is still absent. Cherry-picking

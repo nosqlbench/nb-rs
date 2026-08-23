@@ -308,3 +308,56 @@ Table 1,141 GB, cache 339 GB, free 3 GB. Tier 1 of 18, no settle, pretouch 0.
 
 **Conclusion unchanged and now firmer: `crossSourceSeedPrefetch` does not
 prevent this.** The source pretouch remains untested.
+
+---
+
+### 14:46–15:00 — cycle 1 ENDED; cycle 2 started with the pretouch ON
+
+Collapse captured before teardown: `sessions/collapse-20260823-1403/`
+(11 artifacts), analysis committed as `docs/collapse-20260823-1403.md`
+(`92ddd7d`) since `sessions/` is gitignored.
+
+Sequence: stopped the client (clean shutdown 14:46) -> stopped Cassandra
+(15s) -> added the pretouch flags to `conf/jvm-server.options` (additive
+only, 0 lines removed, pre-existing WIP untouched) -> `new_cass` (hard-stop,
+wiped `/mnt/nvme/cassandra` except heapdumps, restarted; 9042 listening in
+46s) -> relaunched with `./run_200m`.
+
+**Cycle 1 result: `crossSourceSeedPrefetch` ON, collapse reproduced at
+9h 25m.** Merge 30,985 pinned at ~39–44 b/min for 97 min (11.97%), iowait
+50.1–50.8%, md0 4.02–4.03 KB at 99% util. The seed prefetch does not prevent
+this. Mechanically explained: all 32 blocked threads were in the
+`clusterSearchL0` branch of `gatherFromOtherSource`, which the seed hint
+never touches.
+
+## Cycle 2 — the pretouch arm
+
+| | |
+|---|---|
+| started | 2026-08-23 ~14:59 |
+| client | `./run_200m`, pid 1831942, log `run_200m_20260823.log` |
+| table | **wiped** — starts empty, so expect ~24h to collapse conditions, not ~9.5h |
+| jar | unchanged, `f97b7ad3f072` |
+
+Flags now live on the JVM:
+
+```
+-Djvector.compaction.sourcePretouchMaxNodes=-1        <- whole source, windowed
+-Djvector.compaction.sourcePretouchWindowNodes=1048576
+-Djvector.experimental.enable_native_vectorization=true
+-Djvector.mode=production
+```
+
+`frontierPrefetch` and `batchPrefetchDensity` remain at defaults (3 / 8), and
+`crossSourceSeedPrefetch` is still ON — so cycle 2 differs from cycle 1 by
+**exactly one variable**, the pretouch.
+
+**What to look for:** `Source pretouch: warmed N ordinals ...` in
+compaction.log (absent in cycle 1, count 0 — if still absent, the flag did not
+take, since the `jvector.*` namespace has no fail-fast validator), and whether
+a ~31k merge stays out of the 39–46 band.
+
+**Caveat on comparability:** cycle 1 began against an already-populated table
+and collapsed in 9h 25m; cycle 2 starts empty. Time-to-collapse is therefore
+not comparable between the two — only the merge rate at equivalent table
+state is.
