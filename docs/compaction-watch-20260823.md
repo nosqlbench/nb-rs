@@ -855,3 +855,49 @@ Cycle 3 is now past cycle 2's 2h11m/255 GB checkpoint with the same verdict.
 Arms remain indistinguishable, and will stay so until a merge runs under real
 cache pressure — free memory is 6 GB but iowait is ~0%, so reads are still
 being served without blocking.
+
+### 23:00 — cycle 3 passes cycle 2's final checkpoint (385 GB) healthy
+
+| | 22:30 | 23:00 |
+|---|---|---|
+| merges | 284 | **322** |
+| large (~31k) merges | 4 | 4 — **none new (2h)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median | 9,868 | 9,887 b/min |
+| md0 rareq-sz | 8.49–17.56 KB | **43.87–45.57 KB** |
+| md0 %util | 37.7–77.4% | 19.7–20.5% |
+| iowait | 0.3% | **0.8%** |
+| CPU user | 79.5% | 34.4% |
+| table live | 320 GB | **392 GB** |
+| cache / free | 345 / 6 GB | 323 / **27 GB** |
+| pending | 3 | **1** |
+| pretouch | 12 / 123.8 s | **14 / 136.9 s** |
+
+Device quiet and reading in large blocks (~44 KB, the run's largest). Free
+memory recovered 6 -> 27 GB. Client at phase 29/86, `concurrent_query`.
+
+**Milestone: cycle 3 is now past 385 GB, cycle 2's last observed checkpoint,
+with the same verdict — healthy.** Cycle 2 was stopped at 3h46m/385 GB, so
+from here cycle 3 is in territory neither of the empty-start cycles has
+covered. The only prior data beyond this point is cycle 1, which collapsed at
+9h25m from a populated start.
+
+Pretouch: 14 calls, none at 0 ms, cumulative 136.9 s (**1.1% of wall clock**).
+Recent three: 694k / 768k / 500k ord/s; running median now 761,517 (was
+1,033,822 at 22:00, 1,327,539 at 21:30). The median has moved down over three
+consecutive checks — the first time this has been consistent rather than a
+two-point artifact — but the raw spread (219k–1.55M) still contains every
+recent value, so it is a widening sample, not yet a demonstrated decline.
+Noting it explicitly so the next check can settle it either way.
+
+### Head-to-head, size-matched
+
+| table size | cycle 2 | cycle 3 |
+|---|---|---|
+| 255 GB | healthy | — |
+| 320 GB | — | healthy |
+| 385 GB | healthy (3h11m, last point) | **healthy (3h25m)** |
+| beyond | never observed | in progress |
+
+Arms still indistinguishable on merge rate. The test remains whether cycle 3
+reaches cycle-1-style cache exhaustion and stays out of the 39–46 band.
