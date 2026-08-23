@@ -817,3 +817,41 @@ span 3,997–14,606 (median 5,694). **Statistically indistinguishable on four
 points each.** The prefetch is now genuinely running in cycle 3 and has not
 yet produced a measurable difference — which is a real, if unwelcome, interim
 result. Cycle 1 ran 9h25m before collapsing; cycle 3 is at 2h25m.
+
+### 22:30 — second quiet interval; cycle 3 at 2h55m / 320 GB
+
+| | 22:00 | 22:30 |
+|---|---|---|
+| merges | 223 | **284** |
+| large (~31k) merges | 4 | 4 — **none new** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median | 9,868 | 9,868 b/min |
+| md0 rareq-sz | 5.78–6.78 KB | 8.49–17.56 KB |
+| md0 %util | 16.6–99.4% | 37.7–77.4% |
+| iowait | 0.1% | **0.3%** |
+| CPU user | 78.0% | **79.5%** |
+| table live | 268 GB | **320 GB** |
+| pending | 4 | 3 |
+| pretouch | 10 calls / 112.1 s | **12 calls / 123.8 s** |
+
+Compute-bound throughout (iowait 0.3%, CPU user ~80%). 61 small merges this
+interval, median flat at 9,868. No large merge for 85 minutes — the result set
+is still the four from 20:44–21:05.
+
+Pretouch: 12 calls, none at 0 ms. Last three cluster at 662k–754k ord/s,
+pulling the running median down to 1,033,822 (was 1,327,539). Recording that
+as a spread observation, **not** a trend — the same shape twice produced
+reversals this session. Cumulative 123.8 s over 2h55m: **1.2% of wall clock.**
+
+### Head-to-head, size-matched
+
+| table size | cycle 2 | cycle 3 |
+|---|---|---|
+| 255 GB | healthy (2h11m) | — |
+| 320 GB | — | healthy (2h55m) |
+| 385 GB | healthy (3h11m) | pending |
+
+Cycle 3 is now past cycle 2's 2h11m/255 GB checkpoint with the same verdict.
+Arms remain indistinguishable, and will stay so until a merge runs under real
+cache pressure — free memory is 6 GB but iowait is ~0%, so reads are still
+being served without blocking.
