@@ -128,3 +128,37 @@ One 136.9 GB compaction at 50.8% — the largest yet, progressing.
 **Table growth accelerated: 137 GB this hour vs ~46 GB in the previous one.**
 Now 698 GB against 333 GB cache (2.1×). Still tier 1 of 18, still no new ~31k
 merge in 4h 14m, no settle, pretouch absent.
+
+### 10:09 — healthy; **log rotation caught (monitoring bug, now fixed)**
+
+**Method fix — read the archives.** `compaction.log` rotated at 09:19 into
+`compaction.log.2026-08-23.0.zip`. Parsing only the live file reported
+`merges=24, largest=7,747` — i.e. the entire large-merge history had
+apparently vanished. Every check from here must union the rotated `.zip`
+archives with the live log or it silently loses history at each rotation.
+Corrected totals below.
+
+| | 09:09 | 10:09 |
+|---|---|---|
+| merges (incl. archives) | 313 | **663** |
+| large (~31k) merges | 4 | 4 — none new |
+| small-merge rate (n=17) | 3,177–42,164 /min | **1,605 – 24,411 /min** |
+| md0 rareq-sz | 26.0–29.3 KB | 8.86–11.33 KB |
+| md0 r/s | ~2,700 | **69,119 – 116,934** |
+| md0 %util | 93–98% | **56.2–69.7%** |
+| iowait | 0.1% | **0.8%** |
+| CPU user | 32.8% | 16.3% |
+| table live | 698 GB | **815 GB** |
+| cache / free | 333 / 12 GB | 341 / **3 GB** |
+
+Read rate is the highest of the run — 116,934 r/s, matching the 113,136 r/s of
+the fully-developed bad state — but **iowait is 0.8% and util only ~62%**,
+against 50.1% and 99.1% in the real collapse. High throughput, not blocking.
+Read size 8.9–11.3 KB, above the 4.00 KB signature.
+
+Merge rate low end fell 3,177 → 1,605 /min. Still ~35× the bad band and in a
+distribution topping 24,411; worth watching rather than flagging.
+
+Pool: 4 pending, index build at 9.4/19.4 GB (48%). Table 815 GB vs 341 GB
+cache (2.4×). Free memory down to 3 GB. Tier 1 of 18, no settle, pretouch
+absent. **No new ~31k merge in 5h 14m.**
