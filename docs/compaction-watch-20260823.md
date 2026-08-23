@@ -390,3 +390,59 @@ cycle 1 — latest is 14:46:46, before the restart. The log did not rotate at
 the restart, so cycle-2 analysis must cut at **14:48**, not 03:35.)
 
 Nothing to trend yet. The pretouch remains unverified until the first merge.
+
+### 15:59 — **ROOT CAUSE: every jvector prefetch is a NO-OP in the Cassandra integration**
+
+The pretouch fired — 6 calls — but each reports **`in 0 ms`**, for ordinal
+counts from 3,966,201 to 16,012,384. Constant 0 ms across a 4x range of work
+is not a fast warm; it is no work at all. Chased it down:
+
+`ReaderSupplier` has exactly ONE abstract method:
+
+```java
+RandomAccessReader get() throws IOException;   // abstract
+default void prefetch(long offset, long length) { }   // NO-OP
+default void willNeed(long offset, long length) { }   // NO-OP
+```
+
+That makes it a **functional interface**. Cassandra loads source graphs as a
+method reference (`CassandraDiskAnn.java:101`):
+
+```java
+OnDiskGraphIndex.load(graphHandle::createReader, termsMetadata.offset, false);
+```
+
+A lambda/method-ref satisfies `get()` and inherits the **default no-op**
+`prefetch` and `willNeed`. There is **no occurrence of `prefetch` or
+`willNeed` anywhere in Cassandra's vector integration.**
+
+Consequently, on the SOURCE graphs the merge actually reads:
+
+| mechanism | path | effect |
+|---|---|---|
+| source pretouch (this branch) | `prefetchL0Records` -> `supplier.prefetch` | **no-op** |
+| frontier prefetch (985bfe1e) | `willNeedL0Record` -> `supplier.willNeed` | **no-op** |
+| cross-source seed prefetch (this branch) | `willNeedL0Record` -> `supplier.willNeed` | **no-op** |
+
+**This retroactively explains everything:**
+
+- why cycle 1's `crossSourceSeedPrefetch` arm was a clean negative;
+- why `FrontierPrefetchingView` appears in every blocked stack yet the threads
+  still block in `readFully` — it is hinting into a no-op;
+- why 985bfe1e's measured fadvise benefit never reproduced here. Its numbers
+  come from jvector's own benchmarks, which use
+  `ReaderSupplierFactory.open()` and therefore get `MemorySegmentReader$Supplier`,
+  which DOES implement both methods.
+
+`ReaderSupplierFactory.open()` is used in `CompactionGraphMerger:359` for the
+merge OUTPUT only. The inputs come from `CassandraDiskAnn` via `FileHandle`.
+
+**Cycle 2 as an arm is void.** It differs from cycle 1 by a flag whose
+mechanism cannot execute. Both cycles measure the same thing: no prefetch.
+
+**The fix is on the CASSANDRA side**, not jvector's: give the source graphs a
+`ReaderSupplier` that implements `prefetch`/`willNeed` — either by wrapping
+`FileHandle` with an implementation backed by `posix_fadvise`/streaming reads,
+or by opening sources through `ReaderSupplierFactory` so they get
+`MemorySegmentReader$Supplier`. Until then, no jvector prefetch tuning is
+testable through Cassandra at all.
