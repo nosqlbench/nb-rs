@@ -610,3 +610,52 @@ Cycles 2 and 3 both start from an empty table, so they ARE comparable to each
 other — unlike cycle 1, which started populated and collapsed at 9h 25m. The
 size-matched reference points from cycle 2: 255 GB at 16:59 and 385 GB at
 17:59, both healthy, four ~31k merges at 4,048-17,717 b/min.
+
+### 20:08 — **THE FIX WORKS.** Pretouch elapsed time is non-zero for the first time.
+
+```
+cycle 2:  Source pretouch: warmed 4,084,118 ordinals across 4 sources in    0 ms
+cycle 3:  Source pretouch: warmed 4,084,155 ordinals across 4 sources in 2688 ms
+```
+
+Near-identical work (37 ordinals apart, 4 sources both times), **0 ms vs
+2,688 ms**. That is as clean an A/B as this investigation has produced, and it
+confirms the diagnosis end to end: `ReaderSupplier.prefetch` was a default
+no-op inherited from the `graphHandle::createReader` method reference, and
+`FileHandleReaderSupplier` fixes it.
+
+Counted properly — lines NOT matching `in 0 ms`, across archives and live log:
+**19 pretouch lines total across all cycles, exactly 1 with non-zero elapsed**,
+and that one is cycle 3's.
+
+| | cycle 2 @ start | cycle 3 @ 33 min |
+|---|---|---|
+| pretouch elapsed | 0 ms (15/15) | **2,688 ms** |
+| merges | — | 3 |
+| large (~31k) | — | none yet |
+| small median | — | 12,246 b/min |
+| md0 rareq-sz | — | 17.5–21.8 KB |
+| md0 w/s | — | 6,039 → **68,568** |
+| md0 %util | — | 22.7–88.0% |
+| iowait | — | **0.0%** |
+| table live | — | 26.6 GB |
+| cache / free | — | 315 / 42 GB |
+
+Device is write-dominated (ingest) with iowait at 0.0%. Three small merges,
+median 12,246 b/min — in band, but far too early to mean anything.
+
+### What is now true, and what is not
+
+**True:** the prefetch mechanism executes. For the first time in this
+investigation the knobs (`sourcePretouchMaxNodes`, `frontierPrefetch`,
+`batchPrefetchDensity`, `crossSourceSeedPrefetch`) control something real.
+
+**Not yet true:** that it prevents the collapse. Table is 26.6 GB; cycle 2 was
+healthy at 255 GB and 385 GB and cycle 1 ran 9h 25m before collapsing. The
+question this run exists to answer is still hours away.
+
+One number worth watching: 4.08M ordinals warmed in 2.69 s. If that scales
+linearly it is ~1.5M ordinals/s, so a source with hundreds of millions of
+ordinals would spend minutes in pretouch per merge. Whether that cost is repaid
+is exactly what the merge rate at collapse-scale will show — and if it is not,
+`sourcePretouchMaxNodes` is the knob to bound it rather than `-1`.
