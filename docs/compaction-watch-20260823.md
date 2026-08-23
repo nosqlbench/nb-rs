@@ -98,3 +98,33 @@ something that forces the regime — a larger tier, or a restart with
 the same is the likely outcome.
 
 Cadence changed from 20 min to hourly at this point (cron `bfacde5d`, :47).
+
+### 09:09 — healthy; write-dominated, table growth accelerating
+
+| | 08:02 | 09:09 |
+|---|---|---|
+| merges | 274 | **313** |
+| large (~31k) merges | 4 | 4 — none new |
+| small-merge rate (n=21) | — | **3,177 – 42,164 /min** |
+| md0 rareq-sz | 4.15–4.21 KB | **26.0–29.3 KB** |
+| md0 r/s | 24–34k | **~2,700** |
+| md0 w/s | ~2,100 | **7,120 – 20,431** |
+| md0 %util | 87–100% | 93.2–98.2% |
+| iowait | 0.8% | **0.1%** |
+| CPU user | 19.8% | 32.8% |
+| table live | 561 GB | **698 GB** |
+| cache / free | 340 / 8 GB | 333 / 12 GB |
+
+The 08:02 read episode resolved, as the previous three did. Device is now
+**write**-dominated (up to 20,431 w/s) at ~95% util with iowait at 0.1% —
+busy, not blocked. Read size back to ~28 KB.
+
+21 substantive merges in the hour, 3,177–42,164 /min. The 3,177 low is the
+slowest small merge seen this run but still ~70× the bad band, and it sits in
+a distribution whose top is 42,164 — normal spread, not a trend.
+
+One 136.9 GB compaction at 50.8% — the largest yet, progressing.
+
+**Table growth accelerated: 137 GB this hour vs ~46 GB in the previous one.**
+Now 698 GB against 333 GB cache (2.1×). Still tier 1 of 18, still no new ~31k
+merge in 4h 14m, no settle, pretouch absent.
