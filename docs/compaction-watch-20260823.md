@@ -190,3 +190,32 @@ bad band. Watching; not flagging.
 One 180.5 GB compaction at 57.5% — largest yet, progressing normally.
 Table 907 GB vs 330 GB cache (2.7x). Tier 1 of 18, no settle, pretouch 0.
 **No new ~31k merge in 6h 8m.**
+
+### 12:03 — healthy; the "falling floor" trend reversed (it was a reporting artifact)
+
+| | 11:03 | 12:03 |
+|---|---|---|
+| merges (incl. archives) | 799 | **881** |
+| large (~31k) merges | 4 | 4 — none new |
+| small-merge rate (n=26) | 707–39,000 /min | **min 4,987 / median 15,460 / max 40,500** |
+| md0 rareq-sz | 32.0–33.8 KB | **51.5–54.1 KB** |
+| md0 r/s | ~2,800 | ~4,200 |
+| md0 %util | 25.6–26.2% | 33.4–56.7% |
+| iowait | 0.0% | **1.3%** |
+| CPU user | 37.3% | 19.3% |
+| table live | 907 GB | **1,037 GB (1.01 TB)** |
+| cache / free | 330 / 13 GB | 336 / 7 GB |
+
+**Correction to the last three entries.** I reported a "merge-rate floor
+falling three hours running" (3,177 -> 1,605 -> 707 /min) as an emerging
+trend. This hour the min is 4,987 — seven times higher — so it was not a
+trend. Reporting only min and max let one short segment per hour drive the
+narrative. Now reporting the MEDIAN, which is the stable statistic:
+**15,460 /min, mid-healthy-band**. The min/max spread reflects short segments
+at merge boundaries, not degradation.
+
+Device healthy: read size 51.5–54.1 KB (largest of the run), iowait 1.3%.
+Two compactions in flight, 199.1 GB at 22.5% and 24.9 GB at 70.4%.
+
+**Table passed 1 TB** (1,037 GB) against 336 GB cache — 3.1x. Still healthy.
+Tier 1 of 18, no settle, pretouch 0. **No new ~31k merge in 7h 8m.**
