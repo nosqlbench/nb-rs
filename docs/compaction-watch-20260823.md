@@ -486,3 +486,37 @@ that around 05:30 and was still healthy for another 7.5 hours.
 **Recommendation unchanged: this run cannot answer the question it was started
 to answer.** The Cassandra-side `ReaderSupplier` has to implement
 prefetch/willNeed first.
+
+### 17:59 — cycle 2 healthy; 15 pretouch calls, **0 with non-zero elapsed**
+
+| | 16:59 | 17:59 |
+|---|---|---|
+| cycle-2 merges | 224 | **311** |
+| large (~31k) merges | 4 | 4 — none new |
+| small merges median | 11,892 (n=41) | **11,595 (n=59)** |
+| md0 rareq-sz | 32.6–36.4 KB | 7.87–12.42 KB |
+| md0 w/s | ~1,270 | **18,652 – 22,713** |
+| md0 %util | 15.2–15.7% | 91.2–97.9% |
+| iowait | 0.4% | **2.4%** |
+| table live | 255 GB | **385 GB** |
+| cache / free | 324 / 29 GB | 347 / **4 GB** |
+| pretouch lines | 10 (all 0 ms) | **15 (all 0 ms)** |
+
+Device is write-dominated (up to 22,713 w/s) at ~95% util with iowait 2.4% —
+busy, not blocked, the same pattern seen repeatedly in cycle 1. Small-merge
+median flat at ~11.6k b/min. Client at phase 29/86, `concurrent_query`.
+
+**Pretouch: 15 calls, and the count with non-zero elapsed time is still 0.**
+Explicitly checked this hour rather than eyeballing the last two lines. That
+is the no-op confirmed 15 more times, not a sampling accident.
+
+No new ~31k merge this hour. Table 385 GB; cycle 1 passed that around 06:40
+and stayed healthy ~6 more hours, so on the size-matched comparison cycle 2 is
+still well inside its healthy window and nothing here is informative yet.
+
+**Comparability caveat:** cycle 1 started populated and collapsed at 9h 25m;
+cycle 2 started empty at 14:48 (now 3h 11m in). Time-to-collapse is not
+comparable; only merge rate at equivalent table size.
+
+Status unchanged: the arm cannot answer the question. Cassandra-side
+`ReaderSupplier` must implement prefetch/willNeed first.
