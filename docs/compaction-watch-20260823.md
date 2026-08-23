@@ -361,3 +361,32 @@ a ~31k merge stays out of the 39–46 band.
 and collapsed in 9h 25m; cycle 2 starts empty. Time-to-collapse is therefore
 not comparable between the two — only the merge rate at equivalent table
 state is.
+
+### 15:03 — cycle 2, 15 min in. Baseline. Pretouch not yet exercised.
+
+| | cycle 1 @ 14:03 (collapsed) | cycle 2 @ 15:03 |
+|---|---|---|
+| node up since | 03:35 | **14:48** |
+| session | stcs_adaptive_20260823_033825 | **stcs_adaptive_20260823_144949** |
+| table live | 1,141 GB | **6.7 GB** (fresh) |
+| md0 rareq-sz | 4.02–4.03 KB | 20.0–70.4 KB |
+| md0 %util | 99.03–99.40% | **0.30–0.57%** |
+| iowait | 46–50% | **0.0%** |
+| pending | 6 | **0** |
+| cache / free | 339 / 3 GB | 254 / **105 GB** |
+
+Client at phase 5/86, `load_increment_adaptive` 52% of tier 1.
+
+**`Source pretouch: warmed` count is still 0 — and that is EXPECTED here, not
+a failed flag.** The flags are confirmed live on the JVM
+(`sourcePretouchMaxNodes=-1`, `sourcePretouchWindowNodes=1048576`), and
+`pretouchSources()` runs inside `compactGraphImpl` during PQ_RETRAIN — i.e.
+only when a vector merge actually runs. Cycle 2 has **0 batch-progress
+samples since 14:48**, so no merge has run yet. Cycle 1's first merges
+appeared ~36 min after node start, so the first real check is ~15:25.
+
+(The `phase=base_layer` / `total_merge` lines still in compaction.log are from
+cycle 1 — latest is 14:46:46, before the restart. The log did not rotate at
+the restart, so cycle-2 analysis must cut at **14:48**, not 03:35.)
+
+Nothing to trend yet. The pretouch remains unverified until the first merge.
