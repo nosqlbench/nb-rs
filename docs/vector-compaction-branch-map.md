@@ -256,10 +256,11 @@ memory note `jvector-compactor-packed-neighbor-io`.
 ## 7. Experimental branch — `experiment/compaction-io-prefetch-20260823`
 
 jvector only, based on the deployed `xlink-integration` HEAD (`117e856f`).
-Commit `11cb4acf`. **Not built into `/opt/cassandra/lib` — nothing deployed.**
+Commits `11cb4acf`, `55a262a7`. **Not built into `/opt/cassandra/lib` —
+nothing deployed.**
 
-Four knobs. Three were already-existing behaviour that could not be reached or
-observed; one is a new default.
+Six knobs. Three were already-existing behaviour that could not be reached or
+observed; one is a new default; two enable a pass that did not exist here.
 
 | property | default | effect |
 |---|---|---|
@@ -267,6 +268,8 @@ observed; one is a new default.
 | `jvector.compaction.batchPrefetchDensity` | `8` (unchanged) | Density guard on the own-record batch prefetch. `0` disables, negative makes it unconditional. Now counted (`batchPrefetchIssued` / `batchPrefetchDeclined`). |
 | `jvector.compaction.crossSourceSeedPrefetch` | `true` (**new**) | Async-hints the cross-source seed records before the beam search reads them. Counted as `seedHints`. |
 | `jvector.disk.adviseRandom` | `true` (unchanged) | `false` leaves kernel readahead on. **Process-wide — affects search mappings too.** A/B knob, not a production default. |
+| `jvector.compaction.sourcePretouchMaxNodes` | `0` (**off**) | Per-source ordinal cap for the windowed source pretouch. `-1` warms the whole source. |
+| `jvector.compaction.sourcePretouchWindowNodes` | `1048576` | Pretouch window size, bounding transient cache demand. |
 
 ### Suggested arms
 
@@ -289,7 +292,19 @@ Baseline first, to reproduce the current state on the experimental build:
 # E — readahead restored as a fallback. Expect the 4.00 KB mean request size
 #     to move; watch search latency too, since this is process-wide.
 -Djvector.disk.adviseRandom=false
+
+# F — windowed source pretouch. Start well under MemAvailable (~333 GB here),
+#     so pick a cap the cache can actually hold. Read the per-phase timings,
+#     not just the total: CODE_PRE_ENCODE sweeps in order and should improve,
+#     PQ_RETRAIN samples randomly and may not.
+-Djvector.compaction.sourcePretouchMaxNodes=200000000
 ```
+
+Arm F is the one to be sceptical of. It is off by default because whether a
+warm pays depends on the consuming phase's access order, not just on size —
+`670f5588`'s size-only guard could not express that distinction, which is why
+this branch replaces it with a cap rather than inheriting it. Confirm the pass
+ran by looking for `Source pretouch: warmed N ordinals ...` in the log.
 
 The primary metric is `Compaction I/O progress: N/M batches` in
 `/var/log/cassandra/compaction.log`, segmented per merge — the counter resets
