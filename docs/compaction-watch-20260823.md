@@ -270,3 +270,41 @@ requires a restart with a cap set.
 Time to collapse: **9h 25m** from node start (03:35), vs ~24h on the
 2026-08-21 run — faster because this cycle began against an already-populated
 table.
+
+### 14:03 — collapse **sustained**, one hour in. Fully matches the original.
+
+Not a transient. The 30,985 merge has been pinned for 65 minutes.
+
+| the slow merge | 13:03 | 14:03 |
+|---|---|---|
+| progress | 240 (0.77%) | **2,550 (8.23%)** |
+| rate | 44.4 b/min | **39 b/min** |
+| span | 5.2 min | **65 min** |
+| ETA remaining | 11.5 h | **~12.1 h** |
+
+Rate drifted 44 -> 39 b/min, i.e. to the bottom of the 39–46 band. The
+original collapse measured 39–46 b/min over 5.6–6.6 h per merge; this is the
+same number over an hour and holding.
+
+**Zero other merges completed in the hour** (`since 13:03: 0 merges`) — the
+whole pipeline is behind this one, exactly as on 2026-08-22.
+
+| device | 13:03 | 14:03 |
+|---|---|---|
+| md0 r/s | 170,994–177,395 | 162,077–163,927 |
+| rareq-sz | 4.02–4.03 KB | **4.02–4.03 KB** |
+| %util | 99.43% | **99.03–99.40%** |
+| iowait | 45.1–48.6% | **46.3 / 50.1 / 48.9%** |
+| CPU user | 11.1–15.6% | **8.9–12.7%** |
+
+iowait now touches **50.1%** — the exact figure from the original bad state.
+
+Pool queue growing: 5 -> **6 pending**. 199.1 GB merge still parked at
+completed==total; three merges at ~1.6 KB (~0%); index build 329,088 /
+126,918,113 (**0.26%**, was 0.03%) — advancing at roughly the 91 parts/s that
+implied a 15-day ETA on 2026-08-22.
+
+Table 1,141 GB, cache 339 GB, free 3 GB. Tier 1 of 18, no settle, pretouch 0.
+
+**Conclusion unchanged and now firmer: `crossSourceSeedPrefetch` does not
+prevent this.** The source pretouch remains untested.
