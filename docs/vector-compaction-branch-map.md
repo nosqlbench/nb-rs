@@ -250,3 +250,77 @@ memory note `jvector-compactor-packed-neighbor-io`.
 | `8e98e50b` | jvector | original `MADV_RANDOM` (predates rc.9; amplifier, not cause) |
 | `b5ac025689` | Cassandra | removed seven required-explicit flags |
 | `6e1e437689` | Cassandra | removed the merge-path machinery behind them |
+
+---
+
+## 7. Experimental branch — `experiment/compaction-io-prefetch-20260823`
+
+jvector only, based on the deployed `xlink-integration` HEAD (`117e856f`).
+Commit `11cb4acf`. **Not built into `/opt/cassandra/lib` — nothing deployed.**
+
+Four knobs. Three were already-existing behaviour that could not be reached or
+observed; one is a new default.
+
+| property | default | effect |
+|---|---|---|
+| `jvector.compaction.frontierPrefetch` | `3` (unchanged) | `FrontierPrefetchingView.WIDTH`. The class javadoc always documented this property; the code hardcoded 3 and never read it. `0` disables hinting. |
+| `jvector.compaction.batchPrefetchDensity` | `8` (unchanged) | Density guard on the own-record batch prefetch. `0` disables, negative makes it unconditional. Now counted (`batchPrefetchIssued` / `batchPrefetchDeclined`). |
+| `jvector.compaction.crossSourceSeedPrefetch` | `true` (**new**) | Async-hints the cross-source seed records before the beam search reads them. Counted as `seedHints`. |
+| `jvector.disk.adviseRandom` | `true` (unchanged) | `false` leaves kernel readahead on. **Process-wide — affects search mappings too.** A/B knob, not a production default. |
+
+### Suggested arms
+
+Baseline first, to reproduce the current state on the experimental build:
+
+```
+# A — baseline (should match the deployed tree)
+-Djvector.compaction.crossSourceSeedPrefetch=false
+
+# B — seed prefetch only (the one genuinely new mechanism)
+-Djvector.compaction.crossSourceSeedPrefetch=true
+
+# C — B plus a deeper frontier; the "3 is the knee" claim was measured
+#     cache-resident, so sweep this
+-Djvector.compaction.frontierPrefetch=8
+
+# D — C plus unconditional own-record warming
+-Djvector.compaction.batchPrefetchDensity=-1
+
+# E — readahead restored as a fallback. Expect the 4.00 KB mean request size
+#     to move; watch search latency too, since this is process-wide.
+-Djvector.disk.adviseRandom=false
+```
+
+The primary metric is `Compaction I/O progress: N/M batches` in
+`/var/log/cassandra/compaction.log`, segmented per merge — the counter resets
+between merges, so a whole-file first-to-last delta is meaningless. Reference
+numbers for a ~31k-batch merge: **39–46 batches/min** in the current bad state,
+**5,387–27,530 batches/min** cache-resident on 2026-08-21.
+
+Secondary: `iostat -x` mean request size on `md0` (currently pinned at 4.00 KB
+— that is the signature), `%util`, and iowait.
+
+### Deploying an arm
+
+These are jvector system properties, so they belong in the Cassandra fork's
+`conf/jvm-server.options`. That file had uncommitted local edits at the time of
+writing and was deliberately left untouched — add the arm's `-D` lines by hand.
+Note they are **not** in the `cassandra.sai.vector.*` namespace, so they are not
+subject to that namespace's fail-fast validator; a typo will be silently
+ignored rather than refusing startup. Check the startup log for
+`jvector.disk.adviseRandom=false: mapping left on the kernel default` to
+confirm arm E actually took.
+
+### Not done
+
+`670f5588` (source pretouch before bulk phases) is still absent. Cherry-picking
+it conflicts in all five files because `985bfe1e` later rebuilt the same
+infrastructure; its primitives survived into the tree but no call site warms a
+source before the bulk phases. Adding one is the next experiment, and its
+"skip when sources exceed MemAvailable" guard needs rethinking first — it
+self-disables in exactly the above-RAM regime that motivates it.
+
+No Cassandra-side changes were made. Restoring the seven removed flags means
+reverting `b5ac025689` + `6e1e437689`, which is a decision about whether
+`compaction-integration-referencepoint` was meant to carry this sweep — not a
+change to make unilaterally.
