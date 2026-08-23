@@ -162,3 +162,31 @@ distribution topping 24,411; worth watching rather than flagging.
 Pool: 4 pending, index build at 9.4/19.4 GB (48%). Table 815 GB vs 341 GB
 cache (2.4×). Free memory down to 3 GB. Tier 1 of 18, no settle, pretouch
 absent. **No new ~31k merge in 5h 14m.**
+
+### 11:03 — healthy; device calm, merge-rate floor keeps dropping
+
+| | 10:09 | 11:03 |
+|---|---|---|
+| merges (incl. archives) | 663 | **799** |
+| large (~31k) merges | 4 | 4 — none new |
+| small-merge rate (n=21) | 1,605–24,411 /min | **707 – 39,000 /min** |
+| md0 rareq-sz | 8.9–11.3 KB | **32.0–33.8 KB** |
+| md0 r/s | 69k–117k | **~2,800** |
+| md0 %util | 56–70% | **25.6–26.2%** |
+| iowait | 0.8% | **0.0%** |
+| CPU user | 16.3% | 37.3% |
+| table live | 815 GB | **907 GB** |
+| cache / free | 341 / 3 GB | 330 / 13 GB |
+
+Device fully recovered: read rate down 40×, request size back to ~33 KB, util
+~26%, iowait 0.0%. The 10:09 read burst resolved like the four before it.
+
+**Merge-rate floor fell again: 3,177 → 1,605 → 707 /min** over three hours.
+Third consecutive drop, so it is now a trend rather than spread — but the same
+hour's top was 39,000 /min (the run's highest), so the distribution is
+widening at both ends, not shifting down. 707 /min is still ~16x the 39-46
+bad band. Watching; not flagging.
+
+One 180.5 GB compaction at 57.5% — largest yet, progressing normally.
+Table 907 GB vs 330 GB cache (2.7x). Tier 1 of 18, no settle, pretouch 0.
+**No new ~31k merge in 6h 8m.**
