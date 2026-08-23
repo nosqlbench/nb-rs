@@ -901,3 +901,52 @@ Noting it explicitly so the next check can settle it either way.
 
 Arms still indistinguishable on merge rate. The test remains whether cycle 3
 reaches cycle-1-style cache exhaustion and stays out of the 39–46 band.
+
+### 23:30 — cycle 3 at 3h55m / 451 GB, healthy. Pretouch decline: real but modest.
+
+| | 23:00 | 23:30 |
+|---|---|---|
+| merges | 322 | **385** |
+| large (~31k) merges | 4 | 4 — **none new (2h30m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median | 9,887 | **10,107 b/min** |
+| md0 rareq-sz | 43.9–45.6 KB | 35.4–36.9 KB |
+| md0 %util | 19.7–20.5% | 20.0–21.0% |
+| iowait | 0.8% | **0.0%** |
+| CPU user | 34.4% | 53.5% |
+| table live | 392 GB | **451 GB** |
+| cache / free | 323 / 27 GB | 341 / 8 GB |
+| pretouch | 14 / 136.9 s | **17 / 151.4 s** |
+
+Device steady and quiet: ~36 KB reads, ~20% util, **iowait 0.0%**. 63 small
+merges this interval, median up slightly to 10,107. Still no large merge in
+2h30m; the result set is unchanged.
+
+**Pretouch trend — settled with a split-half test rather than another
+consecutive-pairs guess:**
+
+| | median ord/s |
+|---|---|
+| first half of calls (n=8) | **1,398,580** |
+| second half (n=9) | **754,863** |
+
+That is a real ~45% decline, not sampling noise — the two halves barely
+overlap. But the last three calls were 933k / 948k / 647k, i.e. bouncing
+around the second-half median rather than continuing down, so it reads as a
+**step down to a lower plateau** (cache is fuller than at 20:00) rather than
+progressive degradation. Cumulative cost 151.4 s = **1.1% of wall clock**,
+flat as a fraction across the last three checks.
+
+Method note: split-half is the right test here. Three earlier "trends" this
+session were called from consecutive extremes and two of them reversed; a
+half-vs-half comparison of the whole sample would have avoided all three.
+
+### Head-to-head
+
+| table size | cycle 2 | cycle 3 |
+|---|---|---|
+| 385 GB | healthy (3h11m, last point) | healthy (3h25m) |
+| 451 GB | never observed | **healthy (3h55m)** |
+
+Cycle 3 is 66 GB beyond anything the empty-start comparison covers. Arms still
+indistinguishable on merge rate; no settle; pretouch mechanism healthy.
