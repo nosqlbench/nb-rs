@@ -659,3 +659,63 @@ linearly it is ~1.5M ordinals/s, so a source with hundreds of millions of
 ordinals would spend minutes in pretouch per merge. Whether that cost is repaid
 is exactly what the merge rate at collapse-scale will show — and if it is not,
 `sourcePretouchMaxNodes` is the knob to bound it rather than `-1`.
+
+### 21:00 — cycle 3: merges healthy-ish, **pretouch cost scaling super-linearly**
+
+| | 20:08 | 21:00 |
+|---|---|---|
+| merges | 3 | **130** |
+| large (~31k) merges | 0 | **3** |
+| small median | 12,246 | 8,916 b/min |
+| md0 rareq-sz | 17.5–21.8 KB | **4.17–4.23 KB** |
+| md0 r/s | ~70 | **109,965 – 150,084** |
+| md0 %util | 22.7–88.0% | **99.07–99.47%** |
+| iowait | 0.0% | **22.1%** |
+| table live | 26.6 GB | **163 GB** |
+| cache / free | 315 / 42 GB | 348 / 7 GB |
+| pending | 2 | 5 |
+
+**Large merges (the result):**
+
+| total | rate | verdict |
+|---|---|---|
+| 30,987 @ 20:44 | 3,997 b/min | between bands |
+| 30,996 @ 20:52 | 4,147 b/min (completed 100%) | between bands |
+| 31,216 @ 21:00 | 8,916 b/min | healthy |
+
+All ~100x above the 39-46 collapse band. But two of the three sit *below* the
+5,387 healthy floor, where cycle 2's comparable merges were 4,048-17,717 — so
+this is within cycle 2's spread, not an improvement on it. At 163 GB with the
+device already at 99% util it is too early to read anything into the direction.
+
+**PRETOUCH COST IS THE STORY THIS INTERVAL.** 6 calls, 0 at 0 ms (mechanism
+still working), but throughput is collapsing as sources grow:
+
+| ordinals | elapsed | ord/s |
+|---|---|---|
+| 4,084,155 | 2,688 ms | 1,519,403 |
+| 3,995,750 | 2,582 ms | 1,547,541 |
+| 3,966,265 | 2,649 ms | 1,497,269 |
+| 3,967,414 | 2,727 ms | 1,454,864 |
+| 3,966,109 | **11,361 ms** | **349,099** |
+| 16,013,399 | **73,086 ms** | **219,104** |
+
+**7x throughput loss** (1.52M -> 0.22M ord/s) over 30 minutes. Note rows 4 and
+5: nearly identical ordinal counts (3.967M vs 3.966M), 2,727 ms vs 11,361 ms —
+a 4.2x slowdown for the same work, so the cost tracks CACHE PRESSURE, not
+source size. Free memory fell 42 -> 7 GB across the same window.
+
+That is the mechanism the cap exists for: once the working set exceeds cache,
+warming evicts what it warmed, and the pass pays full price for nothing. At
+219k ord/s a source with hundreds of millions of ordinals costs **many minutes
+per merge**.
+
+**`sourcePretouchMaxNodes=-1` is now the suspect setting, not the safe one.**
+The right move is probably a bounded cap, but the informative thing is to let
+this run and see whether the merge rate at collapse-scale repays the cost —
+that is the question the arm exists to answer.
+
+Device note: md0 is at 4.17-4.23 KB / 99% util / 22.1% iowait — the signature
+shape, but iowait is 22% not ~50%, merges are running at thousands of b/min,
+and cycle 1 produced this pattern three times without collapsing. Context, not
+a flag.
