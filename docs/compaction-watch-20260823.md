@@ -446,3 +446,43 @@ mechanism cannot execute. Both cycles measure the same thing: no prefetch.
 or by opening sources through `ReaderSupplierFactory` so they get
 `MemorySegmentReader$Supplier`. Until then, no jvector prefetch tuning is
 testable through Cassandra at all.
+
+### 16:59 — cycle 2 healthy, but the arm is still void (prefetch is a no-op)
+
+| | 15:03 | 16:59 |
+|---|---|---|
+| cycle-2 merges | 0 | **224** |
+| large (~31k) merges | 0 | **4** |
+| large rates | — | 4,048 / 4,588 / 9,455 / **17,717** b/min |
+| small merges median | — | **11,892 b/min** (n=41) |
+| md0 rareq-sz | 20–70 KB | 32.6–36.4 KB |
+| md0 %util | 0.3–0.6% | 15.2–15.7% |
+| iowait | 0.0% | **0.4%** |
+| table live | 6.7 GB | **255 GB** |
+| pretouch lines | 0 | **10 — all `0 ms`** |
+
+Everything healthy. Four ~31k merges, two mid-band (4,048 / 4,588) and two
+healthy (9,455 / 17,717), median small-merge rate 11,892.
+
+**But this is not evidence for the pretouch.** All 10 pretouch calls report
+`0 ms`, confirming the 15:59 finding: `ReaderSupplier.prefetch` and
+`willNeed` are default no-ops, and Cassandra passes source graphs a method
+reference (`graphHandle::createReader`) that inherits them. Nothing is being
+warmed.
+
+So cycle 2 is running the SAME effective configuration as cycle 1 — no
+prefetch of any kind — and these healthy numbers are simply the early-phase
+behaviour cycle 1 also showed for its first 9 hours.
+
+Interesting only as a consistency check: cycle 1's first four ~31k merges were
+5,976–16,079 b/min; cycle 2's are 4,048–17,717. Same distribution, as expected
+if the flag changes nothing. That is itself corroboration of the no-op finding.
+
+**Comparability caveat:** cycle 1 began from a populated table and collapsed at
+9h 25m; cycle 2 started empty at 14:48. Time-to-collapse is not comparable —
+only merge rate at equivalent table size. Cycle 2 is at 255 GB; cycle 1 passed
+that around 05:30 and was still healthy for another 7.5 hours.
+
+**Recommendation unchanged: this run cannot answer the question it was started
+to answer.** The Cassandra-side `ReaderSupplier` has to implement
+prefetch/willNeed first.
