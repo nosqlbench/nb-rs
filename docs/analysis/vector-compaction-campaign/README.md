@@ -13,6 +13,15 @@ from **2026-08-17**; the first vector merges appear 2026-08-21. Session artefact
 from 2026-08-05. Anything earlier is commit-message evidence only and is marked as
 such.
 
+> **Known perturbation.** Every cycle ran with a defunct `nbrs` client (pid 539210,
+> finished 2026-08-09, killed 2026-08-24) holding **46.3 GB resident**. It had zero
+> connections to Cassandra and did zero IO, so it was a memory occupant rather than
+> a traffic source, and the deficit was identical in every cycle — **comparative
+> results hold, absolute thresholds do not.** Wherever this document gives an
+> absolute figure for "the table size at which the collapse happens" or an
+> index/cache ratio, read it as measured on a box with 46 GB spuriously pinned.
+> See §12.0(a).
+
 Every number is recomputed from `data/*.csv` by
 [`data/extract.py`](data/extract.py) and
 [`data/extract_history.py`](data/extract_history.py). Provenance for each run is
@@ -535,3 +544,206 @@ iostat, compactionstats), `docs/captures/cycle3-logdata/cycle3-evidence.log.gz`
 
 Cycle 4 was still running when this was written; its 126.9M-cell verdict is pending
 and the prediction is on record in the cycle-4 watch log (12:43 entry).
+
+---
+
+# 12. Recommended test programme
+
+Written 2026-08-24 after cycle 4. Every conclusion in this document is stated so it
+can be attacked; this section says how, with the specific code, runtime settings and
+parameters for each test.
+
+## 12.0 First, fix the rig — three problems that make everything else slower or wrong
+
+### (a) The 46 GB deficit — invalidates absolute thresholds, not comparisons
+
+A `nbrs` client from 2026-08-06 (pid 539210) finished its workload on **08-09
+12:17:05** ("shutdown complete" in its own session log), failed to exit, and held
+**46.3 GB resident** until killed on 08-24 17:32.
+
+Measured while alive: **0 established connections to port 9042**, **0.0 KB/s disk
+read and write**, **0 voluntary and 0 involuntary context switches over 10 s**. It
+was a memory occupant, not a traffic source, and every node boot in the campaign
+(08-21 19:47 onward) happened 12 days after it stopped working.
+
+| affected | status |
+|---|---|
+| cycle-to-cycle comparisons (the −17% tax, 3.4x read amplification, 8–47x collapse) | **hold** — identical deficit in every cycle |
+| collapse reproducibility 7/7 | **holds** |
+| **absolute thresholds** — "collapses at ~1,000 GB", "index/cache 1.87x" | **discard** — measured with 46 GB spuriously pinned |
+| settle-time model (~8 h) | **weakened** — assumed the observed cache size |
+
+Killing it took `avail` from 353 G to 374 G. **Re-baseline before quoting any
+absolute number.**
+
+### (b) The cycle time is a choice, not a constraint — constrain cache instead
+
+The box runs cgroup v2 with `MemoryAccounting=yes`, and page cache **is** charged
+to the Cassandra cgroup (`memory.stat` `file` tracks it). `MemoryHigh` therefore
+bounds the page cache directly, which lets the above-RAM regime be reached at a
+small table instead of a large one:
+
+| `MemoryHigh` | page cache | index at 1.87x | ~table | time to regime |
+|---|---|---|---|---|
+| 146 G | 40 G | 75 GiB | 119 G | **~70 min** |
+| 166 G | 60 G | 112 GiB | 178 G | ~103 min |
+| (none, today) | 389 G | 727 GiB | 1,150 G | ~640 min |
+
+```ini
+# /etc/systemd/system/cassandra.service.d/cache-cap.conf
+[Service]
+MemoryAccounting=yes
+MemoryHigh=146G     # anon ~106 GiB (96 G heap) + 40 GiB page cache
+```
+
+Use `MemoryHigh` (soft, reclaims) **not** `MemoryMax` (hard, OOM-kills a 96 G
+heap). Anonymous heap is not reclaimable, so the pressure lands on page cache —
+exactly the intent.
+
+**Caveat that must be stated in any result:** a 40 GiB cache makes a *smaller*
+merge the first to go above RAM — the 16.0M-cell class, not the 126.9M one. That
+class is already baselined in both cycles (8,242 vs 4,967 cells/s), so it is a
+valid screening target, but it is a different operation. **Screen on the fast rig;
+confirm the winner once on the full rig.**
+
+### (c) Three code changes to make before any arm runs
+
+| # | change | why | size |
+|---|---|---|---|
+| **C1** | Log ordinals in the progress line: `"Compaction I/O progress: {}/{} batches ({} ordinals)"` at `OnDiskGraphIndexCompactor:2421` | The batch counter carries 125–4,096 ordinals/batch depending on merge. This ambiguity produced an **8x error** in the headline collapse figure that stood for the whole campaign. | 1 line |
+| **C2** | Add `jvector.compaction.clusterSearch` (default true) gating `clusterSearchUsable()` at `:2362` | There is currently **no way to switch the cluster path off**, so the central hypothesis has no negative control. | ~4 lines |
+| **C3** | Counter for packed-neighbour reads issued per merge, logged with the existing cluster stats | Read amplification (1,079 vs 313 KB/ordinal) is currently derived from `iostat` and merge rate. An in-process counter makes it direct. | ~5 lines |
+
+C2 is the highest-value line of code in this list: without it, "the collapse is
+caused by `clusterSearchL0`" cannot be falsified, only supported.
+
+## 12.1 Experiments, ranked by what they settle per hour spent
+
+Each runs on the **fast rig** (`MemoryHigh=146G`, ~70 min to regime) unless noted.
+Common baseline for all: jvector `d859893f`, Cassandra `80064aa109`, table wiped,
+`./run_200m`.
+
+### E1 — Negative control: is `clusterSearchL0` actually the cause? ★ highest value
+
+| | |
+|---|---|
+| **claim under test** | The collapse is caused by the uncovered `clusterSearchL0` branch (40/90 and 38/94 RUNNABLE threads in two dumps) |
+| **jvector** | C2 applied |
+| **runtime** | `-Djvector.compaction.clusterSearch=false` (everything else at cycle-3 settings) |
+| **nbrs** | unchanged |
+| **validates** | Collapse disappears or the merge rate rises >3x -> the cluster path is the cause, and covering it is the fix |
+| **invalidates** | Collapse persists at the same rate -> **the whole clusterSearchL0 thesis is wrong**, and the cost is elsewhere (most likely `FusedPQ$PackedNeighbors.readInto` regardless of caller) |
+| **cost** | ~1.5 h |
+
+This is the one experiment that can overturn the central finding. Run it first.
+
+### E2 — The cycle-5 arm: does hinting the cluster rescore lists help?
+
+| | |
+|---|---|
+| **claim under test** | The two hintable loops in clusterMode are worth hinting (jvector `d859893f`) |
+| **runtime** | `-Djvector.compaction.clusterRescorePrefetch=true`, `frontierPrefetch` at default 3 |
+| **verify first** | `Cluster rescore prefetch: enabled=true hints=N` with **N > 0** in the first cluster-path merge. **N == 0 voids the cycle** — this check exists because a silent no-op cost two cycles |
+| **validates** | 16.0M-class rate >8,242 cells/s (the cycle-3 baseline) |
+| **invalidates** | <=8,242 -> hinting this path does not help either, and the read-amplification reading (the hints fetch records the search does not need) generalises from `frontierPrefetch` to all hinting |
+| **cost** | ~1.5 h |
+
+### E3 — Heap 96 G -> 32 G: the largest lever, zero code
+
+| | |
+|---|---|
+| **claim under test** | This is a page-cache problem, so 64 GB of heap returned to cache should beat any prefetch tuning |
+| **cassandra** | `-Xms32G -Xmx32G` in `jvm-server.options` |
+| **runtime** | cycle-3 flags, **full rig** (the point is absolute headroom) |
+| **validates** | Collapse deferred to a materially larger table, or the 126.9M merge above 74 b/min |
+| **invalidates** | No change -> the working set is so far above cache that 64 GB is noise, which itself bounds how much any caching fix can buy |
+| **cost** | ~10 h (full rig), but **no code and no build** |
+
+A 96 GB heap on a 495 GB box is unusual for this workload and trades directly
+against the one resource the diagnosis says is scarce. It has never been varied.
+
+### E4 — Restore the removed cache warm (tests the root-cause claim)
+
+| | |
+|---|---|
+| **claim under test** | `11ea5b9e`/`711afea5` removing the incidental source streaming is the root cause (L2/G5) |
+| **jvector** | New arm: sequential pre-warm of the source L0 region immediately before `computeBaseBatch`, in **read order**, gated by `jvector.compaction.sourceStreamWarm` |
+| **why not the existing pretouch** | `sourcePretouchMaxNodes` already warms, and it did not help — but it warms **once, up front**, and cycle 3 showed the warm evicted before the merge's random reads arrived (6.8 min spent, collapse anyway). Warming *in read order, just ahead of the reader* is a different intervention |
+| **validates** | Collapse rate improves >2x -> the removed streaming was load-bearing and should return behind a size threshold |
+| **invalidates** | No improvement -> the 3.1x that `11ea5b9e` bought was genuinely free, and L2 should be downgraded |
+| **cost** | ~4 h code + 1.5 h run |
+
+### E5 — Does the collapse follow source count or total ordinals?
+
+| | |
+|---|---|
+| **claim under test** | The 30,985 merge collapses because of its 126.9M ordinals, not its 32 sources |
+| **cassandra** | `ALTER TABLE ... WITH compaction = {'class':'SizeTieredCompactionStrategy','max_threshold':8}` |
+| **effect** | The 4–8 GiB tier merges 8 sources at a time instead of 32 — same total ordinals, four smaller merges |
+| **validates** | Four merges each ~1/4 the ordinals, all healthy -> **working-set driven**, and capping `max_threshold` is an immediate operational mitigation |
+| **invalidates** | Still collapses -> fan-out per merge is the driver, and the fix must be in the merge algorithm |
+| **cost** | ~10 h (needs the real tier cascade), no code |
+
+This is the only experiment that could yield a **deployable mitigation today**
+rather than a code change.
+
+### E6 — `frontierPrefetch` floor: is 3 even right?
+
+| | |
+|---|---|
+| **claim under test** | 32 is a flat ~17–19% tax; the measured knee may be below 3 |
+| **runtime** | Sweep `-Djvector.compaction.frontierPrefetch` = **0**, 3, 8 |
+| **validates** | 0 beats 3 -> `FrontierPrefetchingView` is net-negative above RAM and should default off there |
+| **invalidates** | 3 beats 0 -> the mechanism helps, just not deeper |
+| **cost** | 3 x 1.5 h |
+
+`0` disables hinting entirely and is the clean baseline the class's javadoc names.
+
+### E7 — Pretouch window threshold
+
+| | |
+|---|---|
+| **claim under test** | Cost is set by ordinals-per-source vs the window (3–5x cliff at 1 window) |
+| **runtime** | `-Djvector.compaction.sourcePretouchWindowNodes=4194304` (4M > the observed ~3.97M per source) |
+| **validates** | µs/ordinal drops from ~3.2–4.6 to ~0.7–1.6 on the 32-source call |
+| **invalidates** | No change -> the window is not the driver and the 08-24 13:43 finding is wrong |
+| **cost** | free — rides along on any other arm |
+
+## 12.2 Suggested order
+
+```mermaid
+flowchart LR
+    R[Fix the rig<br/>C1 C2 C3 + MemoryHigh=146G<br/>re-baseline clean] --> E1
+    E1{E1 cluster path OFF<br/>negative control}
+    E1 -->|collapse persists| X[Central thesis WRONG<br/>re-diagnose from the<br/>FusedPQ read path]
+    E1 -->|collapse clears| E2[E2 cluster rescore hints<br/>E6 frontier floor<br/>E7 pretouch window]
+    E2 --> E4[E4 restore the<br/>source stream warm]
+    R --> E3[E3 heap 96G to 32G<br/>no code, full rig]
+    R --> E5[E5 max_threshold 8<br/>no code, full rig]
+    E3 --> D[Deployable mitigation?]
+    E5 --> D
+
+    style E1 fill:#4a1010,stroke:#c0392b,color:#fff
+    style X fill:#7b1f1f,stroke:#c0392b,color:#fff
+    style D fill:#14532d,stroke:#27ae60,color:#fff
+    style R fill:#1f4e5f,stroke:#2980b9,color:#fff
+```
+
+**E1, E3 and E5 are the three that can change the conclusion rather than refine
+it**, and E3 and E5 need no code at all. Everything downstream of E1 assumes the
+central thesis survives it.
+
+## 12.3 Standing requirements for every arm
+
+1. **Verify the flag reached the JVM** — `CassandraDaemon:634` "JVM Arguments" —
+   and that the property string is in the deployed jar's bytecode, before starting
+   the client. Two cycles were lost to not doing this.
+2. **Verify the mechanism fired** — a non-zero counter in the logs. Silence is not
+   evidence of action.
+3. **Record provenance from the running system**, not from notes: JVM args, jar
+   md5, `git rev-parse`, and `git status --porcelain` (the cycles 1–4 jar contained
+   uncommitted changes to `ParallelExecutor.java` plus an untracked
+   `ForkJoinParallelExecutor.java`, so it was **not** exactly `55a262a7`).
+4. **Compare in ordinals**, never batches, until C1 lands.
+5. **One variable per arm.** Where an arm needs a code change, gate it off by
+   default so the flag is the variable.
