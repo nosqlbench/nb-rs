@@ -1537,3 +1537,73 @@ Also new: a 24,898,876,795-byte compaction at 0.00%, and pending up to 5.
 Collapse conditions still absent: iowait 0.0–1.1%, requests 20–27 KB, no >=25k
 merge running. Pretouch 6,426–8,409 ms at constant work, cumulative 305.8 s =
 **1.0% of wall clock**, unchanged for nine checks.
+
+---
+
+## 05:10 — **THE COLLAPSE REPRODUCED. The ReaderSupplier fix did not prevent it.**
+
+A 30,985-batch merge started at 04:59:08 and is running at **74 b/min**. Full
+capture in `docs/captures/collapse-cycle3-20260824-0510.md` (raw files under
+`sessions/collapse-cycle3-20260824-0510/`).
+
+| | cycle 1 (prefetch inert) | cycle 3 (prefetch real) |
+|---|---|---|
+| time to collapse | 9h 25m, populated start | **9h 31m, empty start** |
+| merge | 30,985 batches | **30,985 batches** |
+| rate | 39–44 b/min | **74 b/min** |
+| iowait | 50.1% | **40.3 / 40.3 / 41.1 / 40.3%** |
+| mean request | 4.02 KB | **6.31–6.38 KB** |
+| md0 r/s | 113k–177k | **234k–264k** |
+| %util | 99.0–99.4% | 93.8–98.3% |
+| implied merge time | ~13 h | **~7.0 h** |
+
+All four flag conditions are met simultaneously for the first time in this
+watch: a >=25k merge far below band, iowait ~41% sustained across four samples,
+the small-request signature, and ~98% util. Rate is dead flat — 74 b/min over
+the full 9.5 minutes and 74 b/min over the last 10.
+
+**The fix bought 1.7–1.9x and did not change the outcome.** Rate 39 -> 74 b/min,
+request 4.02 -> 6.31 KB, implied merge time 13 -> 7 hours. Against a healthy
+reference of 5,387–27,530 b/min for this size, 74 is still 73–370x off.
+
+### The hot path is unchanged, and it is the path the hints do not cover
+
+90 RUNNABLE threads: 74 in `MemorySegmentVectorProvider`, 67 in
+`FrontierPrefetchingView.processNeighbors`, 62 in `FusedPQ$PackedNeighbors.readInto`,
+**40 in `clusterSearchL0`**, 31 blocked in `readFully`.
+
+This is the mechanical prediction from the cycle-1 capture, confirmed: the
+cross-source seed prefetch covers only the *seeded* branch of
+`gatherFromOtherSource`, while these threads are in the `clusterMode` branch it
+never touches. Making the `ReaderSupplier` hooks real made the existing hints
+work; it did not put hints on the starving path. Meanwhile 67 threads sit inside
+`FrontierPrefetchingView` and block in `readFully` anyway, with `WIDTH` at its
+compiled default of 3.
+
+### Flags actually in effect
+
+Only `sourcePretouchMaxNodes=-1` and `sourcePretouchWindowNodes=1048576` are on
+the command line. `crossSourceSeedPrefetch`, `frontierPrefetch`,
+`batchPrefetchDensity` and `adviseRandom` are at compiled defaults (ON, 3, 8,
+true) — nothing in this run moved `frontierPrefetch` off the value the evidence
+indicts.
+
+### Pretouch: settled, and not the issue
+
+39 calls, none at 0 ms, cumulative 305.8 s = **1.0% of wall clock**, unchanged
+across nine checks. Per-call work stayed flat at ~3.966M ordinals all night
+because the window bounds it, so `sourcePretouchMaxNodes=-1` is fine as set. It
+works, it is cheap, and it does not address this failure.
+
+### Next
+
+1. Sweep `jvector.compaction.frontierPrefetch` 3 -> 16/32. The one indicted knob
+   still at default, now genuinely wired to the device, and no code change.
+2. Cover `clusterSearchL0` with hints. Two independent captures point here.
+3. Stop spending on the pretouch.
+
+### State at capture
+
+table 1,008 GB, cache 339 G / free 3 GB, pending 6, settle 0, client phase 45/86
+at 63% with zero errors — **ingest is still unaffected**, as it was through the
+02:30–04:00 episode.
