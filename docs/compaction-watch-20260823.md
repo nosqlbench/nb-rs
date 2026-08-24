@@ -1197,3 +1197,64 @@ finding — if elapsed stays high after the device quiets, it becomes real.
 Cumulative 228.8 s = **1.0% of wall clock**, unchanged for four checks.
 
 Position unchanged: the arms are still four points each, none added since 21:05.
+
+### 02:30 — cycle 3 at 6h55m / 772 GB. Healthy. The 02:00 pretouch creep was contention.
+
+| | 02:00 | 02:30 |
+|---|---|---|
+| merges | 694 | **762** |
+| large (~31k) merges | 4 | 4 — **none new (5h25m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| md0 rareq-sz | 10.6–11.4 KB | **28.7–30.6 KB** |
+| md0 r/s | 17.1k–18.7k | **3.2k–3.7k** |
+| md0 %util | 91.0–96.9% | **25.7–33.7%** |
+| iowait | 1.0% | **0.0%** |
+| CPU user | 17.9% | 30.2% |
+| pending tasks | 3 | 1 |
+| table live | 717 GB | **772 GB** |
+| cache / free | 336 / 8 GB | 327 / 17 GB |
+| pretouch | 29 / 228.8 s | **31 / 241.0 s** |
+
+The byte compaction finished. Device back to 29 KB requests at ~30% util,
+pending back to 1, and 55 GB landed in the half hour. As logged at 02:00, that
+signature was context, not a collapse — confirmed by its passing with merge
+throughput never dipping.
+
+**The pretouch creep reversed, exactly as the contention reading predicted.**
+
+| time | ordinals | elapsed | ord/s | device then |
+|---|---|---|---|---|
+| 01:34 | 3,966,071 | 6,431 ms | 616,711 | quiet |
+| 01:46 | 3,966,125 | 6,791 ms | 584,027 | ramping |
+| 01:58 | 3,966,113 | **7,866 ms** | 504,210 | **96% util** |
+| 02:10 | 3,966,101 | 6,548 ms | 605,697 | draining |
+| 02:22 | 3,966,115 | **5,663 ms** | **700,356** | **quiet** |
+
+Elapsed tracked device load up and back down at work held constant to five
+digits, and 5,663 ms is the fastest sample of the night. So the 01:34–01:58
+"creep" was not a trend — it was the byte compaction, and the right call at
+02:00 was to log it as a hypothesis rather than a finding. This is the fourth
+time this watch that consecutive extremes looked like a trend and were not.
+
+**It also settles the `sourcePretouchMaxNodes=-1` question for this workload.**
+The concern was pretouch cost growing super-linearly with source size, which
+would argue for a cap. Six hours in, at 772 GB, the per-call work is *flat* —
+3,966,0xx ordinals every time — because `sourcePretouchWindowNodes=1048576`
+already bounds it. The window is doing the job the cap would do. Cumulative
+241.0 s = **1.0% of wall clock**, unchanged for five checks.
+
+Windowed small-merge medians, unchanged in character:
+
+| window | n | median |
+|---|---|---|
+| 22:00–00:00 | 50 | 9,564 |
+| 00:00–01:00 | 22 | 8,960 |
+| 01:00–01:40 | 18 | 9,371 |
+| 01:40–02:00 | 6 | 9,591 |
+| 02:00–02:30 | 14 | 8,464 |
+
+8.5k–9.6k across five windows spanning 4.5 hours. Flat.
+
+Cycle 3 is now past cycle 2's entire lifetime (3h46m / 385 GB) by 3h and 387 GB,
+and past cycle 1's collapse point in bytes though not in hours. Still four
+points per arm.
