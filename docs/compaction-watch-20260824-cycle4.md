@@ -947,3 +947,58 @@ sequence rather than a proxy.
 Nothing flagged this interval — iowait 0.0–1.1%, requests 27–31 KB, no segment in
 the trough, no ≥25k merge in the log yet. The Monitor will announce the graph
 merge the moment its first progress line appears.
+| 16:25 | **9h30m in — the 126.9M pretouch has FIRED and the decisive merge is minutes away.** Table **1,020 GB** (cycle 3 collapsed at ~1,008), SSTable count **39 → 11** (the 32-source tier merged), pending 5, cache 338 G / free 3 GB, iowait **0.0–0.8%**, CPU **77–80% us**, settle 0. Device 23.9–32.3 KB at 13.7k–16.8k r/s, 33–38% util. Segments n=40, median **11,240** — eleventh flat check. **No graph merge yet.** |
+
+### 16:25 analysis — the matched 126.9M pretouch pair, and it favours the arm
+
+The single best-matched work unit this campaign will ever produce has now run in
+both cycles:
+
+| | ordinals | sources | elapsed | µs/ordinal |
+|---|---|---|---|---|
+| cycle 3 (`frontierPrefetch=3`) | 126,916,949 | 32 | **410,927 ms = 6.8 min** | 3.24 |
+| **cycle 4 (`=32`)** | **126,915,802** | **32** | **266,797 ms = 4.4 min** | **2.10** |
+| difference | **0.0009%** | — | **−35.1%** | −35% |
+
+**Work matched to nine parts per million; cycle 4 is 35% faster.**
+
+This cuts against the control assumption used since 08:13. The pretouch streams
+through `FileHandleReaderSupplier.prefetch()` and never consults
+`FrontierPrefetchingView`, so `frontierPrefetch` cannot be the cause. Two readings:
+
+1. **Device contention differs.** Cycle 3's call ran at 04:38 with a 199 GB
+   compaction in flight and free at 3–8 GB; cycle 4's ran at 16:06 immediately
+   *after* its 199 GB compaction reached 100%. The earlier finding that pretouch
+   cost tracks concurrent device load predicts exactly this.
+2. Something about the arm indirectly helps the streaming path. No mechanism
+   proposed, and none obvious.
+
+Reading 1 is strongly preferred and is consistent with every prior pretouch
+observation. **But it does mean the control is only clean when device load is
+comparable** — the parity established at 08:13 and refined at 08:43 held because
+those pairs ran under similar load, not because the pretouch is unconditionally
+immune. Recorded so the −17% attribution carries the right caveat.
+
+### Staging, and one number I am deliberately not leaning on
+
+| | cycle 3 at its collapse | cycle 4 now |
+|---|---|---|
+| table live | ~1,008 GB | **1,020 GB** |
+| SSTable count | — | **39 → 11** (tier merged) |
+| byte compaction | 199,140,724,110 @ 100% | 199,139,703,033 @ **100%** |
+| 126.9M pretouch | done, 6.8 min | done, **4.4 min** |
+| 126.9M index build | 0.63% after 2 h | **93.85% after 18 min** |
+| graph merge | started t+564m | **not started** |
+
+That index-build row is the `nodetool` "token range parts" counter, which this
+watch declared unreliable at 06:00 after it implied 10.3 days for work three other
+measures put at 2.5–7 h. It is showing an ~800x difference between the cycles on
+the same 126,915,802-part total. **I am reporting it and not concluding from it.**
+The decisive evidence is the graph merge's own rate, and that merge has not begun.
+
+Cycle 3's sequence was pretouch 04:38:28 → index build 04:54:03 → graph merge
+04:59:08, i.e. **21 minutes from pretouch to merge**. Cycle 4's pretouch finished
+16:06:44, so the merge is due imminently.
+
+CPU at 77–80% user with iowait at 0.0–0.8% says the node is in the CPU-bound
+retrain/build phase, not yet reading the graph.
