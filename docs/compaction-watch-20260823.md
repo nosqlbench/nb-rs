@@ -1040,3 +1040,49 @@ despite the run being healthy and productive. The decisive data only arrives
 when STCS schedules another ~31k merge — and it will arrive under heavier
 cache pressure than the first four did, which is precisely the condition of
 interest.
+
+### 01:00 — cycle 3 at 5h25m / 633 GB, healthy. 4h without a large merge.
+
+| | 00:30 | 01:00 |
+|---|---|---|
+| merges | 534 | **588** |
+| large (~31k) merges | 4 | 4 — **none new (4h)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median | 10,424 | 10,424 b/min |
+| md0 rareq-sz | 32.5–36.6 KB | 30.2–46.4 KB |
+| md0 %util | 20.8–72.1% | 57.6–99.9% |
+| iowait | 0.1% | **0.0%** |
+| CPU user | 37.1% | 37.6% |
+| table live | 574 GB | **633 GB** |
+| cache / free | 328 / 18 GB | 335 / 10 GB |
+| pretouch | 21 / 176.2 s | **24 / 194.2 s** |
+
+54 small merges, median flat at 10,424. Device busier (%util up to 99.9%) but
+**iowait 0.0%** and reads large (30–46 KB) — write-side pressure from ingest,
+not the read-starved pattern.
+
+Pretouch: 24 calls, none at 0 ms. Last three 678k / 735k / 585k — inside the
+established plateau. Split-half 1,033,822 vs 722,770; the first-half figure
+moved (was 1,327,539) purely because the midpoint shifted as n grew, which is
+an artifact of the statistic, not of the data. The gap is stable at ~1.4x
+across the last three checks. Cumulative 194.2 s = **1.0% of wall clock**.
+
+### The experiment is stalled on evidence, not on health
+
+**The result set has not grown since 21:05 — four hours.** Cycle 3 is healthy,
+productive (588 merges, 98 of them substantive) and 248 GB past anything the
+cycle-2 comparison covers, but every one of those merges is small. The arm
+comparison still rests on four points per cycle:
+
+| | n | median | range |
+|---|---|---|---|
+| cycle 2 | 4 | ~7,000 | 4,048–17,717 |
+| cycle 3 | 4 | 5,694 | 3,997–14,606 |
+
+No separation, and none obtainable until STCS schedules another ~31k merge.
+That merge will land at 633 GB+ rather than the ~100–160 GB the first four saw,
+so it carries far more information than they did — but its arrival is not
+something the run can be pushed toward.
+
+Cycle 1's collapse came at 9h25m from a populated start. Cycle 3 is at 5h25m
+from empty, with iowait still at zero.
