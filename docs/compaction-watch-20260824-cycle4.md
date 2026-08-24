@@ -559,3 +559,49 @@ operation.** Use cells/s and the device signature for the collapse itself.
 Nothing flagged: iowait 0.0–1.1%, no segment in the trough, no large merge since
 08:43. The 89%/79% util spikes are write bursts (8.3k–18.5k w/s) from an 87 GB
 byte compaction at 34.6%, not the read-starvation pattern.
+| 11:43 | **4h48m in — the exact cumulative match now holds across 4.7 hours.** Table 516 GB at the reading, 517 GB by the end of the check / 20 SSTables, pending 3, cache 339 G / free 8 GB, iowait **0.0–0.4%**, settle 0, phase 37/86. Device: 40.3–40.6 KB at ~2,400 r/s, 98–99% util (write-side, 3.8k–4.3k w/s). Segments n=20, median **11,240**; last three 11,395 / 11,897 / 11,219 — flat for three checks. |
+
+### 11:43 analysis — first equal-TABLE-SIZE comparison, and it disagrees slightly with equal-cells
+
+The cumulative-work match from 10:43 now extends to t+282m and is still exact:
+
+| t+min | cycle 3 cells | cycle 4 cells | delta |
+|---|---|---|---|
+| 180 | 63,757,149 | 63,761,104 | 0.0% |
+| 210 | 71,689,328 | 71,693,257 | 0.0% |
+| 240 | 79,621,551 | 79,625,492 | 0.0% |
+| 270 | 91,519,941 | 91,523,697 | 0.0% |
+| **282** | **95,486,088** | **95,489,791** | **0.0%** |
+
+Five checkpoints, 4.7 hours, agreement to five significant figures. **The arm has
+cost zero net index throughput.**
+
+But the equal-bytes comparison — the one this watch has been asking for and could
+not do until cycle 4 reached cycle 3's recorded range — gives a slightly different
+answer. Cycle 3's own log has 451 GB at t+235m and 574 GB at t+295m, so it passed
+516 GB at roughly **t+267m**. Cycle 4 reached 516 GB at **t+282m**:
+
+**~15 minutes, or 5.3%, behind on table bytes while exactly level on index cells.**
+
+The two cannot both be simple truths, so one of them is measuring something else.
+The likely resolution is that `Space used (live)` is not a clean progress metric —
+it moves with compaction state, not just with data written, and cycle 4 currently
+has a 106 GB byte compaction at 30.3% plus another at 100% awaiting release. Index
+cells come from a deterministic client write schedule and are counted at segment
+completion, which is why they align so precisely.
+
+**Weight accordingly: one interpolated comparison point against five exact ones.**
+Recorded because it is the first equal-bytes data available and because if the lag
+grows at the next checks it becomes the leading indicator of the transition — the
+point where the tax stops being free. If it stays at ~5% or shrinks, it is
+compaction-state noise.
+
+### Nothing else new
+
+Segment rate has been flat for three checks (11,238 / 11,240 / 11,240 median), the
+device is doing write-side byte-compaction work at 40 KB requests, iowait is at the
+floor, and no large merge has run since 08:43. The pretouch is 22 calls / 183.0 s
+with nothing above 10M ordinals since 07:58.
+
+Nothing flagged. Cycle 3's collapse came at t+564m; cycle 4 is at t+282m, exactly
+halfway.
