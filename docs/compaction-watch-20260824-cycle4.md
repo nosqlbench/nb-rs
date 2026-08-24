@@ -696,3 +696,53 @@ since 08:43 — a 3h50m gap, so the STCS schedule has not yet produced another. 
 206.3 s, nothing above 10M ordinals since 07:58. Free memory has *risen* to 25 GB
 at 626 GB of table, so the working set still fits comfortably — the collapse
 precondition is not yet in place.
+| 13:13 | **6h18m in — the SAI index alone now exceeds page cache. The collapse precondition is forming.** Table 686 GB live / 27 SSTables, on-disk dir **807 GiB**, pending 3, cache 338 G / free 6 GB, iowait **0.0–1.1%**, settle 0, phase 45/86. Device: 33.2–36.3 KB at ~2,800 r/s, util 44–99% (write-side). Segments n=27, median **11,261** — flat for six checks. |
+
+### 13:13 analysis — measuring the collapse precondition directly
+
+Every previous check has used *table size* as a proxy for "when will the working
+set stop fitting". That is the wrong denominator: the merge reads the **SAI vector
+index**, not the base table. Measuring the components separately on disk:
+
+| component | size | files |
+|---|---|---|
+| **SAI index** (TERMS_DATA / PQ / vector_idx) | **507.8 GiB** | 142 |
+| base data (`*-Data.db`) | 272.3 GiB | 31 |
+| total table directory | 807 GiB | |
+| **page cache** | **338 GiB** | |
+
+**The index is already 1.5x the page cache.** The base table is 35% of the bytes
+and is largely irrelevant to the merge read path, so table size has been
+overstating how much room was left. This also means the standard 3.97M-cell
+segments have been running at 11,000+ cells/s *while the index no longer fits* —
+because each merge touches only its own sources, not the whole index.
+
+Estimating cycle 3's ratio at its collapse: if its index/table split matched cycle
+4's current 63%, its 1,008 GB table implies ~635 GiB of index against 339 G of
+cache — **~1.87x**. Cycle 4 is at 1.51x. That is a same-shape estimate resting on
+one assumption (that the split is stable across cycles), so treat it as
+indicative, but it says cycle 4 still has room to run before matching the
+condition under which cycle 3 collapsed.
+
+### It also explains the byte-lag puzzle
+
+At 11:43 and 12:13 I attributed the ~7.5% equal-bytes lag to "compaction-state
+accounting" without being able to name the mechanism. Here it is: the directory
+holds **807 GiB on disk against 686 GB reported live** — ~120 GiB of obsolete
+SSTables not yet released. `Space used (live)` moves when files are dropped, which
+is compaction-schedule dependent and jitters by exactly this order. The cumulative
+cells measurement has none of that, which is why it matches to five significant
+figures.
+
+(Note `Space used (total)` reports identically to live here, so it is not the
+counter that exposes the difference — only `du` on the directory is.)
+
+### Otherwise unchanged
+
+Segment median 11,219 -> 11,261, sixth consecutive flat check. **No large merge for
+4h30m** — cycle 3's gap between its early burst (t+69–90m) and its collapse merge
+(t+564m) was similar, so this is expected, not a stall. Pretouch 28 calls /
+219.9 s, nothing above 10M ordinals since 07:58.
+
+Nothing flagged. The 98% util windows are the 143 GB byte compaction at 76.4%,
+with iowait at 0.0–1.1% and requests at 33 KB — not the read-starvation pattern.
