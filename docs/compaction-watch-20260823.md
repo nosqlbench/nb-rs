@@ -950,3 +950,46 @@ half-vs-half comparison of the whole sample would have avoided all three.
 
 Cycle 3 is 66 GB beyond anything the empty-start comparison covers. Arms still
 indistinguishable on merge rate; no settle; pretouch mechanism healthy.
+
+### 00:00 (08-24) — cycle 3 at 4h25m / 516 GB, healthy. Pretouch decline has stopped.
+
+| | 23:30 | 00:00 |
+|---|---|---|
+| merges | 385 | **476** |
+| large (~31k) merges | 4 | 4 — **none new (3h)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median | 10,107 | 10,107 b/min |
+| md0 rareq-sz | 35.4–36.9 KB | 38.0–39.4 KB |
+| md0 %util | 20.0–21.0% | 24.1–45.2% |
+| iowait | 0.0% | **0.1%** |
+| CPU user | 53.5% | 36.5% |
+| table live | 451 GB | **516 GB** |
+| cache / free | 341 / 8 GB | 336 / 11 GB |
+| pretouch | 17 / 151.4 s | **19 / 160.7 s** |
+
+91 small merges this interval, median flat at 10,107. Still no large merge in
+3 hours. Device healthy — ~38 KB reads, iowait 0.1%. Client at phase 37/86.
+
+**Pretouch decline has levelled off.** Last three calls: 647k / 840k / 881k
+ord/s — rising, back near the second-half median. Split-half is unchanged from
+last check (first 1,342,295 vs second 761,517), which is what a completed step
+looks like: the gap is fixed by the early-vs-late boundary and no longer
+widening. Reading this as confirmed: **a one-time step to a lower plateau
+around 750k-880k ord/s, not progressive degradation.** Cumulative 160.7 s =
+**1.0% of wall clock**, down as a fraction for the third check running.
+
+Log rotated (`compaction.log.2026-08-23.158.zip`); the archive union is
+handling it — merge count kept rising across the boundary rather than
+resetting, which is the failure this method exists to prevent.
+
+### Head-to-head
+
+| table size | cycle 2 | cycle 3 |
+|---|---|---|
+| 385 GB | healthy (3h11m, last point) | healthy (3h25m) |
+| 516 GB | never observed | **healthy (4h25m)** |
+
+Cycle 3 is 131 GB past the empty-start comparison. Still four large merges
+each and no separation. Cycle 1 collapsed at 9h25m from a populated start;
+cycle 3 is at 4h25m from empty, so on wall clock it is not yet halfway to the
+only collapse ever observed.
