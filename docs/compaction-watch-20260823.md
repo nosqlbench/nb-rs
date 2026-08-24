@@ -1683,3 +1683,66 @@ and ~91 parts/s implying ~15 days. Same pathology, same order of magnitude.
 Collapse conditions all remain met. No change to the 05:10 conclusions about
 `frontierPrefetch` or `clusterSearchL0`; this interval adds a third
 recommendation ahead of them in cost: cap the pretouch.
+
+### 06:00 — merge decaying toward the band; ingest now choking; one index build parked at exactly 50%.
+
+| | 05:30 | 06:00 |
+|---|---|---|
+| **30,985 merge (overall)** | 72 b/min @ 7.39% | **69 b/min @ 13.75%** |
+| **last 10 min** | 71 b/min | **66 b/min** |
+| implied total | 7.1 h | **7.5 h** |
+| iowait (4x) | 41.0–44.0% | **42.4 / 43.9 / 45.0 / 44.7%** |
+| md0 rareq-sz | 6.33–6.43 KB | 6.39–6.48 KB |
+| md0 r/s | 220k–230k | 225k–230k |
+| md0 w/s | 44–48 | 44–823 |
+| pending tasks | 7 | 7 |
+| table live | 1,027 GB | **1,039 GB** |
+| cache / free | 339 / 3 GB | 339 / 3 GB |
+| pretouch | 41 / 724.0 s | 41 / 724.0 s (no new calls) |
+
+The merge is **slowly decaying, not holding**: 74 -> 72 -> 69 b/min overall, and
+the trailing 10-minute figure is 66. It is drifting toward the 39–46 band rather
+than sitting above it. iowait has risen with it, 40.3% -> 41.0% -> 45.0% at the
+top of each check's samples.
+
+#### Ingest is choking progressively
+
+| interval | GB added | per 30 min |
+|---|---|---|
+| 03:00–03:30 | 48 | 48 |
+| 03:30–04:00 | 49 | 49 |
+| 04:00–04:30 | 48 | 48 |
+| 04:30–05:10 | 30 | 22 |
+| 05:10–05:30 | 19 | 29 |
+| **05:30–06:00** | **12** | **12** |
+
+Client phase 63% -> 71% -> 73%, still zero errors, `settle awaiting` still 0.
+The workload has not entered `settle_compactions`; it is simply being throttled
+by the servo as the node falls behind. Ingest was unaffected right up to the
+collapse and has fallen 4x in the 90 minutes since.
+
+#### One index build IS parked — this one is real
+
+The small recurring build has read **exactly 1,983,029 / 3,966,070 = 50.00%**
+at 05:06, 05:30 and 06:00 — three consecutive checks, byte-identical count. That
+is a genuine stall, and it is worth flagging precisely because at 04:00 I
+withdrew "parked at 100%" and "index build at 0%" as collapse indicators after
+watching them rotate. Those rotate; this one has stopped. The distinction is
+whether the counter *moves* between checks, not what value it shows.
+
+Likewise the three compactions at 0.00% have held identical byte counts
+(1637 / 1637 / 1638) across three checks — also genuinely parked, all behind the
+one merge.
+
+The 126.9M build does advance: 80,000 -> 305,024 -> **551,168 (0.43%)**, about
+137 parts/s, implying **~10.7 days**. Cycle 1's equivalent was ~91 parts/s and
+~15 days.
+
+#### Pretouch
+
+No new calls since 04:38 — the compaction executors are all inside the collapsed
+merge. Still 41 calls, 724.0 s, none at 0 ms. The 05:30 correction stands: two
+calls are 67% of that total and `sourcePretouchMaxNodes` should be bounded.
+
+Collapse conditions remain met on every axis, now with the merge trending down
+rather than flat.
