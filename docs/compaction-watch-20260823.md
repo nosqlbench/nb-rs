@@ -1607,3 +1607,79 @@ works, it is cheap, and it does not address this failure.
 table 1,008 GB, cache 339 G / free 3 GB, pending 6, settle 0, client phase 45/86
 at 63% with zero errors — **ingest is still unaffected**, as it was through the
 02:30–04:00 episode.
+
+### 05:30 — collapse established and stable. **Correction: the pretouch is NOT exonerated.**
+
+| | 05:10 | 05:30 |
+|---|---|---|
+| **30,985 merge** | 74 b/min @ 2.29% | **72 b/min @ 7.39%** |
+| implied total | 7.0 h | 7.1 h |
+| iowait (4x) | 40.3–41.1% | **41.0 / 42.7 / 43.5 / 44.0%** |
+| md0 rareq-sz | 6.31–6.38 KB | 6.33–6.43 KB |
+| md0 r/s | 234k–264k | 220k–230k |
+| md0 **w/s** | 66–1,049 | **44–48** |
+| %util | 93.8–98.3% | 97.9–98.3% |
+| pending tasks | 6 | **7** |
+| table live | 1,008 GB | **1,027 GB** |
+| cache / free | 339 / 3 GB | 339 / 3 GB |
+
+Rate is flat to three decimal places of the story: 72 b/min overall, 72 over the
+last 30 min, 71 over the last 10. Stable bad equilibrium, confirmed over 31.5
+minutes rather than 9.5. Three compactions are now parked at 0.00% and write
+throughput has gone to essentially zero (w/s 44–48, from thousands) — all device
+capacity is graph-search reads.
+
+**Ingest is now affected**, for the first time: table grew 19 GB this interval
+against 48–49 GB in each of the four before it.
+
+#### Correction to the 05:10 entry: the pretouch cost 6.8 minutes and was not repaid
+
+At 05:10 I wrote that the pretouch was "settled and exonerated" at 1.0% of wall
+clock with per-call work "flat at ~3.966M ordinals all night". **That was wrong,
+and wrong in a way I should have caught**: the figure came from the 04:30 run of
+the check script, and the script only ever prints the last three samples, so two
+large outliers were in the log the whole time and never displayed.
+
+| | n | cumulative |
+|---|---|---|
+| calls <=10M ordinals | 39 | 239.9 s |
+| **calls >10M ordinals** | **2** | **484.0 s** |
+| total | 41 | **724.0 s** |
+
+```
+2026-08-23 20:38:51   16,013,399 ord    73,086 ms = 1.2 min  -> 219,104 ord/s
+2026-08-24 04:38:28  126,916,949 ord   410,926 ms = 6.8 min  -> 308,856 ord/s
+```
+
+Two calls are **67% of all pretouch time**. Cumulative is 2.0% of wall clock,
+not 1.0%.
+
+The 04:38 call warmed 126,916,949 ordinals across **32 sources** in 6.8 minutes.
+The 30,985-batch merge began 21 minutes later and collapsed to 72 b/min. The two
+cannot be tied together with certainty from the logs — the gap is consistent
+with PQ retrain running between them, but not proof — yet on either reading the
+conclusion is the same: **6.8 minutes of streaming warm-up bought nothing.**
+With free at 3 GB against a 1,027 GB table, whatever was warmed was evicted long
+before the merge's random reads arrived.
+
+This is exactly the condition the watch brief named: *"a source with hundreds of
+millions of ordinals means MINUTES per merge, and if that is not repaid then
+`sourcePretouchMaxNodes` should bound it instead of -1."* It happened, it was
+not repaid, so **`sourcePretouchMaxNodes` should be bounded.** The window
+(`sourcePretouchWindowNodes=1048576`) bounds work per source, not the total
+across 32 of them, which is why the earlier flat readings were misleading.
+
+Note the scaling is not explosive: 570k ord/s at 4M vs 309k ord/s at 127M, so
+roughly linear in total bytes with a 1.8x rate penalty at scale. The problem is
+not super-linearity, it is that the absolute cost is real and the benefit is
+zero above RAM.
+
+#### The 126.9M index build matches cycle 1
+
+0 (04:30) -> 80,000 (05:06) -> **305,024 / 126,916,949 = 0.24%** — about 150
+parts/s, implying **~9.8 days**. Cycle 1's capture had the same build at 0.26%
+and ~91 parts/s implying ~15 days. Same pathology, same order of magnitude.
+
+Collapse conditions all remain met. No change to the 05:10 conclusions about
+`frontierPrefetch` or `clusterSearchL0`; this interval adds a third
+recommendation ahead of them in cost: cap the pretouch.
