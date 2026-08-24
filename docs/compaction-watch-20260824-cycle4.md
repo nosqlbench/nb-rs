@@ -449,3 +449,60 @@ one-off scripts too, not just the standing one.**
 Nothing flagged: iowait 0.0–0.7%, no segment in the trough, no large merge
 running. The ~100% util at 15–25 KB requests is byte-compaction traffic (a 62 GB
 compaction at 96%), the pattern that produced three false alarms in cycle 1.
+| 10:43 | **3h48m in — the −20% tax has cost ZERO wall-clock progress so far.** Table 401 GB / 16 SSTables, pending 1, cache 321 G / free 28 GB, iowait **0.0–1.1%**, settle 0, phase 29/86. Device calm: 46.5–47.4 KB at ~2,400 r/s, 20–21% util. Segments n=15, median **11,261** (up again); last three 11,480 / 12,278 / 11,385. |
+
+### 10:43 analysis — cumulative work is identical; the tax is being paid out of headroom
+
+Per-segment rate says how fast each unit runs. **Cumulative work says how much has
+actually been finished by elapsed time T** — which is what decides when cycle 4
+reaches the collapse. They turn out to say opposite things.
+
+| t+min | cycle 3 cells | cycle 4 cells | delta |
+|---|---|---|---|
+| 60 | 16,013,399 | 16,016,033 | **0.0%** |
+| 180 | 63,757,149 | 63,761,104 | **0.0%** |
+| 210 | 71,689,328 | 71,693,257 | **0.0%** |
+| **217** | **75,655,480** | **75,659,395** | **+0.0%** |
+
+Matching to four or five significant figures is not a coincidence — it means the
+**same number of segments completed in the same wall clock**. (The t+120/150 rows
+show ±8–17% purely from a segment landing either side of the mark.)
+
+So where did the 20% go? Into idle time:
+
+| by t+217m | segments | time building | **duty cycle** | mean s/segment |
+|---|---|---|---|---|
+| cycle 3 | 16 | 126 min | **58.2%** | 473 |
+| cycle 4 | 15 | 161 min | **74.2%** | 644 |
+
+**Cycle 4 is working 74% of the wall clock to accomplish what cycle 3 did in 58%.**
+The compaction pipeline is not the bottleneck at this table size — ingest is — so
+the slower segments simply consume slack that was previously idle. The tax is real
+and is currently **free**.
+
+That is the most consequential thing measured today, and it cuts both ways:
+
+- It explains why every other metric looked bad while nothing actually fell
+  behind, and it retires any worry that the arm is already damaging the run.
+- **It also means the arm has spent 38% of the available headroom to buy nothing
+  yet.** Cycle 3 entered its collapse with 42% idle to absorb the shock; cycle 4
+  will enter with ~26%. When the collapse drives duty cycle toward 100%, cycle 4
+  has correspondingly less slack before ingest starts backing up.
+
+### Revised collapse-window estimate
+
+Cycle 3 had completed 170,841,975 cells when it collapsed at t+564m. Cycle 4's
+recent pace is 308,406 cells/min, which reaches that work point in ~309 more
+minutes — **t+526m, about 15:40 UTC**. Earlier in wall clock than cycle 3 because
+cycle 4's ingest ramp is marginally ahead, not because anything is degrading.
+
+### Note on what this does NOT overturn
+
+The −15%/−40% size scaling (09:13) and the ceiling compression (09:43) are
+measurements of per-unit rate and stand unchanged. This check adds that per-unit
+rate has not yet translated into lost throughput. Both are true: the arm makes
+each unit slower, and there is currently enough slack that it does not matter.
+The experiment turns on whether that remains true when the slack is gone.
+
+Nothing flagged: iowait 0.0–1.1%, no segment in the trough, no large merge since
+08:43, pretouch 17 calls with none >10M since 07:58.
