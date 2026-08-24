@@ -8,6 +8,12 @@ covering **2026-07-22 → 2026-08-24**: 16 jvector commits, 2 Cassandra fork com
 (`dse-db-4.0.11.0-SNAPSHOT`), table `baselines.ibm_datapile_1b_default`, ~1B rows,
 495 GB box, NVMe md0.
 
+**Companion document.** [`../vector-compaction-5day/`](../vector-compaction-5day/README.md)
+is the same investigation scoped to the last five days of code. It uses **identical
+measurements** and reaches a **different conclusion about cause** — worth reading for
+what a short window does to attribution, and because the two make opposing,
+testable predictions about experiment E1 in §12.
+
 **Evidence boundary.** Code history from git (full month). Compaction logs retained
 from **2026-08-17**; the first vector merges appear 2026-08-21. Session artefacts
 from 2026-08-05. Anything earlier is commit-message evidence only and is marked as
