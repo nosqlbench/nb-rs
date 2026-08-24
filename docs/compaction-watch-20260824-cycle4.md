@@ -746,3 +746,51 @@ Segment median 11,219 -> 11,261, sixth consecutive flat check. **No large merge 
 
 Nothing flagged. The 98% util windows are the 143 GB byte compaction at 76.4%,
 with iowait at 0.0–1.1% and requests at 33 KB — not the read-starvation pattern.
+| 13:43 | **6h48m in — pretouch cost is governed by ordinals PER SOURCE, not source count.** Table 741 GB / 30 SSTables, **SAI index 551.0 GiB** (1.76x the 313 G cache, up from 1.51x), pending 1, free 30 GB, iowait **0.0–1.1%**, settle 0, phase 45/86. Device: 31.6–33.4 KB at ~3,000 r/s, util 62–98% (write-side, 5.2k–7.7k w/s). Segments n=29, median **11,261** — seventh consecutive flat check. |
+
+### 13:43 analysis — what actually drives pretouch cost
+
+Cycle 3's expensive pretouch (126.9M ordinals, 6.8 minutes) was **32 sources**, and
+it was natural to read source count as the driver. It is not. Grouping every call
+in both cycles by ordinals-per-source, against the `sourcePretouchWindowNodes`
+window of 1,048,576:
+
+| cycle | ordinals | src | ord/src | windows/src | ms | **µs/ord** |
+|---|---|---|---|---|---|---|
+| c3 | 4,100,000 | 4 | 1,025,000 | 1.0 | 2,688 | **0.66** |
+| c4 | 4,100,000 | 4 | 1,025,000 | 1.0 | 2,747 | **0.67** |
+| c3 | 4,000,000 | 4 | 1,000,000 | 1.0 | 6,278 | **1.57** |
+| c4 | 4,000,000 | 4 | 1,000,000 | 1.0 | 5,905 | **1.48** |
+| c3 | **126,900,000** | **32** | 3,965,625 | 3.8 | 410,926 | **3.24** |
+| c3 | 16,000,000 | 4 | 4,000,000 | 3.8 | 73,086 | **4.57** |
+| c4 | 16,000,000 | 4 | 4,000,000 | 3.8 | 67,368 | **4.21** |
+
+**The 32-source call and the 4-source call sit in the same cost class** — 3.24 vs
+4.21–4.57 µs/ord — because both carry ~4M ordinals per source. Meanwhile calls
+with ~1M ordinals per source run at 0.66–1.57 µs/ord. Source count is irrelevant;
+**crossing one window per source costs 3–5x per ordinal.**
+
+Two things follow.
+
+1. **A concrete tuning lever.** Raising `sourcePretouchWindowNodes` so a source
+   fits in a single window should recover the cheap regime. Cycle 3's 6.8-minute
+   call at 3.24 µs/ord would be ~1.4–2.0 minutes at 0.66–1.57. That is a separate
+   arm from the `sourcePretouchMaxNodes` cap recommended at 05:30 — and a better
+   one, because it makes the warm cheaper rather than abandoning it.
+2. **It re-confirms the pretouch as an unbiased control.** Within every window
+   class the two cycles agree closely — 0.66/0.67, 1.57/1.48, 4.57/4.21 — which is
+   what a code path untouched by `frontierPrefetch` should do, and it holds across
+   a 6x range of per-ordinal cost.
+
+The 2.4x spread inside the 1-window class (0.66 vs 1.57) is real noise, so the
+window boundary is a threshold effect, not a clean step function. The separation
+between classes is nonetheless unambiguous.
+
+### Collapse precondition tightening
+
+SAI index **507.8 -> 551.0 GiB** in 30 minutes while cache fell 338 -> 313 G: the
+ratio moved **1.51x -> 1.76x**. The estimated cycle-3-at-collapse figure is ~1.87x,
+so on this measure cycle 4 is close. Segment rate has not responded — still 11,261
+— consistent with the 13:13 point that each merge touches only its own sources.
+
+No large merge for 5h00m. Nothing flagged.
