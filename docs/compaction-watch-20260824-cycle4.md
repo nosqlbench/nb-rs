@@ -339,3 +339,59 @@ The merge sequence keeps closing (−46, −37, −54, −11.7%) while the segme
 penalty widens with size. These measure different things: the batch counter is
 not comparable across merge geometries (established in cycle 3), whereas cells/s
 is. Where they disagree, cells/s is the metric with the fixed unit.
+| 09:43 | **2h48m in — segments recovered to their best of the run, and the distribution reveals the mechanism.** Table 286 GB / 12 SSTables, pending 1, cache 323 G / free 28 GB, iowait **0.0% x4**, settle 0, phase 25/86. Device calm: 53.2–55.1 KB at ~2,200 r/s, 16–43% util. Segments n=11, median 10,600; last three **11,697 / 11,538 / 11,261** — the run's fastest. No new large merges since 08:43. |
+
+### 09:43 analysis — the arm compresses the ceiling, it does not add a slow tail
+
+n=11 is finally enough to compare *distributions* rather than centres. The two
+hypotheses look different in the quantiles: a slow tail would drag the minimum
+and leave the median and maximum alone; a constant per-operation tax would pull
+the whole distribution down and hit the fast cases hardest.
+
+Standard 3.97M-cell segments, cycle 3's first 11 vs cycle 4's 11 (equal ordinal):
+
+| quantile | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| min | 2,455 | 2,235 | **−9.0%** |
+| p25 | 12,426 | 10,297 | −17.1% |
+| median | 13,149 | 10,600 | −19.4% |
+| p75 | 14,401 | 11,399 | −20.8% |
+| **max** | **18,330** | **12,461** | **−32.0%** |
+| IQR / median | 0.150 | **0.104** | tighter |
+
+**The penalty rises monotonically from the floor to the ceiling.** The minimum is
+essentially unchanged (−9%) while the maximum falls a third. Cycle 4 is also
+*more consistent* — IQR/median 0.104 against 0.150 — i.e. consistently worse
+rather than occasionally worse.
+
+That is the signature of a **constant per-operation cost, not an occasional
+stall**. When a segment is already blocked on contention the extra hints cost
+nothing measurable, which is why the floor holds; when nothing else is limiting,
+the tax is the whole story, which is why the ceiling drops most. Ten times the
+`fadvise` calls per expansion is exactly such a tax — paid on every expansion,
+whether or not the hint is ever used.
+
+**This unifies with the 09:13 size-scaling result.** More cells means more
+expansions means more calls, so a per-expansion tax must grow with segment size —
+which is what −15.2% at 3.97M and −39.7% at 16.0M showed. Two independent
+measurements, one mechanism.
+
+### The recovery is real but does not change the conclusion
+
+The last three segments (11,697 / 11,538 / 11,261) are cycle 4's best, and the
+device is genuinely idle — iowait 0.0% across four samples, 53–55 KB requests,
+16–43% util, free back up to 28 GB. But cycle 3's comparable stretch ran
+13,000–18,330. **Cycle 4's best is below cycle 3's median.** The ceiling
+compression is visible even at cycle 4's most favourable moment, which is the
+point of measuring the maximum rather than the average.
+
+### Where the run stands
+
+Table 286 GB at 2h48m. Cycle 3 collapsed at ~1,000 GB and 9h31m; at cycle 4's
+current ~48 GB per 30 min that is roughly **7 more hours**, so mid-afternoon
+rather than the 16:25 estimated from wall clock alone. Ingest is not the limiter
+here — the client is in `load_increment_adaptive` at 6% of phase 25/86 with zero
+errors.
+
+Nothing flagged: no segment in the trough this interval, iowait at zero, no large
+merge running.
