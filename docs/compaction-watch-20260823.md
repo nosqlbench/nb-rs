@@ -1258,3 +1258,62 @@ Windowed small-merge medians, unchanged in character:
 Cycle 3 is now past cycle 2's entire lifetime (3h46m / 385 GB) by 3h and 387 GB,
 and past cycle 1's collapse point in bytes though not in hours. Still four
 points per arm.
+
+### 03:00 — cycle 3 at 7h25m / 833 GB. Healthy, but a like-for-like series moved.
+
+| | 02:30 | 03:00 |
+|---|---|---|
+| merges | 762 | **820** |
+| large (~31k) merges | 4 | 4 — **none new (5h55m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| md0 rareq-sz | 28.7–30.6 KB | 46.4–50.0 KB |
+| md0 w/s | 1.1k–2.7k | **2.4k–9.5k** |
+| md0 %util | 25.7–33.7% | **34.5–98.1%** |
+| iowait | 0.0% | **0.3%** |
+| pending tasks | 1 | 2 |
+| table live | 772 GB | **833 GB** |
+| cache / free | 327 / 17 GB | 336 / 7 GB |
+| pretouch | 31 / 241.0 s | **33 / 256.0 s** |
+
+#### A better statistic: the 7,747-batch class
+
+"All small merges" mixes 119-, 120-, 160-, 972- and 7,747-batch merges whose
+rates are not comparable, and the mix shifts hour to hour. The 7,747 class now
+dominates — 56 of the 58 merges this interval — so track it alone: same batch
+count, completed merges only (>=95%), like-for-like.
+
+| window | n | median | median span |
+|---|---|---|---|
+| 21:00–23:00 | 30 | 10,087 | 46s |
+| 23:00–01:00 | 36 | 10,204 | 46s |
+| 01:00–02:00 | 18 | 11,862 | 40s |
+| 02:00–02:30 | 11 | 12,205 | 38s |
+| **02:30–03:00** | **8** | **4,661** | **102s** |
+
+**5.5 hours flat-to-rising, then one window 2.6x down.** This is the first
+non-flat movement in a like-for-like series all night, and it is the reason to
+introduce the statistic — the all-small median showed the same window as
+8,464 -> 6,757, a much weaker version of the same thing, because the mix moved
+underneath it.
+
+**It is not the collapse.** 4,661 b/min is 100x above the 39–46 band; iowait is
+0.3%, not ~50%; and no >=25k merge is running. A 2.6x slowdown and a 150–400x
+collapse are different phenomena.
+
+**And it is not yet a trend.** n=8, one window, and this watch has now produced
+four trend calls that reversed on the next check. The obvious candidate is the
+same contention seen at 02:00 — device at 98% util, writes up to 9,502/s. But
+that reading does not transfer cleanly: at 02:00 the device was *also* pegged
+(96% util) and this class ran at its **fastest** of the night. Busy device
+therefore does not by itself predict this. Either the write-heavy shape matters
+where the read-heavy one did not, or something else is starting.
+
+Pretouch tracks the device the same way it did at 02:00 — 5,663 -> 6,996 ->
+7,960 ms at work constant to five digits (3,966,0xx ordinals). Same up-swing as
+01:58, which reverted. Cumulative 256.0 s = **1.0% of wall clock**, unchanged
+for six checks.
+
+**Next check is the one that matters**: if the 7,747 class returns to ~10–12k
+b/min it was contention, matching the 01:58 pretouch reversal. If it stays near
+4,661 or falls further, this is the first evidence of degradation in cycle 3 and
+the run is heading somewhere at 833 GB that cycle 2 never reached.
