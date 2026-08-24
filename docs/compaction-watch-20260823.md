@@ -1401,3 +1401,69 @@ in territory cycle 2 never saw (881 GB vs 385 GB), with free memory at 2 GB.
 If a ~31k merge is scheduled from here it lands under real memory pressure —
 which is the condition under which cycle 1 collapsed, and therefore the most
 informative point this experiment could produce.
+
+### 04:00 — cycle 3 at 8h25m / 930 GB. **Third consecutive down window. Ingest unaffected.**
+
+| | 03:30 | 04:00 |
+|---|---|---|
+| merges | 877 | **924** |
+| large (~31k) merges | 4 | 4 — **none new (6h55m)** |
+| **7,747 class** | **3,417 b/min** | **2,279 b/min** |
+| 7,747 median span | 138s | **204s** |
+| md0 rareq-sz | 45.1–49.9 KB | 43.5–65.0 KB |
+| md0 r/s | 4.0k–6.9k | **4.0k–30.6k** |
+| md0 %util | 30.0–90.5% | 35.1–82.6% |
+| iowait (3x) | 0.0 / 0.1 / 1.3% | **1.0 / 1.3 / 0.0%** |
+| pending tasks | 3 | 3 |
+| table live | 881 GB | **930 GB** |
+| cache / free | 341 / 2 GB | 335 / **8 GB** |
+| pretouch | 36 / 282.7 s | **37 / 291.1 s** |
+
+#### The series is now monotone across three windows
+
+| window | n | median | span | ratio |
+|---|---|---|---|---|
+| 02:00–02:30 | 11 | 12,205 | 38s | — |
+| 02:30–03:00 | 8 | 4,661 | 102s | 0.38 |
+| 03:00–03:30 | 8 | 3,417 | 138s | 0.73 |
+| **03:30–04:00** | **8** | **2,279** | **204s** | **0.67** |
+
+5.4x off the 5.5-hour baseline. Span has gone 38s -> 204s. At the recent
+per-window ratio (~0.7) the collapse band would be several hours away, but that
+extrapolation deserves no weight: this same series sat flat for 5.5 hours before
+it moved, so it is not inherently monotone.
+
+#### Ingest is not affected
+
+Table growth: 55 GB (02:30) -> 48 GB (03:00) -> 49 GB (03:30) -> **49 GB**
+this interval. Client phase advanced 39% -> 48% -> 55%, error rate 0. **The
+vector-merge slowdown has not propagated to ingest throughput.** That bounds
+what this costs so far: it is a compaction-side effect, not a client-visible one.
+
+#### Correction to the 03:30 entry
+
+I flagged a merge "parked at 100.00%" there as a cycle-1 collapse shape. It is
+not. This check shows a different merge id at the same 100.00% and nearly the
+same byte count (6,222,686,084 vs 6,222,722,140) — these rotate through
+normally, so 100.00% is just the terminal display state, not a stall. The
+cycle-1 significance came from that merge staying parked while nothing else
+completed, which is not what is happening here.
+
+Same for the index build: the 0.13% build from 03:30 is gone, replaced by a new
+id at 0.00%. Builds are completing and recycling, unlike cycle 1 where one build
+sat at 0.26% for hours. Withdraw both as collapse indicators.
+
+#### Memory pressure eased, and the slowdown continued anyway
+
+`free` went 2 GB -> **8 GB** while the 7,747 class got *worse*. That weakens the
+page-cache-exhaustion mechanism proposed at 03:30 as a complete explanation — it
+may still be a contributor at the 881 GB threshold, but free memory recovering
+without the rate recovering means something else is carrying the trend.
+
+Collapse conditions remain absent: iowait 0.0–1.3%, requests 43–65 KB (larger
+than ever, not the 4 KB signature), no >=25k merge running, 2,279 b/min still
+50x above the band.
+
+Pretouch: 8,409 ms at 03:45 for the same 3,966,108 ordinals — within the
+9,933/6,952 spread of the last interval, no new information. Cumulative 291.1 s
+= **1.0% of wall clock**, unchanged for eight checks.
