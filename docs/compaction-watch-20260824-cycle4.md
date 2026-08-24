@@ -280,3 +280,62 @@ shown, not from a subset that happened to exclude them.
 **Not flagged as a collapse** despite iowait crossing the 25% threshold: merges
 are at 2,110–11,440 b/min and accelerating, which is the opposite of the
 collapse's defining symptom. Recorded prominently instead.
+| 09:13 | **2h18m in — the arm's penalty SCALES WITH SEGMENT SIZE, and that predicts it fails at the collapse.** Table 231 GB / 9 SSTables, pending 3, cache 339 G / free 13 GB, settle 0, phase 21/86. Device recovered: **57.8–78.6 KB at 1.8k–3.2k r/s, 11–22% util, iowait 0.0–2.9%**. Segments n=8, median 10,446 cells/s; one at **2,235 cells/s** and the 16.0M-cell at **4,967** — both in or below the collapse trough. Merges: 2,110 / 2,612 / 3,279 / **12,892** b/min. |
+
+### 09:13 analysis — the penalty grows with the size of the work
+
+Both cycles have now run a 16.0M-cell segment, and the work matches to
+**+0.016%** — the closest-matched pair this campaign has produced.
+
+| class | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| 3.97M cells | 13,133 cells/s | 11,141 | **−15.2%** |
+| **16.0M cells** | **8,242 cells/s** | **4,967** | **−39.7%** |
+
+**Quadrupling the work more than doubles the penalty.** As a retained fraction:
+0.848 at 3.97M, 0.603 at 16.0M, over a 4.04x size step — an implied
+`retained ~ size^-0.245`.
+
+Extrapolated to the 126.9M-cell segment on which cycle 3 collapsed (32x the
+standard class), that gives a retained fraction of ~0.36, i.e. **~−64%**. Two
+points do not establish a power law and this is an order-of-magnitude statement
+only — but the direction is unambiguous and it is the direction that matters:
+**the arm is worst exactly where the problem is.**
+
+Note the mechanism is coherent with the cost model. A deeper hint helps only if
+the hinted record is still resident when the search reaches it. The larger the
+segment, the longer the interval between hint and use, and the more likely a
+depth-32 hint is evicted before it pays — so waste should rise with size, which
+is what the numbers show. This is the javadoc's own argument for WIDTH=3, holding
+at larger scale rather than inverting as the above-RAM hypothesis predicted.
+
+### Correction to the 08:43 "decoupling"
+
+Last check I reported iowait at collapse levels (36–43%) while "merges run
+healthy and accelerating", and offered two competing readings. That framing was
+wrong in an avoidable way: **the 16.0M-cell segment was building throughout that
+window** — it ran ~07:57 to 08:51, spanning both the 08:13 and 08:43 checks — at
+4,967 cells/s, squarely inside the collapse trough. So throughput was *not*
+decoupled from iowait. My designated PRIMARY metric was showing the damage and I
+quoted merge rates instead.
+
+The device confirms it retrospectively: with that segment finished, iowait is
+back to 0.0–2.9% and mean request to 57.8–78.6 KB. The high-iowait,
+4.17 KB regime was that one segment build, not a steady-state property of the
+arm. Reading 1 ("the hints are working, iowait is the intended signature") is
+retired; reading 2 (the hints are waste) now has the evidence.
+
+**The 2,235 cells/s segment at 08:49:55 is not new information** — cycle 3 had an
+equivalent (2,455 cells/s) at the same point, during its own back-to-back large
+merges. Both cycles degrade under merge contention; that one is a wash.
+
+### Merges continue to converge, and that is not a contradiction
+
+| # | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| 4 | 31,908 @ 14,606 b/min | 31,678 @ **12,892** | **−11.7%** |
+
+The merge sequence keeps closing (−46, −37, −54, −11.7%) while the segment
+penalty widens with size. These measure different things: the batch counter is
+not comparable across merge geometries (established in cycle 3), whereas cells/s
+is. Where they disagree, cells/s is the metric with the fixed unit.
