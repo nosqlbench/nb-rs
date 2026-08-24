@@ -1002,3 +1002,75 @@ Cycle 3's sequence was pretouch 04:38:28 → index build 04:54:03 → graph merg
 
 CPU at 77–80% user with iowait at 0.0–0.8% says the node is in the CPU-bound
 retrain/build phase, not yet reading the graph.
+
+---
+
+## 16:38 — **VERDICT. The arm does not prevent the collapse, and my prediction was wrong.**
+
+The 30,985-batch merge began 16:28:04. Measured over 10.1 minutes (610 batches),
+with the opening 30 batches discarded as warm-start noise:
+
+| | cycle 3 (`frontierPrefetch=3`) | cycle 4 (`=32`) |
+|---|---|---|
+| elapsed at reading | 9.5 min | **10.1 min** |
+| rate | 74 b/min | **60 b/min** |
+| in cells/s | 5,052 | **4,096** |
+| implied total | 7.0 h | **8.7 h** |
+| md0 r/s | 234k–264k | **574,019** |
+| md0 mean request | 6.31–6.38 KB | **7.47 KB** |
+| md0 %util | 93.8–98.3% | **97.0–97.5%** |
+| iowait | **40.3–41.1%** | **30.0–32.4%** |
+
+Rate is stable — 60 b/min overall, 59 over the last 5 minutes, 60 over the last 3.
+The same flat bad equilibrium as every previous collapse.
+
+### Against the pre-registration (12:43, recorded before the data)
+
+| band | meaning | result |
+|---|---|---|
+| below 60 b/min | ARM FAILS | — |
+| **60–74 b/min** | **ARM NEUTRAL** | **← 60 b/min lands here, at the bottom edge** |
+| above 74 b/min | ARM WORKS | — |
+| **predicted 21.8–26.8 b/min** | | **WRONG by 2.2–2.8x** |
+
+**The prediction failed, and the way it failed is informative.** It came from the
+size-scaling law fitted at 09:13 (`retained ~ size^-0.228`, from −15.2% at 3.97M
+cells and −39.7% at 16.0M), extrapolated to ~−64% at 126.9M. The actual penalty at
+126.9M is **−18.9%** — essentially identical to the −17.1% measured on standard
+3.97M segments.
+
+**So the scaling law does not extrapolate.** It described two points and nothing
+beyond them. The honest reading of all four size classes now:
+
+| segment size | penalty |
+|---|---|
+| 3.97M cells | −17.1% |
+| **16.0M cells** | **−39.7%** |
+| 126.9M cells | **−18.9%** |
+
+The 16.0M point is the outlier, not the trend. Whatever made that one segment 40%
+worse was not size. The defensible statement is that **`frontierPrefetch=32` costs a
+roughly flat ~17–19% almost everywhere**, and the 09:13 "penalty grows with work
+size" conclusion should be withdrawn.
+
+### The mechanism, now visible
+
+Cycle 4 is issuing **2.2x the reads** (574k/s vs 234k–264k/s) at a **larger** mean
+request (7.47 vs 6.31 KB), and converting that into **19% less merge progress**.
+iowait is *lower* (31% vs 41%) — the deeper hints genuinely do keep more IO in
+flight and reduce blocking — but the extra reads are not the ones the search needs.
+
+That is the clearest statement of the whole experiment: **deeper hinting produces
+more IO, less blocking, and less work done.** The hints are aimed at the wrong
+records, and aiming more of them changes nothing about which records those are.
+
+### What this settles
+
+1. **Hint depth is retired as a lever.** 3 → 32 (the class maximum) neither
+   prevents the collapse nor materially worsens it; it costs a flat ~17–19%
+   everywhere and buys nothing.
+2. **`clusterSearchL0` coverage is the remaining candidate**, and it is a code
+   change. Three independent thread dumps put the threads there; two prefetch
+   mechanisms have now been shown not to reach it.
+3. **The 30,985 merge is 7 for 7.** Every configuration tested across four days has
+   collapsed on this one operation.
