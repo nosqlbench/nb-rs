@@ -1746,3 +1746,55 @@ calls are 67% of that total and `sourcePretouchMaxNodes` should be bounded.
 
 Collapse conditions remain met on every axis, now with the merge trending down
 rather than flat.
+
+### 06:30 — merge still sliding; a fourth compaction joins the parked queue.
+
+| | 06:00 | 06:30 |
+|---|---|---|
+| **30,985 merge (overall)** | 69 b/min @ 13.75% | **67 b/min @ 19.88%** |
+| **last 30 min** | 66 | **63 b/min** |
+| **last 10 min** | 66 | **60 b/min** |
+| implied total | 7.5 h | **7.7 h** |
+| iowait (4x) | 42.4–45.0% | 43.1 / 44.3 / 44.3 / 44.7% |
+| md0 rareq-sz | 6.39–6.48 KB | 6.40–6.46 KB |
+| md0 r/s | 225k–230k | 217k–218k |
+| md0 w/s | 44–823 | **42–45** |
+| %util | 97.8–98.2% | 97.9–98.1% |
+| **pending tasks** | 7 | **8** |
+| table live | 1,039 GB | **1,051 GB** |
+| cache / free | 339 / 3 GB | 338 / 3 GB |
+| pretouch | 41 / 724.0 s | 41 / 724.0 s (none new) |
+
+Trailing rate across four checks: **71 -> 66 -> 60 -> 60 b/min**. The decline
+has flattened this interval — the 10-minute figure is unchanged at 60 while the
+30-minute figure fell 66 -> 63, which is what a series looks like when it is
+levelling off rather than continuing down. 60 b/min is still ~1.4x above the
+39–46 band.
+
+Given this watch's record — five trend calls that reversed — the honest reading
+is that the merge is somewhere between "approaching the cycle-1 equilibrium
+slowly" and "settling at its own, slightly higher one". Both are consistent with
+the data so far, and distinguishing them needs another hour, not another
+interpretation.
+
+#### The parked queue is growing
+
+A fourth compaction appeared at 0.00% (`d43c74a0`, 6,225,128,702 bytes), pending
+7 -> 8. The other three still hold identical byte counts (1637 / 1637 / 1638) —
+now four consecutive checks unchanged. Write throughput is 42–45/s, i.e. nil;
+the device is doing nothing but graph-search reads for one merge.
+
+The small index build remains at **exactly 1,983,029 / 3,966,070 = 50.00%** —
+four consecutive checks. The 126.9M build advances: 551,168 -> **793,344
+(0.63%)**, ~135 parts/s, implying **~10.9 days** (steady with the 137 parts/s
+last interval).
+
+#### Ingest found a floor
+
+12 GB this interval, same as the previous one, after 48–49 GB before the
+collapse. Client phase 73% -> 75%, zero errors, `settle awaiting` still 0. The
+4x throttle is holding steady rather than deepening.
+
+No new pretouch calls — all executors remain inside the collapsed merge. The
+05:30 correction stands: 41 calls / 724.0 s, of which two calls are 484.0 s, and
+`sourcePretouchMaxNodes` should be bounded.
