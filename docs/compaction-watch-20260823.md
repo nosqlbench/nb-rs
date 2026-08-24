@@ -1467,3 +1467,73 @@ than ever, not the 4 KB signature), no >=25k merge running, 2,279 b/min still
 Pretouch: 8,409 ms at 03:45 for the same 3,966,108 ordinals — within the
 9,933/6,952 spread of the last interval, no new information. Cumulative 291.1 s
 = **1.0% of wall clock**, unchanged for eight checks.
+
+### 04:30 — cycle 3 at 8h55m / 978 GB. **The degradation fully reversed. Mechanism identified.**
+
+| | 04:00 | 04:30 |
+|---|---|---|
+| merges | 924 | **985** |
+| large (~31k) merges | 4 | 4 — **none new (7h25m)** |
+| **7,747 class** | **2,279 b/min** | **12,277 b/min** |
+| 7,747 median span | 204s | **40s** |
+| md0 rareq-sz | 43.5–65.0 KB | 20.7–27.5 KB |
+| md0 %util | 35.1–82.6% | 29.3–98.5% |
+| iowait (3x) | 1.0 / 1.3 / 0.0% | 1.1 / 1.1 / 0.0% |
+| pending tasks | 3 | **5** |
+| table live | 930 GB | **978 GB** |
+| cache / free | 335 / 8 GB | 339 / 4 GB |
+| pretouch | 37 / 291.1 s | **39 / 305.8 s** |
+
+#### Correction: the three-window decline was episodic, not progressive
+
+| window | median | span |
+|---|---|---|
+| 02:00–02:30 | 12,205 | 38s |
+| 02:30–03:00 | 4,661 | 102s |
+| 03:00–03:30 | 3,417 | 138s |
+| 03:30–04:00 | 2,279 | 204s |
+| **04:00–04:30** | **12,277** | **40s** |
+
+Back to baseline in one window — 12,277 vs the 12,205 it started from, span 204s
+-> 40s. **I called this a genuine degradation at 03:30 and reaffirmed it at
+04:00; both calls were wrong.** The two-window standard I set at 03:00 to guard
+against single-window noise was not strict enough: three consecutive monotone
+windows in a like-for-like series still reversed completely.
+
+#### The mechanism, and it was contention after all
+
+The 199,140,724,110-byte compaction that read 18.93% at 04:00 now reads
+**100.00%**. Tracking it back: 192.9 GB at 44.79% (03:30), 199.1 GB at 18.93%
+(04:00) — a run of ~193–199 GB compactions was in flight continuously from
+roughly 02:30 to 04:15, which is exactly the span of the decline, and the class
+recovered in the window one completed.
+
+So the 02:00 contention reading was right; it was rejected at 03:00 for the
+wrong reason. The objection then was that the device had been equally pegged at
+02:00 while the class ran its fastest. That compared the wrong things — a
+30-second iostat window against a 1.5-hour compaction. The unit of contention
+here is the compaction's lifetime, not the instantaneous device state.
+
+**Standing rule going forward: read this series against `compactionstats`
+lifetimes, not against iostat windows.** A window where a >=100 GB compaction is
+in flight is not comparable to one where none is.
+
+#### New and worth watching: the 126.9M-part index build has started
+
+```
+9daba2d0  Secondary index build   0 / 126,916,949 token range parts   0.00%
+```
+
+126,916,949 parts is the same build that in the cycle-1 collapse capture sat at
+0.26% advancing at ~91 parts/s — a 15-day implied ETA. It has just started here
+at 0. This is the first time cycle 3 has reached it. Its rate over the next
+checks is a direct comparison against cycle 1 and is worth recording each time.
+
+(The other build at 11.25% of 3,966,070 is the small recurring kind that has
+been recycling all night — not this one.)
+
+Also new: a 24,898,876,795-byte compaction at 0.00%, and pending up to 5.
+
+Collapse conditions still absent: iowait 0.0–1.1%, requests 20–27 KB, no >=25k
+merge running. Pretouch 6,426–8,409 ms at constant work, cumulative 305.8 s =
+**1.0% of wall clock**, unchanged for nine checks.
