@@ -1074,3 +1074,52 @@ records, and aiming more of them changes nothing about which records those are.
    mechanisms have now been shown not to reach it.
 3. **The 30,985 merge is 7 for 7.** Every configuration tested across four days has
    collapsed on this one operation.
+
+### 16:43 — read amplification, the cleanest measure of what the arm actually did
+
+Both cycles now have a collapse merge on the identical 126.9M-ordinal operation,
+and in both the device is doing essentially nothing else (`w/s` is 55). So all
+device traffic is the merge's own reads, and **bytes read per ordinal processed**
+becomes computable — a measure no earlier check could produce, because it needs a
+matched merge in both cycles.
+
+| | device throughput | merge progress | **KB read per ordinal** |
+|---|---|---|---|
+| cycle 3 (`frontierPrefetch=3`) | 249k r/s x 6.35 KB = **1.51 GB/s** | 74 b/min = 5,052 ord/s | **313 KB** |
+| **cycle 4 (`=32`)** | 580k r/s x 7.48 KB = **4.14 GB/s** | 59 b/min = 4,028 ord/s | **1,079 KB** |
+
+**Cycle 4 reads 3.4x more bytes per ordinal and delivers 20% less throughput.**
+
+That is the arm's effect stated without reference to any band or threshold: it
+converted a device already doing 1.5 GB/s into one doing **4.1 GB/s — near this
+NVMe array's ceiling — for less work done.** Sustained 580,000 reads/s at 7.48 KB.
+
+It also explains the lower iowait (31% vs 41%) without contradicting anything.
+Deeper hints do exactly what they promise: more requests in flight, less time
+blocked per thread. The requests are simply for records the search does not go on
+to need. **More IO, less blocking, less progress** — all three at once, and only
+the third one matters.
+
+| | 16:38 | 16:43 |
+|---|---|---|
+| 30,985 merge | 60 b/min @ 1.97% | **59 b/min @ 2.94%** |
+| last 10 min | — | 58 b/min |
+| implied total | 8.7 h | 8.8 h |
+| md0 r/s | 574,019 | **577,883–584,200** |
+| md0 mean request | 7.47 KB | 7.48–7.49 KB |
+| iowait (4x) | 30.0–32.4% | 31.5–32.9% |
+| pending tasks | 5 | **6** |
+| table live | 1,020 GB | 1,033 GB |
+| SSTables | 11 | 13 |
+
+Flat and stable, as every collapse in this campaign has been.
+
+**A note on the index-build counter.** At 16:25 it read 93.85% and I reported it
+while explicitly declining to conclude from it. It has now **reset to 0.10%**
+(126,080 / 126,915,802) — the same state cycle 3 showed at 0.63%. The 93.85% was a
+different phase of the same build. Declining to lean on that counter was correct;
+it would have supported a spectacular and entirely false claim.
+
+Segments unchanged at median 11,240 (n=40, eleventh flat check); none have run
+since 15:52 because every executor is inside the merge. Pending has grown to 6 with
+a 31 GB and a 6.2 GB compaction parked at 0.00% — the same queue backup as cycle 3.
