@@ -794,3 +794,57 @@ so on this measure cycle 4 is close. Segment rate has not responded — still 11
 — consistent with the 13:13 point that each merge touches only its own sources.
 
 No large merge for 5h00m. Nothing flagged.
+| 14:13 | **7h18m in — cycle 4 has passed the point where cycle 3 first dipped, without dipping.** Table 808 GB / 36 SSTables, **SAI index 598.4 GiB** (1.86x the 322 G cache, up from 1.76x), pending 2, free 21 GB, iowait **0.0–1.3%**, settle 0, phase 45/86. Device: 53.5–55.2 KB at 3.7k–4.2k r/s, util 33–69%. Segments n=32, median **11,289** — eighth consecutive flat check. |
+
+### 14:13 analysis — does the standard-segment series warn before a collapse?
+
+Eight flat checks are only meaningful if flatness is informative. So: what did
+cycle 3's standard-segment series do in the hours before its t+564m collapse?
+
+| t+min | cycle 3 | | cycle 4 |
+|---|---|---|---|
+| 385–389 | 11,635 | | 11,346 |
+| 397–401 | 12,113 | | 10,855 |
+| 409–413 | 11,523 | | 11,475 |
+| 421 | — | | 11,610 |
+| **429** | **6,962** | | — |
+| 441 | 9,377 | | — |
+| **434** | — | | **11,141** |
+| 457 | **6,229** trough | | |
+| 471 | **6,179** trough | | |
+| 489 | **4,792** trough | | |
+| 503 | **5,206** trough | | |
+| 511 | 13,263 | | |
+| 523 | 12,577 | | |
+| **564** | **COLLAPSE** | | |
+
+**Cycle 3 broke flat at t+429m and spent t+457–503m in the collapse trough**, then
+recovered fully at t+511–523m before collapsing at t+564m. Cycle 4 is at t+434m
+and is still at 11,141 — five minutes past the point where the baseline first
+dropped, with no sign of it.
+
+That is the first observation in this run that favours the arm. Two caveats keep
+it from being more:
+
+1. **Cycle 3's dip was byte-compaction contention, not a collapse precursor.** The
+   t+457–503m window is 03:11–03:58 UTC, which the 04:30 entry established was
+   driven by a run of ~193–199 GB compactions and recovered the window one
+   finished. So the thing cycle 4 has avoided may be a contention episode rather
+   than anything predictive.
+2. **The contention loads are not matched.** Cycle 4's compactions through this
+   window have been 143–168 GB against cycle 3's 193–199 GB. Smaller load,
+   so an easier test.
+
+Which also answers the question that prompted this: **the standard-segment series
+did NOT reliably warn.** Cycle 3 recovered to 12,577–13,263 in the two segments
+immediately before collapsing. Eight flat checks in cycle 4 therefore carry no
+predictive weight about what happens at t+564m — the verdict still rests entirely
+on the 126.9M-cell segment itself, exactly as pre-registered at 12:43.
+
+### Collapse precondition
+
+SAI index **551.0 -> 598.4 GiB**, cache 313 -> 322 G: ratio **1.76x -> 1.86x**,
+now level with the ~1.87x estimated for cycle 3 at its collapse. Table 808 GB
+against cycle 3's ~1,000 GB. No large merge for 5h30m.
+
+Nothing flagged: iowait 0.0–1.3%, requests 53–55 KB, no segment in the trough.
