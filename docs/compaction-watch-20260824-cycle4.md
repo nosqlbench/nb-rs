@@ -83,3 +83,4 @@ code change, as the remaining candidate.
 | when | note |
 |---|---|
 | 06:54:50 | cycle 4 started. Node clean (98 KiB load), cache 259 G / free 108 G. Flag confirmed on the JVM command line. |
+| 07:12 | **17 min in — warm-up, nothing to measure yet.** Table 6.2 GB / 1 SSTable, pending 0, device idle (r/s 0, 55 w/s, 0.2% util), iowait 0.0%, cache 279 G / free 80 G, settle 0. No segment builds yet — cycle 3's first came 36 min after start, so this is on schedule. Phase 5/86 `compaction_watch`, which is exactly where cycle 3 sat at the same elapsed time (216 vs 239 status lines in the same phase over the first 20 min). Startup is tracking the baseline. |
