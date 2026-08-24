@@ -993,3 +993,50 @@ Cycle 3 is 131 GB past the empty-start comparison. Still four large merges
 each and no separation. Cycle 1 collapsed at 9h25m from a populated start;
 cycle 3 is at 4h25m from empty, so on wall clock it is not yet halfway to the
 only collapse ever observed.
+
+### 00:30 — cycle 3 at 4h55m / 574 GB, healthy. Still no large merge in 3h30m.
+
+| | 00:00 | 00:30 |
+|---|---|---|
+| merges | 476 | **534** |
+| large (~31k) merges | 4 | 4 — **none new (3h30m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median | 10,107 | **10,424 b/min** |
+| md0 rareq-sz | 38.0–39.4 KB | 32.5–36.6 KB |
+| md0 %util | 24.1–45.2% | 20.8–72.1% |
+| iowait | 0.1% | **0.1%** |
+| CPU user | 36.5% | 37.1% |
+| table live | 516 GB | **574 GB** |
+| cache / free | 336 / 11 GB | 328 / 18 GB |
+| pretouch | 19 / 160.7 s | **21 / 176.2 s** |
+
+58 small merges, median up slightly to 10,424. Device healthy, iowait 0.1%.
+Client at phase 41/86, back in `load_increment_adaptive`.
+
+**Pretouch: one slow call, not a resumed decline.** Last three were 881k /
+711k / **398k** ord/s. The 398k is the lowest since the 20:38 episode, which is
+the shape that fooled me at 21:00. Applying the rule adopted at 23:30: the
+split-half is 1,327,539 vs 710,524 — **essentially unchanged** from the 00:00
+check (1,342,295 vs 761,517), so the plateau has not moved. One low sample
+against a stable split-half is a slow call, not a trend. Recording it; will
+revisit only if the split-half itself moves.
+
+Cumulative 176.2 s = **1.0% of wall clock**, unchanged.
+
+### Head-to-head
+
+| table size | cycle 2 | cycle 3 |
+|---|---|---|
+| 385 GB | healthy (3h11m, last point) | healthy (3h25m) |
+| 574 GB | never observed | **healthy (4h55m)** |
+
+189 GB past the empty-start comparison. Four large merges per arm, no
+separation. Cycle 1 collapsed at 9h25m from a populated start; cycle 3 is at
+4h55m from empty.
+
+Worth noting what the absence of large merges means: the result set has not
+grown since 21:05, so the arm comparison has had no new evidence for 3.5 hours
+despite the run being healthy and productive. The decisive data only arrives
+when STCS schedules another ~31k merge — and it will arrive under heavier
+cache pressure than the first four did, which is precisely the condition of
+interest.
