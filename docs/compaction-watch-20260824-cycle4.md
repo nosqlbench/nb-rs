@@ -506,3 +506,56 @@ The experiment turns on whether that remains true when the slack is gone.
 
 Nothing flagged: iowait 0.0–1.1%, no segment in the trough, no large merge since
 08:43, pretouch 17 calls with none >10M since 07:58.
+| 11:13 | **4h18m in — corrects last check's headroom method; the conclusion survives with different numbers.** Table 462 GB / 20 SSTables, pending 1, cache 337 G / free 11 GB, iowait **0.0–1.1%**, settle 0, phase 33/86 `concurrent_query`. Device: 45.1–48.9 KB at ~2,500 r/s, util 19–89% (write bursts to 18.5k w/s). Segments n=18, median **11,238**; last three 11,139 / 11,216 / 11,395 — flat. |
+
+### Correction — last check's duty cycle summed concurrent builds
+
+At 10:43 I reported "duty cycle 58.2% vs 74.2%" and concluded cycle 4 had spent
+38% of its headroom. **That measure was invalid.** It summed per-segment build
+times over wall clock, but `-Dcassandra.sai.vector.concurrent_builds=2` allows two
+segments to build simultaneously — so the sum can legitimately reach 200% and is
+not an occupancy figure at all. Computing it per-hour made the error obvious: the
+t+60–120m window came out at 124% for cycle 3 and 149.9% for cycle 4.
+
+Recomputed as the **union of build intervals** (each segment's span reconstructed
+from its completion time and duration):
+
+| window | c3 busy | c3 peak | c4 busy | c4 peak |
+|---|---|---|---|---|
+| t+0–60m | 32.7% | 1 | 40.7% | 1 |
+| t+60–120m | 79.1% | 2 | **97.0%** | 2 |
+| t+120–180m | 31.6% | 1 | 51.4% | 2 |
+| t+180–240m | 36.1% | 1 | 40.5% | 1 |
+| **whole run to t+256m** | **43.9%** | | **57.7%** | |
+
+The conclusion survives, with smaller margins than I claimed: cycle 4 runs at
+**57.7% occupancy against cycle 3's 43.9%** — so ~42% headroom remains, not the
+26% stated at 10:43. The 10:43 cumulative-work finding is unaffected; that was
+pure counting of completed segments and needs no occupancy model.
+
+### The new part — cycle 4 has already touched saturation once
+
+**During t+60–120m cycle 4 hit 97.0% occupancy at concurrency 2.** That window is
+07:55–08:55, which contains the 16.0M-cell segment and the four large merges.
+Cycle 3 reached 79.1% over the same window. So the arm has already produced one
+near-saturation episode where the baseline had ~20 points of slack left — and that
+is precisely the regime where a per-unit tax stops being free.
+
+It recovered: t+180–240m is back to 40.5%, barely above cycle 3's 36.1%. So this
+is not a trend, it is evidence that **the headroom gap is not uniform** — it is
+small when the pipeline is idle and large when it is loaded, which is the same
+ceiling-compression shape found at 09:43, now visible in occupancy rather than
+rate.
+
+### A limit of this metric, worth recording before the collapse
+
+Cycle 3's collapse hour (t+504–564m) computes to **17.1% busy at concurrency 1** —
+which looks idle and is completely misleading. Occupancy is derived from
+*completed* segments, and during the collapse the 126.9M-cell segment ran for
+hours without completing, so it contributes nothing to any window. **This metric
+cannot detect the collapse; it can only measure headroom during healthy
+operation.** Use cells/s and the device signature for the collapse itself.
+
+Nothing flagged: iowait 0.0–1.1%, no segment in the trough, no large merge since
+08:43. The 89%/79% util spikes are write bursts (8.3k–18.5k w/s) from an 87 GB
+byte compaction at 34.6%, not the read-starvation pattern.
