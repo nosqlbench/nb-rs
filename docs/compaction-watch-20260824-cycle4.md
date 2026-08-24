@@ -650,3 +650,49 @@ byte-compaction pattern that produced three false alarms in cycle 1, not read
 starvation. Recorded, not flagged.
 
 Cycle 4 is at t+310m; cycle 3 collapsed at t+564m.
+| 12:43 | **5h48m in — pre-registering the verdict before the decisive segment arrives.** Table 626 GB / 26 SSTables, pending 1, cache 319 G / free 25 GB, iowait **0.0–1.0%**, settle 0, phase 45/86. Device calm: 36.3–40.3 KB at ~2,700 r/s, 25–26% util. Segments n=25, median **11,219** (was 11,240); last three 10,814 / 10,732 / 11,525. |
+
+### 12:43 analysis — the prediction, on record, before the data
+
+Cycle 3's collapse was one 126.9M-cell segment. Cycle 4 should reach it in about
+3.5 hours. Given that this watch has already produced five trend calls that
+reversed and one "exonerated" conclusion that had to be retracted, the specific
+failure mode to guard against now is **fitting the story to whatever arrives**.
+So the prediction goes in the log first, with numbers that can be wrong.
+
+**When.** Cumulative cells match exactly at six checkpoints, so cycle 4 should hit
+cycle 3's collapse work point (170,841,975 cells, reached at t+564m) at about
+t+564m — **~16:18 UTC**, ±40 min for the ~7.5% byte offset.
+
+**The baseline, converted into the primary metric.** Cycle 3's 126.9M-cell segment
+ran at 60–74 b/min; at 4,096 ordinals per batch that is **4,096–5,052 cells/s**,
+implying 7.0–8.6 h for the segment.
+
+**The prediction.** The measured size-scaling law (`retained ~ size^-0.245`, fitted
+on −15.2% at 3.97M and −39.7% at 16.0M) gives a retained fraction of **0.36** at
+126.9M cells:
+
+> **Cycle 4's 126.9M segment will run at roughly 1,486–1,833 cells/s — 19–24 hours
+> — and the arm will have made the collapse materially worse.**
+
+**Falsifiable outcomes, decided in advance:**
+
+| result | meaning |
+|---|---|
+| **below 4,096 cells/s** | ARM FAILS — worse than the `frontierPrefetch=3` baseline |
+| 4,096–5,052 cells/s | ARM NEUTRAL — the tax is invisible where it matters |
+| **above 5,052 cells/s** | **ARM WORKS** — the only outcome that justifies the setting |
+
+If the result lands above 5,052 cells/s, the size-scaling law is wrong and the
+above-RAM hypothesis is right, and this entry should be cited as the prediction
+that failed. Two points do not make a power law; that caveat was recorded at 09:13
+and stands.
+
+### Otherwise stable
+
+Segment median 11,240 -> 11,219, within noise, flat for five checks. No large merge
+since 08:43 — a 3h50m gap, so the STCS schedule has not yet produced another. The
+131 GB byte compaction at 46.6% is the only pending work. Pretouch 26 calls /
+206.3 s, nothing above 10M ordinals since 07:58. Free memory has *risen* to 25 GB
+at 626 GB of table, so the working set still fits comfortably — the collapse
+precondition is not yet in place.
