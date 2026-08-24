@@ -200,3 +200,83 @@ Note the device already shows 4.70 KB mean request at 98–100% util — the
 small-request signature — while iowait sits at 3.0–3.6% rather than cycle 3's
 collapse-time 40–45%. Recorded, not interpreted: cycle 3 also ran cool here, and
 the signature means nothing without the iowait.
+| 08:43 | **1h48m in — iowait is at collapse levels (36.6/41.1/43.2/41.2%) while merges run healthy and accelerating.** Table 182.6 GB / 9 SSTables, pending 5, cache 349 G / free 4 GB, settle 0, phase 17/86. md0 **4.14–4.18 KB at 214k–229k r/s, 98–99% util**. Segments still n=5 (no flush since 08:03; two index builds in progress at 79% and 25%). Large merges done: 2,110 / 2,612 / 3,175 b/min, with a fourth at 11,440 partial. |
+
+### 08:43 analysis — iowait and throughput have decoupled
+
+Cycle 3's collapse was defined by four things co-occurring. Cycle 4 now has
+three of them and not the fourth:
+
+| | cycle 3 collapse (1,008 GB) | cycle 4 now (182.6 GB) |
+|---|---|---|
+| md0 mean request | 6.31–6.38 KB | **4.14–4.18 KB** (smaller) |
+| md0 r/s | 234k–264k | **214k–229k** (comparable) |
+| %util | 93.8–98.3% | **98.2–99.0%** (comparable) |
+| iowait | 40.3–41.1% | **36.6–43.2%** (comparable) |
+| **large merge rate** | **60–74 b/min** | **2,110–11,440 b/min** |
+
+**The device signature and the iowait are at collapse levels; the throughput is
+43–190x better.** In cycle 3 those always moved together.
+
+For scale against cycle 3's *healthy* hours, from its own watch log: it ran at
+~2,700–4,200 r/s at 26–54 KB for most of the night, with brief small-request
+episodes reaching 24–34k r/s (561 GB) and 69k–117k r/s (815 GB), and iowait
+never above 1.3% until the collapse. **Cycle 4 is sustaining more IOPS than
+cycle 3's collapse produced, at a fifth the table size.**
+
+Two readings, and the data does not yet separate them:
+
+1. **The hints are working.** `posix_fadvise(WILLNEED)` at depth 32 puts many
+   reads in flight; the device saturates and iowait rises because there is
+   always outstanding IO, but threads are not serialised behind demand faults —
+   which is why merges stay fast. On this reading high iowait is the *intended*
+   signature, not a warning.
+2. **The hints are waste.** 10x the hints generate 10x the readahead, most of it
+   displaced before use, saturating the device five times earlier than the
+   default did. Benign now because the working set still fits in 349 G of cache;
+   damaging once it does not.
+
+**What separates them is whether merge throughput survives the transition above
+RAM** — which is exactly the experiment, ~5–6 hours out. Recording the numbers
+now so the comparison at 1,000 GB is against a measured baseline rather than a
+recollection.
+
+### The merge sequence is converging on cycle 3
+
+| # | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| 1 | 30,987 @t+69m, 3,912 b/min | 30,996 @t+71m, 2,110 | −46% |
+| 2 | 30,996 @t+78m, 4,131 | 31,006 @t+85m, 2,612 | −37% |
+| 3 | 31,216 @t+85m, 6,933 | 31,446 @t+98m, 3,175 | −54% |
+| 4 | 31,908 @t+90m, 14,606 | 31,678 @t+109m, 11,440 (part) | −22% |
+
+Both cycles accelerate through the early large merges; cycle 4 starts at roughly
+half the rate and closes to −22% by the fourth. It is also running the sequence
+slower in wall clock (t+71/85/98/109 vs t+69/78/85/90). Only the 30,996 pair is
+size-matched; the rest are near-neighbours, so read the shape, not the deltas.
+
+### Correction to the 08:13 control claim
+
+Last check I called the pretouch control "parity" from a subset. The full series
+at equal ordinal is noisier than that implied — it has large outliers in **both**
+directions:
+
+| # | cycle 3 ord/s | cycle 4 ord/s | delta |
+|---|---|---|---|
+| 1 | 1,519,403 | 1,476,076 | −2.9% |
+| 2 | 1,547,541 | 1,557,678 | +0.7% |
+| 3 | 1,497,269 | 1,386,699 | −7.4% |
+| 4 | 1,454,864 | 1,449,042 | −0.4% |
+| 5 | **349,099** | 1,442,789 | **+313.3%** |
+| 6 | 219,104 | 237,739 | +8.5% |
+| 7 | 687,137 | **289,411** | **−57.9%** |
+
+Calls 5 and 7 are 4–5x off their own neighbours — contention events, one in each
+cycle. The robust read is the five non-outlier pairs: **median −0.4%, range −7.4
+to +8.5%.** The control still holds and the −20% on segments is still
+attributable to the arm, but "parity" should have been stated with the outliers
+shown, not from a subset that happened to exclude them.
+
+**Not flagged as a collapse** despite iowait crossing the 25% threshold: merges
+are at 2,110–11,440 b/min and accelerating, which is the opposite of the
+collapse's defining symptom. Recorded prominently instead.
