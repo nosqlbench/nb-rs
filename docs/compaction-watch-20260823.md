@@ -1142,3 +1142,58 @@ work. Cumulative 214.1 s = **1.0% of wall clock**, unchanged.
 
 Position unchanged from 01:00: healthy, productive, 36 GB further on, and the
 arm comparison still rests on four points per cycle, none added since 21:05.
+
+### 02:00 — cycle 3 at 6h25m / 717 GB. Healthy. A byte compaction is running.
+
+| | 01:40 | 02:00 |
+|---|---|---|
+| merges | 636 | **694** |
+| large (~31k) merges | 4 | 4 — **none new (4h55m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| md0 rareq-sz | 27.9–31.9 KB | **10.6–11.4 KB** |
+| md0 r/s | ~3,100 | **17.1k–18.7k** |
+| md0 %util | 25.1–28.6% | **91.0–96.9%** |
+| iowait | 0.0% | **1.0%** |
+| CPU user | 38.7% | 17.9% |
+| pending tasks | 1 | 3 |
+| table live | 669 GB | **717 GB** |
+| cache / free | 326 / 18 GB | 336 / 8 GB |
+| pretouch | 27 / 214.1 s | **29 / 228.8 s** |
+
+**The device signature is back and it is NOT the collapse.** 10.6 KB mean
+request, 18k r/s, 96% util is the pattern that produced three false alarms in
+cycle 1. The two conditions that define the collapse are both absent:
+
+- iowait is **1.0%**, not ~50%
+- no >=25k merge is running at all, let alone at 39–46 b/min
+
+Merge throughput during exactly this window is the highest of the night:
+
+| window | n | median |
+|---|---|---|
+| 22:00–00:00 | 50 | 9,564 |
+| 00:00–01:00 | 22 | 8,960 |
+| 01:00–01:40 | 18 | 9,371 |
+| **01:40–02:00** | **6** | **9,591** |
+
+Flat-to-up across four windows. Device is context; batch rate is the result, and
+the result says healthy. Three pending tasks and 48 GB added in 20 minutes says
+a large byte compaction — which is what this signature has meant every time.
+
+**Pretouch elapsed is creeping at constant work** — this is the one thing worth
+watching:
+
+| time | ordinals | elapsed | ord/s |
+|---|---|---|---|
+| 01:34 | 3,966,071 | 6,431 ms | 616,711 |
+| 01:46 | 3,966,125 | 6,791 ms | 584,027 |
+| 01:58 | 3,966,113 | 7,866 ms | 504,210 |
+
+Work is constant to five significant digits, so this is not the super-linear
+growth that would argue for bounding `sourcePretouchMaxNodes`. The simplest
+reading is contention: the slowest sample lands inside the byte compaction that
+has the device at 96%. That is a hypothesis fitted to one interval, not a
+finding — if elapsed stays high after the device quiets, it becomes real.
+Cumulative 228.8 s = **1.0% of wall clock**, unchanged for four checks.
+
+Position unchanged: the arms are still four points each, none added since 21:05.
