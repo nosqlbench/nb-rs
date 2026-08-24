@@ -1317,3 +1317,87 @@ for six checks.
 b/min it was contention, matching the 01:58 pretouch reversal. If it stays near
 4,661 or falls further, this is the first evidence of degradation in cycle 3 and
 the run is heading somewhere at 833 GB that cycle 2 never reached.
+
+### 03:30 — cycle 3 at 7h55m / 881 GB. **The 7,747 class did NOT recover. Page cache is full.**
+
+| | 03:00 | 03:30 |
+|---|---|---|
+| merges | 820 | **877** |
+| large (~31k) merges | 4 | 4 — **none new (6h25m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| **7,747 class** | **4,661 b/min** | **3,417 b/min** |
+| 7,747 median span | 102s | **138s** |
+| md0 rareq-sz | 46.4–50.0 KB | 45.1–49.9 KB |
+| md0 %util | 34.5–98.1% | 30.0–90.5% |
+| iowait (3x) | 0.3% | **0.0 / 0.1 / 1.3%** |
+| pending tasks | 2 | 3 |
+| table live | 833 GB | **881 GB** |
+| cache / **free** | 336 / 7 GB | 341 / **2 GB** |
+| pretouch | 33 / 256.0 s | **36 / 282.7 s** |
+
+#### The 03:00 question is answered: it was not contention
+
+| window | n | median | median span |
+|---|---|---|---|
+| 21:00–23:00 | 30 | 10,087 | 46s |
+| 23:00–01:00 | 36 | 10,204 | 46s |
+| 01:00–02:00 | 18 | 11,862 | 40s |
+| 02:00–02:30 | 11 | 12,205 | 38s |
+| 02:30–03:00 | 8 | 4,661 | 102s |
+| **03:00–03:30** | **8** | **3,417** | **138s** |
+
+Two consecutive windows, monotone down, same batch count, completed merges only.
+That is the standard set at 03:00 for calling this real, and it is met: **3.5x
+off a 5.5-hour baseline**, span 38s -> 138s. This is the first genuine
+degradation in cycle 3, and unlike the four earlier trend calls in this watch it
+survived the next check rather than reversing.
+
+#### The mechanism is page-cache exhaustion, not the read-starvation collapse
+
+`free` has gone 17 GB (02:30) -> 7 GB (03:00) -> **2 GB**, with cache pinned at
+341 G against an 881 GB table. This is the bistability regime recorded on
+2026-08-22: merges inflate once the working set stops fitting. It is the
+expected consequence of running cycle 3 far past any prior cycle's size, not a
+new fault.
+
+`nodetool compactionstats` shows two shapes that also appeared in the cycle-1
+collapse capture:
+
+- a 6,222,722,140-byte merge **parked at 100.00%** (completed == total)
+- the **Secondary index build at 0.13%** — 5,120 of 3,966,069 token range parts
+
+The index-build total is exactly the pretouch ordinal count (3,966,069), which
+confirms the pretouch is warming the source for that build.
+
+**It is still not the collapse**, and the distinction matters:
+
+| | collapse (cycle 1) | now |
+|---|---|---|
+| merge rate | 39–44 b/min | **3,417** (78x higher) |
+| iowait | 50.1% sustained | **0.0 / 0.1 / 1.3%** |
+| mean request | 4.02 KB | **45–50 KB** |
+| >=25k merge running | yes | no |
+
+Read-starvation is absent: requests are large and iowait is at the floor. What
+is happening is byte-compaction pressure plus a working set that no longer fits.
+
+#### Pretouch took its two worst samples of the night, then recovered
+
+| time | ordinals | elapsed | ord/s |
+|---|---|---|---|
+| 03:01 | 3,966,118 | **9,822 ms** | 403,799 |
+| 03:15 | 3,966,108 | **9,933 ms** | 399,286 |
+| 03:30 | 3,966,069 | 6,952 ms | 570,493 |
+
+Work constant to five digits throughout; 2.4x worse than the night's best
+(5,663 ms) at the trough, recovering within the same interval. Cumulative
+282.7 s = **1.0% of wall clock**, unchanged for seven checks — the pretouch is
+not what is costing anything here.
+
+#### What to watch next
+
+The A/B still has four points per arm and none since 21:05. But cycle 3 is now
+in territory cycle 2 never saw (881 GB vs 385 GB), with free memory at 2 GB.
+If a ~31k merge is scheduled from here it lands under real memory pressure —
+which is the condition under which cycle 1 collapsed, and therefore the most
+informative point this experiment could produce.
