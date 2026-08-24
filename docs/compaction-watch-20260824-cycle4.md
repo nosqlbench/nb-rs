@@ -848,3 +848,52 @@ now level with the ~1.87x estimated for cycle 3 at its collapse. Table 808 GB
 against cycle 3's ~1,000 GB. No large merge for 5h30m.
 
 Nothing flagged: iowait 0.0–1.3%, requests 53–55 KB, no segment in the trough.
+| 14:43 | **7h48m in — the STCS tier that produced cycle 3's collapse merge is now FULL at 32 members.** Table 863 GB / 35 SSTables, **SAI index 657.5 GiB** (1.96x the 335 G cache), pending 3, free 7 GB, iowait **0.8–3.0%**, settle 0. Device: 7.1–9.3 KB at 14k–37k r/s, 98–100% util (byte compaction). Segments n=34, median **11,285** — ninth flat check. |
+
+### 14:43 analysis — identifying the trigger, and it is armed
+
+STCS compacts *tiers* of similarly-sized SSTables, so the size histogram predicts
+when the next large merge fires. Bucketing cycle 4's base-data SSTables by
+power-of-two tier:
+
+| tier | count | total |
+|---|---|---|
+| 1–2 GiB | 5 | 7.2 GiB |
+| **4–8 GiB** | **32** | **185.5 GiB** |
+| 16–32 GiB | 1 | 23.4 GiB |
+| 128–256 GiB | 1 | 133.2 GiB |
+
+**The 4–8 GiB tier holds exactly 32 SSTables totalling 185.5 GiB.** Two independent
+facts identify that as the collapse merge:
+
+- Cycle 3's pretouch for the collapsed merge logged *"126,916,949 ordinals **across
+  32 sources**"*.
+- Cycle 3's `compactionstats` carried a **199,140,724,110-byte** compaction through
+  the collapse window — which is **185.46 GiB**, matching this tier's 185.5 GiB.
+
+So cycle 3's collapse was the 32-source, 185.5 GiB compaction of the 4–8 GiB tier,
+and **cycle 4's equivalent tier is now full.** The decisive merge is imminent —
+plausibly deferred only by the 168 GiB compaction currently at 79%.
+
+This is a better predictor than either of the two used so far. The cells-based
+estimate (t+564m, ~16:18 UTC) and the index/cache ratio (1.96x now, ~1.87x
+estimated for cycle 3) are both indirect; tier occupancy is the actual scheduling
+mechanism, and it says the trigger is armed rather than approaching.
+
+### The pre-registered prediction stands unchanged
+
+From 12:43, before any of this: cycle 4's 126.9M-cell segment will run at
+**1,486–1,833 cells/s** against cycle 3's 4,096–5,052; **above 5,052 the arm works
+and the prediction failed.** Nothing since has altered it — the one contrary
+observation (cycle 4 passing t+429m without dipping, 14:13) was shown in the same
+entry to carry no predictive weight, because cycle 3 recovered to 12,577–13,263 in
+the two segments immediately before collapsing.
+
+### Device is already in the small-request regime
+
+7.1–9.3 KB at 14k–37k r/s and 98–100% util, with iowait 0.8–3.0% and CPU 32–34%
+sy. This is the byte-compaction pattern, not read starvation — iowait would be
+40–50% for the latter. Recorded because it will need distinguishing from the real
+thing shortly.
+
+Nothing flagged.
