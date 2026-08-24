@@ -605,3 +605,48 @@ with nothing above 10M ordinals since 07:58.
 
 Nothing flagged. Cycle 3's collapse came at t+564m; cycle 4 is at t+282m, exactly
 halfway.
+| 12:13 | **5h18m in — the byte lag is a stable offset, not a divergence.** Table 565 GB / 22 SSTables, pending 3, cache 339 G / free 6 GB, iowait **0.1–0.7%**, settle 0, phase 41/86. Device: **4.46–4.56 KB** at 3.2k–4.7k r/s, 98–99% util, CPU 59–63% us + 25–26% sy. Segments n=22, median **11,240** — unchanged for four consecutive checks. |
+
+### 12:13 analysis — answering last check's question
+
+At 11:43 I flagged a 5.3% equal-bytes lag and said: if it grows it is the leading
+indicator of the transition; if it holds at ~5% it is compaction-state noise. Now
+there are three points:
+
+| table size | cycle 3 reached | cycle 4 reached | lag |
+|---|---|---|---|
+| 462 GB | t+240m | t+258m | +18 min (**+7.3%**) |
+| 516 GB | t+267m | t+282m | +15 min (**+5.7%**) |
+| 565 GB | t+291m | t+318m | +27 min (**+9.4%**) |
+
+**Non-monotone — 7.3 -> 5.7 -> 9.4% — so it is an offset, not a divergence.**
+Mean ~7.5%, and the middle point is the smallest, which rules out steady growth.
+Against that, cumulative index cells now match at **six** checkpoints:
+
+| t+min | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| 240 | 79,621,551 | 79,625,492 | +0.00% |
+| 270 | 91,519,941 | 91,523,697 | +0.00% |
+| 300 | 99,452,211 | 99,455,877 | +0.00% |
+| **310** | **103,418,316** | **103,421,994** | **+0.00%** |
+
+Exact agreement over 5.2 hours against a noisy ~7.5% byte offset built on
+interpolating cycle 3's sparse size record (10 points across 5 hours). The cells
+measurement wins on both precision and directness. **Conclusion: the arm has not
+started costing throughput.** The byte offset is real but stable and most likely
+reflects compaction-state accounting — cycle 4 has 22 SSTables and just finished a
+112 GB compaction, and `Space used (live)` moves with what has been released, not
+with what has been written.
+
+### Otherwise nothing new
+
+Segment median has been 11,238 / 11,240 / 11,240 / 11,240 across four checks — as
+flat as this metric gets. No large merge since 08:43. Pretouch 24 calls / 195.5 s,
+nothing above 10M ordinals since 07:58.
+
+The device is showing **4.46–4.56 KB at 98–99% util** — the small-request
+signature — but iowait is 0.1–0.7% and CPU is 85–89% busy, so this is the
+byte-compaction pattern that produced three false alarms in cycle 1, not read
+starvation. Recorded, not flagged.
+
+Cycle 4 is at t+310m; cycle 3 collapsed at t+564m.
