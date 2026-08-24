@@ -395,3 +395,57 @@ errors.
 
 Nothing flagged: no segment in the trough this interval, iowait at zero, no large
 merge running.
+| 10:13 | **3h18m in — the ~20% tax is STABLE across a 4x table growth.** Table 347 GB / 13 SSTables, pending 3, cache 345 G / free 5 GB, iowait **0.0–0.7%**, settle 0, phase 29/86. Device busy but healthy: 14.8–25.2 KB at 3.3k–6.3k r/s, ~100% util; CPU 66–69% us + 22% sy, 9–11% idle. Segments n=13, median **11,143** (up from 10,600); last three 11,261 / 11,368 / 11,480 — still climbing. No new large merges since 08:43. |
+
+### 10:13 analysis — the tax scales with SEGMENT size, not with TABLE size
+
+These are different variables and separating them matters: the collapse is driven
+by table growth (working set outgrowing cache), while the 09:13 result showed the
+arm's tax growing with segment size. If the tax also grew with table size, the two
+would be the same phenomenon. It does not.
+
+Rolling 5-segment median at equal ordinal, standard 3.97M class:
+
+| segments | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| 1–5 | 13,133 | 10,455 | −20.4% |
+| 2–6 | 13,133 | 10,436 | −20.5% |
+| 3–7 | 13,133 | 10,159 | −22.6% |
+| 4–8 | 13,149 | 10,159 | −22.7% |
+| 5–9 | 11,908 | 10,159 | −14.7% |
+| 6–10 | 13,366 | 11,143 | −16.6% |
+| 7–11 | 14,317 | 11,261 | −21.4% |
+| 8–12 | 14,454 | 11,368 | −21.3% |
+| 9–13 | 14,325 | 11,480 | −19.9% |
+
+**Nine overlapping windows, all between −14.7% and −22.7%, no drift.** Over this
+span cycle 4's table went from ~86 GB to 347 GB — a 4x growth — and the penalty
+did not move. Both cycles' absolute rates rise together through the same window
+(cycle 3 13,133 -> 14,325; cycle 4 10,455 -> 11,480), so the gap is a constant
+*ratio*, not a constant offset.
+
+So the picture is now two independent effects:
+
+| | driven by | magnitude |
+|---|---|---|
+| the arm's tax | **segment size** | −15% at 3.97M cells, −40% at 16.0M |
+| the collapse | **table size** (working set vs cache) | 100x+, at ~1,000 GB |
+
+They are independent, which means **they compound**. The collapse merge in cycle 3
+was a 126.9M-cell segment: it will carry both the size-dependent tax and the
+table-size collapse. That is the arithmetic behind the 09:13 extrapolation, and
+this check is what licenses treating the two as multiplicative rather than as one
+effect double-counted.
+
+### Method note — log rotation bit an ad-hoc script this interval
+
+`system.log` rotated mid-cycle; only 1 of the 13 segment lines remained in the
+live logs. `c4check.py` unions the `.zip` archives and was unaffected, but a
+throwaway analysis script written for this check globbed `*.log` only and reported
+n=1 without erroring. Caught by comparing against `c4check.py`'s n=13. This is the
+cycle-3 rotation lesson recurring in a new place: **the rule has to apply to
+one-off scripts too, not just the standing one.**
+
+Nothing flagged: iowait 0.0–0.7%, no segment in the trough, no large merge
+running. The ~100% util at 15–25 KB requests is byte-compaction traffic (a 62 GB
+compaction at 96%), the pattern that produced three false alarms in cycle 1.
