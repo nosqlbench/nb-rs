@@ -137,3 +137,66 @@ not the timestamp — so it matched every line and appeared to show the script
 under-counting 25 calls as 3. Re-checked against the real timestamp field: 3
 unique post-cutoff calls, script correct. The cycle-3 rule is to sanity-check the
 parser; the corollary is to sanity-check the sanity check.
+| 08:13 | **1h18m in — the −20% on segments is holding across five points, and the pretouch gives it a control.** Table 140 GB / 5 SSTables, pending 2, cache 350 G / free 5 GB, iowait 3.0–3.6%, settle 0, phase 13/86. Segments n=5, median **10,455 cells/s** (cycle 3 whole-run median 14,318). md0 4.69–4.70 KB / 157k–205k r/s / 98–100% util while iowait stays at 3%. The 30,996 merge from the monitor is at 65%, **2,563 b/min** vs cycle 3's byte-identical 4,188. |
+
+### 08:13 analysis — the pretouch is a control variable, and it validates the −20%
+
+Three independent work items now exist at matched size in both cycles. Crucially
+they do **not** all touch the code the arm changes: `frontierPrefetch` affects
+the graph-search path only. The pretouch is a streaming sequential read that
+never consults `FrontierPrefetchingView`, so it should show **parity** — and if
+it does, it rules out machine state, device health or table layout as the
+explanation for any difference on the paths that *do* use it.
+
+**Control — pretouch (should be unaffected):**
+
+| | cycle 3 | cycle 4 | delta |
+|---|---|---|---|
+| the 16.0M-ordinal call | 16,013,399 ord, 73,086 ms, 219,104 ord/s | 16,016,033 ord, 67,368 ms, **237,739 ord/s** | work +0.016%, rate **+8.5%** |
+| small (<=10M) calls, equal ordinal, n=5 | median 1,497,269 ord/s | median **1,449,042 ord/s** | **−3.2%** |
+
+Work differs by 0.016% on the large call — as close to an identical unit of work
+as this system produces. **Parity confirmed**: −3.2% on the small calls, +8.5% on
+the large one, i.e. noise in both directions and no systematic difference.
+
+**Treatment — segments (graph-search path, equal ordinal):**
+
+| # | cycle 3 cells/s | cycle 4 cells/s | delta |
+|---|---|---|---|
+| 1 | 15,397 | 12,461 | −19.1% |
+| 2 | 12,944 | 10,600 | −18.1% |
+| 3 | 13,133 | 10,455 | −20.4% |
+| 4 | 13,149 | 10,436 | −20.6% |
+| median | 13,133 | **10,455** | **−20.4%** |
+
+Four consecutive points within a 2.5-point spread (−18.1 to −20.6%), at cell
+counts matched to within 1.5%. **With the control at parity, the −20% is
+attributable to the arm rather than to the machine.** That is a materially
+stronger claim than last check's n=2 could support.
+
+**Segment 5 is NOT usable and is excluded above.** Cycle 3's fifth took 1,616 s
+(2,455 cells/s — below its own collapse trough) while cycle 4's took 396 s
+(10,010), which reads as +308% for the arm. It is not: cycle 3's slow segment sat
+inside four back-to-back large merges (30,987 / 30,996 / 31,216 / 31,908 running
+continuously 20:44–21:06), while cycle 4's finished at 08:03:15, two minutes
+*before* its 30,996 merge began. Different contention, not different behaviour —
+exactly the compare-against-lifetimes error that produced a false trend in
+cycle 3.
+
+**Secondary, and consistent:** the 30,996-batch merge — byte-identical batch
+count to cycle 3's — is at 2,563 b/min against 4,188, **−39%**. Partial (65%) vs
+cycle 3's completed run, so weight it accordingly, but it points the same way.
+
+### Where this leaves the arm
+
+Every path that uses the deeper hint is 20–39% slower; the one path that does not
+is at parity. At 140 GB against 350 G of cache the working set still fits, which
+is the regime the default of 3 was tuned for and where extra hints are waste.
+**The cost of the arm is now established. The benefit, if any, cannot appear
+until the working set stops fitting** — cycle 3 collapsed at ~1,000 GB, roughly
+7 hours out.
+
+Note the device already shows 4.70 KB mean request at 98–100% util — the
+small-request signature — while iowait sits at 3.0–3.6% rather than cycle 3's
+collapse-time 40–45%. Recorded, not interpreted: cycle 3 also ran cool here, and
+the signature means nothing without the iowait.
