@@ -1086,3 +1086,59 @@ something the run can be pushed toward.
 
 Cycle 1's collapse came at 9h25m from a populated start. Cycle 3 is at 5h25m
 from empty, with iowait still at zero.
+
+### 01:40 — cycle 3 at 6h05m / 669 GB, healthy. Still no large merge since 21:05.
+
+| | 01:00 | 01:40 |
+|---|---|---|
+| merges | 588 | **636** |
+| large (~31k) merges | 4 | 4 — **none new (4h35m)** |
+| large median | 5,694 | 5,694 (unchanged) |
+| small median (all cycle) | 10,424 | 9,138 — see note |
+| md0 rareq-sz | 30.2–46.4 KB | 27.9–31.9 KB |
+| md0 %util | 57.6–99.9% | **25.1–28.6%** |
+| iowait | 0.0% | **0.0%** |
+| CPU user | 37.6% | 38.7% |
+| table live | 633 GB | **669 GB** |
+| cache / free | 335 / 10 GB | 326 / 18 GB |
+| pretouch | 24 / 194.2 s | **27 / 214.1 s** |
+
+Device quieter than at 01:00 (util 25–29% vs up to 99.9%) — that burst was
+ingest write pressure, and it passed. iowait still 0.0%.
+
+**Two tooling bugs found and fixed this interval; both were silent.**
+
+1. The pretouch regex required `warmed N,NNN ordinals in M ms`. The real line is
+   `warmed 3966096 ordinals across 4 sources in 6431 ms` — no separators, and a
+   clause in between. It matched nothing and printed **"PRETOUCH: 0 calls"**,
+   which reads exactly like the pretouch reverting to no-op — the flag condition
+   for this watch. It is not: 27 calls, none at 0 ms. Pattern now tolerates both
+   forms.
+2. The median helper used `x[n//2]`, which for even n takes the upper-middle
+   rather than averaging the two. Prior checks averaged. Restored, so the
+   4-sample large-merge figure stays comparable.
+
+Also: the archive union was reading all 460 `.zip` files and timing out at 5 min.
+Now filtered by mtime against the cycle-3 cutoff — 5 archives, same output.
+
+**The small-merge median needs the same care.** The cycle-wide figure fell
+10,424 -> 9,138, but that statistic covers all six hours and dilutes as the
+table grows. Windowed, over the same data:
+
+| window | n | median |
+|---|---|---|
+| 22:00–00:30 | 60 | 9,564 |
+| since 00:30 | 30 | 9,098 |
+| since 01:00 | 18 | 9,371 |
+
+Flat within noise. The cycle-wide drop is the accumulating window moving, not
+throughput degrading. (Old vs new statistic on identical data: 9,276 vs 9,138 —
+the rest is real drift in the cumulative figure.)
+
+Pretouch: same work each time (~3,966,08x ordinals, constant to 5 digits), but
+elapsed has crept 5,846 -> 6,431/6,697/6,769 ms across the last four, so ~592k
+ord/s where 01:00 saw 585–735k. A ~10% slowdown at fixed work, not a growth in
+work. Cumulative 214.1 s = **1.0% of wall clock**, unchanged.
+
+Position unchanged from 01:00: healthy, productive, 36 GB further on, and the
+arm comparison still rests on four points per cycle, none added since 21:05.
