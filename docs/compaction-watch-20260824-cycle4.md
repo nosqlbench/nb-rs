@@ -897,3 +897,53 @@ sy. This is the byte-compaction pattern, not read starvation — iowait would be
 thing shortly.
 
 Nothing flagged.
+| 15:13 | **8h18m in — the decisive compaction is RUNNING, at 62.6%, and its byte count matches cycle 3's collapse merge to 0.002%.** Table 923 GB / 39 SSTables, **SAI index 684.4 GiB** (2.04x the 335 G cache), pending 1, free 7 GB, iowait **0.0–1.1%**, settle 0. Device: 27.6–30.9 KB at ~3,100 r/s, util 74–99% (write-side, 7k–11k w/s). Segments n=37, median **11,261** — tenth flat check. |
+
+### 15:13 analysis — the trigger has fired; the test is ~1 hour out
+
+Last check identified the 4–8 GiB tier at 32 members / 185.5 GiB as the structure
+that produced cycle 3's collapse. It has now fired:
+
+```
+Compaction  baselines ibm_datapile_1b_default  124,578,054,240 / 199,136,225,937 bytes  62.56%
+```
+
+| | bytes |
+|---|---|
+| cycle 3's collapse compaction | 199,140,724,110 |
+| **cycle 4's in-flight compaction** | **199,136,225,937** |
+| difference | 4,498,173 — **0.0023%** |
+
+Two compactions on independently-built tables agreeing to two parts in a hundred
+thousand is not coincidence. **This is the same structural event.**
+
+**Sequencing, from cycle 3's own record**, which tells us what happens next and
+when. Its byte compaction read 18.93% at t+425m and 100% at t+455m; the
+`Starting a compaction index build` line landed at t+479m; the 30,985-batch graph
+merge began at t+564m... *(correction: cycle 3's index build started 04:54:03 and
+the merge at 04:59:08, i.e. t+559m and t+564m — the byte compaction finished
+~45 min before the graph merge began).*
+
+So the order is: **byte compaction -> index build -> graph merge**, with roughly
+30–45 minutes between the byte phase completing and the graph merge starting.
+Cycle 4's byte phase is at 62.6%; cycle 3 covered 18.93 -> 100% in 30 minutes, so
+completion is ~15 minutes away and **the decisive graph merge should begin around
+15:45–16:00 UTC.**
+
+That is materially more precise than the earlier estimates (cells-based t+564m
+≈ 16:18; index/cache ratio "close"), and it comes from the actual scheduling
+sequence rather than a proxy.
+
+### Everything is now staged for the pre-registered test
+
+| | |
+|---|---|
+| trigger | fired, byte phase 62.6% |
+| index / cache | **2.04x** (cycle 3 at collapse: ~1.87x estimated) |
+| free memory | 7 GB |
+| table | 923 GB (cycle 3 collapsed at ~1,008 GB) |
+| prediction (12:43) | **1,486–1,833 cells/s**; above **5,052** falsifies it |
+
+Nothing flagged this interval — iowait 0.0–1.1%, requests 27–31 KB, no segment in
+the trough, no ≥25k merge in the log yet. The Monitor will announce the graph
+merge the moment its first progress line appears.
