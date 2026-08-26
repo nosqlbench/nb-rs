@@ -115,3 +115,13 @@ User asked which call paths carry the 200k r/s @ 6 KB / 100% util load. 3× jcmd
 - Cgroup: anon 106.8G / file 36.0G, max=0.
 - Gate: 0 cluster-cost lines since 03:48; 0 assertions.
 - Trend: unchanged for a fourth window — 70% through the base layer at a locked ~3.9±0.25 min/M clip; next check should catch the base-layer finish and the start of upper layers.
+
+### 16:26 UTC — t+12h38m — 63.6M merge 81.8%, base layer in its final hour
+
+- Table: 677.2 GB live / 27 SSTables (+13.0 GB, +2 since 15:56). Client + Cassandra up.
+- **63.6M merge: 101,340 b (81.8%)** at 16:26:17. Interval 15:56→16:26: 14,410 b in 30.1 min = **479 b/min ⇒ 4.06 min/M** — fifth consecutive in-band window. Interval rates 549→511→501→483→479: a mild monotone drift (−13% over 2h) consistent with the table growing +50 GB under the fixed cache cap, not a regime change. Remaining base ~22.6k b ⇒ base ends ~17:13, land ~17:30–18:00.
+- Completed merges / ordinal passes / REORDERED this interval: none.
+- Device: 183–186k r/s @ 6.0 KB, 100% util, iowait 43.2%.
+- Cgroup: anon 106.8G / file 36.0G, max=0.
+- Gate: 0 cluster-cost lines since 03:48; 0 assertions.
+- Trend: base layer entering its final hour at a stable clip; the only movement is a slow few-percent-per-hour rate decline tracking table growth — next check lands mid upper-layers or at TERMS_DATA.
