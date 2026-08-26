@@ -125,3 +125,14 @@ User asked which call paths carry the 200k r/s @ 6 KB / 100% util load. 3× jcmd
 - Cgroup: anon 106.8G / file 36.0G, max=0.
 - Gate: 0 cluster-cost lines since 03:48; 0 assertions.
 - Trend: base layer entering its final hour at a stable clip; the only movement is a slow few-percent-per-hour rate decline tracking table growth — next check lands mid upper-layers or at TERMS_DATA.
+
+### 16:56 UTC — t+13h08m — 63.6M merge 93.0%, base layer finishing ~17:15
+
+- Table: 683.6 GB live / 28 SSTables (+6.4 GB, +1 since 16:26). Client + Cassandra up.
+- **63.6M merge: 115,230 b (93.0%)** at 16:56:16. Interval 16:26→16:56: 13,890 b in 30.0 min = **463 b/min ⇒ 4.20 min/M** — sixth in-band window; the slow decel continues (549→…→463, −16% over 2.5h, tracking table growth under the fixed cache). Remaining base ~8.7k b ⇒ base ends ~17:15; upper layers + write-back after ⇒ **TERMS_DATA ~17:40±20m**.
+- WALL projection (ordinals-assigned 12:49:48 → land): ~290–310 min ⇒ **~4.6–4.9 min/M** — same band as the 16M class (4.5–4.8), i.e. near-linear size scaling across a 4× ordinal span; ~2× the 2.31 cluster-ON small-merge reference.
+- Completed merges / ordinal passes / REORDERED this interval: none.
+- Device: 183–186k r/s @ 6.0 KB, 100% util, iowait 37.4%.
+- Cgroup: anon 106.8G / file 35.9G, max=0.
+- Gate: 0 cluster-cost lines since 03:48; 0 assertions.
+- Trend: final stretch of the largest-ever base layer with the clip still in band; next check should contain the landed wall verdict.
