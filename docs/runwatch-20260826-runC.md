@@ -95,3 +95,13 @@ User asked which call paths carry the 200k r/s @ 6 KB / 100% util load. 3× jcmd
 - Interpretation: this is the *bounded* IO-bound regime the cache cap was built to provoke (working set ≈ sources' fused rows ≈ hundreds of GB vs 36 GiB file cache ⇒ ~every expansion misses), not the 39–46 b/min collapse — progress holds ~3.8 min/M with the device at capacity. The dominant 63% path is the structural cost target: fewer/cheaper cross-source visits (O-track), wider latency hiding, or cache.
 
 > Deep-dive published: `docs/analysis/vector-compaction-readpath-20260826.md` — full call-path→read-forcing analysis with measured 15.86M-merge anatomy and drawio cost diagrams (`docs/analysis/figures-readpath-20260826/`).
+
+### 15:28 UTC — t+11h40m — 63.6M merge 59.3%, clip locked at ~3.9 min/M
+
+- Table: 651.3 GB live / 23 SSTables (+13.0 GB, +2 since 14:56). Client + Cassandra up.
+- **63.6M merge: 73,440 b (59.3%)** at 15:28:19. Interval 14:56→15:28: 16,080 b in 32.1 min = **501 b/min ⇒ 3.89 min/M** — third consecutive window inside 3.55–4.0; the clip is locked. Remaining base ~50.5k b ⇒ base ends ~17:08, land ~17:25–17:55.
+- Completed merges / ordinal passes / REORDERED this interval: none — window still owned by the 63.6M.
+- Device: 191–195k r/s @ 6.0 KB, 100% util, iowait 45.6% — unchanged; per the new read-path analysis this is ~40 workers × 1 outstanding cold expansion read each (docs/analysis/vector-compaction-readpath-20260826.md).
+- Cgroup: anon 106.8G / file 36.1G, max=0.
+- Gate: 0 cluster-cost lines since 03:48; 0 assertions.
+- Trend: no news is the news — flat 3.9 min/M through 59% of the largest-ever base layer; projected total ~5.0–5.5 min/M, linear-scaling verdict on track for the ~17:30 landing.
