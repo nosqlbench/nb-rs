@@ -131,6 +131,25 @@ params:
   # denominators are scale-invariant: the same thresholds mean the
   # same thing at 100k rows or 1B. Tune on the CLI.
   result_failure_window_floor: 100
+  # `attempt_saturation_rate` / `attempt_window_floor` = the SATURATION breaker.
+  #
+  # The 2026-08-25 hang exposed a gap both existing breakers share. The windowed
+  # result-level clause needs `result_failure_window_floor` (100) TERMINAL failures
+  # inside 55s, but a terminal failure only lands after the whole `tries:` budget is
+  # spent: 20 attempts at up to 60s each, plus ~133s of capped backoff. Under a full
+  # stall the loader therefore produces almost no TERMINAL failures per window and the
+  # floor is unreachable exactly when it matters. The attempt-level clause sees through
+  # retries, but its denominator is LIFETIME `attempt_total`, so a long healthy past
+  # dilutes a 100%-failing present below the 0.10 threshold — the same wedge the
+  # 2026-08-05 note describes for the result-level pair, still present on attempts.
+  #
+  # This clause closes it: a WINDOWED attempt-level rate. Attempts resolve at their own
+  # timeout rather than at the end of the retry budget, so at concurrency 200 with a 60s
+  # timeout a full stall yields ~180 resolved attempt failures per 55s window — far above
+  # the floor even after the servo throttles hard. The floor stays low deliberately: it
+  # exists to stop a cold-start blip from tripping the breaker, not to gate saturation.
+  attempt_saturation_rate: 0.90
+  attempt_window_floor: 20
   adapter: cql
   # ── Environment defaults captured from `runtest` (2026-08-03) ──
   # The standing test environment, promoted from the wrapper script so
@@ -503,6 +522,11 @@ bindings: |
   # pulse, heavy metricsql only at watch cadence.
   shared recent_result_failures:    f64 := 0.0
   shared recent_result_total:       f64 := 0.0
+  # Attempt-level twins. Attempts resolve at their own timeout instead of at the end of
+  # the retry budget, so these saturate immediately when the server stalls whereas the
+  # result-level pair above lags by minutes per op.
+  shared recent_attempt_failures:   f64 := 0.0
+  shared recent_attempt_total:      f64 := 0.0
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -1093,6 +1117,8 @@ phases:
         result: |
           volatile recent_result_failures := metricsql_scalar("sum(increase(result_failure{part=\"{part}\"}[55s]))")
           volatile recent_result_total := metricsql_scalar("sum(increase(result_total{part=\"{part}\"}[55s]))")
+          volatile recent_attempt_failures := metricsql_scalar("sum(increase(attempt_failure{part=\"{part}\"}[55s]))")
+          volatile recent_attempt_total := metricsql_scalar("sum(increase(attempt_total{part=\"{part}\"}[55s]))")
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
@@ -1101,6 +1127,8 @@ phases:
           flush_pool_blocked:      { kind: gauge, value: flush_blocked_live }
           recent_result_failures:  { kind: gauge, value: recent_result_failures }
           recent_result_total:     { kind: gauge, value: recent_result_total }
+          recent_attempt_failures: { kind: gauge, value: recent_attempt_failures }
+          recent_attempt_total:    { kind: gauge, value: recent_attempt_total }
       read_live_sstables:
         timeout: 10s
         raw: |
@@ -1184,6 +1212,18 @@ phases:
         action:  abort
         at:      workload
       - condition: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
+      # SATURATION breaker — windowed, attempt-level. The two clauses above cannot fire
+      # during a full stall: the first needs 100 TERMINAL failures in 55s (a terminal
+      # failure costs the whole 20-try budget, so they accrue far too slowly), and the
+      # second divides by LIFETIME attempt_total, which a healthy past keeps below the
+      # threshold. This one divides by the SAME 55s window it measures, so a sustained
+      # near-total attempt failure rate aborts regardless of how healthy the run was
+      # before it and regardless of how slowly terminal failures land.
+      - condition: "(recent_attempt_total >= {attempt_window_floor}) & (recent_attempt_failures > (recent_attempt_total * {attempt_saturation_rate}))"
         pulse:   continuous
         per:     self
         action:  abort
