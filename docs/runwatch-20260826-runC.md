@@ -83,3 +83,13 @@ live — `recent_attempt_*` scoped windows).
 - Cgroup: anon 106.8G / file 36.2G, max=0.
 - Gate: 0 cluster-cost lines since 03:48; 0 assertions.
 - Trend: flat-and-healthy — half the base layer done at a stable ~3.6–3.8 min/M clip under full device saturation; no drift in either direction over two consecutive windows.
+
+### 15:15 UTC addendum — IO attribution under saturation (thread-dump capture)
+
+User asked which call paths carry the 200k r/s @ 6 KB / 100% util load. 3× jcmd Thread.print at 15:14 (docs/captures/iosat-20260826-1514/): 120 RUNNABLE FJP samples —
+- **63% `gatherFromOtherSource` → `GraphSearcher.searchOneLayer` → `FusedPQDecoder.enableSimilarityToNeighbors` → `FusedPQ$PackedNeighbors.readInto` → `getPackedNeighbors` → `readFully`** — per-visit fused adjacency+PQ row reads of the cross-source symmetric searches (the T×(k−1) term itself).
+- **12% `gatherFromOtherSource` → `rescore` → `getVectorInto` → `readFloats`** — exact FP rerank reads of returned candidates.
+- **24% issuing `willNeedL0Record` fadvise hints** (FrontierPrefetchingView.hint + seed hints + gatherFromSameSource) — prefetch machinery IS active; workers block in readFully anyway (3-deep frontier can't hide ~100 µs at this miss rate — same conclusion as the 08-23 collapse capture, different call site: symmetric search now, clusterSearchL0 then).
+- pidstat: all ~1.2 GB/s is FJP workers (~37 × 32 MB/s); ingest/flush IO negligible. 9 samples WAITING in acquireBuildPermit = co-scheduled builds starved (known).
+- Zero clusterSearchL0/clusterFallbackSearch frames — gate corroborated at the stack level.
+- Interpretation: this is the *bounded* IO-bound regime the cache cap was built to provoke (working set ≈ sources' fused rows ≈ hundreds of GB vs 36 GiB file cache ⇒ ~every expansion misses), not the 39–46 b/min collapse — progress holds ~3.8 min/M with the device at capacity. The dominant 63% path is the structural cost target: fewer/cheaper cross-source visits (O-track), wider latency hiding, or cache.
