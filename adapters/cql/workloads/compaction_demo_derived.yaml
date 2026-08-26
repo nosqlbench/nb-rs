@@ -2488,3 +2488,64 @@ phases:
 # `workload=adapters/cql/workloads/compaction_demo_derived.yaml` to render the
 # current definition against the same data.
 # ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compaction health report.
+#
+# Replaces a set of checked-in Python log-scrapers that recomputed medians,
+# quantiles and windowed rates by hand. Everything here is a metricsql query
+# over metrics this workload already publishes, so the analysis lives with the
+# workload that produces it and travels with the session.
+#
+# Routing is left at the default (files under the session dir). `to` is an
+# item-level directive, so add e.g. `to: sessiondir stdout` inside a table when
+# you want one item echoed interactively.
+# ─────────────────────────────────────────────────────────────────────────────
+report:
+  compaction_health: |
+    file compaction_health.md as 'Compaction health'
+
+    text health_intro as "What this covers":
+     Pool pressure, SSTable growth and the windowed failure rates the
+     abort backstops read, per tier. The servo's own view — weight,
+     pressure and the flush term — is the last table: a tier whose
+     weight sagged while `compaction_active` sat high was throttled by
+     real merge backlog, one that sagged on the flush term alone was
+     paying SAI flush-serialisation cost.
+
+    table pool_pressure:
+      group_by: part
+      query: comp_active: avg(compaction_pool_active) by (part)
+      query: comp_active_max: max(compaction_pool_active) by (part)
+      query: comp_pending_max: max(compaction_pool_pending) by (part)
+      query: flush_active_max: max(flush_pool_active) by (part)
+      query: flush_blocked_max: max(flush_pool_blocked) by (part)
+      query: sstables_max: max(table_sstables_live) by (part)
+
+    text windowed_intro as "Windowed failure rates":
+     The denominators here are TIME-bounded, not lifetime — a 55s
+     trailing window, scoped to the loader phase. That is what makes the
+     backstops scale-invariant: the same thresholds mean the same thing
+     at 100k rows or 1B, and a healthy past cannot hide a failing
+     present. `attempt_*` sees through retries; `result_*` does not.
+
+    table windowed_failures:
+      group_by: part
+      query: attempt_fail_max: max(recent_attempt_failures) by (part)
+      query: attempt_total_max: max(recent_attempt_total) by (part)
+      query: result_fail_max: max(recent_result_failures) by (part)
+      query: result_total_max: max(recent_result_total) by (part)
+
+    table servo_response:
+      group_by: part
+      query: weight_mean: avg(load_weight) by (part)
+      query: weight_min: min(load_weight) by (part)
+      query: pressure_mean: avg(servo_pressure) by (part)
+      query: flush_term_mean: avg(servo_flush_term) by (part)
+      query: target_rate: avg(target_rows_rate) by (part)
+
+    table tier_throughput:
+      group_by: part
+      query: ops: last(cycles_total) by (part)
+      query: failures: last(result_failure) by (part)
+      query: p99_ms: max(cycles_servicetime_p99) by (part)
