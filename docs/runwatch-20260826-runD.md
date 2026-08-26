@@ -41,3 +41,16 @@ the stack carry the day's fixes.
 - Ordinal-pass norm 11.5–12.5 µs/node post-fix; flag >100. One 40.5 outlier at 22:24 noted.
 
 ## Entries
+
+### 23:36 UTC — t+2h15m — first 16M wall verdict: 4.29 min/M; starved 4M at 13.3
+
+- Table: 176.8 GB live / 6 SSTables (pre-landing snapshot). Rows: parts 0–2 complete (30M), part 3 at 3.87M ⇒ **33.9M total, ~15.6M rows/h** (servo easing as backlog grows). Client 3842588 + Cassandra up.
+- **16M-class merge LANDED: pass 22:26:34 → TERMS_DATA 23:35:11 = 68.6 min wall ⇒ 4.29 min/M** (16,012,316 ords) — marginally better than Run C's 4.5–4.8 steady band; vs 3.9 (Run C 63.6M base) and 2.31 (cluster-ON ref). The early 1.61 min/M segment did NOT hold: group rates ran ~1,214 → ~106 → ~7,000 b/min (fast first group, deeply IO-bound middle, near-cache-speed final group). Upper layers 1–3 took only 44 s total; write-back 1.3 min.
+- Fifth 4M merge landed 23:17:09 at **13.3 min/M** (pass 22:24:24, 52.7 min) — starved behind the 16M's slow middle, matching Run C's co-scheduling starvation pattern (10.6–18.6 min/M).
+- New structural observation: the 16M's batch TOTAL drifted upward during the merge (30,986 → 30,987 → 31,908, +3%) — totals grow as later groups/layers enumerate. Segment-rate math must key on the ordinal total, not the batch denominator.
+- Ordinal passes this interval: none new (16M's 16.7 µs/node was the last).
+- Device: 276–289k r/s @ **4.4 KB** (smaller requests than Run C's 6.0 — many tiny flush-build reads co-mingled), 100% util, iowait 33%.
+- Cgroup: anon 107.1G / file 37.8G, max=0.
+- Gate: 0 cluster-cost lines; REORDERED adopt present per landing (16M's at 23:33:52); 0 assertions.
+- Breaker wires: **alive — recent_attempt_total=218,260 / failures=0** at check. Four 'no data for 10 consecutive reads' warnings, all stamped 22:21:10 = the guard firing on part-2's cold-start blip (loader hadn't filled the window yet), then re-arming correctly; threshold 10 is a touch tight for the daemon cadence — candidate tune-up, warn-only, not a defect.
+- Trend: the fixed stack's first full 16M wall lands slightly under Run C's steady band with the same storm physics underneath; intra-merge group variance (70× spread) is now the dominant texture to watch as sizes scale.
