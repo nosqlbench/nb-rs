@@ -45,3 +45,4 @@ live — `recent_attempt_*` scoped windows).
 ## Entries
 
 | 05:58 (manual baseline) | t+2h10m, ~200 GB / 10 SSTables. Series and device as above. cgroup high-events 562k, max 0. |
+| 06:26 | t+2h38m, 231 GB / 5 SSTables. Gate ✓ (0 cost lines, 9 REORDERED, 0 assertions). Completed since baseline: only the 06:00 close (1.37 min/M, already in series). **In flight: 15.9M at 5.69 min/M (17%)** — and the device has flipped to the read-storm signature: **5.35 KB @ 264–269k r/s, 100% util, iowait 29.4%** (was 90 KB @ 30% util). Ordinal passes: two more slow ones under merge overlap (98.9, 29.0 µs/node) between clean 10.4–11.9s; both 16M passes at 11.9. cgroup file 38.2 GiB, high-events 671k, max 0. Trend: the small-request read storm is back **with the cluster path off** — the plain symmetric searches alone produce it above RAM; rate swing 1.37→~5.7 min/M is inside the known 5.5× spread, so watching, not alarmed. |
