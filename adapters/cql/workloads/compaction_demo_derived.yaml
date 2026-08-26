@@ -1115,10 +1115,20 @@ phases:
         # acknowledgment" compile warning — one line of which used to
         # print for every kernel instantiation at session start.
         result: |
-          volatile recent_result_failures := metricsql_scalar("sum(increase(result_failure{part=\"{part}\"}[55s]))")
-          volatile recent_result_total := metricsql_scalar("sum(increase(result_total{part=\"{part}\"}[55s]))")
-          volatile recent_attempt_failures := metricsql_scalar("sum(increase(attempt_failure{part=\"{part}\"}[55s]))")
-          volatile recent_attempt_total := metricsql_scalar("sum(increase(attempt_total{part=\"{part}\"}[55s]))")
+          # SCOPED TO THE LOADER PHASE, not just the part. A single `part` carries
+          # four phases -- compaction_watch, concurrent_query, load_increment_adaptive
+          # and recall_check -- and a part-only selector sums all of them. That
+          # matters precisely during a loader stall: this daemon keeps polling
+          # successfully at 0.5/s and the query phases keep resolving, so their
+          # attempts hold the denominator up while the loader contributes almost
+          # nothing, and the windowed rate never reaches the threshold. Verified
+          # against a live session's label tree, and reproduced in
+          # examples/workloads/controls/saturation_windowed_breaker.yaml, where an
+          # unscoped query put a 100%-failing loader at a 0.50 windowed rate.
+          volatile recent_result_failures := metricsql_scalar("sum(increase(result_failure{part=\"{part}\",phase=\"load_increment_adaptive\"}[55s]))")
+          volatile recent_result_total := metricsql_scalar("sum(increase(result_total{part=\"{part}\",phase=\"load_increment_adaptive\"}[55s]))")
+          volatile recent_attempt_failures := metricsql_scalar("sum(increase(attempt_failure{part=\"{part}\",phase=\"load_increment_adaptive\"}[55s]))")
+          volatile recent_attempt_total := metricsql_scalar("sum(increase(attempt_total{part=\"{part}\",phase=\"load_increment_adaptive\"}[55s]))")
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
