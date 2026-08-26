@@ -1241,8 +1241,11 @@ mod poll_wire_tests {
         let src =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
                 .expect("read own source");
+        // Needle tolerates rustfmt splitting the receiver from the call —
+        // `ctx.wires\n    .write(...)` — which is exactly what broke the
+        // original `ctx.wires.write("poll_elapsed_ms"` form.
         let write_at = src
-            .find("ctx.wires.write(\"poll_elapsed_ms\"")
+            .find(".write(\"poll_elapsed_ms\"")
             .expect("poll_elapsed_ms must be published");
         let predicate_at = src
             .find("let is_done = if self.until {")
@@ -1253,7 +1256,7 @@ mod poll_wire_tests {
              is evaluated, or a self-bounding condition reads a stale 0"
         );
         assert!(
-            src.contains("ctx.wires.write(\"poll_count\""),
+            src.contains(".write(\"poll_count\""),
             "poll_count must be published alongside poll_elapsed_ms"
         );
     }
