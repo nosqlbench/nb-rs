@@ -95,6 +95,7 @@ The structural statement: **within one search there is no lookahead to exploit**
 | frontierPrefetch WIDTH 3→8/16/32 | stall per miss | the sweep this document re-motivates; hints are cheap, stalls are 100 µs |
 | O-track: O4 codebook adoption, O1 decoder sharing, O7 same-source ADC | CPU per visit, rescore & same-source reads | queued behind Run C; does **not** remove the cross-source expansion read itself |
 | pretouch policy | phase-1 waste / co-merge eviction | consider `sourcePretouchMaxNodes` ≈ cache size or 0 above capacity |
+| **seeding under fused** | expansions per search (the 63% directly) | currently gated `!fusedPQEnabled` on the stale assumption that fused hop codes are RAM-resident; **the fix is decoupling the gate, NOT disabling FusedPQ** — non-fused hop scoring reads up to 32 vectors per expansion and changes the shipped index. Three touch points: `setupSeeding` gate (L1396), `seedOutputPath` for Scratch under fused (L1385), exact-rescore loop in the seeded branch. Self-measuring via `seededSearches`/`coldSearches`. |
 
 ## 6. Provenance
 
