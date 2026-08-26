@@ -73,3 +73,13 @@ live — `recent_attempt_*` scoped windows).
 - Cgroup: anon 106.8G / file 36.2G, memory.events high=4.25M (normal), **max=0**. Cache cap holding.
 - Gate: **0 'Cluster path cost' lines since 03:48**; 0 read-back assertions; no new REORDERED lines (none expected — no merge started this interval).
 - Trend: single-story interval — the largest-ever merge grinding through its base layer slightly *faster* than the last window despite full-tilt device saturation; ~4.9–5.4 min/M projected total, comfortably linear vs the 16M class.
+
+### 14:56 UTC — t+11h08m — 63.6M merge 46.3%, base clip steady ~3.8 min/M
+
+- Table: 638.3 GB live / 21 SSTables (+13.0 GB, +2 since 14:30 — ingest still flushing). Client + Cassandra up.
+- **63.6M merge: 57,360 b (46.3%)** at 14:56:13. Interval 14:30→14:56: 13,470 b in 26.4 min = **511 b/min ⇒ 3.81 min/M** — the 549 spike cooled slightly; base clip is oscillating in a tight 3.55–4.0 band. Remaining base ~66.6k b ⇒ base ends ~17:04, land ~17:20–17:50.
+- Completed merges / ordinal passes / new REORDERED this interval: none — window still wholly owned by the 63.6M.
+- Device: 195–205k r/s @ 6.0 KB, 94–100% util, iowait 42.5% — unchanged storm signature.
+- Cgroup: anon 106.8G / file 36.2G, max=0.
+- Gate: 0 cluster-cost lines since 03:48; 0 assertions.
+- Trend: flat-and-healthy — half the base layer done at a stable ~3.6–3.8 min/M clip under full device saturation; no drift in either direction over two consecutive windows.
