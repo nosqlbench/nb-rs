@@ -143,3 +143,11 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Table: 754.3 GB / 35 SSTables (+3 flushes). Part 10: 15.23M rows (2.1M/h — servo tightest yet). Device: 182k r/s @ 6.0 KB, 100% util, iowait 42.9%. Cgroup: anon 107.1G / file 35.4G, max=0.
 - Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
 - Trend: the giant's second sweep grinds at a constant batch clock with wildly varying ordinal density — the class's first true wall now reads ~8.5–9.0 min/M, roughly twice the stream-1-only figure the old references carried.
+
+### 18:14 UTC — t+16h17m — stream-2 at 54.7%, 560 b/min; landing slips to ~19:55–20:15
+
+- **63.6M stream-2: 67,850/123,950 (54.7%)** at 18:14:06. Interval 17:44→18:14: 16,800 b in 30.0 min = **560 b/min** (588→560, mild cooling); ordinal numerator +2.18M (low-density region again, ~130 ords/b). Remaining ~56.1k b ⇒ **landing ~19:55–20:15**; wall tracking ~8.8–9.2 min/M.
+- 0 landings, 0 passes this interval. Table static at 754.3 GB / 35 SSTables (no flushes — servo at its tightest: part 10 +0.68M in 30 min = **1.4M/h**).
+- Device: 173k r/s @ 6.0 KB, 100% util, iowait 42.4% — softening in step with the batch clock. Cgroup: anon 107.1G / file 35.4G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
+- Trend: the second sweep's cooling mirrors stream-1's late-phase pattern; ingest is nearly parked while the giant owns the device — the landing, whenever it prints, ends the longest single-merge grind the campaign has measured.
