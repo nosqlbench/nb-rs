@@ -1085,6 +1085,12 @@ phases:
       sense_breaker_windows:
         # Local no-op: constructing this op is what evaluates the volatile
         # bindings below; `stdout: silent` drops the rendered line entirely.
+        # `adapter:` at OP level: the phase-level field did not survive into
+        # the running phase (2026-08-27 first start: the op mapped as CQL raw
+        # and syntax-errored at cycle 0) — the per-op override is the
+        # documented first-class path (executor adapter-name collection +
+        # Activity::run_with_adapters both read op.params["adapter"]).
+        adapter: stdout
         stdout: silent
         stmt: "breaker-watch tick"
         bindings: |
