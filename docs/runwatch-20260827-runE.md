@@ -49,3 +49,12 @@ Log fields $3=date $4=time; the run will cross midnight — filter
   max=0; device 190k r/s @ 6.1 KB 100% util (expected storm).
 - Client: breaker wires live (57,325 attempts/window), lint 0, no-data blips 36
   (cold-start cosmetic), ticks 38k (known, silenced next restart).
+
+### 13:14 UTC — t+11h17m — 63.6M at 42.8%, clip locked at 4.70 min/M
+
+- Table: 676.6 GB / 23 SSTables (+13.0 GB, +2 since 12:30). Part 10: 4.10M rows (~3.5M/h, servo-throttled). Client + Cassandra up.
+- **63.6M merge: 52,990/123,949 (42.8%)** at 13:14:01. Interval 12:30→13:14: 18,030 b in 43.5 min = **415 b/min ⇒ 4.70 min/M** — identical to the previous window's 414; the clip is locked. Base ends ~16:05, land ~16:25–16:55.
+- Completed merges / ordinal passes this interval: none — the window is wholly the 63.6M's, same single-story pattern as Run C's giant.
+- Device: 184–189k r/s @ 6.0 KB, 99–100% util, iowait 41.7%. Cgroup: anon 107.1G / file 35.9G, max=0.
+- Gate: 0 cluster-cost lines; 0 integrity/assertion lines; breaker wire live (46,309 attempts/window); lint 0.
+- Trend: steady-state above-RAM grind, flat within a single b/min across two windows — Run E's 63.6M runs ~12% slower than Run C's 3.9–4.2 base clip but with a fixed pool under it; on pace for the campaign's first completed 63.6M wall this afternoon.
