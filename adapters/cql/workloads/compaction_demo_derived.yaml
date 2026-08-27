@@ -679,6 +679,7 @@ scenarios:
                 # post-run analysis can correlate recall latency with
                 # live compaction state (the encumbered-read evidence).
                 - compaction_watch
+                - breaker_watch
                 - scenario: tier_ingest_adaptive
                 - recall_check
         # The single forced large flush: everything still
@@ -1049,6 +1050,54 @@ phases:
   # post-run story of every backoff decision is reconstructible.
   # Reads are advisory: an errored poll warns and keeps the last
   # wire values; it must never fail a tier.
+  breaker_watch:
+    # SERVER-INDEPENDENT breaker sensor (2026-08-27). The windowed breaker
+    # wires (recent_*) were previously computed in `compaction_watch`'s CQL op
+    # bindings. When the server died mid-run, that op's cycles wedged inside
+    # the driver and its bindings never re-evaluated — the wires FROZE at
+    # their last healthy values (failures=0.0) for the whole 29-minute outage
+    # while the loader failed 100% of attempts, and the saturation breaker
+    # never armed (Run D, docs/runwatch-20260826-runD.md). The sensor must
+    # not share fate with the server it effectively guards against.
+    #
+    # This daemon evaluates the same metricsql over the CLIENT'S OWN metrics
+    # store, on a LOCAL stdout op that cannot fail or block on any server, so
+    # the wires stay live through any outage. Bindings are not
+    # template-interpolated, so the selector braces are safe here; selectors
+    # are PHASE-ONLY by the same rule as before (see the pointer comment in
+    # `compaction_watch`, and never "{part}" — inert in bindings).
+    key_metrics:
+      recent_fail_max: max(recent_result_failures)
+    checkpoint: idempotent
+    adapter: stdout
+    daemon: true
+    concurrency: 1
+    tries: 1
+    # LITERAL numeric (rate: does not interpolate). One evaluation per
+    # second: 4 metricsql queries/s against the local store, and at most
+    # ~1s of added abort latency on 55s windows.
+    rate: 1
+    bindings: |
+      # Open-extent clock cursor, cut by the daemon stop when the tier's
+      # foreground completes (same pattern as compaction_watch).
+      cursor t = until_elapsed(1000000000, query_budget_ms)
+    ops:
+      sense_breaker_windows:
+        # Local no-op: constructing this op is what evaluates the volatile
+        # bindings below; `stdout: silent` drops the rendered line entirely.
+        stdout: silent
+        stmt: "breaker-watch tick"
+        bindings: |
+          volatile recent_result_failures := metricsql_scalar("sum(increase(result_failure{phase=\"load_increment_adaptive\"}[55s]))")
+          volatile recent_result_total := metricsql_scalar("sum(increase(result_total{phase=\"load_increment_adaptive\"}[55s]))")
+          volatile recent_attempt_failures := metricsql_scalar("sum(increase(attempt_failure{phase=\"load_increment_adaptive\"}[55s]))")
+          volatile recent_attempt_total := metricsql_scalar("sum(increase(attempt_total{phase=\"load_increment_adaptive\"}[55s]))")
+        metrics:
+          recent_result_failures:  { kind: gauge, value: recent_result_failures }
+          recent_result_total:     { kind: gauge, value: recent_result_total }
+          recent_attempt_failures: { kind: gauge, value: recent_attempt_failures }
+          recent_attempt_total:    { kind: gauge, value: recent_attempt_total }
+
   compaction_watch:
     # SRD-109 — the servo's INPUTS: what pressure each tier lived
     # with (means) and its worst moments (maxes), plus the windowed
@@ -1059,7 +1108,6 @@ phases:
       comp_pending_max: max(compaction_pool_pending)
       flush_active_max: max(flush_pool_active)
       sstables_max: max(table_sstables_live)
-      recent_fail_max: max(recent_result_failures)
     checkpoint: idempotent
     adapter: cql
     daemon: true
@@ -1115,45 +1163,18 @@ phases:
         # acknowledgment" compile warning — one line of which used to
         # print for every kernel instantiation at session start.
         result: |
-          # SCOPED TO THE LOADER PHASE — and PHASE ONLY, deliberately.
-          #
-          # Phase, because a single `part` carries four phases -- compaction_watch,
-          # concurrent_query, load_increment_adaptive and recall_check -- and an
-          # unscoped query sums all of them. That matters precisely during a loader
-          # stall: this daemon keeps polling successfully and the query phases keep
-          # resolving, so their attempts hold the denominator up while the loader
-          # contributes almost nothing (measured 0.50 windowed rate for a
-          # 100%-failing loader; reproduced in
-          # examples/workloads/controls/saturation_windowed_breaker.yaml).
-          #
-          # NOT part-scoped, because bindings do NOT template-interpolate: params
-          # are CONSTANTS in polydat bindings, so an embedded "{part}" reaches the
-          # engine as a literal, matches nothing, sum(empty) projects to NaN, and
-          # every stop_when comparison on the NaN wire is false — the breaker is
-          # silently disarmed. That exact defect shipped on 2026-08-26: the wires
-          # were NaN from birth and a 100%-failing loader churned for 45+ min
-          # after a server wipe with no abort (docs/runwatch-20260826-runC.md,
-          # 19:05 root cause). Phase-only is exact here because parts run this
-          # phase sequentially: finished parts' counters stop advancing, so their
-          # increase()[55s] is 0 and they add nothing to the sum — the only
-          # cross-part bleed is the single 55s window spanning a part boundary.
-          # If parts ever run the loader phase CONCURRENTLY, rebuild the part
-          # selector by string construction from the `part` constant — never with
-          # "{part}" inside the query string.
-          volatile recent_result_failures := metricsql_scalar("sum(increase(result_failure{phase=\"load_increment_adaptive\"}[55s]))")
-          volatile recent_result_total := metricsql_scalar("sum(increase(result_total{phase=\"load_increment_adaptive\"}[55s]))")
-          volatile recent_attempt_failures := metricsql_scalar("sum(increase(attempt_failure{phase=\"load_increment_adaptive\"}[55s]))")
-          volatile recent_attempt_total := metricsql_scalar("sum(increase(attempt_total{phase=\"load_increment_adaptive\"}[55s]))")
+          # The windowed breaker wires (recent_*) are computed by the
+          # `breaker_watch` daemon — a SERVER-INDEPENDENT stdout op — not here.
+          # 2026-08-27: they used to live in this op's bindings, and froze at
+          # their last healthy values for 29 minutes when the server died and
+          # this op's cycles wedged in the driver (sensor shared fate with the
+          # thing it guarded — docs/runwatch-20260826-runD.md, Run D end).
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
           flush_pool_active:       { kind: gauge, value: flush_active_live }
           flush_pool_pending:      { kind: gauge, value: flush_pending_live }
           flush_pool_blocked:      { kind: gauge, value: flush_blocked_live }
-          recent_result_failures:  { kind: gauge, value: recent_result_failures }
-          recent_result_total:     { kind: gauge, value: recent_result_total }
-          recent_attempt_failures: { kind: gauge, value: recent_attempt_failures }
-          recent_attempt_total:    { kind: gauge, value: recent_attempt_total }
       read_live_sstables:
         timeout: 10s
         raw: |
