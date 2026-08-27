@@ -110,3 +110,11 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Device: 179–182k r/s @ 6.0 KB, 100% util, iowait 43.8%. Cgroup: anon 107.1G / file 35.6G, max=0.
 - Gate: 0 cluster-cost; 0 integrity/assertions; wire live (38,392 — servo-locked constancy, documented 14:14); lint 0.
 - Trend: final half-hour of the base layer, cooling curve fully explainable by +58 GB of table growth since merge start; the landing, the wall verdict, and the queued-build burst all arrive before the next scheduled check.
+
+### 16:26 UTC — t+14h29m — 63.6M BASE LAYER COMPLETE (16:11:22); upper layers in flight; the 5-hour starved pass surfaces
+
+- **63.6M base layer completed 16:11:22** (123,940/123,949 — the usual one-short ending; NOT a wedge: the pool is demonstrably alive). Base-layer span: pass 10:58:36 → L0 done 16:11:22. Now in upper layers — progress counter reset to 3,400/123,950 (the Run-D drift+reset behavior), ~240–690 b/min; upper volume ≈2.5% of nodes but cross-source at depth, ETA minutes-to-tens-of-minutes. Wall verdict lands with TERMS_DATA (~77 GB write-back after upper layers); background waiter armed (bv3xd44ds) → push on landing. Monitor's observed segment: **4.84 min/M over its 213-min window** — consistent with the six cron windows (4.57–5.05).
+- **Monitor event folded — SLOW ORDINAL PASS: the queued 4M merge's pass completed at 16:10:35 having run at 4,554.8 µs/node (380× the 12 µs norm)** — this is the pass the 14:50 capture photographed parked in `joinAll:2911`: it started ~11:09, spent ~5 h starved under the giant's base layer, and finished seconds before L0 released the pool. Starvation, not a dispatch regression (single occurrence; the 4M merge is now progressing normally at 1,370/7,747). One pass — below the twice-per-interval push threshold; documented here instead.
+- Table: 728.4 GB / 31 SSTables. Part 10: 12.06M rows. Device 176k r/s @ 5.9 KB, util 100%. Cgroup: anon 107.1G / file 35.6G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
+- Trend: the giant's endgame — base done in 5h13m (~4.9 min/M for L0 alone), upper layers now the open question after the 15.86M precedent (44 s) clearly won't scale; the queued-build burst is beginning exactly as the 14:50 capture predicted.
