@@ -2303,6 +2303,14 @@ fn normalize_op_object(
         // op-payload keys.
         "errors",
         "tries",
+        // SRD-40b §9 — per-op-template CHANNEL ROUTING for the stdout
+        // adapter (`stdout: terminal|eventlog|silent`). The adapter reads
+        // it from params; left as an op FIELD it silently falls through
+        // (open vocabulary), the channel defaults to terminal, and a
+        // deliberately-silent op spams the event log — exactly what the
+        // breaker_watch sense op did on 2026-08-27 (1/s "breaker-watch
+        // tick" INF lines) until this key joined the excision list.
+        "stdout",
     ];
 
     let mut op_fields = if let Some(explicit_op) = op_field_names.iter().find_map(|k| map.get(*k)) {
@@ -3666,6 +3674,38 @@ fn merge_value_maps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdout_channel_key_is_excised_into_params() {
+        // SRD-40b §9: `stdout: silent` is CHANNEL ROUTING, read by the
+        // stdout adapter from template.params. Left as an op FIELD it
+        // falls through the open vocabulary and the channel defaults to
+        // terminal — a deliberately-silent op then spams the event log
+        // (the 2026-08-27 breaker_watch tick regression).
+        let yaml = r#"
+phases:
+  watch:
+    adapter: stdout
+    ops:
+      sense:
+        stdout: silent
+        stmt: "tick"
+scenarios:
+  default: [watch]
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).expect("parse");
+        let phase = wl.phases.get("watch").expect("phase watch");
+        let op = phase.ops.iter().find(|o| o.name == "sense").expect("op sense");
+        assert_eq!(
+            op.params.get("stdout").and_then(|v| v.as_str()),
+            Some("silent"),
+            "stdout channel key must land in params for the adapter to read"
+        );
+        assert!(
+            !op.op.contains_key("stdout"),
+            "stdout channel key must not remain an op field"
+        );
+    }
 
     #[test]
     fn phase_metrics_mapping_form_preserves_raw_value() {
