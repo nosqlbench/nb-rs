@@ -151,3 +151,10 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Device: 173k r/s @ 6.0 KB, 100% util, iowait 42.4% — softening in step with the batch clock. Cgroup: anon 107.1G / file 35.4G, max=0.
 - Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
 - Trend: the second sweep's cooling mirrors stream-1's late-phase pattern; ingest is nearly parked while the giant owns the device — the landing, whenever it prints, ends the longest single-merge grind the campaign has measured.
+
+### 18:50 UTC — RUN E ENDED at t+16h33m — operator transition to the frontierPrefetch=16 arm; the giant died un-landed at 63%
+
+- **Sequenced teardown, not an incident**: client stopped cleanly 18:30:32 → `nodetool` drain 18:32:51 → Cassandra stopped 18:32:54 → new jars deployed (dse-db 18:39; **jvector md5 22f92c42**, replacing 33f1202c/7de94e83) → fresh start 18:40:12 (pid 76285). **New flag set: frontierPrefetch=16** (WIDTH 3→16 — the latency-hiding arm the read-path analysis re-motivated), similarityOrdinals=true, clusterSearch=false unchanged.
+- **The 63.6M merge died at stream-2 63.1%** (last line 18:32:53) after 7h34m — the class's first full wall remains unmeasured; the new server is already re-tiering the surviving sstables (healthy 7.4 µs/node pass on a 4.96M merge at 18:44:02, fresh streams running).
+- **What Run E banked (16.5 h)**: stream-1 of the 63.6M at 4.6–5.0 min/M (directly comparable to Run C's 3.9-corrected figure); the counter-semantics rules (batch resets at boundaries, 5× ordinal-density variance — stacks/passes/TERMS_DATA are the only ground truth); the 5-hour starved ordinal pass (4,555 µs/node) and the 79%-packed-read IO attribution with the qd-40/220 µs closure; and full-run validation of every fix — integrity guard silent, breaker wires live end-to-end, zero gate violations, zero lint warns.
+- Teardown: cron 72fb6e65 deleted; monitor bd7jht4as and waiter bv3xd44ds stopped. Next run gets fresh instrumentation (new pids, new jvector provenance, WIDTH=16 references).
