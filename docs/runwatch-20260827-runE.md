@@ -118,3 +118,10 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Table: 728.4 GB / 31 SSTables. Part 10: 12.06M rows. Device 176k r/s @ 5.9 KB, util 100%. Cgroup: anon 107.1G / file 35.6G, max=0.
 - Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
 - Trend: the giant's endgame — base done in 5h13m (~4.9 min/M for L0 alone), upper layers now the open question after the 15.86M precedent (44 s) clearly won't scale; the queued-build burst is beginning exactly as the 14:50 capture predicted.
+
+### 16:44 UTC — t+14h47m — 63.6M upper phase larger than modeled: 14,560 batches at 607 b/min; wall still pending
+
+- **63.6M upper phase: 14,560/123,950 batches at 16:44:02** (3,400 at 16:25:40 ⇒ 11,160 b in 18.4 min = **607 b/min**). The upper stream has already covered ~7.5M batch-ordinals — far beyond the naive layer-1 estimate (~1.6M ords) — so the counter's upper-phase semantics differ from L0's (possibly per-source×per-layer sweeps); the landing CANNOT be projected from this counter reliably. The background waiter (bv3xd44ds) on adopt→TERMS_DATA remains the source of truth; no adopt line yet.
+- No landings, no ordinal passes this interval (the 4M's own progress interleaves quietly). Gate 0; integrity 0; max=0; wire live; lint 0.
+- Table: 734.9 GB / 32 SSTables. Part 10: 13.11M rows (~2.5M/h). Device: 186k r/s @ 6.0 KB, 100% util, iowait 41.7% — the upper phase saturates the device exactly like base.
+- Trend: the giant's tail is longer than the small-merge precedent suggested — upper layers are a real cost regime at this scale (novel observation for the campaign; Run C never reached them on this class); wall verdict now likely in the 17:00–18:00 window unless the counter total misleads.
