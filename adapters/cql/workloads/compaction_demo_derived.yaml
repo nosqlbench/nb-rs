@@ -1640,8 +1640,8 @@ phases:
           # cycle). settle_pending_tasks is this op's own published
           # count; the part filter scopes the answer to this phase's
           # own samples.
-          volatile compaction_observed := round_u64(metricsql_scalar(
-              "max_over_time(settle_pending_tasks{part=\"{part}\"}[6h])"))
+          volatile compaction_observed := round_u64(metricsql_scalar_dyn(str_concat(
+              "max_over_time(settle_pending_tasks{part=\"", part_str(part), "\"}[6h])")))
           extern completion_ratio:   f64 = 0.0
           extern index_nodes_done:   u64 = 0
           extern index_nodes_total:  u64 = 0
@@ -1650,10 +1650,10 @@ phases:
           # Drain speed, both task kinds (they do not overlap in time;
           # see finalize's per-kind capture note). Part-scoped so a
           # preceding tier's finalize-era series cannot contribute.
-          volatile nodes_per_s := round_u64(metricsql_scalar(
-              "sum(rate(compaction_index_nodes_done{part=\"{part}\"}[2m]))"))
-          volatile mib_per_s := round_u64(metricsql_scalar(
-              "sum(rate(compaction_data_bytes_done{part=\"{part}\"}[2m]))") / 1048576)
+          volatile nodes_per_s := round_u64(metricsql_scalar_dyn(str_concat(
+              "sum(rate(compaction_index_nodes_done{part=\"", part_str(part), "\"}[2m]))")))
+          volatile mib_per_s := round_u64(metricsql_scalar_dyn(str_concat(
+              "sum(rate(compaction_data_bytes_done{part=\"", part_str(part), "\"}[2m]))")) / 1048576)
         # NO kind filter — the drain must hold for the WHOLE
         # compaction, not only its index-build tail (the 2026-07-24
         # flush-starvation lesson on finalize's await_compaction).
@@ -1951,8 +1951,8 @@ phases:
           # this op's own published task count, so max_over_time over it is
           # exactly "did any poll see a task", and the `part` filter scopes it
           # to THIS tier so a previous tier's drain cannot answer for this one.
-          volatile compaction_observed := round_u64(metricsql_scalar(
-              "max_over_time(compaction_pending_tasks{part=\"{part}\"}[6h])"))
+          volatile compaction_observed := round_u64(metricsql_scalar_dyn(str_concat(
+              "max_over_time(compaction_pending_tasks{part=\"", part_str(part), "\"}[6h])")))
           extern completion_ratio:   f64 = 0.0
           extern index_nodes_done:   u64 = 0
           extern index_nodes_total:  u64 = 0

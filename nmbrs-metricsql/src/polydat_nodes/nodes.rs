@@ -234,6 +234,44 @@ fn metricsql_scalar(
     read_value(*query, parsed, "metricsql_scalar", Shape::Scalar).as_f64()
 }
 
+/// Like [`metricsql_scalar`] but the query is a RUNTIME string — for
+/// selectors built from scope values (e.g.
+/// `str_concat("…{part=\"", to_str(part), "\"}[6h])")`), which cannot
+/// satisfy the const-parse contract: iteration vars reach op scopes as
+/// runtime externs, so the folder can never collapse the concat and
+/// `#[poly_const]` resolution fails at kernel build ("missing required
+/// const arg 'query'", 2026-08-27). Parses are memoized per distinct
+/// query string — one parse ever per site in steady state, then a map
+/// hit per eval — and each distinct string passes through the same
+/// uninterpolated-template lint as the const path.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads live metrics framed by the cadence pipeline; value changes over the run"),
+)]
+fn metricsql_scalar_dyn(query: &str) -> f64 {
+    let parsed = parse_cached(query);
+    read_value(query, &*parsed, "metricsql_scalar_dyn", Shape::Scalar).as_f64()
+}
+
+/// Per-process memo for [`metricsql_scalar_dyn`] parses, keyed by the
+/// exact query text. Holds the same `Result` shape `parse_query`
+/// produces (an `Err` is memoized too — the warn-not-poison contract
+/// re-warns only via `read_value`, not by re-parsing).
+fn parse_cached(query: &str) -> Arc<Result<Expr, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Result<Expr, String>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(m) = cache.lock()
+        && let Some(hit) = m.get(query)
+    {
+        return hit.clone();
+    }
+    let parsed = Arc::new(parse_query(query));
+    if let Ok(mut m) = cache.lock() {
+        m.insert(query.to_string(), parsed.clone());
+    }
+    parsed
+}
+
 /// Evaluate a MetricsQL query → VecF64 (instant vector). Intrinsically
 /// `Nondeterministic` — see [`metricsql`].
 #[polydat::polydat_node(
@@ -348,6 +386,16 @@ mod tests {
             assert!(!note_no_data(label, q), "warned early after re-arm at read {i}");
         }
         assert!(note_no_data(label, q), "must warn again after re-arm");
+    }
+
+    #[test]
+    fn dyn_variant_accepts_runtime_queries_and_defaults_without_service() {
+        // The query reaches the node as a runtime value (here via str_concat),
+        // exercising the parse-memo path; with no live service installed the
+        // node reads the F64 default like its const sibling.
+        let mut k = compile_polydat("score := metricsql_scalar_dyn(str_concat(\"u\", \"p\"))")
+            .expect("metricsql_scalar_dyn should be a registered node");
+        assert_eq!(k.pull("score").as_f64(), 0.0);
     }
 
     #[test]

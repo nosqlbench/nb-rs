@@ -191,6 +191,30 @@ fn task_cycle() -> u64 {
 }
 
 // =========================================================================
+// part_str(partition) — the partition's canonical label string
+// =========================================================================
+
+/// Render a partition to its canonical display string — byte-identical to
+/// the `part=` identity label the metrics layer stamps
+/// (`Partition(i/N [a..b) [x%..y%))`), so a metricsql selector built from
+/// it matches this scope's own series exactly:
+/// `metricsql_scalar_dyn(str_concat("…{part=\"", part_str(part), "\"}[6h])")`.
+///
+/// Introduced 2026-08-27: four settle/finalize selectors carried a literal
+/// `{part}` — op-template syntax that bindings never interpolate — and had
+/// matched nothing since they were written (the nmbrs-metricsql parse-time
+/// lint now flags exactly that class). Building the selector from the
+/// in-scope partition through this node is the sanctioned replacement.
+/// (A general any-value `to_str` was tried first and rejected by the type
+/// checker: ext outputs do not connect to String inputs; the param must be
+/// `Ext<Partition>`, as in polydat's own `idx_of`/`start_of`.)
+#[polydat::polydat_node(category = Context)]
+fn part_str(partition: polydat::derive_support::Ext<polydat::iteration::cursor_partition::Partition>) -> String {
+    use polydat::ast::ReflectedValue;
+    partition.display()
+}
+
+// =========================================================================
 // control_set(name, value) — GK-driven write into a control
 // =========================================================================
 
