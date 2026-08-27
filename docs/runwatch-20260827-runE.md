@@ -101,3 +101,12 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Device: 178–180k r/s @ 6.0 KB, 100% util, iowait 36.9% — softening in step with the clip. Cgroup: anon 107.1G / file 35.6G, max=0.
 - Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
 - Trend: the giant's base layer is in its final hour with a slow, explainable cooling curve; everything else is queued patiently behind it exactly as the 14:50 capture showed.
+
+### 15:43 UTC — t+13h47m — 63.6M at 91.9%, ~26 min of base left
+
+- Table: 721.9 GB / 30 SSTables. Part 10: 10.93M rows (2.6M/h). Client + Cassandra up.
+- **63.6M merge: 113,900/123,949 (91.9%)** at 15:43:54. Interval 15:13→15:43: 11,620 b in 30.0 min = **387 b/min ⇒ 5.05 min/M** — sixth window of the gentle cooling curve (427→422→402→393→387). Base ends ~16:10; upper layers + write-back ⇒ **land ~16:25–16:50**; projected total WALL ≈ **5.2–5.4 min/M** (pass 10:58:36 → ~16:35).
+- Completed merges / ordinal passes this interval: none — the starved next-pass still parked.
+- Device: 179–182k r/s @ 6.0 KB, 100% util, iowait 43.8%. Cgroup: anon 107.1G / file 35.6G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; wire live (38,392 — servo-locked constancy, documented 14:14); lint 0.
+- Trend: final half-hour of the base layer, cooling curve fully explainable by +58 GB of table growth since merge start; the landing, the wall verdict, and the queued-build burst all arrive before the next scheduled check.
