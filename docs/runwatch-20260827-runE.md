@@ -135,3 +135,11 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - The wrongly-inferred "upper layers are a new cost regime" note in 16:44 is WITHDRAWN pending the actual upper phase.
 - Interval otherwise: 0 landings, 0 passes, gate 0, integrity 0, max=0, wire live, part 10 ~13.9M rows, device unchanged (186k r/s @ 6.0 KB).
 - Trend: the giant grinds on in L0 — slower than every projection because the projections trusted a counter that lies at boundaries; the pool is healthy and the stack shows the same 79%-packed-read physics as the 14:50 capture.
+
+### 17:44 UTC — t+15h47m — stream-2 batches steady at 588 b/min; ordinal density varies 5×; landing ~19:30–20:00
+
+- **63.6M stream-2: 51,050/123,950 batches** at 17:44:09 (33,340 at 17:14) = **588 b/min** — the batch clock is steady (607→605→588). The ORDINAL numerator moved only +2.24M in the same window (126 ords/b vs 604 cumulative) — ordinal density varies ~5× by region, so neither counter alone is a clean progress proxy; the batch stream is the steadier clock. If stream-2 runs its full 123,950: **~124 min left ⇒ landing ~19:30–20:00** (wall would print ~8.5–9.0 min/M). Waiter armed.
+- One active stream only in the recent window — the 4M's stream has gone quiet without a TERMS_DATA (write-back or queued; not flagged, watching). 0 landings, 0 passes this interval.
+- Table: 754.3 GB / 35 SSTables (+3 flushes). Part 10: 15.23M rows (2.1M/h — servo tightest yet). Device: 182k r/s @ 6.0 KB, 100% util, iowait 42.9%. Cgroup: anon 107.1G / file 35.4G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
+- Trend: the giant's second sweep grinds at a constant batch clock with wildly varying ordinal density — the class's first true wall now reads ~8.5–9.0 min/M, roughly twice the stream-1-only figure the old references carried.
