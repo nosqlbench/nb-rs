@@ -76,3 +76,12 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Device: 186–188k r/s @ 6.0 KB, 100% util, iowait 40.3%. Cgroup: anon 107.1G / file 35.8G, max=0.
 - Gate: 0 cluster-cost; 0 integrity/assertions; lint 0. Breaker wire: near-identical values across checks (46,309–46,310) prompted a freeze check — the last 8 samples jitter (46,276…46,310), i.e. a servo-locked ~842 attempts/s producing near-constant window sums. LIVE, verified; future checks needn't re-litigate small-jitter constancy.
 - Trend: metronomic — three flat windows inside 0.13 min/M of each other; the giant is two hours from the campaign's first 63.6M wall.
+
+### 14:44 UTC — t+12h47m — 63.6M at 73.0%, clip 4.86 min/M (band widens slightly)
+
+- Table: 708.9 GB / 28 SSTables (+12.9 GB, +2). Part 10: 8.40M rows (~2.5M/h — servo easing as backlog deepens). Client + Cassandra up.
+- **63.6M merge: 90,530/123,949 (73.0%)** at 14:44:00. Interval 14:14→14:44: 12,060 b in 30.0 min = **402 b/min ⇒ 4.86 min/M** — coolest of four windows (4.57–4.86, mean ~4.7); consistent with the table growing +45 GB under the fixed cache since the merge began. Base ends ~16:07, land ~16:25–16:55.
+- Completed merges / ordinal passes this interval: none.
+- Device: 173–182k r/s @ 6.0 KB, 100% util, iowait 44.7%. Cgroup: anon 107.1G / file 35.7G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; wire live (38,392 — dropped with the servo easing, further proof of liveness); lint 0.
+- Trend: three-quarters done with a gentle cooling drift inside the band — the wall projects to ~4.8–5.1 min/M total, decisively below the 6 flag and the campaign's first completed 63.6M verdict remains ~2 checks out.
