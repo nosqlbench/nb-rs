@@ -58,3 +58,12 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - Device: 184–189k r/s @ 6.0 KB, 99–100% util, iowait 41.7%. Cgroup: anon 107.1G / file 35.9G, max=0.
 - Gate: 0 cluster-cost lines; 0 integrity/assertion lines; breaker wire live (46,309 attempts/window); lint 0.
 - Trend: steady-state above-RAM grind, flat within a single b/min across two windows — Run E's 63.6M runs ~12% slower than Run C's 3.9–4.2 base clip but with a fixed pool under it; on pace for the campaign's first completed 63.6M wall this afternoon.
+
+### 13:44 UTC — t+11h47m — 63.6M crosses half: 53.1%, clip 4.57 min/M
+
+- Table: 689.5 GB / 25 SSTables (+12.9 GB, +2). Part 10: 5.62M rows (~3.0M/h). Client + Cassandra up.
+- **63.6M merge: 65,810/123,949 (53.1%)** at 13:44:01. Interval 13:14→13:44: 12,820 b in 30.0 min = **427 b/min ⇒ 4.57 min/M** — a nudge faster (415→427). Base ends ~16:00, land ~16:20–16:50.
+- Completed merges / ordinal passes this interval: none.
+- Device: 188k r/s @ 6.0 KB, 100% util, iowait 47.9%. Cgroup: anon 107.1G / file 35.7G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; breaker wire live (46,310/window — stable attempt rate, not a freeze: value moves); lint 0.
+- Trend: past the halfway mark with the clip drifting mildly FASTER (4.70→4.57) — the same hot-set settling Run C showed at this depth; landing window unchanged.
