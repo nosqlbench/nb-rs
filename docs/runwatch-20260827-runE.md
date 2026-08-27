@@ -92,3 +92,12 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - **Queue-depth arithmetic closes exactly**: per-member r_await 0.22 ms × ~40 synchronous FJP readers ⇒ 182k IOPS predicted; measured 187k r/s (4× nvme at 46.8k each, 6.03 KB, 100% util, 1.13 GB/s — pidstat: ~37 workers × 30.7 MB/s = the whole stream). The device is saturated by LATENCY-bound sync reads at qd≈40, using ~1/3 of its large-request bandwidth — same physics as the Run C capture, now with the true 220 µs latency measured (the 100 µs figure in earlier docs was optimistic).
 - Vs Run C's capture: packed-read share 63%→79%, hint-issuance samples 24%→0 — consistent with group position (single-search group, no seed bursts) rather than a mechanism change; rescore steady at 12%.
 - **Starvation forming behind the giant**: 6 builds queued in `acquireBuildPermit:934` and the NEXT merge's similarity-ordinal pass parked in `joinAll:2911` — expect a burst of landings + a slow pass right after the 63.6M completes (the exact burst pattern the isEmpty fix now guards).
+
+### 15:13 UTC — t+13h17m — 63.6M at 82.5%, cooling drift continues: 4.98 min/M
+
+- Table: 715.4 GB / 29 SSTables. Part 10: 9.65M rows (2.5M/h, servo re-locked ~698 rows/s — the wire's 38,393/55s window matches exactly). Client + Cassandra up.
+- **63.6M merge: 102,280/123,949 (82.5%)** at 15:13:55. Interval 14:44→15:13: 11,750 b in 29.9 min = **393 b/min ⇒ 4.98 min/M** — fifth window, monotone gentle cooling (427→422→402→393) tracking table growth; still under the 6 flag with ~55 min of base left. Base ends ~16:09, land ~16:25–16:55.
+- Completed merges / ordinal passes this interval: none (the starved next-merge pass observed in the 14:50 capture still hasn't printed — consistent with joinAll parking).
+- Device: 178–180k r/s @ 6.0 KB, 100% util, iowait 36.9% — softening in step with the clip. Cgroup: anon 107.1G / file 35.6G, max=0.
+- Gate: 0 cluster-cost; 0 integrity/assertions; wire live; lint 0.
+- Trend: the giant's base layer is in its final hour with a slow, explainable cooling curve; everything else is queued patiently behind it exactly as the 14:50 capture showed.
