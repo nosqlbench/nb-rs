@@ -33,9 +33,11 @@ Log fields $3=date $4=time; the run will cross midnight — filter
 - 16M class walls: Run D 4.29 min/M; Run C steady 4.5–4.8; Run E's first four:
   ..., fourth = **6.79 min/M** (09:12→10:59:49, co-ran against sibling 16Ms — within the
   historical 1.5–8.5 spread). Cluster-ON 9-src ref 2.31. Collapse era 8.5+.
-- 63.6M class: Run C base layer 3.9±0.3 min/M through 99.99% (never landed — deadlock).
-  Run E's 63.6M: pass 10:58:36 (32.5 µs/node), base clip ~4.7 min/M at 28%,
-  projected land ~16:30±30m — would be the campaign's FIRST completed 63.6M wall.
+- 63.6M class: Run C base 3.9±0.3 min/M — CORRECTED 17:2x: that covered COUNTER STREAM 1
+  only; Run C's "99.999% wedge" sat at the same mid-merge boundary where Run E's counter
+  reset (see the 17:22 entry), so the class's TOTAL cost was never measured before Run E.
+  Run E stream-1: 4.6–5.0 min/M (comparable and consistent); full wall projecting
+  ~8.0–8.3 min/M, landing ~19:15–19:45 — the campaign's FIRST completed 63.6M wall.
 - Ordinal-pass norm 11.5–12.5 µs/node; flag >100 twice per interval. Starved-pass
   outliers seen: 40.5 (Run D), 44.6 (Run E 09:01).
 - 100M rows reached at ~t+10h08m; partition 10 (final 100M) began ~12:05.
