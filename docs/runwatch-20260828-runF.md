@@ -416,3 +416,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - ADOPT 19:36:02 (REORDERED), TERMS_DATA 19:43:20, 320.5 GB body, zero integrity/assertion lines across the entire 10.7-hour merge. Landing pushed.
 - The per-phase decomposition is in E13; the headline splits: search 3.89 min/M (arm win), everything-else 6.22 min/M (arm-blind, SPLAT's target).
 - Post-landing: expect the queued-build burst (the permit queue has been deep for hours) and the servo to reopen ingest; giants #2 and #3 re-price from E13.
+
+### 19:47 UTC — t+19h10m — post-landing burst underway; ingest reopened
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- The burst began on schedule: 1 landing since 19:43:30, a fresh 4M (pass 19:44:39, 0.6 µs/node — clean passes again with the pool free) already at 97% four minutes in. SSTables consolidated 34→25; table 804.9 GB post-giant (+320.5 GB TERMS_DATA landed).
+- **Ingest reopened**: part 10 jumped to 20.30M (+2.8M in the hour post-storm — servo unthrottling as the backlog drains).
+- Device: 165k r/s @ 9.0 KB (burst mix). max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: the system exhales after the giant — burst landings will re-tier toward giant #2 (needs four more 16Ms; ETA roughly 6–8 h at reopened pace), which E13 now prices in advance.
