@@ -60,6 +60,15 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   consistent, marginally better than Run D's 4.29-without-arm territory, still no big arm
   effect at this class (E3 stands).
 
+- E7 (captured 05:18 lull): **PQ training now runs pool-wide** — 67/88 RUNNABLE samples in
+  `getNearestCluster` between merges: the dse-db ea38d33954 change (cold-start PQ codebook on
+  the build pool, not the flush thread) working as shipped.
+- E8 (captured 05:19 storm, 4M-class): **blocked-in-readFully share 50% vs Run E's 79%** —
+  under WIDTH=16, ~40% of the pool computes (scoring/diversity/gather CPU + hint issuance)
+  vs ~15% in Run E; the arm shifts worker time from stalls to work. CAVEAT: 4M-class storm
+  at 10.5 KB requests; the class-matched giant capture decides whether this holds at 63.6M
+  scale. Capture: docs/captures/iosat-20260828-0519/.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -106,3 +115,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Device: 313k r/s @ 6.0 KB, util 100%, **r_await 0.24 ms** (up from 0.17 — the deeper queue now pays a small latency toll at higher depth; net throughput still ~65% above the sync era). Cgroup: anon 106.4G / file 37.8G, max=0.
 - Gate 0; integrity 0; wires live; lint 0.
 - Trend: steady-state cadence — #3 lands ~05:20, #4 follows, **giant pass projected ~06:40±30m**; the run remains the healthiest and fastest of the campaign at equivalent depth.
+
+### 05:25 UTC addendum — runtime re-analysis under the arm (captures: docs/captures/iosat-20260828-0519/)
+
+- 16M #3 landed ~05:12 (wall pending exact match at next check); a 4M storm followed and was captured.
+- Ledger E7 and E8 added from the paired lull/storm captures — headline: **blocked-read share 50% vs 79%**, PQ training pool-wide. Line-shift map for db987fd0 recorded in the capture README.
+- The definitive giant-storm capture is queued for the 63.6M (forming after #4, ~06:30–07:00).
