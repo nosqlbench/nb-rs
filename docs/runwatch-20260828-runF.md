@@ -179,3 +179,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **16M #5**: batch numerator went 15,610 → 10,900 across the interval on the same 30,985 total — the boundary-reset artifact at 16M scale (ordinal counter 33.8%); landing ~08:40–09:00 by wall precedent, then the giant. No landings, no new passes this interval.
 - Rows: part 8 at ~9.6M (~89.6M total, ~12.5M/h). Table ~590 GB / 1x SSTables. Device 29x k r/s @ ~6 KB, r_await ~0.19 ms. max=0. Gate 0; integrity 0; wire live; lint 0.
 - Trend: holding pattern behind #5 — the giant's inputs remain banked and every instrument stays pointed at its pass.
+
+### 08:47 UTC — t+8h10m — #5 running long (62% at 78 min); giant waits
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Watcher armed, silent (correct).
+- **16M #5: ordinals 61.6% at 78 min elapsed** — tracking ~95–110 min, the longest 16M yet (mid-flight estimate only, per the E6 lesson; the wall decides). Depth context: 90M+ rows, cache share per source shrinking. Landing ~09:05–09:20 ⇒ **giant pass ~09:15–09:30** (five 16M sources will be banked).
+- No landings, no new passes this interval. Rows: part 9 underway (~92M total). Table ~610 GB. Device 28x k r/s, max=0, gate 0, integrity 0, lint 0.
+- Trend: each 16M at depth runs longer than the last — the giant's verdict, when it finally fires, lands on the deepest table any giant has attempted.
