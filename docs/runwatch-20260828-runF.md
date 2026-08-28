@@ -73,6 +73,13 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   at 10.5 KB requests; the class-matched giant capture decides whether this holds at 63.6M
   scale. Capture: docs/captures/iosat-20260828-0519/.
 
+- E9 (captured 09:05): **the reverse-fold group's cost profile, measured for the first time**
+  — during 16M #5's final group (largest source, cross-link elision: zero forward searches),
+  77% of RUNNABLE samples are diversity candidate-vector reads
+  (`retainDiverse:3817 → getVectorInto:658 → readFloats:186`), 18% same-source willNeed
+  hints, ZERO search/packed frames. The elision works exactly as designed, and the last
+  group's bill is diversity reads, not search. Capture: docs/captures/iosat-20260828-0905/.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -186,3 +193,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **16M #5: ordinals 61.6% at 78 min elapsed** — tracking ~95–110 min, the longest 16M yet (mid-flight estimate only, per the E6 lesson; the wall decides). Depth context: 90M+ rows, cache share per source shrinking. Landing ~09:05–09:20 ⇒ **giant pass ~09:15–09:30** (five 16M sources will be banked).
 - No landings, no new passes this interval. Rows: part 9 underway (~92M total). Table ~610 GB. Device 28x k r/s, max=0, gate 0, integrity 0, lint 0.
 - Trend: each 16M at depth runs longer than the last — the giant's verdict, when it finally fires, lands on the deepest table any giant has attempted.
+
+### 09:10 UTC — THE GIANT IS LIVE — 63,576,748 ords, pass 09:00:40 (21.9 µs/node, starved-class: co-scheduled with #5's tail)
+
+- Start pushed 09:05. The 09:05 "giant storm" capture actually caught **#5's reverse-fold final group** (ledger E9 — a first-of-its-kind profile); the giant was in setup behind #5. Re-armed: bz7azxs4l fires the giant's true L0-storm capture (progress-line detection + 3 min), bdt18922r waits adopt(63576748)→TERMS_DATA for the wall + landing push.
+- The wall clock started 09:00:40. References at stake: Run E stream-1 4.6–5.0 min/M; device baseline 173–205k @ 0.22 ms sync-era; two-sweep structure recurrence; the class's first-ever completed wall.
+- Device at capture: 289k r/s @ 6.1 KB, r_await 0.20 ms, iowait 37. Provenance unchanged.
