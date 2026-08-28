@@ -126,6 +126,8 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   further wall reduction belongs to the SPLAT staged rewrite, exactly as its design doc
   argues. Two 63.6M giants remain in the 200M cascade to confirm repeatability.
 
+**E14 — Post-giant recovery curve (the giant's externality, priced).** After E13's landing (19:43), the six queued 4M merges land at 3.29 / 3.95 / 2.65 / 3.56 / 2.23 / 1.17 min/M — monotone decay back into the solo band within 40 minutes, and the ingest servo opens to a run-record 8.2M rows/h. So a giant's total cost = its own 642.7-min wall + ~40 min of 2–4× degraded 4M walls behind it — the starved-class horror walls (6.3–13.4, record 79.3) occur only when victims are co-resident DURING the monopoly, not after it. Scheduler-fix sizing: permit aging must protect co-residents mid-giant; post-giant drainage needs nothing.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -431,3 +433,12 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Burst walls: **3.29, 3.95, 2.65 min/M** (lightly co-scheduled with each other — between the solo band 1.0–1.5 and the starved band; the backlog clears in overlapping pairs); two more 4Ms in flight (passes 20:08, 20:15). SSTable re-tiering toward the next 16M generation underway.
 - Ingest: part 10 at 22.48M (+2.2M/30min = 4.4M/h — the servo's strongest part-10 pace of the run). Device 273k r/s @ 5.0 KB (burst mix). max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: recovery dynamics textbook — clear the 4M backlog, rebuild the 16M tier, giant #2 forming roughly 02:00–04:00 with E13 as its prior.
+
+### 20:50 UTC — t+20h13m — backlog cleared in 40 min; gen-2's first 16M already 66% through batches; ingest at run-record 8.2M/h
+
+- Provenance: pid 290993 / db987fd0 / fp16+simord — UNCHANGED. Client nmbrs 301327 alive.
+- 4M backlog CLEARED — all six post-giant walls: 3.29, 3.95, 2.65, 3.56, **2.23, 1.17** min/M. Monotone decay as co-scheduling thins; the last lands in the solo band (1.17 vs 1.01–1.16). → E14.
+- **16M #6 IN FLIGHT** (first of the gen-2 tier): pass 20:29:52, 15.86M ords; 20,390/30,985 batches at 20:50 (66% in 20 min — solo-fast). References: 4.48/4.34/4.50/5.42/12.04**.
+- Ingest: part 10 at 27.03M (+4.5M/33min ≈ **8.2M/h, run record** — servo wide open with compaction debt gone). Table 859 GB, 0 sstables.
+- Pass µs/node: 0.6 22.2 0.7 0.7 14.2 0.9 0.8 (two burst-co-scheduled blips, sub-flag). Device 302k r/s @ 6.3 KB, r_await 0.19 ms member-avg 0.21. Cgroup anon 106.5G/file 36.4G, max=0. Gate 0, integrity 0 (4 grep hits since 19:43 were pre-run artifacts at 00:03–00:32 — ERROR lines carry date in field 3, filter misaligned; verified clean), wire live (27.03M).
+- Trend: the exhale is complete — recovery from the 10.7 h monopoly took <45 min of degraded 4M walls; the machine is already building giant #2's tier at solo pace.
