@@ -366,3 +366,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-3: 48,700/123,943 (39.3%)** — interval 16:47→17:17: 36,440 b in 30.1 min = **1,215 b/min** (980→1,215, still accelerating). Remaining ~75.2k b ⇒ stream-3 ends ~18:20 ⇒ **TERMS_DATA ~18:30–18:50**, composite ~**9.0–9.3 min/M**.
 - Rows: part 10 at 16.33M (~116.3M — servo throttled to ~1.1M/h under the emission storm). Device 233k r/s @ 6.7 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: emission keeps quickening as it goes — the per-phase splits (3.96 / 2.88 / ~1.5 equiv) will make the composite legible when it lands this evening.
+
+### 17:47 UTC — t+17h10m — stream-3 at 65.8% (1,095 b/min); wall ~18:35–18:55
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-3: 81,570/123,943 (65.8%)** — interval 1,095 b/min (1,215→1,095). Remaining ~42.4k b ⇒ stream-3 ends ~18:25 ⇒ **TERMS_DATA ~18:35–18:55**, composite ~**9.1–9.4 min/M** (per-phase: 3.96 / 2.88 / ~1.6 + boundaries + write).
+- Rows: part 10 at 16.90M (~116.9M). Device 228k r/s @ 6.8 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: on final approach — the waiter takes it from here.
