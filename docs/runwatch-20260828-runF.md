@@ -43,6 +43,13 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   hints add ~120k IOPS of queue depth beyond the ~182k sync ceiling. BUT E3:
 - E3: **16M wall unmoved** (4.48 vs Run D's 4.29 without the arm) — extra IOPS did not shorten
   the 16M critical path; decisive test deferred to the 63.6M class.
+- E2b (measured 03:17, mid-16M#2 storm): **306k r/s at r_await 0.18 ms** — deeper queue AND
+  lower per-read latency than the sync-era 190k @ 0.22 ms: the NVMe members absorb the hint
+  depth without a latency penalty. WIDTH=16's device-level win is unambiguous; whether it
+  reaches the giant's wall is still open (E3).
+- E5 (probe 03:17): NO distinctive SPLAT log phrases (band-staged / token stream / spill /
+  key-window) in the run's logs — the de79d5bf machinery is INERT this run, as presumed; the
+  ledger's effects attribute to WIDTH=16 + the pass rewrite + upstream fixes only.
 - E4: **starved-4M inflation halved** (6.3–7.4 vs 10.6–18.6) — consistent with E1 + WIDTH=16
   helping victims more than owners.
 
@@ -53,3 +60,13 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Landed walls so far: 4M solo ×4 (1.01–1.16), 4M starved ×2 (7.40, 6.28), 16M #1 4.48.
 - **16M #2 pass 02:49:46 (15.86M) + a 4M co-runner (pass 02:49:12)** — the starvation experiment repeats.
 - Gate 0; integrity guard silent; max=0; wires live (139,909/window at the hot servo); lint 0; zero ticks.
+
+### 03:17 UTC — t+2h40m — provenance unchanged; 16M #2 bursting after a gated start; 40M rows in
+
+- Provenance: pid 290993, jvector db987fd0, frontierPrefetch=16 — UNCHANGED.
+- Rows: parts 0–3 complete (40M), part 4 at 1.75M (~15.6M/h). Table 273.3 GB / 8 SSTables.
+- **16M #2 (pass 02:49:46, 3.2 µs/node): 1,640/30,986 at 03:18** — a slow 28-min average (~59 b/min, spent gated behind its 4M co-runner's phases) but bursting at ~3,000 b/min instantaneous now; too early for a wall projection. The 4M co-runner (pass 02:49:12, 2.0 µs/node) also in flight.
+- Landed walls this interval: none (both in flight).
+- Device: **305k r/s @ 5.8 KB, util 100%, r_await 0.18 ms** — ledger E2b: more IOPS at LOWER latency than the sync era. iowait 37.3%. Cgroup: anon 106.4G / file 38.1G, max=0.
+- Gate 0; integrity 0; wires live (139,887); lint 0. SPLAT-phrase probe: zero hits (E5 — machinery inert as presumed).
+- Trend: the arm's device-level advantage is now double-confirmed (depth AND latency); the class-level question stays parked until 16M #2 lands and, decisively, the giant (~4 h out).
