@@ -352,3 +352,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - The giant's structure under db987fd0 is (at least) THREE sweeps: search (stream-1, 3.96 min/M — the arm's win), the Run-E-style second sweep (13:32→~16:35 ≈ 183 min ≈ 2.88 min/M-equivalent), and now a third — most plausibly the token-stream emission (E11), silent at 16M scale but printing here. Opening ~780 b/min.
 - **Wall re-projection: if stream-3 runs full-length at ~700–800 b/min, TERMS_DATA ~18:45–19:30 and the composite lands ~9.3–9.9 min/M** — the arm's stream-1 win swamped by the build's ADDED emission phase, a cost Run E never carried. The honest comparison is per-phase, not composite: the ledger already splits them. Ledger E12 annotated accordingly (three-sweep structure at giant scale).
 - Waiter unchanged — the wall prints when it prints.
+
+### 16:47 UTC — t+16h10m — stream-3 at 9.9%, ~980 b/min; wall ~19:00–19:20
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-3 (emission): 12,260/123,943 (9.9%)** at ~980 b/min — the fastest sweep of the three (sequential-leaning writes as expected for emission). If full-length: ends ~18:45 ⇒ **TERMS_DATA ~19:00–19:20**, composite ~**9.5–9.7 min/M** (per-phase: s1 3.96 / s2 2.88 / s3 ~1.8–1.9 equivalent + boundaries).
+- Rows: part 10 at 15.77M (~115.8M). Device 230k r/s @ 6.5 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: the three-sweep anatomy is pricing itself cleanly phase by phase — emission is cheap per-M but long in absolute terms at giant scale; the wall lands this evening.
