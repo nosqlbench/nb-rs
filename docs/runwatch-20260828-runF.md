@@ -256,3 +256,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant: 42,190/123,941 (34.0%)** — interval 476 b/min (4.07), cumulative **510 b/min = 3.80 min/M average** through a third of L0; still 20%+ under Run E's stream-1. Base ETA ~13:05 on the cumulative clip; then the token-stream tail (silent, expected), then the wall.
 - Rows: 100M reached (~t+10h05m — matching Run E's pace at the milestone despite the heavier merge schedule). Table ~670 GB. Device 24x k r/s @ ~7 KB, r_await 0.21. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: the giant holds its advantage at depth while everything co-scheduled pays for it — the composite wall (search + emission + write) is now the only open number.
+
+### 11:17 UTC — t+10h40m — giant at 47.3%, cumulative 3.87 min/M; solo at last
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant: 58,570/123,941 (47.3%)** — interval 10:47→11:17: 16,380 b in 30.0 min = **546 b/min** (the clip RECOVERED from 476 once #5 landed and freed the pool); cumulative 58,570 b / 112.7 min = 520 b/min = **3.87 min/M** through nearly half of L0. Base ETA ~13:15; then the silent token-stream tail (expected, E11), then the wall.
+- No landings, no passes this interval — the giant finally runs SOLO (first clean-conditions giant segment of the campaign).
+- Rows: part 10 at ~1.6M (~101.6M total). Table ~670 GB. Device 25x k r/s @ ~6.9 KB, r_await 0.22 ms. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: with the pool to itself the giant's clip bounced back — the arm's advantage is now measured under both contended and clean conditions; the composite wall closes the story.
