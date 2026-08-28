@@ -114,6 +114,18 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   touch. Six executors queue in acquireBuildPermit behind the giant; the next 16M's pass
   parks in joinAll — the starvation pattern repeats on schedule.
 
+- E13 (19:43, THE CROWN MEASUREMENT): **the campaign's first complete 63.6M-class wall:
+  pass 09:00:40 → TERMS_DATA 19:43:20 = 642.7 min = 10.11 min/M** (63,576,748 ords;
+  vectorMergeMillis 688.6 min incl. pre-pass; TERMS_DATA body 320.5 GB). Full anatomy:
+  setup 24.3 min (starved) · **stream-1 search 247 min = 3.89 min/M (the arm's win — Run E
+  ran 4.6–5.0 on this segment)** · stream-2 183 min = 2.88 · stream-3 emission 115 min =
+  1.81 · stream-4 47 min = 0.74 · upper/adopt tail 19.3 min · write-back 7.3 min (320 GB ≈
+  730 MB/s). Reading: the search phase — the only phase prior runs ever measured — is now
+  38% of the total; the new build's added sweeps (emission et al.) buy the SPLAT ramp at
+  ~2.5 min/M of one-time cost per merge; and every phase after stream-1 is arm-blind, so
+  further wall reduction belongs to the SPLAT staged rewrite, exactly as its design doc
+  argues. Two 63.6M giants remain in the 200M cascade to confirm repeatability.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -398,3 +410,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-4 finished 124,870/124,870 at 19:16:43** — the first stream of the campaign to print an exact-total completion. Now in the post-sweep tail (upper layers + cross-link + adopt): >10 min so far without the adopt line, consistent with giant-scale upper layers being non-trivial (~1.6M nodes cross-source). **TERMS_DATA expected ~19:30–20:00**; composite ~**9.8–10.3 min/M**.
 - max=0; gate 0; integrity 0; wire live. Two waiters armed (bdt18922r, b1ctwtzye) — push on the wall.
 - Trend: four sweeps done, tail phases pricing themselves now; the complete anatomy lands within the hour.
+
+### 19:45 UTC — THE GIANT LANDED: 642.7 min = 10.11 min/M — the class's first complete wall (ledger E13)
+
+- ADOPT 19:36:02 (REORDERED), TERMS_DATA 19:43:20, 320.5 GB body, zero integrity/assertion lines across the entire 10.7-hour merge. Landing pushed.
+- The per-phase decomposition is in E13; the headline splits: search 3.89 min/M (arm win), everything-else 6.22 min/M (arm-blind, SPLAT's target).
+- Post-landing: expect the queued-build burst (the permit queue has been deep for hours) and the servo to reopen ingest; giants #2 and #3 re-price from E13.
