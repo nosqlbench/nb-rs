@@ -359,3 +359,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-3 (emission): 12,260/123,943 (9.9%)** at ~980 b/min — the fastest sweep of the three (sequential-leaning writes as expected for emission). If full-length: ends ~18:45 ⇒ **TERMS_DATA ~19:00–19:20**, composite ~**9.5–9.7 min/M** (per-phase: s1 3.96 / s2 2.88 / s3 ~1.8–1.9 equivalent + boundaries).
 - Rows: part 10 at 15.77M (~115.8M). Device 230k r/s @ 6.5 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: the three-sweep anatomy is pricing itself cleanly phase by phase — emission is cheap per-M but long in absolute terms at giant scale; the wall lands this evening.
+
+### 17:17 UTC — t+16h40m — stream-3 at 39.3%, accelerating (1,215 b/min); wall pulls in to ~18:30–18:50
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-3: 48,700/123,943 (39.3%)** — interval 16:47→17:17: 36,440 b in 30.1 min = **1,215 b/min** (980→1,215, still accelerating). Remaining ~75.2k b ⇒ stream-3 ends ~18:20 ⇒ **TERMS_DATA ~18:30–18:50**, composite ~**9.0–9.3 min/M**.
+- Rows: part 10 at 16.33M (~116.3M — servo throttled to ~1.1M/h under the emission storm). Device 233k r/s @ 6.7 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: emission keeps quickening as it goes — the per-phase splits (3.96 / 2.88 / ~1.5 equiv) will make the composite legible when it lands this evening.
