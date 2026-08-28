@@ -97,3 +97,12 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Device: **328k r/s @ 5.9 KB, r_await 0.17 ms** — new IOPS high for the run. Cgroup: anon 106.4G / file 37.9G, max=0.
 - Gate 0; integrity 0; wires live (218,262); lint 0.
 - Trend: the negative signal evaporated on landing — the 16M class is consistent and healthy under the arm, the device keeps setting depth records, and the giant is two 16Ms away.
+
+### 04:47 UTC — t+4h10m — 16M #3 at 61.8% on class pace; quiet interval
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **16M #3: 19,160/30,985 (61.8%)** at 04:48; interval clip 459 b/min, cumulative 36.4 min ⇒ tracking a ~4.2–4.5 min/M wall (class-consistent). A 4M co-runner in flight (pass 04:35:36). No landings this interval.
+- Rows: part 5 at 8.68M (58.7M total, ~14.3M/h). Table 386.4 GB / 10 SSTables.
+- Device: 313k r/s @ 6.0 KB, util 100%, **r_await 0.24 ms** (up from 0.17 — the deeper queue now pays a small latency toll at higher depth; net throughput still ~65% above the sync era). Cgroup: anon 106.4G / file 37.8G, max=0.
+- Gate 0; integrity 0; wires live; lint 0.
+- Trend: steady-state cadence — #3 lands ~05:20, #4 follows, **giant pass projected ~06:40±30m**; the run remains the healthiest and fastest of the campaign at equivalent depth.
