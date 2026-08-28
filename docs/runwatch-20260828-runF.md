@@ -272,3 +272,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - No landings, no passes — solo giant, second clean interval.
 - Rows: part 10 ~3.6M (~103.6M). Table ~690 GB. Device 25x k r/s @ ~6.9 KB, r_await ~0.21. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: metronomic solo grind at a clip no prior giant has held at this depth; three more intervals to the boundary and the token-stream tail.
+
+### 12:17 UTC — t+11h40m — giant at 71.7%, average locked at 3.87
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant: 88,890/123,941 (71.7%)** — interval 11:47→12:17: 14,640 b in 30.1 min = **486 b/min** (523→486, the familiar depth-cooling); cumulative 88,890 b / 192.8 min = 461... recompute: 88,890/192.8 = 461 b/min?? — correction: cumulative = 88,890 b since 09:25:00 = 172.8 min ⇒ **514 b/min = 3.91 min/M average**. Base ETA ~13:25–13:30.
+- No landings, no passes — third solo interval. Rows: part 10 at 5.31M (~105.3M). Table 705.2 GB / 25 SSTables. Device 244k r/s @ 6.9 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: gentle cooling inside a locked ~3.9 average — the giant remains on pace to beat every reference; boundary and token-stream tail next hour.
