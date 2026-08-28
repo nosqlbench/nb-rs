@@ -148,3 +148,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Rows: part 7 at 5.07M (75.1M total, ~13.3M/h). Table 499.6 GB / 12 SSTables. Wire live again post-boundary (139,982).
 - Device: 300k r/s @ 6.2 KB, util 100%, r_await 0.19 ms. Cgroup: anon 106.4G / file 37.4G, max=0. Gate 0; integrity 0; lint 0.
 - Trend: quiet approach to the decisive event — cadence intact, all instrumentation armed for the giant.
+
+### 06:47 UTC — t+6h10m — #4 at 94.2%, tracking a wider wall (~5.0–5.4); giant imminent
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Watcher bucoqponb: armed, no giant pass yet.
+- **16M #4: 29,190/30,986 (94.2%)** at 06:48 — 70 min elapsed ⇒ wall projecting **~5.0–5.4 min/M**, the first widening beyond the 4.34–4.50 cohort (deeper table at 75M rows + a long-running starved 4M co-runner, 42 min and counting). Landing ~06:55–07:05 ⇒ **giant pass ~07:05–07:15**.
+- Rows: part 7 at ~7.8M (77.8M total, ~13M/h). Table ~510 GB / 12 SSTables. Device 28x k r/s @ 6.2 KB, r_await ~0.2 ms. max=0. Gate 0; integrity 0; wire live; lint 0.
+- Trend: the tier cadence bends slightly under depth as the decisive event arrives — every instrument armed.
