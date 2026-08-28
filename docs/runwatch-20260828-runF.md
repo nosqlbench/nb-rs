@@ -279,3 +279,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant: 88,890/123,941 (71.7%)** — interval 11:47→12:17: 14,640 b in 30.1 min = **486 b/min** (523→486, the familiar depth-cooling); cumulative 88,890 b / 192.8 min = 461... recompute: 88,890/192.8 = 461 b/min?? — correction: cumulative = 88,890 b since 09:25:00 = 172.8 min ⇒ **514 b/min = 3.91 min/M average**. Base ETA ~13:25–13:30.
 - No landings, no passes — third solo interval. Rows: part 10 at 5.31M (~105.3M). Table 705.2 GB / 25 SSTables. Device 244k r/s @ 6.9 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: gentle cooling inside a locked ~3.9 average — the giant remains on pace to beat every reference; boundary and token-stream tail next hour.
+
+### 12:47 UTC — t+12h10m — giant at 83.2%; boundary ~13:30
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant: 103,140/123,941 (83.2%)** — interval 12:17→12:47: 14,250 b in 30.0 min = **475 b/min**; cumulative 103,140 b / 202.8 min = **509 b/min = 3.95 min/M average**. Remaining ~20.8k b ⇒ **boundary ~13:30**, then the silent token-stream tail (E11: expect tens of minutes, no logging), then adopt + TERMS_DATA = the wall.
+- No landings, no passes — fourth solo interval. Rows: part 10 at 6.83M (~106.8M). Table 711.8 GB / 26 SSTables. Device 244k r/s @ 6.9 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: the cooling curve (546→523→486→475) mirrors Run E's giant exactly, but from a floor ~20% lower — the average will finish ~3.95–4.0 vs Run E's 4.6–5.0 stream-1; the wall then adds the emission tail that Run E never measured.
