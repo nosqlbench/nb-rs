@@ -172,3 +172,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **16M #5 launched at 07:29:13** (15.86M) instead of the expected 64M-tier merge — STCS consumed the accumulated 4Ms first; the four (now forming five) 16M sources sit waiting. #5 at 15,610/30,985 (50.4%) in 18.5 min ≈ 844 b/min — fast start. **Giant pass re-projected ~08:45–09:15** (after #5 frees a slot and the 16M bucket fires).
 - Rows: ~85M (part 8 mid-flight). Table ~540 GB. Device: 28x k r/s @ ~6 KB, r_await ~0.2 ms. max=0. Gate 0; integrity 0; lint 0.
 - Trend: tier arithmetic, not trouble — the giant's inputs are banked; STCS ordering just made us wait one more 16M.
+
+### 08:17 UTC — t+7h40m — #5 mid-flight (counter boundary-reset observed); giant still pending
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Watcher armed, silent (no ≥20M pass — correct).
+- **16M #5**: batch numerator went 15,610 → 10,900 across the interval on the same 30,985 total — the boundary-reset artifact at 16M scale (ordinal counter 33.8%); landing ~08:40–09:00 by wall precedent, then the giant. No landings, no new passes this interval.
+- Rows: part 8 at ~9.6M (~89.6M total, ~12.5M/h). Table ~590 GB / 1x SSTables. Device 29x k r/s @ ~6 KB, r_await ~0.19 ms. max=0. Gate 0; integrity 0; wire live; lint 0.
+- Trend: holding pattern behind #5 — the giant's inputs remain banked and every instrument stays pointed at its pass.
