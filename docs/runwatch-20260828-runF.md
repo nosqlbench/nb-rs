@@ -442,3 +442,13 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Ingest: part 10 at 27.03M (+4.5M/33min ≈ **8.2M/h, run record** — servo wide open with compaction debt gone). Table 859 GB, 0 sstables.
 - Pass µs/node: 0.6 22.2 0.7 0.7 14.2 0.9 0.8 (two burst-co-scheduled blips, sub-flag). Device 302k r/s @ 6.3 KB, r_await 0.19 ms member-avg 0.21. Cgroup anon 106.5G/file 36.4G, max=0. Gate 0, integrity 0 (4 grep hits since 19:43 were pre-run artifacts at 00:03–00:32 — ERROR lines carry date in field 3, filter misaligned; verified clean), wire live (27.03M).
 - Trend: the exhale is complete — recovery from the 10.7 h monopoly took <45 min of degraded 4M walls; the machine is already building giant #2's tier at solo pace.
+
+### 21:17 UTC — t+20h40m — gen-2 builds two-at-a-time: 16M #6 + #7 co-resident; batch clock now ambiguous
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Client nmbrs 301327 alive.
+- No landed walls this interval (the 0.11 sub-min match on the 20:24 4M is the known TERMS_DATA double-match artifact of the moving cut; its true wall 1.17 stands as recorded at 20:50).
+- **16M #7 STARTED 21:00:53** (CompactionExecutor:65; #6 is :64 — thread-name discrimination, not counters): one of the two parked byte-complete 23.2 GiB compactions took a build slot. First time two 16M builds run co-resident in Run F. #6 ordinal clock (nodetool 21:15): 6.07M/15.86M = 38% at t+45min — co-scheduled pace, off the solo 4.48 reference; expect walls toward the 5.42 cohort band. Their landings will price 16M×16M co-scheduling (candidate E15).
+- Instrument note: both merges total 30,985 batches (same size) → interleaved `Compaction I/O progress` lines are indistinguishable (apparent 20390→19940 "regression" at 21:17 was the two streams, not a reset). Batch clock UNRESOLVABLE while same-size merges co-run; use nodetool per-task ordinal rows.
+- Queue (nodetool 21:15): 6 pending = #6 indexing + #7 now started + one 4M build at 0% + one more byte-complete 16M parked + two fresh 4M compactions. Tier: 1×92.9G (giant) + 3×23.2G + 10×5.8G + 10×1.4G; giant #2 needs the fourth 16M — already byte-complete, awaiting slot.
+- Ingest: part 10 at 29.97M (+2.94M/27min ≈ 6.5M/h — servo still wide open). Table 898 GB, 26 sstables. Pass µs/node 0.9 0.8 1.4. Device 276k r/s @ 6.2 KB, r_await 0.20 ms. Cgroup anon 106.5G/file 36.2G, max=0. Gate 0, integrity 0, wire live (29.97M).
+- Trend: the tier factory has shifted to parallel production — two of giant #2's four 16Ms mid-build simultaneously, third parked ready; forming window holds at ~02:00–04:00, possibly earlier, at the cost of co-scheduled (5+ min/M) rather than solo 16M walls.
