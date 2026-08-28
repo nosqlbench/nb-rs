@@ -424,3 +424,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Ingest reopened**: part 10 jumped to 20.30M (+2.8M in the hour post-storm — servo unthrottling as the backlog drains).
 - Device: 165k r/s @ 9.0 KB (burst mix). max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: the system exhales after the giant — burst landings will re-tier toward giant #2 (needs four more 16Ms; ETA roughly 6–8 h at reopened pace), which E13 now prices in advance.
+
+### 20:17 UTC — t+19h40m — burst in full swing: three 4M walls landed (2.65–3.95), two more in flight
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- Burst walls: **3.29, 3.95, 2.65 min/M** (lightly co-scheduled with each other — between the solo band 1.0–1.5 and the starved band; the backlog clears in overlapping pairs); two more 4Ms in flight (passes 20:08, 20:15). SSTable re-tiering toward the next 16M generation underway.
+- Ingest: part 10 at 22.48M (+2.2M/30min = 4.4M/h — the servo's strongest part-10 pace of the run). Device 273k r/s @ 5.0 KB (burst mix). max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: recovery dynamics textbook — clear the 4M backlog, rebuild the 16M tier, giant #2 forming roughly 02:00–04:00 with E13 as its prior.
