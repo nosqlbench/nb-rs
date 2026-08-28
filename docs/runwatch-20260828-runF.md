@@ -88,6 +88,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   strongly positive). Opening clip ~555 b/min ≈ Run E's stream-1 steady state, achieved at
   comparable depth WITH a starved setup and #5 co-resident. The wall remains the verdict.
   Capture: docs/captures/iosat-20260828-0928-giant/.
+  E10b (09:47): sustained L0 clip through 10% = **544 b/min ≈ 3.55 min/M** — 25–30% faster
+  than Run E's stream-1 steady state (390–427 b/min, 4.6–5.0 min/M) at comparable depth,
+  with #5's tail still co-resident. The blocked-share reduction IS converting into clip.
 
 ## Entries
 
@@ -220,3 +223,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 ### 09:30 UTC addendum — the giant's L0 capture: 51% blocked vs Run E's 79% (ledger E10)
 
 - Giant L0 began 09:25:00 (24 min of starved setup post-pass); opening clip ~555 b/min; landing waiter armed for the wall.
+
+### 09:47 UTC — t+9h10m — giant L0 at 9.9%, clip 544 b/min (3.55 min/M — beats Run E); #5 phase-2 still out
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant: 12,300/123,941 (9.9%) at 544 b/min sustained ⇒ 3.55 min/M clip** — ledger E10b: the arm's blocked-share win converts to clip (Run E stream-1: 4.6–5.0). Base-layer ETA on this clip ~12:50; wall verdict still owns the day.
+- **#5's silent phase-2 is now 38+ min** (elapsed 138 min; last stream line 09:09) — queued behind the giant's L0; its wall will land ugly and needs the co-scheduling asterisk when it prints.
+- Rows: part 9 ~8.2M (~98.2M). Table ~655 GB. Device 25x k r/s @ ~6.8 KB, r_await 0.21 ms. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: the giant is outrunning every prior giant while dragging #5 behind it — the arm's story is now consistent across share, depth, and clip; only the wall remains.
