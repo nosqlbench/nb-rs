@@ -50,8 +50,14 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - E5 (probe 03:17): NO distinctive SPLAT log phrases (band-staged / token stream / spill /
   key-window) in the run's logs — the de79d5bf machinery is INERT this run, as presumed; the
   ledger's effects attribute to WIDTH=16 + the pass rewrite + upstream fixes only.
-- E4: **starved-4M inflation halved** (6.3–7.4 vs 10.6–18.6) — consistent with E1 + WIDTH=16
-  helping victims more than owners.
+- E4 (REVISED 03:47): starved-4M inflation is BIMODAL, not halved — observed 6.28, 7.40, and
+  now **11.79** (the 02:49 co-runner, starved by 16M #2 its whole life) vs the old world's
+  10.6–18.6. The improvement is real but variance dominates; withhold the "halved" claim.
+- E6 (forming, 03:47): **16M #2 is running ~2× slower than #1** — 32.5% in 58 min incl. a
+  gated start; recent clip 281 b/min projects a wall ≈8–9 min/M vs #1's 4.48 at similar
+  depth. One data point; if it lands >6 the two-consecutive flag arms on #3. Possible
+  drivers: deeper table (40M vs 30M rows), a second 4M co-runner (pass 03:45:47), request
+  size down to 4.8 KB (more small co-traffic).
 
 ## Entries
 
@@ -70,3 +76,13 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Device: **305k r/s @ 5.8 KB, util 100%, r_await 0.18 ms** — ledger E2b: more IOPS at LOWER latency than the sync era. iowait 37.3%. Cgroup: anon 106.4G / file 38.1G, max=0.
 - Gate 0; integrity 0; wires live (139,887); lint 0. SPLAT-phrase probe: zero hits (E5 — machinery inert as presumed).
 - Trend: the arm's device-level advantage is now double-confirmed (depth AND latency); the class-level question stays parked until 16M #2 lands and, decisively, the giant (~4 h out).
+
+### 03:47 UTC — t+3h10m — starved-4M lands 11.79 (E4 revised); 16M #2 tracking ~2× slower than #1 (E6 forming)
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- Landed: the 02:49:12 4M co-runner at **11.79 min/M** (46.8 min — starved under 16M #2 throughout; back in the old-world band, E4 revised to "bimodal").
+- **16M #2: 10,060/30,987 (32.5%)** at 03:48; recent clip 281 b/min ⇒ projected wall ~8–9 min/M vs #1's 4.48 — E6 forming; a third 4M (pass 03:45:47, 0.8 µs/node) now co-runs.
+- Rows: part 4 at 6.22M (44.2M total, ~15.2M/h). Table 306.5 GB / 10 SSTables.
+- Device: 265k r/s @ 4.8 KB, util 100%, r_await 0.18 ms, iowait 38.8. Cgroup: anon 106.4G / file 38.0G, max=0.
+- Gate 0; integrity 0; wires live; lint 0.
+- Trend: the arm's device numbers stay excellent while class walls tell a mixed story — #2's slowdown is the first negative signal of the run; whether it's depth, co-scheduling, or the arm itself gets refereed by #3 and #4 before the giant.
