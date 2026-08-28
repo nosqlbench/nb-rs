@@ -318,3 +318,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-2: 32,880/123,941 (26.5%)** — interval clip **795 b/min** (570→795; exceeds Run E's stream-2 band — E12's "arm-independent" softened to "partially/regionally"). At this clip TERMS_DATA lands **~16:15–16:45**, composite wall ~**6.9–7.3 min/M**.
 - Rows: part 10 at 10.67M (~110.7M). Table 738.2 GB / 30 SSTables. Device 241k r/s @ 6.7 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: stream-2 is outrunning its Run E counterpart too — the composite wall estimate improves each interval; the first complete 63.6M wall remains on track for late afternoon with the push armed.
+
+### 14:47 UTC — t+14h10m — stream-2 at 44.4%, clip 736 b/min; wall holding ~16:20–16:45
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-2: 54,970/123,941 (44.4%)** — interval 14:17→14:47: 22,090 b in 30.0 min = **736 b/min** (795→736; still well above Run E's 560–605 band). Remaining ~69.0k b ⇒ **TERMS_DATA ~16:20–16:45**, composite wall tracking **~7.0–7.3 min/M**.
+- Rows: part 10 at 11.82M (~111.8M). Table 744.8 GB / 31 SSTables. Device 235k r/s @ 6.7 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: both sweeps of this giant outrun their Run E counterparts — the composite estimate has stabilized inside a half-minute-per-M band across two checks; landing late afternoon as projected.
