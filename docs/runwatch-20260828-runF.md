@@ -101,6 +101,16 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   than Run E's stream-1 steady state (390–427 b/min, 4.6–5.0 min/M) at comparable depth,
   with #5's tail still co-resident. The blocked-share reduction IS converting into clip.
 
+- E12 (13:47): **the two-sweep structure RECURS under db987fd0 at giant scale — and this
+  build PRINTS stream-2 progress** (counter reset to 9,020/123,941 after the ~13:32
+  boundary; the 16Ms' phase-2 was silent, the giant's is not — scale- or path-dependent
+  logging). Stream-2 opening clip ~570 b/min ≈ stream-1's — and ≈ Run E's stream-2
+  (560–605): **the second sweep looks arm-INDEPENDENT** (not search-bound, so WIDTH=16
+  can't help it). If it runs the full denominator, the wall lands ~17:10–17:45 and the
+  composite ~7.7–8.3 min/M — the arm's stream-1 win diluted by the sweep the arm can't
+  touch. Six executors queue in acquireBuildPermit behind the giant; the next 16M's pass
+  parks in joinAll — the starvation pattern repeats on schedule.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -293,3 +303,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant: 117,080/123,941 (94.5%)** — interval 465 b/min; cumulative 117,080 b / 232.8 min = **503 b/min = 3.96 min/M**. Remaining ~6.9k b ⇒ **boundary ~13:32**; then the token-stream tail (silent, expected: #1–#4 took 10–18 min uncontended, #5 took 3h starved — the giant emits ~4× #5's stream, solo, so estimate 30–60 min), then adopt → TERMS_DATA.
 - No landings, no passes — fifth solo interval. Rows: part 10 at 8.16M (~108.2M). Table 718.4 GB / 27 SSTables. Device 241k r/s @ 6.9 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: stream-1 will close at ~3.96 min/M vs Run E's 4.6–5.0 — a ~15–20% arm win on the like-for-like segment, banked regardless of what the emission tail adds; wall projection ~14:15–15:00.
+
+### 13:47 UTC — t+13h10m — boundary crossed: stream-2 live and PRINTING (E12); wall estimate widens
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-1 closed at the boundary ~13:32 (final average 3.96 min/M — the banked arm win). Stream-2 running: 9,020/123,941 at ~570 b/min** — recurrence confirmed, printing at this scale, clip ≈ Run E's stream-2 ⇒ arm-independent (ledger E12). Wall now projects **~17:10–17:45 if the sweep runs full-length** (composite ~7.7–8.3 min/M); earlier if the denominator misleads (it has before).
+- Permit queue: 6 executors waiting; next 16M's pass parked in joinAll — the familiar debt accumulating for the post-landing burst.
+- Rows: part 10 ~9.5M (~109.5M). Gate 0; integrity 0; max=0; wire live; lint 0.
+- Trend: the run has cleanly split the merge into an arm-sensitive half (stream-1, 20% faster) and an arm-blind half (stream-2) — which is precisely the case for the SPLAT staged rewrite that targets the second half.
