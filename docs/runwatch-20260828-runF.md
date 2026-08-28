@@ -165,3 +165,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **All four 16M sources now exist (landed ~07:03) — the giant is next**, currently gated behind two in-flight 4Ms (passes 07:07, 07:15) holding the build slots; its pass expected within ~10–20 min. Watcher + pushes armed.
 - Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Gate 0; integrity 0; max=0.
 - Trend: the tier is done; everything now waits on the class verdict.
+
+### 07:47 UTC — t+7h10m — STCS chose a FIFTH 16M over the giant; class verdict slips ~1h
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Watcher armed, silent (correct — no ≥20M pass exists).
+- **16M #5 launched at 07:29:13** (15.86M) instead of the expected 64M-tier merge — STCS consumed the accumulated 4Ms first; the four (now forming five) 16M sources sit waiting. #5 at 15,610/30,985 (50.4%) in 18.5 min ≈ 844 b/min — fast start. **Giant pass re-projected ~08:45–09:15** (after #5 frees a slot and the 16M bucket fires).
+- Rows: ~85M (part 8 mid-flight). Table ~540 GB. Device: 28x k r/s @ ~6 KB, r_await ~0.2 ms. max=0. Gate 0; integrity 0; lint 0.
+- Trend: tier arithmetic, not trouble — the giant's inputs are banked; STCS ordering just made us wait one more 16M.
