@@ -199,3 +199,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Start pushed 09:05. The 09:05 "giant storm" capture actually caught **#5's reverse-fold final group** (ledger E9 — a first-of-its-kind profile); the giant was in setup behind #5. Re-armed: bz7azxs4l fires the giant's true L0-storm capture (progress-line detection + 3 min), bdt18922r waits adopt(63576748)→TERMS_DATA for the wall + landing push.
 - The wall clock started 09:00:40. References at stake: Run E stream-1 4.6–5.0 min/M; device baseline 173–205k @ 0.22 ms sync-era; two-sweep structure recurrence; the class's first-ever completed wall.
 - Device at capture: 289k r/s @ 6.1 KB, r_await 0.20 ms, iowait 37. Provenance unchanged.
+
+### 09:17 UTC — t+8h40m — giant in extended setup (17 min post-pass, no L0 yet); #5 in its silent phase-2
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Giant L0 watcher (bit9vmt75, corrected pattern) + landing waiter (bdt18922r) armed.
+- **Giant (63.58M): 17 min post-pass, zero L0 progress lines** — setup phases starved-class (pretouch 310 GB + PQ retrain on a contended pool; Run C/E precedent: a starved giant PQ refine alone ran 40 min). L0 storm may not begin until ~09:40.
+- **#5: silent phase-2** at its 30,980/30,986 boundary since 09:09:48; elapsed 108 min already exceeds #4's 86-min wall — its wall is ballooning under the giant's setup competition. Not a wedge (pool demonstrably active).
+- Rows: part 9 at ~5.4M (~95.4M total). Table ~640 GB. Device 9x k–29x k r/s oscillating with the phase mix. max=0; gate 0; integrity 0; lint 0.
+- Trend: the two big builds are now starving each other's phase transitions — the giant's wall will carry heavy co-scheduling tax on top of depth; both instruments will catch their moments regardless.
