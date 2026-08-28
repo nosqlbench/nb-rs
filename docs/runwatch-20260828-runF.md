@@ -50,9 +50,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - E5 (probe 03:17): NO distinctive SPLAT log phrases (band-staged / token stream / spill /
   key-window) in the run's logs — the de79d5bf machinery is INERT this run, as presumed; the
   ledger's effects attribute to WIDTH=16 + the pass rewrite + upstream fixes only.
-- E4 (REVISED 03:47): starved-4M inflation is BIMODAL, not halved — observed 6.28, 7.40, and
-  now **11.79** (the 02:49 co-runner, starved by 16M #2 its whole life) vs the old world's
-  10.6–18.6. The improvement is real but variance dominates; withhold the "halved" claim.
+- E4 (REVISED 03:47, 05:20): starved-4M inflation is BIMODAL — observed 6.28, 7.40, 11.79,
+  **9.36** vs the old world's 10.6–18.6. Band 6.3–11.8: overlapping the old world's floor,
+  better at the median; variance dominates. Withhold the "halved" claim.
 - E6 (CLOSED 04:17): the "#2 runs 2× slower" projection was a MID-FLIGHT ILLUSION — after
   its 4M co-runner landed, #2 ripped the back 67% at ~2,100 b/min and **landed at 4.34 min/M
   (68.8 min)**, slightly BETTER than #1's 4.48. Lesson re-learned at 16M scale: gated starts
@@ -118,6 +118,14 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 
 ### 05:25 UTC addendum — runtime re-analysis under the arm (captures: docs/captures/iosat-20260828-0519/)
 
-- 16M #3 landed ~05:12 (wall pending exact match at next check); a 4M storm followed and was captured.
+- ~~16M #3 landed ~05:12~~ **CORRECTION (05:20 check): the 05:12 landing was the STARVED 4M** (pass 04:35:36, wall 9.36 min/M, vectorMergeMillis 37.8 min). #3 is at its stream boundary (30,980/30,985 since 04:57:33) in a silent phase-2 — under db987fd0 the second phase apparently no longer prints progress lines; landing expected any minute on the #1/#2 precedent.
 - Ledger E7 and E8 added from the paired lull/storm captures — headline: **blocked-read share 50% vs 79%**, PQ training pool-wide. Line-shift map for db987fd0 recorded in the capture README.
 - The definitive giant-storm capture is queued for the 63.6M (forming after #4, ~06:30–07:00).
+
+### 05:20 UTC — t+4h43m — addendum corrected (05:12 was the starved 4M at 9.36); #3 in the silent phase-2 at its boundary
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- Landed this interval: the starved 4M at **9.36 min/M** (E4 band now 6.3–11.8). **16M #3 wall still pending** — at the 30,980/30,985 boundary since 04:57:33 with a silent phase-2 (new-build behavior: no stream-2 progress printing); elapsed 69 min vs #1/#2's 68.8–71.5 total ⇒ landing imminent, NOT a wedge (pool active: the 05:18 4M storms at 220k r/s @ 9.1 KB, r_await 0.20 ms).
+- Rows: part 6 at 2.65M (62.6M total, ~14.1M/h). Table 413.1 GB / 11 SSTables.
+- Cgroup: anon 106.4G / file 37.6G, max=0. Gate 0; integrity 0; wires live (137,347); lint 0.
+- Trend: cadence intact, one mis-attribution corrected in place; #4 launches after #3's landing, putting the giant's pass at ~06:30–07:00 with the definitive capture queued.
