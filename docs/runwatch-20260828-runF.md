@@ -62,7 +62,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - E4 (REVISED 03:47, 05:20, 07:17): starved-4M observed 6.28, 7.40, 11.79, 9.36, **13.40**
   — band 6.3–13.4 now fully overlapping the old world's 10.6–18.6 at depth. The early-run
   improvement decays as the table grows; the arm does NOT durably protect victims. Claim
-  reduced to: mild median improvement, early-run only.
+  reduced to: mild median improvement, early-run only. EXTREME (18:47): a 4M victim of
+  the three-sweep giant landed at **79.3 min/M** (5.24 h parked; vectorMergeMillis 314.6
+  min) — an all-time starvation record. The multi-sweep giant triples the monopoly window;
+  victim protection needs scheduler work (permit priority/aging), not prefetch width.
 - E6 (CLOSED 04:17): the "#2 runs 2× slower" projection was a MID-FLIGHT ILLUSION — after
   its 4M co-runner landed, #2 ripped the back 67% at ~2,100 b/min and **landed at 4.34 min/M
   (68.8 min)**, slightly BETTER than #1's 4.48. Lesson re-learned at 16M scale: gated starts
