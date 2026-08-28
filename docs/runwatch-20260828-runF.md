@@ -53,11 +53,12 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - E4 (REVISED 03:47): starved-4M inflation is BIMODAL, not halved — observed 6.28, 7.40, and
   now **11.79** (the 02:49 co-runner, starved by 16M #2 its whole life) vs the old world's
   10.6–18.6. The improvement is real but variance dominates; withhold the "halved" claim.
-- E6 (forming, 03:47): **16M #2 is running ~2× slower than #1** — 32.5% in 58 min incl. a
-  gated start; recent clip 281 b/min projects a wall ≈8–9 min/M vs #1's 4.48 at similar
-  depth. One data point; if it lands >6 the two-consecutive flag arms on #3. Possible
-  drivers: deeper table (40M vs 30M rows), a second 4M co-runner (pass 03:45:47), request
-  size down to 4.8 KB (more small co-traffic).
+- E6 (CLOSED 04:17): the "#2 runs 2× slower" projection was a MID-FLIGHT ILLUSION — after
+  its 4M co-runner landed, #2 ripped the back 67% at ~2,100 b/min and **landed at 4.34 min/M
+  (68.8 min)**, slightly BETTER than #1's 4.48. Lesson re-learned at 16M scale: gated starts
+  make mid-flight clips useless; only walls compare. 16M class under the arm: 4.48, 4.34 —
+  consistent, marginally better than Run D's 4.29-without-arm territory, still no big arm
+  effect at this class (E3 stands).
 
 ## Entries
 
@@ -86,3 +87,13 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Device: 265k r/s @ 4.8 KB, util 100%, r_await 0.18 ms, iowait 38.8. Cgroup: anon 106.4G / file 38.0G, max=0.
 - Gate 0; integrity 0; wires live; lint 0.
 - Trend: the arm's device numbers stay excellent while class walls tell a mixed story — #2's slowdown is the first negative signal of the run; whether it's depth, co-scheduling, or the arm itself gets refereed by #3 and #4 before the giant.
+
+### 04:17 UTC — t+3h40m — 16M #2 lands 4.34 (E6 closed: the slowdown was an illusion); #3 launched strong
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- Landed this interval: **16M #2 = 4.34 min/M** (68.8 min — class now 4.48, 4.34); 4M walls 2.92, 1.45, 0.76 (light co-load; the 0.76 plausibly real at this cadence).
+- **16M #3 in flight** (pass 04:11:37): 5,380/30,985 (17.4%) at 04:18 ≈ 830 b/min opening clip. #4 after it ⇒ giant forming ~05:45–06:45.
+- Rows: part 5 at 3.2M (53.2M total, ~14.9M/h). Table 353.4 GB / 5 SSTables (post-landing consolidation).
+- Device: **328k r/s @ 5.9 KB, r_await 0.17 ms** — new IOPS high for the run. Cgroup: anon 106.4G / file 37.9G, max=0.
+- Gate 0; integrity 0; wires live (218,262); lint 0.
+- Trend: the negative signal evaporated on landing — the 16M class is consistent and healthy under the arm, the device keeps setting depth records, and the giant is two 16Ms away.
