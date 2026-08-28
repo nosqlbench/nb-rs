@@ -264,3 +264,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - No landings, no passes this interval — the giant finally runs SOLO (first clean-conditions giant segment of the campaign).
 - Rows: part 10 at ~1.6M (~101.6M total). Table ~670 GB. Device 25x k r/s @ ~6.9 KB, r_await 0.22 ms. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: with the pool to itself the giant's clip bounced back — the arm's advantage is now measured under both contended and clean conditions; the composite wall closes the story.
+
+### 11:47 UTC — t+11h10m — giant at 59.9%, solo clip steady 523 b/min
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant: 74,250/123,941 (59.9%)** — interval 11:17→11:47: 15,680 b in 30.0 min = **523 b/min** (546→523, gentle cooling solo); cumulative 74,250 b / 142.7 min = 520 b/min = **3.87 min/M** — the average is rock-steady. Base ETA ~13:20.
+- No landings, no passes — solo giant, second clean interval.
+- Rows: part 10 ~3.6M (~103.6M). Table ~690 GB. Device 25x k r/s @ ~6.9 KB, r_await ~0.21. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: metronomic solo grind at a clip no prior giant has held at this depth; three more intervals to the boundary and the token-stream tail.
