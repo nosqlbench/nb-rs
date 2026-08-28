@@ -58,7 +58,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   (68.8 min)**, slightly BETTER than #1's 4.48. Lesson re-learned at 16M scale: gated starts
   make mid-flight clips useless; only walls compare. 16M class under the arm: 4.48, 4.34 —
   consistent, marginally better than Run D's 4.29-without-arm territory, still no big arm
-  effect at this class (E3 stands).
+  effect at this class (E3 stands). UPDATE 05:47: #3 landed 4.50 — the class triplet
+  **4.48 / 4.34 / 4.50 (±0.08)** is the tightest 16M cohort the campaign has measured:
+  the arm's clearest class-level effect is VARIANCE COLLAPSE, not mean shift.
 
 - E7 (captured 05:18 lull): **PQ training now runs pool-wide** — 67/88 RUNNABLE samples in
   `getNearestCluster` between merges: the dse-db ea38d33954 change (cold-start PQ codebook on
@@ -129,3 +131,12 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Rows: part 6 at 2.65M (62.6M total, ~14.1M/h). Table 413.1 GB / 11 SSTables.
 - Cgroup: anon 106.4G / file 37.6G, max=0. Gate 0; integrity 0; wires live (137,347); lint 0.
 - Trend: cadence intact, one mis-attribution corrected in place; #4 launches after #3's landing, putting the giant's pass at ~06:30–07:00 with the definitive capture queued.
+
+### 05:47 UTC — t+5h10m — 16M #3 lands 4.50 (cohort ±0.08); #4 at 31.5%; giant pass ~06:50–07:00
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- Landed: **16M #3 = 4.50 min/M** (71.3 min — cohort 4.48/4.34/4.50, E3 updated: variance collapse is the arm's class-level signature); 4M solos 1.48, 1.39, 1.13.
+- **16M #4 in flight** (pass 05:37:48): 9,770/30,985 (31.5%) in 10.4 min ≈ 940 b/min opening — fastest 16M start of the run. Landing ~06:45–06:50 ⇒ **giant pass ~06:50–07:00**; class-matched capture + start/landing pushes queued.
+- Rows: parts 0–6 complete (70M, t+5h05m — vs Run E's 70M at ~t+7h). Table 466.5 GB / 7 SSTables. Wire NULL adjudicated: part-6/7 boundary (no loader active; part-7 series not yet created) — legitimate SRD-89 no-data, boundary blips as designed.
+- Device: 284k r/s @ 6.2 KB, util 100%, r_await 0.23 ms. Cgroup: anon 106.4G / file 37.6G, max=0. Gate 0; integrity 0; lint 0.
+- Trend: the tightest, fastest tier cadence of the campaign rolls into the decisive hour — one 16M from the giant.
