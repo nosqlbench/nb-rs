@@ -107,7 +107,7 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   logging). Stream-2 opening clip ~570 b/min ≈ stream-1's — and ≈ Run E's stream-2
   (560–605): **the second sweep looked arm-INDEPENDENT** — but by 14:17 its clip rose to
   **795 b/min** (vs Run E's 560–605 ceiling): either partially arm-assisted after all, or
-  density-variable by region. Wall estimate improves to ~16:15–16:45, composite ~6.9–7.3 min/M — the arm's stream-1 win diluted by the sweep the arm can't
+  density-variable by region. Wall estimate improved to ~16:15–16:45 — then a THIRD sweep appeared at 16:35 (see the 16:45 addendum): composite re-projected ~9.3–9.9 min/M with the added emission phase; per-phase accounting is the honest comparison — the arm's stream-1 win diluted by the sweep the arm can't
   touch. Six executors queue in acquireBuildPermit behind the giant; the next 16M's pass
   parks in joinAll — the starvation pattern repeats on schedule.
 
@@ -346,3 +346,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-2: 113,520/123,941 (91.6%)** — interval 613 b/min (the cooling slope continues); remaining ~10.4k b ⇒ stream-2 ends ~16:35, then upper layers + adopt + write-back ⇒ **TERMS_DATA ~16:50–17:10**. Composite tracking **~7.25–7.45 min/M**.
 - Rows: part 10 ~15.0M (~115M). Table ~764 GB. Device 23x k r/s. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: last quiet entry before the wall — the waiter owns the landing.
+
+### 16:45 UTC addendum — a THIRD full-scale sweep began ~16:35 (counter reset to 6,090/123,943)
+
+- The giant's structure under db987fd0 is (at least) THREE sweeps: search (stream-1, 3.96 min/M — the arm's win), the Run-E-style second sweep (13:32→~16:35 ≈ 183 min ≈ 2.88 min/M-equivalent), and now a third — most plausibly the token-stream emission (E11), silent at 16M scale but printing here. Opening ~780 b/min.
+- **Wall re-projection: if stream-3 runs full-length at ~700–800 b/min, TERMS_DATA ~18:45–19:30 and the composite lands ~9.3–9.9 min/M** — the arm's stream-1 win swamped by the build's ADDED emission phase, a cost Run E never carried. The honest comparison is per-phase, not composite: the ledger already splits them. Ledger E12 annotated accordingly (three-sweep structure at giant scale).
+- Waiter unchanged — the wall prints when it prints.
