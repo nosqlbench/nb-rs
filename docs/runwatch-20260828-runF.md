@@ -80,6 +80,15 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   hints, ZERO search/packed frames. The elision works exactly as designed, and the last
   group's bill is diversity reads, not search. Capture: docs/captures/iosat-20260828-0905/.
 
+- E10 (captured 09:28, THE class-matched measurement): **the giant's L0 storm under
+  WIDTH=16 blocks in packed-neighbor readFully 51% of the time vs Run E's 79%** — the E8
+  result holds at 63.6M scale. Hint issuance is 31% of samples (frontier 27% + same-source
+  4%); rescore steady at 12%. Device: 259k r/s @ 0.21 ms ⇒ ~70k IOPS of landed hint depth
+  over the sync ceiling (vs +120k at 4M scale — hint efficiency decays with depth, stays
+  strongly positive). Opening clip ~555 b/min ≈ Run E's stream-1 steady state, achieved at
+  comparable depth WITH a starved setup and #5 co-resident. The wall remains the verdict.
+  Capture: docs/captures/iosat-20260828-0928-giant/.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -207,3 +216,7 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **#5: silent phase-2** at its 30,980/30,986 boundary since 09:09:48; elapsed 108 min already exceeds #4's 86-min wall — its wall is ballooning under the giant's setup competition. Not a wedge (pool demonstrably active).
 - Rows: part 9 at ~5.4M (~95.4M total). Table ~640 GB. Device 9x k–29x k r/s oscillating with the phase mix. max=0; gate 0; integrity 0; lint 0.
 - Trend: the two big builds are now starving each other's phase transitions — the giant's wall will carry heavy co-scheduling tax on top of depth; both instruments will catch their moments regardless.
+
+### 09:30 UTC addendum — the giant's L0 capture: 51% blocked vs Run E's 79% (ledger E10)
+
+- Giant L0 began 09:25:00 (24 min of starved setup post-pass); opening clip ~555 b/min; landing waiter armed for the wall.
