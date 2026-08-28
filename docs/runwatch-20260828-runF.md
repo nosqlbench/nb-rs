@@ -325,3 +325,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-2: 54,970/123,941 (44.4%)** — interval 14:17→14:47: 22,090 b in 30.0 min = **736 b/min** (795→736; still well above Run E's 560–605 band). Remaining ~69.0k b ⇒ **TERMS_DATA ~16:20–16:45**, composite wall tracking **~7.0–7.3 min/M**.
 - Rows: part 10 at 11.82M (~111.8M). Table 744.8 GB / 31 SSTables. Device 235k r/s @ 6.7 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: both sweeps of this giant outrun their Run E counterparts — the composite estimate has stabilized inside a half-minute-per-M band across two checks; landing late afternoon as projected.
+
+### 15:17 UTC — t+14h40m — stream-2 at 61.0%, clip steady 690 b/min; wall ~16:30–16:50
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-2: 75,660/123,941 (61.0%)** — interval 14:47→15:17: 20,690 b in 30.0 min = **690 b/min** (795→736→690, its own gentle cooling curve, still above Run E's band). Remaining ~48.3k b ⇒ **TERMS_DATA ~16:30–16:50**, composite ~**7.1–7.3 min/M**.
+- Rows: part 10 at 12.89M (~112.9M). Table 751.4 GB / 32 SSTables. Device 235k r/s @ 6.8 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: both sweeps cooling on the same gentle slope, projections stable within minutes across three checks — the landing is a formality of time now.
