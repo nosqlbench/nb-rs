@@ -47,9 +47,18 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   lower per-read latency than the sync-era 190k @ 0.22 ms: the NVMe members absorb the hint
   depth without a latency penalty. WIDTH=16's device-level win is unambiguous; whether it
   reaches the giant's wall is still open (E3).
-- E5 (probe 03:17): NO distinctive SPLAT log phrases (band-staged / token stream / spill /
-  key-window) in the run's logs — the de79d5bf machinery is INERT this run, as presumed; the
-  ledger's effects attribute to WIDTH=16 + the pass rewrite + upstream fixes only.
+- E5 (probe 03:17; **FALSIFIED 10:20**): no SPLAT log phrases exist because the phase LOGS
+  NOTHING — a thread dump caught #5's executor RUNNABLE in `emitTokenStream ← compact ←
+  merge`: **the construction-side token-stream emission (SPLAT ramp, 8aa6d329) is ACTIVE by
+  default in db987fd0.** See E11.
+- E11 (10:20): **the "silent phase-2" every Run F merge exhibits IS token-stream emission**
+  — new work the old build didn't do, log-silent, visible only in stacks. Implications:
+  (a) the 16M walls 4.34–5.42 INCLUDE this added phase and still matched Run D — the search
+  phase is faster than the walls alone suggest; (b) #5's phase-2 has run 68+ min because the
+  emission is pool-starved under the giant's L0; (c) expect the giant to emit its own stream
+  at its boundary — a long silent tail before the wall is EXPECTED, not a wedge; (d) the
+  effects ledger now attributes to WIDTH=16 + pass rewrite + TOKEN-STREAM RAMP jointly —
+  single-variable attribution is no longer possible for this build.
 - E4 (REVISED 03:47, 05:20, 07:17): starved-4M observed 6.28, 7.40, 11.79, 9.36, **13.40**
   — band 6.3–13.4 now fully overlapping the old world's 10.6–18.6 at depth. The early-run
   improvement decays as the table grows; the arm does NOT durably protect victims. Claim
@@ -231,3 +240,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **#5's silent phase-2 is now 38+ min** (elapsed 138 min; last stream line 09:09) — queued behind the giant's L0; its wall will land ugly and needs the co-scheduling asterisk when it prints.
 - Rows: part 9 ~8.2M (~98.2M). Table ~655 GB. Device 25x k r/s @ ~6.8 KB, r_await 0.21 ms. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: the giant is outrunning every prior giant while dragging #5 behind it — the arm's story is now consistent across share, depth, and clip; only the wall remains.
+
+### 10:17 UTC — t+9h40m — giant 22.5% at 517 b/min; E5 falsified: token-stream emission discovered live (E11)
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant: 27,920/123,941 (22.5%)**, interval clip 517 b/min (3.73 min/M — cooling texture, still well under Run E's 4.6–5.0).
+- **Stack check on #5's 68-min silent phase-2 found `emitTokenStream` RUNNABLE** — the SPLAT construction ramp is ACTIVE in this build (no flag, no logs; E5 falsified, E11 added). #5 is emission-starved under the giant, not wedged; its wall carries the double asterisk (co-scheduling + new phase).
+- Rows: ~100M imminent (part 9 ~9.5M). max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: the run is now measuring THREE changes at once (WIDTH=16, pass rewrite, token-stream ramp) — the ledger's attribution notes updated accordingly; the giant's wall remains the composite verdict.
