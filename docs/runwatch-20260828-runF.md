@@ -380,3 +380,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-3: 111,090/123,943 (89.6%)** — interval 984 b/min; remaining ~12.9k b ⇒ stream-3 ends ~18:30 ⇒ **TERMS_DATA ~18:40–19:00**. Composite finishing ~**9.2–9.5 min/M**; per-phase ledger ready.
 - max=0; gate 0; integrity 0; wire live; part 10 at ~17.5M. Waiter armed; push on the wall.
 - Trend: minutes out.
+
+### 18:47 UTC — t+18h10m — starved 4M lands at 79.3 min/M (all-time record, E4 extreme); giant in a FOURTH stream
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Giant adopt line: still absent ⇒ waiter correctly armed.
+- **The 18:40:02 landing was NOT the giant** — a 4M merge at **79.3 min/M** (5.24 h wall, parked through all three giant sweeps; E4 updated: the multi-sweep giant triples the starvation window; victims need scheduler help, not width).
+- **Giant stream-4: 43,830/124,870** (total drift +927; numerator reset ~18:30) at ~2,580 b/min — write-phase-like speed. If full-length: ends ~19:19 ⇒ **TERMS_DATA ~19:25–19:45**, composite ~**9.8–10.1 min/M** (four-sweep anatomy: 3.96 / 2.88 / ~1.6 / ~0.5 equiv).
+- max=0; gate 0; integrity 0; wire live.
+- Trend: the anatomy keeps growing sweeps but each is faster than the last — the wall lands tonight and prices all of it at once.
