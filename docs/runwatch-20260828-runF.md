@@ -140,3 +140,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Rows: parts 0–6 complete (70M, t+5h05m — vs Run E's 70M at ~t+7h). Table 466.5 GB / 7 SSTables. Wire NULL adjudicated: part-6/7 boundary (no loader active; part-7 series not yet created) — legitimate SRD-89 no-data, boundary blips as designed.
 - Device: 284k r/s @ 6.2 KB, util 100%, r_await 0.23 ms. Cgroup: anon 106.4G / file 37.6G, max=0. Gate 0; integrity 0; lint 0.
 - Trend: the tightest, fastest tier cadence of the campaign rolls into the decisive hour — one 16M from the giant.
+
+### 06:17 UTC — t+5h40m — 16M #4 mid-flight at 48%; giant slips to ~07:00–07:20
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **16M #4: 14,870/30,985 (48.0%)** at 06:18 — 371 b/min average after the 940 opening (the usual gated middle; wall is the metric). Landing ~06:50–07:10 ⇒ **giant pass ~07:00–07:20** (watcher bucoqponb armed for the storm capture). A 4M co-runner in flight (pass 06:05:49, 1.3 µs/node). No landings this interval.
+- Rows: part 7 at 5.07M (75.1M total, ~13.3M/h). Table 499.6 GB / 12 SSTables. Wire live again post-boundary (139,982).
+- Device: 300k r/s @ 6.2 KB, util 100%, r_await 0.19 ms. Cgroup: anon 106.4G / file 37.4G, max=0. Gate 0; integrity 0; lint 0.
+- Trend: quiet approach to the decisive event — cadence intact, all instrumentation armed for the giant.
