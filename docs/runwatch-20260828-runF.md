@@ -248,3 +248,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Stack check on #5's 68-min silent phase-2 found `emitTokenStream` RUNNABLE** — the SPLAT construction ramp is ACTIVE in this build (no flag, no logs; E5 falsified, E11 added). #5 is emission-starved under the giant, not wedged; its wall carries the double asterisk (co-scheduling + new phase).
 - Rows: ~100M imminent (part 9 ~9.5M). max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: the run is now measuring THREE changes at once (WIDTH=16, pass rewrite, token-stream ramp) — the ledger's attribution notes updated accordingly; the giant's wall remains the composite verdict.
+
+### 10:47 UTC — t+10h10m — #5 lands 12.04** (the double-asterisk wall); giant at 34.0%, avg 3.80 min/M
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **16M #5 landed 10:40:13: wall 191.0 min = 12.04 min/M** — carrying both asterisks (pool-starved under the giant's L0 + token-stream emission phase, E11). Cohort: 4.48/4.34/4.50/5.42/12.04** — the last two show what co-scheduling with a giant does to this class regardless of arm.
+- **Giant: 42,190/123,941 (34.0%)** — interval 476 b/min (4.07), cumulative **510 b/min = 3.80 min/M average** through a third of L0; still 20%+ under Run E's stream-1. Base ETA ~13:05 on the cumulative clip; then the token-stream tail (silent, expected), then the wall.
+- Rows: 100M reached (~t+10h05m — matching Run E's pace at the milestone despite the heavier merge schedule). Table ~670 GB. Device 24x k r/s @ ~7 KB, r_await 0.21. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: the giant holds its advantage at depth while everything co-scheduled pays for it — the composite wall (search + emission + write) is now the only open number.
