@@ -50,17 +50,19 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - E5 (probe 03:17): NO distinctive SPLAT log phrases (band-staged / token stream / spill /
   key-window) in the run's logs — the de79d5bf machinery is INERT this run, as presumed; the
   ledger's effects attribute to WIDTH=16 + the pass rewrite + upstream fixes only.
-- E4 (REVISED 03:47, 05:20): starved-4M inflation is BIMODAL — observed 6.28, 7.40, 11.79,
-  **9.36** vs the old world's 10.6–18.6. Band 6.3–11.8: overlapping the old world's floor,
-  better at the median; variance dominates. Withhold the "halved" claim.
+- E4 (REVISED 03:47, 05:20, 07:17): starved-4M observed 6.28, 7.40, 11.79, 9.36, **13.40**
+  — band 6.3–13.4 now fully overlapping the old world's 10.6–18.6 at depth. The early-run
+  improvement decays as the table grows; the arm does NOT durably protect victims. Claim
+  reduced to: mild median improvement, early-run only.
 - E6 (CLOSED 04:17): the "#2 runs 2× slower" projection was a MID-FLIGHT ILLUSION — after
   its 4M co-runner landed, #2 ripped the back 67% at ~2,100 b/min and **landed at 4.34 min/M
   (68.8 min)**, slightly BETTER than #1's 4.48. Lesson re-learned at 16M scale: gated starts
   make mid-flight clips useless; only walls compare. 16M class under the arm: 4.48, 4.34 —
   consistent, marginally better than Run D's 4.29-without-arm territory, still no big arm
   effect at this class (E3 stands). UPDATE 05:47: #3 landed 4.50 — the class triplet
-  **4.48 / 4.34 / 4.50 (±0.08)** is the tightest 16M cohort the campaign has measured:
-  the arm's clearest class-level effect is VARIANCE COLLAPSE, not mean shift.
+  **4.48 / 4.34 / 4.50 (±0.08)** was the tightest 16M cohort measured — until #4 landed
+  **5.42** at 78M-row depth with heavy co-scheduling (07:17 update). The variance-collapse
+  claim holds at matched depth; depth itself still bends the class, arm or no arm.
 
 - E7 (captured 05:18 lull): **PQ training now runs pool-wide** — 67/88 RUNNABLE samples in
   `getNearestCluster` between merges: the dse-db ea38d33954 change (cold-start PQ codebook on
@@ -155,3 +157,11 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **16M #4: 29,190/30,986 (94.2%)** at 06:48 — 70 min elapsed ⇒ wall projecting **~5.0–5.4 min/M**, the first widening beyond the 4.34–4.50 cohort (deeper table at 75M rows + a long-running starved 4M co-runner, 42 min and counting). Landing ~06:55–07:05 ⇒ **giant pass ~07:05–07:15**.
 - Rows: part 7 at ~7.8M (77.8M total, ~13M/h). Table ~510 GB / 12 SSTables. Device 28x k r/s @ 6.2 KB, r_await ~0.2 ms. max=0. Gate 0; integrity 0; wire live; lint 0.
 - Trend: the tier cadence bends slightly under depth as the decisive event arrives — every instrument armed.
+
+### 07:17 UTC (extended) — t+6h40m — #4 lands 5.42; giant gated behind 4M permits; rotation note
+
+- Rotation at 07:16 moved the morning into `compaction.log.2026-08-28.0.zip` — walls recomputed zip-inclusive (the walls tooling now reads the day's zips; the giant watcher is unaffected: new lines land in the live file it greps).
+- Landed: **16M #4 = 5.42 min/M** (86.0 min; cohort 4.48/4.34/4.50/5.42 — depth bends the class, E3 annotated); starved 4M = **13.40** (E4 revised again: band 6.3–13.4, early-run improvement decays); post-#4 4M solo 3.32.
+- **All four 16M sources now exist (landed ~07:03) — the giant is next**, currently gated behind two in-flight 4Ms (passes 07:07, 07:15) holding the build slots; its pass expected within ~10–20 min. Watcher + pushes armed.
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED. Gate 0; integrity 0; max=0.
+- Trend: the tier is done; everything now waits on the class verdict.
