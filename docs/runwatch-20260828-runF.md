@@ -391,3 +391,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-4: 43,830/124,870** (total drift +927; numerator reset ~18:30) at ~2,580 b/min — write-phase-like speed. If full-length: ends ~19:19 ⇒ **TERMS_DATA ~19:25–19:45**, composite ~**9.8–10.1 min/M** (four-sweep anatomy: 3.96 / 2.88 / ~1.6 / ~0.5 equiv).
 - max=0; gate 0; integrity 0; wire live.
 - Trend: the anatomy keeps growing sweeps but each is faster than the last — the wall lands tonight and prices all of it at once.
+
+### 19:17 UTC — t+18h40m — stream-4 COMPLETED to its full counter (19:16:43); upper-layer tail running
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-4 finished 124,870/124,870 at 19:16:43** — the first stream of the campaign to print an exact-total completion. Now in the post-sweep tail (upper layers + cross-link + adopt): >10 min so far without the adopt line, consistent with giant-scale upper layers being non-trivial (~1.6M nodes cross-source). **TERMS_DATA expected ~19:30–20:00**; composite ~**9.8–10.3 min/M**.
+- max=0; gate 0; integrity 0; wire live. Two waiters armed (bdt18922r, b1ctwtzye) — push on the wall.
+- Trend: four sweeps done, tail phases pricing themselves now; the complete anatomy lands within the hour.
