@@ -373,3 +373,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **Giant stream-3: 81,570/123,943 (65.8%)** — interval 1,095 b/min (1,215→1,095). Remaining ~42.4k b ⇒ stream-3 ends ~18:25 ⇒ **TERMS_DATA ~18:35–18:55**, composite ~**9.1–9.4 min/M** (per-phase: 3.96 / 2.88 / ~1.6 + boundaries + write).
 - Rows: part 10 at 16.90M (~116.9M). Device 228k r/s @ 6.8 KB. max=0; gate 0; integrity 0; wire live; lint 0.
 - Trend: on final approach — the waiter takes it from here.
+
+### 18:17 UTC — t+17h40m — stream-3 at 89.6%; landing imminent
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-3: 111,090/123,943 (89.6%)** — interval 984 b/min; remaining ~12.9k b ⇒ stream-3 ends ~18:30 ⇒ **TERMS_DATA ~18:40–19:00**. Composite finishing ~**9.2–9.5 min/M**; per-phase ledger ready.
+- max=0; gate 0; integrity 0; wire live; part 10 at ~17.5M. Waiter armed; push on the wall.
+- Trend: minutes out.
