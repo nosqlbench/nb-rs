@@ -105,9 +105,9 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
   build PRINTS stream-2 progress** (counter reset to 9,020/123,941 after the ~13:32
   boundary; the 16Ms' phase-2 was silent, the giant's is not — scale- or path-dependent
   logging). Stream-2 opening clip ~570 b/min ≈ stream-1's — and ≈ Run E's stream-2
-  (560–605): **the second sweep looks arm-INDEPENDENT** (not search-bound, so WIDTH=16
-  can't help it). If it runs the full denominator, the wall lands ~17:10–17:45 and the
-  composite ~7.7–8.3 min/M — the arm's stream-1 win diluted by the sweep the arm can't
+  (560–605): **the second sweep looked arm-INDEPENDENT** — but by 14:17 its clip rose to
+  **795 b/min** (vs Run E's 560–605 ceiling): either partially arm-assisted after all, or
+  density-variable by region. Wall estimate improves to ~16:15–16:45, composite ~6.9–7.3 min/M — the arm's stream-1 win diluted by the sweep the arm can't
   touch. Six executors queue in acquireBuildPermit behind the giant; the next 16M's pass
   parks in joinAll — the starvation pattern repeats on schedule.
 
@@ -311,3 +311,10 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - Permit queue: 6 executors waiting; next 16M's pass parked in joinAll — the familiar debt accumulating for the post-landing burst.
 - Rows: part 10 ~9.5M (~109.5M). Gate 0; integrity 0; max=0; wire live; lint 0.
 - Trend: the run has cleanly split the merge into an arm-sensitive half (stream-1, 20% faster) and an arm-blind half (stream-2) — which is precisely the case for the SPLAT staged rewrite that targets the second half.
+
+### 14:17 UTC — t+13h40m — stream-2 accelerates to 795 b/min (E12 revised); wall ~16:15–16:45
+
+- Provenance: pid 290993 / db987fd0 / fp16 — UNCHANGED.
+- **Giant stream-2: 32,880/123,941 (26.5%)** — interval clip **795 b/min** (570→795; exceeds Run E's stream-2 band — E12's "arm-independent" softened to "partially/regionally"). At this clip TERMS_DATA lands **~16:15–16:45**, composite wall ~**6.9–7.3 min/M**.
+- Rows: part 10 at 10.67M (~110.7M). Table 738.2 GB / 30 SSTables. Device 241k r/s @ 6.7 KB. max=0; gate 0; integrity 0; wire live; lint 0.
+- Trend: stream-2 is outrunning its Run E counterpart too — the composite wall estimate improves each interval; the first complete 63.6M wall remains on track for late afternoon with the push armed.
