@@ -373,3 +373,23 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
 - Table 929 GB, sstables 41 → **45**; debt keeps stacking behind the monopoly. Cgroup anon 106.0G / file 36.8G.
 - Trend: the giant's per-source structure converts an ambiguous rate comparison into a decisive one, and the
   answer arrives with source 2 rather than at stage end.
+
+### 17:42 UTC — t+12h55m — C6's first data point: source 1 = 252 min; source 2 opens faster; new starvation record
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 239k r/s @ 6.8 KB, r_await **0.22 ms**.
+- **C6 first result: giant source 1 completed in 252 min** (13:12 → 17:24), against Run F's ~216 min average
+  across its sources 1+2 — the control is ~17% slower, matching the early-window figure and the null-region
+  overhead seen at every other class. **Source 2 started 17:24** and is 9.4% through its cycle after 17 min,
+  which extrapolates to ~181 min — i.e. *faster* than source 1, hinting the control amortizes somewhat too.
+  17 minutes is far too little to call: early-cycle rates are the least representative part of a source, and
+  this is exactly the kind of extrapolation that produced the withdrawn C5. Treat as unresolved.
+- The three scenarios now bracket cleanly: uniform 252 min/source → stage ≈1,008 min (15.9 min/M, SPLAT wins
+  1.7×); Run F-like decline (252/181/80/80) → ≈593 min, parity, no giant-scale win; anything between is a
+  partial-amortization result. Source 2's completion (~20:30) is the real answer.
+- Phase: **still ingesting** — 10 rounds, latest returned 14:09:57. 110.5M rows.
+- **New all-time starvation record.** The 4M from 10:56 has now been in flight **405 min = ≥102 min/M**,
+  passing Run F's 92.23 record (E18) while still unfinished. Its final wall will set the mark. This is C2 at
+  monopoly scale and the clearest cost of the control's weaker co-resident protection.
+- Table 971 GB, sstables 45 → **48**; a fresh 4M started 17:20. Trend: the giant's amortization question now
+  has a concrete deadline — source 2 lands around 20:30 and settles whether SPLAT's giant-scale win is real.
