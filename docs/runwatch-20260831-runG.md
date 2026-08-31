@@ -132,6 +132,24 @@ pre-SPLAT ordinal pass, not an anomaly. Scale matters though: 73 min against a ~
 a giant's wall, so C4 is a real SPLAT win that cannot by itself decide the experiment. CODE_PRE_ENCODE was
 12.88 min vs Run F's 22.33 / 12.51 / 9.95 — no signal.
 
+**C5 — SPLAT's BASE_LAYER is ~1.6× faster at giant scale (provisional, in-flight).** Run G's giant is
+**9.48% complete after 90.4 min** (6.02M of 63.58M ordinals, batch clock read merge-globally — see the
+instrument note). That is **66.7k nodes/min overall, 63.5k over the last 30 min**, projecting a BASE_LAYER of
+**954–1,001 min = 15.00–15.75 min/M**. Run F's giants ran **593.71 min = 9.34 min/M** (107.1k nodes/min) and
+**609.87 = 9.61**. The control is therefore at **62% of Run F's node rate — Run F is 1.61× faster** — and the
+last-30-min figure is flat-to-slower, so this is steady state, not warm-up. Consequences: the giant now
+projects to land ~05:00 on 09-01 rather than ~midnight, and a wall near **15.6 min/M vs Run F's 10.11 /
+10.21**. This is the first measurement in the genuinely saturated regime, and it lands hard in SPLAT's
+favour: exactly the amortization payoff the design predicts, at exactly the scale predicted. Provisional
+until the stage completes — 90% remains, and a giant-scale rate can still shift.
+
+**Instrument note (14:42).** Pre-SPLAT the batch counter is **merge-global**, not per-source: the giant logs
+`46,840/123,940 batches (5,995,520/63,579,887 ordinals)` against the full ordinal count. Run F's per-source
+cycle model (E15 addendum) genuinely does not apply here, as the runbook warned. Also, `Stage BASE_LAYER
+progress` only fires per 10% decile, so at this rate the first decile line arrives ~95 min in — the absence
+of progress lines at 90 min was reporting granularity, not a stall (thread sample confirmed 40 ForkJoin
+workers in `processBaseNode`/`gatherCandidates`, coordinator parked on the task, 1,164 s CPU).
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -270,3 +288,19 @@ a giant's wall, so C4 is a real SPLAT win that cannot by itself decide the exper
   Cgroup anon 106.0G / file 37.2G.
 - Trend: setup is behind us with one real SPLAT win banked (C4, worth ~8% of a giant), and the stage that
   carries the other 90% is now running against a known target.
+
+### 14:42 UTC — t+9h55m — FIRST DECISIVE READING: control's BASE_LAYER is 1.6× slower than Run F (C5, pushed)
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 249k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Giant BASE_LAYER: 9.48% in 90.4 min → 15.00–15.75 min/M projected, vs Run F's 9.34 / 9.61** (C5). Not a
+  wedge and not warm-up: threads confirm 40 workers computing, and the trailing-30-min rate is slightly
+  *slower* than the overall. Projected stage end ~05:07 on 09-01; projected wall ≈15.6 min/M against Run F's
+  10.11 / 10.21.
+- Phase: **still ingesting** — 10 rounds, latest returned 14:09:57. **101.7M rows — past halfway.**
+- Walls: none landed this hour. The 4M from 10:56 is now at **225 min (≥56.7 min/M floor)**, deep in
+  monopoly starvation and closing on Run F's 92.23 all-time record; the giant itself is 102 min past its pass.
+- Table 857 GB, sstables 32 → 37 (flushes accumulating behind the giant). µs/node unchanged. Cgroup anon
+  106.0G / file 37.0G.
+- Trend: the saturated-regime measurement has arrived and it is decisive so far — SPLAT is buying ~1.6× on
+  the stage that is 90% of a giant, which is precisely the amortization claim under test.
