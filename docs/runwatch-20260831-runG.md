@@ -220,3 +220,24 @@ measurement that decides this experiment at merge scale; the tail decides it at 
   106.0G / file 37.4G. µs/node 9.5–44.2 this hour, no new >100.
 - Trend: the experiment's decisive measurement is now in flight, and thanks to the archive we know exactly
   what it has to beat — 9.34 / 9.61 min/M of BASE_LAYER.
+
+### 12:42 UTC — t+7h55m — giant in setup: PQ_RETRAIN 35.76 min, now on SIMILARITY_ORDINALS; monopoly starvation begins
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 272k r/s @ 6.3 KB, r_await **0.21 ms**.
+- **Giant #1 setup, stage by stage:** SOURCE_PRETOUCH 3.82 min → **PQ_RETRAIN 35.76 min** (2,145,571 ms,
+  256,000 units) → SIMILARITY_ORDINALS started ~12:23. Run F's giants took 25.17 / 14.20 / **0.19** min on
+  the identical 256,000-unit PQ_RETRAIN, and that 130× internal spread makes the stage a **contention proxy,
+  not a SPLAT signal** — giant #3's 0.19 min came when it ran alone in the tail. Read narrowly, Run G's 35.76
+  vs Run F #1's 25.17 (both mid-ingest) is +42% and weakly corroborates C2; it is n=1 vs n=1 and should not
+  be leaned on. BASE_LAYER — the number that matters (C3: **9.34 / 9.61 min/M** to beat) — should begin
+  ~13:00 and run ~10 h, so the landing is due ~23:00 UTC.
+- Phase: **still ingesting** — 9 rounds, latest returned 12:02:09; no `settle_compactions`. 93.2M rows.
+- No walls landed this hour. Both in-flight merges are being crushed by the giant's monopoly: a 4M running
+  **105 min** (≥26 min/M floor — worse than any completed starvation so far) and a 16M at 94 min. Run F's
+  armed band under a 16M was 6.28–7.40, with 92.23 the deep-monopoly record; Run G is heading into that
+  regime with its first giant.
+- Table 747 GB, sstables 20 → 26, largest 92.9 GB (giant's parked data output). µs/node unchanged this hour
+  (9.5–44.2, no new >100). Cgroup anon 106.0G / file 37.2G.
+- Trend: setup stages are contention-noisy and prove nothing either way; everything now waits on BASE_LAYER,
+  which starts within the hour.
