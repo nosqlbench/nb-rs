@@ -1,6 +1,8 @@
 # Vector-compaction completion rates across runtime regimes
 
 **Date:** 2026-08-28 · **Scope:** SAI vector merges, `baselines.ibm_datapile_1b_default`, dse-db-4.0.11.0-SNAPSHOT + jvector db987fd0 (branch `experiment/cluster-rescore-prefetch-20260824` @ de79d5bf) · **Rig:** MemoryHigh=146G ≈ 38 GiB file cache, md0 NVMe raid (10 members)
+**Updated 2026-08-31** with Run F's full completed record (giants #2/#3, E16–E18) recovered after the monitoring blackout.
+
 **Evidence base:** Runs C–F walls (`docs/runwatch-20260826-runC.md`, `-runD.md`, `runwatch-20260827-runE.md`, `runwatch-20260828-runF.md` incl. CHANGE-EFFECTS LEDGER E1–E14) and the read-path deep dive (`vector-compaction-readpath-20260826.md`).
 **Method note:** every wall here is pass→adopt→TERMS_DATA, ordinal-count matched ("Similarity ordinals assigned" → "adopted effective ordinal mapping" → "TERMS_DATA written in place"). Batch/ordinal counters lie at boundaries (resets, +1..+927 drift, 5× ordinal-density variance); they are used only for in-flight pacing, never for walls.
 
@@ -16,7 +18,8 @@ Per-ordinal cost rises super-linearly with merge size because the source working
 |---|---|---|---|---|
 | 4M | 1.01–1.16 | 1× | cache-resident | Run F early cohort |
 | 16M | 4.29–4.50 | ~4× | partially resident | Run D 4.29 (no arm) · Run C 4.5–4.8 · Run F 4.48/4.34/4.50 |
-| 63.6M | **10.11 composite** (642.7 min) | ~9× | IO-bound streaming, 310 GB source | Run F E13 — first complete wall ever for the class |
+| 63.6M | **10.11 / 10.21** (642.7 / 647.9 min) | ~9× | IO-bound streaming, 310 GB source | Run F E13 + giant #2 (E17) — two same-class walls agree within 1% |
+| 68.4M | **10.97** (750.8 min) | ~10× | same, larger source | Run F giant #3 (E17) — +7.7% ords → +7.4% per-ord |
 
 A 4× size step costs ~4× per-ordinal at 4M→16M, then only ~2.3× more at 16M→63.6M — damped because the giant's later streams are cheap (Axis 4), not because IO pressure relents: stream-1 alone runs 3.89 min/M.
 
@@ -31,7 +34,9 @@ Same 4M work under different co-residency (Run F unless noted):
 | starved under a 16M — pre-arm (Runs C–E) | 10.6–18.6 | ×10–16 |
 | starved under a 16M — armed | 6.28–7.40 | ×5.5–6.5 (inflation halved, E-ledger) |
 | starved under the giant's monopoly | up to 13.40 | ×12 |
-| fourth concurrent stream under the giant | **79.3** (5.24 h for 4M, all-time record) | ×70 (E4) |
+| fourth concurrent stream under the giant | 79.3 (5.24 h for 4M) | ×70 (E4) |
+| deep monopoly, giant #2 (Run F, recovered) | **92.23** (6.10 h for 4M — all-time record) | ×80 (E18) |
+| 16M–20M victims under a giant | 18.20 / 18.28 | ×3–4 of their own solo band (E18) |
 
 **E14 (the giant's externality, priced):** the contention penalty exists only *during* a monopoly window. After E13 landed, the queued 4M backlog drained 3.95→1.17 min/M in under 45 minutes and the ingest servo hit a run-record 8.2M rows/h. A giant's total cost = its own wall + ~40 min of 2–4× degraded 4M walls; the horror walls happen only to victims co-resident mid-monopoly. Scheduler-fix sizing (server session's lane): permit priority/aging must protect co-residents *during* a giant; post-giant drainage needs nothing.
 
@@ -72,7 +77,7 @@ Compaction completion rate sets the servo's admission: run-record 8.2M rows/h wi
 
 ## Implications
 
-1. **Scheduler (server session):** permit aging scoped to mid-monopoly protection only (E14).
+1. **Scheduler (server session):** permit aging scoped to mid-monopoly protection only (E14), covering every co-resident class — 4M through 20M victims all measured 3–80× penalties (E18). Also serialize same-class merges: two concurrent 16Ms cost 2.2–2.7× per-merge latency and buy nothing in throughput (190.1 min for the pair vs 143–180 min serial, E16).
 2. **SPLAT:** streams 2–4 = 345 min of E13's wall (54%) are arm-blind — that is SPLAT's addressable budget.
 3. **Arm applicability:** ship frontierPrefetch for giant-class search; expect nothing from it below ~16M residency.
 4. **Measurement discipline:** walls only via pass→adopt→TERMS_DATA; per-phase accounting for any giant-class comparison.
