@@ -418,3 +418,26 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
   Run F's 92.23; a second 4M has been waiting 82 min behind it. The giant is 342 min past its pass.
 - Trend: the giant is no longer a story about raw speed — both builds cost the same for the first half, and
   the experiment now turns entirely on how steeply each one amortizes across the back half.
+
+### 19:42 UTC — t+14h55m — source 2 tracking to 197 min; ingest throttling under a giant is identical in both runs
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 235k r/s @ 6.9 KB, r_await **0.23 ms**.
+- **C6 holds.** Source 2 is 70% done after 138 min → **197 min projected** (was 192). Sources 1+2 =
+  252 + 197 = **449 min vs Run F's 432, +4.0%** — still effectively tied through the giant's first half, with
+  the verdict resting entirely on sources 3–4 (Run F: 160 min for the pair). Source 2 completes ~20:41, so
+  source 3's opening rate is the next real signal. Overall node rate continues climbing — 64.5 → 67.7 →
+  **69.3k/min** — the expected shape of a build that amortizes, if shallowly.
+- **Instrument fix.** Source position must be derived from the **ordinal count** (`n / 15,864,320`), not from
+  batch-counter resets: the log rotated this hour, the pre-17:24 reset scrolled out of the live file, and the
+  boundary detector silently relabelled source 2 as "source 1 at 389 min". Ordinal-derived position is
+  rotation-proof and agrees exactly (26.97M → source 2, 70%).
+- **Ingest throttling is not a control-specific effect.** Run G has completed **1** load round since its
+  giant began (13:12 → now, 6.5 h); Run F completed **1** during its own giant #1 monopoly (09:00 → 19:43,
+  10.7 h). The current ~2.1M rows/h crawl is what a giant does to ingest in both builds — no signal, and a
+  claim I would otherwise have been tempted to make.
+- Phase: **still ingesting**, 114.9M rows. Table 1,042 GB, sstables 51 → **53**.
+- Walls: none landed. Starved 4M now **525 min (≥132 min/M)**, record still extending; a second 4M waits at
+  142 min. Giant 402 min past its pass.
+- Trend: nothing has moved the giant verdict this hour — first half remains a tie, and the answer arrives
+  with source 3 in about an hour.
