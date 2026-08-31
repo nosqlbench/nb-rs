@@ -90,6 +90,24 @@ sign-consistent with the theory; it is **not** evidence against SPLAT, and the e
 straight win" was wrong. The classes that can falsify or vindicate SPLAT are the giants and, above all, the
 tail defined above.
 
+**C2 — Under contention the control is markedly WORSE, and that is SPLAT's predicted payoff region
+(first real signal).** 4M merges starved beneath a co-resident 16M measured **15.69, 17.97 and 10.57 min/M**
+in Run G, against Run F's armed starved band of **6.28–7.40** — the control is 1.4–2.9× worse at exactly the
+job SPLAT claims to improve. Meanwhile the uncontended cases stay in the null region (solo 4M 0.69–0.90 vs
+Run F 1.01–1.16; 16M 3.65 / 3.84 vs 4.48 / 4.34 / 4.50), so this is not a general slowdown — it is
+contention-specific. Reading: SPLAT's amortization and reduced read amplification chiefly buy *protection for
+co-resident work*, which is precisely the mechanism that should also compress the tail. Corroborating signal:
+ordinal-pass µs/node runs 10–41 here (one 399 outlier) versus Run F's mixed 0.6–22 — the pre-SPLAT ordinal
+pass is slower and more contention-sensitive, consistent with `8eba8b9e` (SPLAT's ordinal plan from the token
+stream) doing real work.
+
+**Instrument correction (08:42).** The ±500-ordinal pass→adopt matcher inherited from Run F **mis-assigned
+walls**: counter drift reached −1,253 here, so drifted passes were paired with the wrong adopts and the
+starved cases were silently reported as fast ones. The 07:37 entry's "0.89 / 1.03 / 1.16 / 0.90 / 1.06"
+figures are withdrawn. Matching now uses a proportional tolerance (0.1% of the pass count, floor 500) with
+earliest-unused-adopt ordering; drifts observed since: 0, ±56–74, −1,253. Every wall in this doc from 08:42
+onward uses the corrected matcher.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -105,3 +123,21 @@ tail defined above.
   demonstrably live on the control build too.
 - Trend: the control opens faster than Run F at both measured classes with every gate green; the giant
   (~t+19h, so ~23:45 UTC) is the number that matters.
+
+### 08:42 UTC — t+3h55m — corrected matcher reveals severe starvation; control loses badly under contention (C2)
+
+- Provenance: pid 1544653 / jvector 6dcb0e4c / dse-db 0517567f / client 1546323 / **24 flags identical** — unchanged.
+- Gates: **G1 = 0** SPLAT lines (control intact). G3 shows the pre-SPLAT enum only (SOURCE_PRETOUCH,
+  SIMILARITY_ORDINALS, PQ_RETRAIN, CODE_PRE_ENCODE, BASE_LAYER, UPPER_LAYERS, FINALIZE). G5 cost 0,
+  integrity 0, max 0. G4 arm live: 312k r/s @ **0.19 ms** r_await, above the 190k sync ceiling. G6 satisfied.
+- Phase: **still ingesting** — 6 `load_increment_adaptive` rounds started, latest returned 08:11:56; no
+  `settle_compactions` yet, so the tail has not begun. 56.9M rows in at t+3h55m (~14.6M/h).
+- Walls (corrected matcher): solo 4M **0.69 / 0.90 / 0.87 / 0.87**; light co-scheduling **1.79 / 2.25 / 1.80
+  / 2.34**; **starved 4M 15.69 / 17.97 / 10.57** (Run F armed band 6.28–7.40); 16M **3.65 / 3.84** (Run F
+  4.48 / 4.34 / 4.50). In flight: 4M from 08:09 (36m), 16M #3 from 08:21 (24m).
+- Table 396 GB, 18 sstables — largest 23.3 / 23.2 / 23.2 GB (three 16M-class outputs; a giant needs four).
+  Pass µs/node 10.3–40.9 with one 399.0 (single occurrence, below the two-strike flag). Cgroup anon 105.9G /
+  file 38.4G.
+- Trend: the null region holds where predicted and the first saturation-sensitive measurement lands
+  decisively against the control — if that carries into the tail, SPLAT is earning its keep exactly where the
+  theory says it should.
