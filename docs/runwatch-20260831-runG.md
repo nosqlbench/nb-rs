@@ -123,6 +123,15 @@ apples-to-apples):
 plan makes BASE_LAYER cheaper. Run G's giant BASE_LAYER against **9.34 / 9.61 min/M** is the single
 measurement that decides this experiment at merge scale; the tail decides it at run scale.
 
+**C4 — SPLAT's ordinal plan is ~3× cheaper at giant scale, but it is only ~8% of the wall.** Run G's giant
+took **73.0 min** on SIMILARITY_ORDINALS (4,380,348 ms for 63,579,887 units = **68.9 µs/node**); Run F's
+giants took 23.21 / 11.13 / 2.26 min (giant #1 = 21.9 µs/node, same mid-ingest context). That is a genuine
+algorithmic difference — `8eba8b9e` derives the similarity-ordinal plan from the token stream, and this is
+the cost of not having it — and it also explains the elevated µs/node readings flagged earlier: they are the
+pre-SPLAT ordinal pass, not an anomaly. Scale matters though: 73 min against a ~600 min BASE_LAYER is ~8% of
+a giant's wall, so C4 is a real SPLAT win that cannot by itself decide the experiment. CODE_PRE_ENCODE was
+12.88 min vs Run F's 22.33 / 12.51 / 9.95 — no signal.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -241,3 +250,23 @@ measurement that decides this experiment at merge scale; the tail decides it at 
   (9.5–44.2, no new >100). Cgroup anon 106.0G / file 37.2G.
 - Trend: setup stages are contention-noisy and prove nothing either way; everything now waits on BASE_LAYER,
   which starts within the hour.
+
+### 13:42 UTC — t+8h55m — BASE_LAYER UNDERWAY (started 13:12:58); ordinal plan costs 3× without SPLAT (C4)
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 271k r/s @ 6.8 KB, r_await **0.21 ms**.
+- **Giant #1 setup complete, BASE_LAYER started 13:12:58.** Full setup: PRETOUCH 3.82 → PQ_RETRAIN 35.76 →
+  **SIMILARITY_ORDINALS 73.0 min** (C4: 3.1× Run F #1's 23.21) → CODE_PRE_ENCODE 12.88 (in family). If
+  BASE_LAYER matches Run F's 593.7–609.9 min it completes ~23:06–23:23, and with UPPER_LAYERS/FINALIZE the
+  wall lands ~23:45–00:00 for **≈10.1–10.4 min/M — parity with Run F's 10.11 / 10.21**. So the whole question
+  is now whether BASE_LAYER's own rate beats or misses **9.34 / 9.61 min/M**; first progress readings next check.
+- Phase: **still ingesting** — 9 rounds, latest returned 12:02:09. 97.9M rows (~49% of target).
+- Walls: **16M under the giant = 7.95** (126.2 min, pass 11:07). Useful context — Run F's mid-class victims
+  measured 18.20 / 18.28 but that was in its *tail*; its two-wide mid-ingest pair was 11.99 / 10.06, so the
+  control's 7.95 under a monopoly is better than Run F's two-wide penalty and not directly comparable to the
+  tail figures. In flight: the 4M from 10:56 now at **165 min (≥41.6 min/M floor)** — deep monopoly
+  starvation, heading toward Run F's 92.23 record territory; and the giant itself at 42 min past its pass.
+- Table 813 GB, sstables 26 → 32. µs/node 9.6–68.9 (the 68.9 is the giant's own ordinal pass, per C4).
+  Cgroup anon 106.0G / file 37.2G.
+- Trend: setup is behind us with one real SPLAT win banked (C4, worth ~8% of a giant), and the stage that
+  carries the other 90% is now running against a known target.
