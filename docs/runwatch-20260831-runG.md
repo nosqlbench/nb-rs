@@ -441,3 +441,18 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
   142 min. Giant 402 min past its pass.
 - Trend: nothing has moved the giant verdict this hour — first half remains a tie, and the answer arrives
   with source 3 in about an hour.
+
+### 20:42 UTC — t+15h55m — source 2 finishing at 201 min; source 3 (the answer) starts within minutes
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 230k r/s @ 6.9 KB, r_await **0.23 ms**.
+- **C6: source 2 is 98% done at 197 min → 201 min.** Sources 1+2 = 252 + 201 = **453 min vs Run F's 432,
+  +4.9%.** The first half of the giant is confirmed a near-tie, and **source 3 begins within minutes** — its
+  rate is the whole answer. Overall node rate 70.0k/min, still inching up (64.5 → 67.7 → 69.3 → 70.0).
+- Phase: **still ingesting**, 116.7M rows; last completed load round remains 14:09:57 (the giant's monopoly,
+  matched by Run F's behaviour — see 19:42).
+- Walls: none landed. Starved 4M at **586 min (≥147.6 min/M)** — 1.6× past Run F's 92.23 record, and it is
+  still running; the second 4M is at 202 min (≥50.9 min/M), itself already beyond Run F's starved band.
+- Table 1,075 GB, sstables 53 → **56**. Cgroup steady.
+- Trend: an hour with no new information by design — source 2 merely confirmed its projection, and the
+  decisive source-3 rate lands in the next check.
