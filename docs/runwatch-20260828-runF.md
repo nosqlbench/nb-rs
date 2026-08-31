@@ -132,6 +132,12 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 
   - *E15 addendum (22:18):* instrument model closed — batch counter is a per-source cycle (30,985/source, 4 per 16M); `Stage BASE_LAYER` is the merge-global ordinal clock; `Stage X completed ... in N ms` lines make per-stage anatomy retrospectively extractable for every landed merge including E13. All historical batch-clock paradoxes (resets, 66%@16%, end-at-50%) reduce to this structure.
 
+**E16 — Two-wide 16M production is a loss, not a trade (verdict on the 22:47 hypothesis).** #6 = 11.99 and #7 = 10.06 min/M, landing 24 s apart: 31.7M ordinals in 190.1 min end-to-end = 6.00 min/M for the pair. Serial comparison: 2 × 4.48 (Run F #1) = 143 min, and 2 × 5.67 (#8, the contemporaneous near-solo 16M) = 180 min — two-wide is 33% worse against the first baseline and a wash-to-worse against the second, while costing 2.2–2.7× per-merge latency. The "maybe it wins on throughput" hypothesis floated at 22:47/23:17 is FALSIFIED. Scheduler implication: serialize same-class merges; the co-residency penalty is not recovered anywhere.
+
+**E17 — Giant-class walls are repeatable (the campaign's decisive result).** Three giants, one build, one run: 63.58M → 10.11 (E13), 63.46M → 10.21, 68.41M → 10.97 min/M. The two same-class giants agree within 1%, so the composite is a stable, predictive constant, not a one-off. The 68.41M outlier is +7.7% ordinals for +7.4% per-ordinal cost — mild super-linearity continuing the class ladder, consistent with the residency model in vector-compaction-regimes-20260828.md.
+
+**E18 — Monopoly starvation deepens with giant duration; mid-class victims are not spared.** New record 92.23 min/M (a 4M taking 365.8 min under giant #2), beating E4's 79.3. And 16M/19.8M victims measured 18.20/18.28 min/M — 3–4× their own solo band. E14's finding still holds (recovery is fast, ~40 min), but the in-monopoly penalty now spans 4M through 20M classes, which widens the scope of the permit-aging fix: priority must protect every co-resident class, not just the small ones.
+
 ## Entries
 
 ### 02:55 UTC — t+2h18m — armed; 37.1M rows; 16M #2 launched
@@ -491,3 +497,24 @@ rotation-aware. pgrep 'nmbrs run' self-match trap.
 - **#7**: source-2 bands 23:04:40, DISTRIBUTE completed 23:07:26 in 164,857 ms = **2.75 min** — DISTRIBUTE elapsed spread now 36.4/28.6/14.9/2.75 min for identical unit counts: pure upstream-gating confirmed; the stage's own cost is minutes. #7 mid-final-quarter; landing ~23:45–00:00.
 - No landings in the interval; no new passes. Ingest: part 10 at 38.81M (+1.88M/30min ≈ 3.8M/h, steady taper). **Table crossed 1 TB (1,044 GB)**, 37 sstables. Device 243k r/s @ 5.8 KB, r_await 0.23 ms. Cgroup anon 106.5G/file 35.8G, max=0. Gate 0, integrity 0, wire live (38.81M).
 - Trend: both walls land next interval → E16 (16M×16M co-scheduling priced: per-wall ~2.4× solo, but overlapped-pair effective throughput ~6.3 min/M-pair vs serial 8.96 — two-wide may WIN on throughput while losing on latency; exact numbers decide).
+
+### RUN F COMPLETE — reconstructed 2026-08-31 04:15 after a 53 h monitoring blackout
+
+**What happened to the watch.** Live monitoring stopped after the 23:17 entry (2026-08-28) when the assistant session hit model limits; the 30-minute cron kept firing into a stalled session and ~75 checks went unprocessed. The run itself was unaffected and ran to completion. Everything below is reconstructed from the 337 retained rotated compaction logs + the session's metrics.db — walls by the standard pass→adopt→TERMS_DATA ordinal-matched rule, unchanged.
+
+**RUN F REACHED ITS TARGET.** Client shut down cleanly 2026-08-30 12:36:15 (WAL consolidated, all summaries written) after loading **200,000,000 rows** (parts 0–9 × 10M + part 10 = 100M). Duration 2 d 12 h. Table 1,251 GB; quiesced to 5 sstables (100.0 / 92.9 / 92.8 / 5.8 / 0.9 GB); pending tasks 0. **Zero integrity aborts, zero ERRORs, zero cluster-cost lines across the entire run.** Provenance held throughout: pid 290993 / db987fd0 / fp16 — no redeploy, so all Run F walls are cross-comparable.
+
+**Recovered walls, 2026-08-28 20:29 → 2026-08-30 12:25** (min/M):
+- The flagged pair (resolves the 22:47/23:17 entries): **#6 = 190.1 min = 11.99**, **#7 = 159.5 min = 10.06** — both landed within 24 s of each other (23:40:00 / 23:40:24). The >6 flag was correct.
+- Post-pair 4M burst (23:41–23:59): 1.88, 1.79, 1.72, 1.56, 1.18 — same recovery decay as E14.
+- 16M #8 (00:06) **5.67** solo-ish; 4M 00:34 **14.69** (starved); 4M 01:34/01:40/01:55 4.92 / 3.82 / 7.94; 16M #9 (02:04) **11.02**.
+- **GIANT #2 — pass 08-29 03:53:49, 63.46M ords, landed 14:41:43 = 647.9 min = 10.21 min/M.**
+- 4M pass 08:14:55, landed 14:20:43 = 365.8 min = **92.23 min/M — new all-time starvation record** (prior 79.3, E4), co-resident with giant #2's monopoly.
+- 4M cohort 14:23–15:15: 2.14, 2.65, 2.31, 3.21, 2.65, 2.14, 2.81, 3.80; 4.96M 15:24 **3.05**.
+- 19.83M (15:39) **18.28** and 15.86M (16:54) **18.20** — mid-class victims under the giants.
+- 4M 21:43 **1.65**; 16.86M 21:50 **6.44**.
+- **GIANT #3 — pass 08-29 23:54:18, 68.41M ords, landed 08-30 12:25:06 = 750.8 min = 10.97 min/M.** Client stopped 11 min later.
+
+**Stage vocabulary now complete** (closes E15): `SOURCE_PRETOUCH → SIMILARITY_ORDINALS → CODE_PRE_ENCODE → BASE_LAYER → TOKEN_STREAM → DISTRIBUTE → UPPER_LAYERS → FINALIZE`, each emitting `Stage X completed: N units in M ms`. Example (#6): pretouch 0.5 · ordinals 0.2 · pre-encode 2.6 · base 156.9 · token-stream 15.6 min.
+
+**What is genuinely lost** (not recoverable from logs): live device captures (iostat/jcmd) during giants #2 and #3 — i.e. the arm's storm-time IOPS and r_await at giant scale, which existed only in real time. Every wall, stage elapsed, and counter survives.
