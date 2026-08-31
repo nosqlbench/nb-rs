@@ -132,16 +132,31 @@ pre-SPLAT ordinal pass, not an anomaly. Scale matters though: 73 min against a ~
 a giant's wall, so C4 is a real SPLAT win that cannot by itself decide the experiment. CODE_PRE_ENCODE was
 12.88 min vs Run F's 22.33 / 12.51 / 9.95 — no signal.
 
-**C5 — SPLAT's BASE_LAYER is ~1.6× faster at giant scale (provisional, in-flight).** Run G's giant is
-**9.48% complete after 90.4 min** (6.02M of 63.58M ordinals, batch clock read merge-globally — see the
-instrument note). That is **66.7k nodes/min overall, 63.5k over the last 30 min**, projecting a BASE_LAYER of
-**954–1,001 min = 15.00–15.75 min/M**. Run F's giants ran **593.71 min = 9.34 min/M** (107.1k nodes/min) and
-**609.87 = 9.61**. The control is therefore at **62% of Run F's node rate — Run F is 1.61× faster** — and the
-last-30-min figure is flat-to-slower, so this is steady state, not warm-up. Consequences: the giant now
-projects to land ~05:00 on 09-01 rather than ~midnight, and a wall near **15.6 min/M vs Run F's 10.11 /
-10.21**. This is the first measurement in the genuinely saturated regime, and it lands hard in SPLAT's
-favour: exactly the amortization payoff the design predicts, at exactly the scale predicted. Provisional
-until the stage completes — 90% remains, and a giant-scale rate can still shift.
+**C5 — WITHDRAWN AS STATED; the giant comparison cannot be projected from early rate (revised 15:42).**
+The 14:42 reading (Run G's giant at 9.5% after 90 min = 66.7k nodes/min, projecting 15.0 min/M against Run
+F's 9.34) compared **Run G's early-stage rate against Run F's whole-stage average**, which is invalid.
+Checking Run F's giant #1 progress counters from the archive:
+
+| | Run F giant #1 | Run G giant #1 |
+|---|---|---|
+| ordinal rate, first ~7 h of BASE_LAYER | **73.4k nodes/min** (0 → 31.73M, 09:25→16:37) | **63.8k nodes/min** (0 → 9.51M, 149 min) |
+| BASE_LAYER average from the stage line | **107.1k/min** (593.71 min, authoritative) | unknown until it completes |
+
+Run F's giant therefore ran at 58–74k/min for most of its stage and still averaged 107.1k/min, implying a
+**~2.7× acceleration in its final stretch** (≈31.85M ordinals in the last ~159 min). Whatever causes that —
+plausibly SPLAT's token stream making later sources cheap, which is the amortization claim itself — it means
+**linear extrapolation from early rate badly under-predicts completion**, and the same extrapolation applied
+to Run G is untrustworthy.
+
+What survives: on the **like-for-like early window the control is ~15% slower** (63.8k vs 73.4k), not 60%.
+The verdict at giant scale must wait for Run G's `Stage BASE_LAYER completed … in N ms` line, which is the
+only authoritative measure, and the key question becomes **whether the control shows the same late
+acceleration** — if it does not, SPLAT's win is real and concentrated exactly where amortization predicts.
+
+**Counter caveat for both runs:** Run F's *batch* counter cycles (reset observed 13:10 → 13:55) while its
+*ordinal* counter is monotonic; Run G's batch counter is merge-global. Both giants share the same batch total
+(123,941 vs 123,940). Progress counters are usable for coarse liveness only — never for cross-build rate
+claims.
 
 **Instrument note (14:42).** Pre-SPLAT the batch counter is **merge-global**, not per-source: the giant logs
 `46,840/123,940 batches (5,995,520/63,579,887 ordinals)` against the full ordinal count. Run F's per-source
@@ -304,3 +319,20 @@ workers in `processBaseNode`/`gatherCandidates`, coordinator parked on the task,
   106.0G / file 37.0G.
 - Trend: the saturated-regime measurement has arrived and it is decisive so far — SPLAT is buying ~1.6× on
   the stage that is 90% of a giant, which is precisely the amortization claim under test.
+
+### 15:42 UTC — t+10h55m — C5 WITHDRAWN as stated (pushed): early-rate projection was apples-to-oranges
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 247k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Self-correction.** The 14:42 "SPLAT is 1.6× faster" reading compared Run G's early rate to Run F's
+  whole-stage average. Run F's giant ran 58–74k nodes/min through most of BASE_LAYER yet averaged 107.1k —
+  it accelerated ~2.7× late. Like-for-like, **Run G 63.8k vs Run F 73.4k = ~15% slower**, not 60%. A
+  correcting PushNotification was sent. Only the completed stage line will settle this.
+- Giant: 14.95% after 149 min; first decile line fired 14:48:39. Overall 63.8k/min, trailing-45-min
+  58.4k/min — mildly decelerating so far, which is exactly what Run F also did before its late acceleration.
+- Phase: **still ingesting** — 10 rounds, latest returned 14:09:57. 105.1M rows.
+- Walls: none landed. The 4M from 10:56 is now **285 min (≥71.8 min/M)**, closing on Run F's 92.23 record;
+  the giant is 162 min past its pass. Table 892 GB, sstables 37 → **41** (debt accumulating behind the giant).
+  Cgroup anon 106.0G / file 36.9G.
+- Trend: the honest position is that the giant comparison is still open, and the interesting question has
+  sharpened — not "is the control slower" but "does the control show Run F's late acceleration at all".
