@@ -108,6 +108,21 @@ figures are withdrawn. Matching now uses a proportional tolerance (0.1% of the p
 earliest-unused-adopt ordering; drifts observed since: 0, ±56–74, −1,253. Every wall in this doc from 08:42
 onward uses the corrected matcher.
 
+**C3 — The giant test reduces to one number: BASE_LAYER min/M.** Recovering all three Run F giants'
+per-stage anatomy from the archived logs (the stage instrument is byte-identical across builds, so this is
+apples-to-apples):
+
+| Run F giant | PRETOUCH | ORDINALS | PRE_ENCODE | **BASE_LAYER** | TOKEN_STREAM |
+|---|---|---|---|---|---|
+| #1 63.58M | 4.84 min | 23.21 | 22.33 | **593.71 min = 9.34 min/M** | 15.66 |
+| #2 63.46M | 5.38 | 11.13 | 12.51 | **609.87 = 9.61 min/M** | 15.32 |
+| #3 68.41M | 1.85 | 2.26 | 9.95 | **716.50 = 10.47 min/M** | 19.09 |
+
+**BASE_LAYER is 90%+ of a giant's wall, and TOKEN_STREAM — the SPLAT-only stage — costs just 15–19 min,
+2–3%.** So SPLAT's overhead at giant scale is nearly free, and its entire case rests on whether the staged
+plan makes BASE_LAYER cheaper. Run G's giant BASE_LAYER against **9.34 / 9.61 min/M** is the single
+measurement that decides this experiment at merge scale; the tail decides it at run scale.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -185,3 +200,23 @@ onward uses the corrected matcher.
 - Table 587 GB, sstables 13 → **25** (fresh flushes outpacing consolidation). Cgroup anon 105.9G / file 37.8G.
 - Trend: no new landed walls, but the in-flight shape keeps reproducing C2's contention penalty, and the
   giant — the first genuine test of amortization — remains pending.
+
+### 11:42 UTC — t+6h55m — GIANT #1 STARTED (pushed); Run F's giant anatomy recovered, defining the target
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 289k r/s @ 6.6 KB, r_await **0.20 ms**.
+- **GIANT #1 STARTED 11:07:29 on CompactionExecutor:37 — 63,579,887 ordinals, the same class as Run F's
+  #1 (63,576,748) and #2 (63.46M).** SOURCE_PRETOUCH completed 11:11:18 in **3.82 min** (Run F giants:
+  4.84 / 5.38 / 1.85 — in family, no signal); now in PQ_RETRAIN. It started at **t+6h20m vs Run F's first
+  giant at t+8h23m**, i.e. ~2 h earlier in the run, so the selection-latency worry from 10:42 is resolved:
+  the delay was the strategy waiting for its moment, not a pre-SPLAT deficiency. Expect BASE_LAYER to run
+  ~10 h; landing due late tonight.
+- Phase: **still ingesting** — 8 rounds, latest returned 10:56:08; no `settle_compactions`. 87.8M rows.
+- Walls: starved 4M **18.36** and **10.86** (starved-4M count now **7**, none below Run F's 6.28–7.40 band);
+  clean 4M 1.90 / 2.69; **16M #4 = 3.93** — the control's four 16Ms are 3.65 / 3.84 / 3.82 / 3.93, remarkably
+  tight and ~13% under Run F's 4.48 / 4.34 / 4.50. In flight: 4M from 10:56, 16M from 11:07, plus the giant.
+- Table 678 GB, sstables 25 → **20**; largest now **92.9 GB** — the giant's data-side output is already
+  written and parked, with the vector index build (the slow half) the thing actually running. Cgroup anon
+  106.0G / file 37.4G. µs/node 9.5–44.2 this hour, no new >100.
+- Trend: the experiment's decisive measurement is now in flight, and thanks to the archive we know exactly
+  what it has to beat — 9.34 / 9.61 min/M of BASE_LAYER.
