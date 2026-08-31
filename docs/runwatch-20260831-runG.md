@@ -162,3 +162,26 @@ onward uses the corrected matcher.
   Cgroup anon 105.9G / file 38.3G.
 - Trend: the two-regime split is holding cleanly — 16M walls tightly ~15% better than Run F while starved 4Ms
   run 2–3× worse — and the first giant-class measurement, the one that actually tests amortization, is imminent.
+
+### 10:42 UTC — t+5h55m — ingest pace is at parity with Run F (correction); storm confirms the arm; still no giant
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0. **G4 now positively confirmed** — the deferred arm check
+  caught a real storm this hour: **252k r/s @ 4.6 KB, r_await 0.19 ms, 100% util**, above the 190k @ 0.22 ms
+  sync ceiling. A third pass over 100 µs/node (404.5, after 399.0 and 544.7); already flagged, still tracking
+  starved merges rather than a fault.
+- Phase: **still ingesting** — 8 rounds, latest returned 09:48:32; no `settle_compactions`. 77.5M rows.
+- **Ingest-pace claim withdrawn before it was made.** Comparing whole-run averages (Run G ~13.1M/h vs Run F's
+  5.1M/h) would have been wrong: Run F's average is dragged down by late-run servo throttling. Like-for-like,
+  **both runs completed 7 load rounds at the same point** — Run G at t+5h01m, Run F at ~t+5h13m. Ingest pace
+  is at parity so far; no conclusion is available yet, and the meaningful test is whether Run G's servo
+  throttles later as debt accumulates, or defers that debt into the tail.
+- Walls: nothing new landed this hour — three merges in flight, and the shape is the story: a 4M running
+  **70 min** (≥17.6 min/M floor already, a fourth severe starvation for C2), a 16M at 59 min, a 4M at 34 min.
+- **Still no giant.** Four 16M-class sstables have been available since 09:39 (t+4h52m) but nothing
+  giant-class has been selected an hour later; the largest stage since then is 15.86M. Run F's first giant
+  passed at t+8h23m, so this is not yet late — but selection latency after availability is now worth tracking
+  in its own right, since the tail's length depends on when the *final* giant can form.
+- Table 587 GB, sstables 13 → **25** (fresh flushes outpacing consolidation). Cgroup anon 105.9G / file 37.8G.
+- Trend: no new landed walls, but the in-flight shape keeps reproducing C2's contention penalty, and the
+  giant — the first genuine test of amortization — remains pending.
