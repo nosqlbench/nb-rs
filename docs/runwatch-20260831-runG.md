@@ -201,6 +201,36 @@ the null-region overhead everywhere else. The question is whether **Run G's sour
 - if they drop toward 80 min each → there is no giant-scale SPLAT win and the case rests on C4 plus the tail.
 Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
 
+**C7 — THE GIANT IS MEASURED: near-parity on the wall, ~9% total, and SPLAT's win is in the ordinal plan,
+not the base layer.** Run G's giant landed **2026-08-31 23:47:14** (TERMS_DATA), with every stage now
+authoritative rather than projected:
+
+| stage | Run F giant #1 | Run G giant #1 | delta |
+|---|---|---|---|
+| SOURCE_PRETOUCH | 4.84 min | 3.82 min | −1.0 |
+| PQ_RETRAIN | 25.17 | 35.76 | +10.6 |
+| SIMILARITY_ORDINALS | 23.21 | **73.00** | **+49.8** |
+| CODE_PRE_ENCODE | 22.33 | 12.88 | −9.5 |
+| **BASE_LAYER** | **593.71** | **626.99** | **+33.3** |
+| TOKEN_STREAM (SPLAT-only) | 15.66 | — | −15.7 |
+| UPPER_LAYERS + FINALIZE + write-back | ~7 | ~4 | −3 |
+| **wall (pass → TERMS_DATA)** | **642.7 = 10.11 min/M** | **647.2 = 10.18 min/M** | **+0.7%** |
+| **total (pretouch → TERMS_DATA)** | **695.8 min** | **759.8 min** | **+9.2%** |
+
+Read carefully, three things follow. (1) **The wall is a dead heat** — 10.18 vs Run F's 10.11 and 10.21, i.e.
+Run G's giant sits *between* Run F's two same-class giants. (2) **BASE_LAYER, the stage that carries 90% of
+the work, is only 5.6% slower** — the control amortizes across its four L0 sources (252/211/116/47 min) very
+nearly as well as SPLAT does. (3) **SPLAT's real giant-scale advantage is the ordinal plan** (+49.8 min for
+the control, C4), which sits *outside* the pass→TERMS_DATA wall and is therefore invisible to the wall metric
+— it shows up only in the end-to-end total, where SPLAT is ~9% ahead. The staged machinery largely pays for
+itself: TOKEN_STREAM costs 15.7 min and buys 33.3 min of BASE_LAYER, a net ~18 min, partly given back by a
+9.5-min more expensive CODE_PRE_ENCODE.
+
+**Consequence for the experiment:** at merge scale SPLAT is worth ~9% end-to-end, not the 1.6× the early
+extrapolation suggested and not nothing either. The large remaining differences are contention (C2 — the
+control's starved merges run 2–3× worse, with an in-flight 4M past 700 min against Run F's 92.23 record) and
+the tail, which is still the deciding metric.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -498,3 +528,21 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
 - Table 1,162 GB, sstables 57 → **58**. Cgroup steady.
 - Trend: the 1.17× giant-scale figure has now held across three consecutive checks, so the merge-scale
   verdict is effectively settled pending source 4 — and the tail remains the open question.
+
+### 23:47 UTC — t+19h00m — GIANT LANDED (pushed): wall 10.18 min/M, a dead heat with Run F's 10.11/10.21
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0** SPLAT lines across the entire run; G5 cost 0 / integrity 0 / max 0. Device eased to 156k
+  r/s @ 4.7 KB, r_await **0.17 ms** as the monopoly released.
+- **The decisive merge-scale measurement is in (C7).** `Stage BASE_LAYER completed … in 37,619,398 ms` =
+  **627.0 min = 9.86 min/M** (Run F 593.71 = 9.34, so **+5.6%**), then UPPER_LAYERS 46 ms, FINALIZE 1.0 s,
+  TERMS_DATA written **23:47:14**. Wall from the 13:00:04 pass = **647.2 min = 10.18 min/M**, sitting between
+  Run F's two 63.5M giants (10.11 and 10.21). End-to-end from pretouch: **759.8 vs 695.8 min = +9.2%**.
+  My 23:25 projection of 626 min was accurate to 1 min — but the earlier 15.0–15.7 min/M projections were
+  wrong by 50%, which is the standing lesson about extrapolating from partial stages.
+- Per-source, final: **252 / 211 / 116 / 47 min** — a 5.4× decline that closely tracks Run F's own
+  amortization curve. The control amortizes; it is simply a few percent behind at each step.
+- Phase: **still ingesting**, 120.2M rows (60.1%); a fresh 4M started 23:45 as the pool reopened. Table
+  1,254 GB, sstables **61**.
+- Trend: the giant is a near-tie, so the experiment now rests entirely on the tail and on the contention gap
+  — exactly where the run started, but with the merge-scale question answered rather than assumed.
