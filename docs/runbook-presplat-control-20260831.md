@@ -31,16 +31,32 @@ open). Nothing here has been executed; the server trees are untouched.
 - **Gap:** `build-cassandra.sh` tells you to install jvector via `$JVECTOR_REPO/bin/build-jvector.sh
   --verify --deploy`, but `/mnt/nvme/opt/jvector/bin` **does not exist**. Use `mvn install` (below).
 
-## DECISION REQUIRED BEFORE ANY WIPE
+## The wipe is the protocol, not a loss
 
-`new_cass` hard-deletes `/mnt/nvme/cassandra` except `heapdumps`. That destroys the **200M-row dataset Run F
-spent 2 d 12 h building** (1,251 GB, 5 sstables). There is 8.4 TB free. Preserving it costs ~20 minutes of
-copy and keeps the only 200M SAI vector index we have ever produced (useful for query/recall work later):
+The measurement *is* the 200M load: the tier ladder (4M → 16M → 63.6M) forms as the dataset is built, so the
+control run must start from empty exactly as Run F did. `new_cass` hard-deletes `/mnt/nvme/cassandra` except
+`heapdumps` — that is the intended starting condition, and Run F's sstables are a byproduct with no role in
+the comparison. Nothing to preserve there.
 
-    sudo systemctl stop cassandra
-    sudo cp -a /mnt/nvme/cassandra /mnt/nvme/cassandra-runF-200M    # ~1.3 TB
+**What did need preserving is the log evidence, and it is now archived.** logback keeps `maxHistory=7` days /
+`totalSizeCap=5GB`, so Run F's 08-28/08-29 compaction logs — the source for every wall in E13 and E16–E18,
+all three giants included — expire around 09-04 and would additionally compete with the control run's own
+output. All 523 files (394 MB) are copied verbatim to
+`/mnt/nvme/opt/rc-tools/build-anchors/runF-20260828-splat-de79d5bf/logs/`. **Leave live logrotate settings
+alone**; the control run needs the same retention that made Run F reconstructable.
 
-Recommended. Skip only if the dataset is genuinely disposable.
+## When each comparison point arrives (from Run F's own clock, t = run start)
+
+| t+ | event on Run F | what the control gives you |
+|---|---|---|
+| ~0–2 h | 4M solo walls, first 16M lands t+2h01m at 4.48 | early SPLAT-vs-control at cache-resident scale; also gate G6 |
+| ~8 h 23 m | giant #1's ordinal pass begins | first giant-class stream timings |
+| **~19 h 06 m** | **giant #1 lands — 642.7 min, 10.11 min/M** | **the decisive number** |
+| ~38 h | giant #2 lands (10.21) | repeatability of the control, as E17 did for SPLAT |
+| ~60 h | 200M complete, clean shutdown | full-run parity: 2 d 12 h end to end |
+
+So the headline answer arrives roughly **19 hours in**, not at the end — but the run should go the full
+distance for the repeat giant and the ingest-rate comparison.
 
 ## Phase 1 — swap jvector (node down)
 
