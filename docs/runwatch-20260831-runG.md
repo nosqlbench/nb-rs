@@ -29,14 +29,57 @@ banded DISTRIBUTE does not exist pre-SPLAT. Walls and `Stage X completed … in 
 - 16M **4.48 / 4.34 / 4.50**, late-run near-solo **5.67**; two-wide pair 11.99 + 10.06 (6.00 effective, E16).
 - Giants **10.11 / 10.21** min/M at 63.5M (10.97 at 68.4M, E17). 16M BASE_LAYER stage 156.9 min.
 
+## The endpoint that decides it: the tail
+
+SPLAT buys amortization of work and reduced read/write amplification. That machinery has nothing to pay for
+itself with when resources are not saturated — so at 4M and 16M, where the working set is cache-resident or
+nearly so, SPLAT is expected to be **pure overhead** and the control should look equal or slightly better.
+Those classes are not the experiment. The planning and sequencing only pay off, potentially by multiples,
+once merges are large enough to be genuinely IO-saturated.
+
+**The key tell is the tail**: after ingest completes there is a remainder of compaction work, and its shape
+plus the total time to completion — measured against the last full run — is what decides whether SPLAT earns
+its keep.
+
+### Run F's tail (the baseline, reconstructed from the archived logs)
+
+| boundary | timestamp | span |
+|---|---|---|
+| run start | 2026-08-28 00:37:11 | — |
+| ingest ends (`load_increment_adaptive` returns) | 2026-08-29 15:35:25 | ingest **38 h 58 m** |
+| `settle_compactions` starts | 2026-08-29 15:47:42 | |
+| `settle_compactions` returns | 2026-08-30 12:26:57 | **tail 20 h 51 m** |
+| all phases complete | 2026-08-30 12:32:10 | **total 59 h 49 m** |
+
+**The tail was 34.9% of the whole run**, and its shape was:
+
+| pass | class | wall | min/M | note |
+|---|---|---|---|---|
+| 15:39:53 | 19.83M | 362.5 min | **18.28** | co-scheduled pair — 4× its solo band |
+| 16:54:42 | 15.86M | 288.8 min | **18.20** | " |
+| 21:43:41 | 3.97M | 6.5 min | 1.65 | |
+| 21:50:41 | 16.86M | 108.5 min | 6.44 | |
+| 23:54:18 | **68.41M** | 750.8 min | 10.97 | **giant #3 — landed 12:25:06** |
+
+`settle_compactions` returned **1 m 51 s after the last giant landed**, so Run F's tail is
+**giant-terminated**: its length ≈ (time before the final giant can form) + (that giant's wall). Two
+sub-metrics follow, and SPLAT should move both if it moves anything —
+
+1. **the final giant's wall** (10.97 min/M at 68.4M here), and
+2. **how degraded the mid-class cleanup is while the giant hogs the pool** (18.20/18.28 — 4× solo).
+
+A third, cheaper tell: the run left **5 sstables** (100.0 / 92.9 / 92.8 / 5.8 / 0.9 GB) — i.e. it did not
+fully consolidate, it simply ran out of work to schedule. Compare Run G's terminal sstable shape too.
+
 ## Control ledger
 
-**C1 — The control is faster at every class measured so far (first 3 h, provisional).** 4M solo walls
-0.69 / 0.90 / 0.87 / 0.87 / 1.03 / 0.89 / 0.89 vs Run F's 1.01–1.16 — the control's *slowest* opening 4M
-beats Run F's *fastest*. First 16M landed **3.65 min/M** (58.4 min, 15.99M ords) vs Run F's 4.48 / 4.34 /
-4.50. Direction: removing SPLAT looks like a straight win at cache-resident and mid classes. Provisional
-because early-run co-scheduling is lighter than Run F's steady state and the table is still small; the giant
-at ~t+19h is the measurement that decides it.
+**C1 — Small-class deltas are the expected null region, not a verdict (revised).** Run G's opening 4M walls
+(0.69–1.03 vs Run F's 1.01–1.16) and first 16M (3.65 vs 4.48/4.34/4.50) run ahead of Run F. Under SPLAT's
+own theory this is what should happen: with the working set cache-resident there is no saturation to
+amortize, so the staged planning is overhead with nothing to recover it. The magnitude is small and
+sign-consistent with the theory; it is **not** evidence against SPLAT, and the earlier reading of it as "a
+straight win" was wrong. The classes that can falsify or vindicate SPLAT are the giants and, above all, the
+tail defined above.
 
 ## Entries
 
