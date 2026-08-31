@@ -20,6 +20,15 @@ compatibility question settled by the compiler, not by assumption) → `new_cass
 Anchors: control `build-anchors/runG-20260831-presplat-30cdfdaf/`, rollback
 `build-anchors/runF-20260828-splat-de79d5bf/` (includes Run F's 523 archived log files).
 
+**Capture protocol — do this for every important session.** A run is only comparable later if all four
+pieces survive: (1) the **jars** — jvector + dse-db, since a rebuild need not reproduce the md5;
+(2) the **flags** from the live `/proc/<pid>/cmdline`, not from the conf file, which can drift;
+(3) the **server logs** — logback keeps only 7 days / 5 GB, and they are the sole source of walls and stage
+elapsed; (4) the **full client session directory** → `nb-rs/keepsessions/<session>/`, which carries the
+structured `metrics.db`, `checkpoint.jsonl`, session/transcript logs and end-of-run summaries. Run F is
+complete on all four (session at `keepsessions/stcs_adaptive_20260828_003711`, 139 MB). Run G owes (3) and
+(4) at run end; its jars and flags are already banked.
+
 **Instrument note:** the batch counter's per-source-cycle semantics from Run F (E15 addendum) do NOT apply —
 banded DISTRIBUTE does not exist pre-SPLAT. Walls and `Stage X completed … in N ms` lines are unaffected.
 
