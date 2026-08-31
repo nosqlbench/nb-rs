@@ -186,6 +186,14 @@ cheap, which is precisely what `29f24feb`/`8aa6d329` were written to do.
     ~192/source there, the stage lands ≈828 min (13.0 min/M, 1.39× Run F); if it keeps declining toward ~120,
     ≈684 min (1.15×). The giant-scale verdict is a question about the second half only.
 
+  - *C6 resolved (21:42):* per-source costs are now **252 / 211 / ~117 / ?** min. The control amortizes
+    substantially after all — source 3 is running **1.8× faster than source 2** — where Run F went ~216 →
+    ~80 (2.7×). Both builds amortize; SPLAT simply amortizes harder. If source 4 matches source 3, the stage
+    lands at **697 min = 10.96 min/M vs Run F's 593.71 = 9.34 — a 1.17× SPLAT win**, and the giant's wall
+    ≈750 min ≈11.8 min/M vs 10.11/10.21 (1.16×). That is a real but **modest** giant-scale advantage, far
+    from the 1.6–1.7× the early extrapolations suggested, and it puts the weight of the experiment back onto
+    the tail, where a ~1.2× on the final giant compounds with the much larger starvation gap (C2).
+
 **This makes the experiment a clean binary.** Run G's source 1 is ~14% slower than Run F's — consistent with
 the null-region overhead everywhere else. The question is whether **Run G's sources 2–4 get cheaper at all**:
 - if they stay near 246 min each → stage ≈ 984 min vs 594, SPLAT wins ~1.65× at giant scale, and the win is
@@ -456,3 +464,20 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
 - Table 1,075 GB, sstables 53 → **56**. Cgroup steady.
 - Trend: an hour with no new information by design — source 2 merely confirmed its projection, and the
   decisive source-3 rate lands in the next check.
+
+### 21:42 UTC — t+16h55m — source 3 is 1.8× faster: the giant-scale win shrinks to ~1.17×
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 231k r/s @ 6.6 KB, r_await **0.23 ms**.
+- **The C6 answer arrived.** Source 2 finished at **211 min**; **source 3 is 39% done in 46 min → ~117 min**,
+  i.e. 1.8× faster than source 2. Per-source: **252 / 211 / ~117 / ?**. The control amortizes properly — just
+  less steeply than Run F (~216 → ~80, 2.7×). Projected stage **697 min = 10.96 min/M vs Run F's 9.34**, a
+  **1.17× SPLAT win**; giant wall ≈750 min ≈**11.8 min/M** vs 10.11 / 10.21. Overall node rate jumped 70.0 →
+  **74.6k/min**, confirming the acceleration is real rather than a sampling artifact.
+- Caveat: 46 min at 39% is a better sample than source 2's opening but still partial, and source 4 is
+  unmeasured. The stage-completed line (~00:50 on 09-01) remains the authority.
+- Phase: **still ingesting**, 117.9M rows. Table 1,117 GB, sstables **57**.
+- Walls: none landed. Starved 4M at **646 min (≥162.7 min/M)**; second 4M at 262 min (≥66 min/M) — both far
+  past Run F's 92.23 record and 6.28–7.40 band respectively.
+- Trend: the giant-scale verdict is converging on *modest* (~1.17×) rather than decisive, which raises the
+  stakes on the tail — the metric that was always meant to decide this.
