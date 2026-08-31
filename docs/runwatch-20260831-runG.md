@@ -179,6 +179,13 @@ than Run G's ~246 — and then sources 3–4 came in at ~80 min each, **2.7× ch
 signature itself: the token stream built while processing early sources makes later cross-source search
 cheap, which is precisely what `29f24feb`/`8aa6d329` were written to do.
 
+  - *C6 running result (18:42):* source 1 = **252 min**, source 2 = **40% in 77 min → ~192 min projected**.
+    So the control **does** amortize, but shallowly: 252 → 192 is **1.31×**, where Run F went ~216 → ~80 =
+    **2.7×**. Combined, the control's sources 1+2 project **444 min against Run F's 432 — only 2.8% slower**.
+    The entire Run F advantage therefore lives in **sources 3–4** (160 min for the pair). If the control holds
+    ~192/source there, the stage lands ≈828 min (13.0 min/M, 1.39× Run F); if it keeps declining toward ~120,
+    ≈684 min (1.15×). The giant-scale verdict is a question about the second half only.
+
 **This makes the experiment a clean binary.** Run G's source 1 is ~14% slower than Run F's — consistent with
 the null-region overhead everywhere else. The question is whether **Run G's sources 2–4 get cheaper at all**:
 - if they stay near 246 min each → stage ≈ 984 min vs 594, SPLAT wins ~1.65× at giant scale, and the win is
@@ -393,3 +400,21 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
   monopoly scale and the clearest cost of the control's weaker co-resident protection.
 - Table 971 GB, sstables 45 → **48**; a fresh 4M started 17:20. Trend: the giant's amortization question now
   has a concrete deadline — source 2 lands around 20:30 and settles whether SPLAT's giant-scale win is real.
+
+### 18:42 UTC — t+13h55m — control amortizes too, but shallowly; at the giant's midpoint the two builds are within 3%
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 235k r/s @ 6.8 KB, r_await **0.23 ms**.
+- **C6 sharpens again.** Source 2 is 40% done in 77 min → ~192 min, confirming last hour's hint was real
+  rather than an early-cycle artifact: the control amortizes **1.31×** (252 → 192). Run F amortized **2.7×**
+  (~216 → ~80). Crucially, **sources 1+2 project 444 min vs Run F's 432 — a 2.8% gap.** Through the first
+  half of the giant the two builds are effectively tied, and *all* of Run F's advantage is in sources 3–4
+  (160 min for the pair). Stage projections: ~828 min if the control flattens at 192/source (13.0 min/M,
+  1.39× Run F); ~684 min if it keeps declining (1.15×). Overall node rate has risen 64.5k → 67.7k/min as
+  source 2 proceeds, exactly as an amortizing build should look.
+- Phase: **still ingesting** — 10 rounds, latest returned 14:09:57. 112.7M rows. **Table crossed 1 TB**
+  (1,007 GB), sstables 48 → **51**.
+- Walls: none landed. The starved 4M is now at **465 min (≥117 min/M)**, extending its new record well past
+  Run F's 92.23; a second 4M has been waiting 82 min behind it. The giant is 342 min past its pass.
+- Trend: the giant is no longer a story about raw speed — both builds cost the same for the first half, and
+  the experiment now turns entirely on how steeply each one amortizes across the back half.
