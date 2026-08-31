@@ -92,7 +92,7 @@ tail defined above.
 
 **C2 — Under contention the control is markedly WORSE, and that is SPLAT's predicted payoff region
 (first real signal).** 4M merges starved beneath a co-resident 16M measured **15.69, 17.97 and 10.57 min/M**
-in Run G, against Run F's armed starved band of **6.28–7.40** — the control is 1.4–2.9× worse at exactly the
+in Run G (plus **18.23** and 7.19 measured 08:09–08:59), against Run F's armed starved band of **6.28–7.40** — the control is 1.4–2.9× worse at exactly the
 job SPLAT claims to improve. Meanwhile the uncontended cases stay in the null region (solo 4M 0.69–0.90 vs
 Run F 1.01–1.16; 16M 3.65 / 3.84 vs 4.48 / 4.34 / 4.50), so this is not a general slowdown — it is
 contention-specific. Reading: SPLAT's amortization and reduced read amplification chiefly buy *protection for
@@ -141,3 +141,24 @@ onward uses the corrected matcher.
 - Trend: the null region holds where predicted and the first saturation-sensitive measurement lands
   decisively against the control — if that carries into the tail, SPLAT is earning its keep exactly where the
   theory says it should.
+
+### 09:42 UTC — t+4h55m — giant precondition met; starvation signal repeats; µs/node flag tripped (pushed)
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0** SPLAT lines; G3 pre-SPLAT enum only; G5 cost 0 / integrity 0 / max 0. **Flag tripped:**
+  ordinal passes at **399.0 and 544.7 µs/node** (two >100 occurrences → PushNotification sent). Both are
+  contention-driven and land beside starved walls, so they corroborate C2 rather than indicate a fault; Run E
+  precedent for a starved pass is 4,555 µs/node.
+- Phase: **still ingesting** — 7 `load_increment_adaptive` rounds, latest returned 09:03:01; no
+  `settle_compactions` yet. 68.5M rows at t+4h55m (~13.9M/h).
+- Walls: starved **18.23** (72.3 min) and **7.19**; lightly co-scheduled 1.80 / 2.34 / 1.61 / 2.33; **16M #3
+  = 3.82** (Run F 4.48 / 4.34 / 4.50 — the control's three 16Ms are now 3.65 / 3.84 / 3.82, tightly clustered
+  and ~15% under Run F).
+- **Giant precondition met**: four 16M-class sstables now on disk (23.3G 05:32, 23.2G 06:54, 23.2G 08:17,
+  23.2G 09:39). Nothing giant-class has been selected yet — largest stage in flight is a 15.86M
+  SOURCE_PRETOUCH/SIMILARITY_ORDINALS pair started 09:39–09:40, plus a 3.97M. Expect the giant within the hour.
+- Table 445 GB, sstables 18 → **13** (consolidating). Device caught in an inter-merge lull: 6.4k r/s @ 81 KB,
+  r_await 0.44 ms, 22% util — sequential/low-IOPS, not a storm, so G4's arm check defers to the next storm.
+  Cgroup anon 105.9G / file 38.3G.
+- Trend: the two-regime split is holding cleanly — 16M walls tightly ~15% better than Run F while starved 4Ms
+  run 2–3× worse — and the first giant-class measurement, the one that actually tests amortization, is imminent.
