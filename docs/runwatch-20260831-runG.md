@@ -481,3 +481,20 @@ Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
   past Run F's 92.23 record and 6.28–7.40 band respectively.
 - Trend: the giant-scale verdict is converging on *modest* (~1.17×) rather than decisive, which raises the
   stakes on the tail — the metric that was always meant to decide this.
+
+### 22:42 UTC — t+17h55m — source 3 lands at ~115 min; stage projection stable at 1.17×
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 233k r/s @ 6.6 KB, r_await **0.23 ms**.
+- **Giant, 72.9% complete (46.33M/63.58M at 22:42:11).** Source 3 is 92% done at 106 min → **115 min**,
+  confirming last hour's 117 estimate rather than drifting. Per-source **252 / 211 / ~115 / pending**; stage
+  projects **694 min = 10.91 min/M vs Run F's 593.71 = 9.34, a steady 1.17×**. Source 3 completes ~22:51 and
+  **source 4 — the last unknown — begins immediately after**; if it matches source 3 the projection holds, and
+  the authoritative `Stage BASE_LAYER completed` line arrives ~00:47 on 09-01.
+- Phase: **still ingesting**, 119.0M rows (59.5%); last completed load round still 14:09:57 — the monopoly
+  continues to hold the servo down, matching Run F's behaviour under its own giant.
+- Walls: none landed this interval. Starved 4M at **705 min (≥177.6 min/M)**, second 4M at 322 min
+  (≥81 min/M) — the latter alone is now approaching Run F's all-time record of 92.23.
+- Table 1,162 GB, sstables 57 → **58**. Cgroup steady.
+- Trend: the 1.17× giant-scale figure has now held across three consecutive checks, so the merge-scale
+  verdict is effectively settled pending source 4 — and the tail remains the open question.
