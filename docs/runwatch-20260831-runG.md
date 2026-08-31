@@ -165,6 +165,27 @@ progress` only fires per 10% decile, so at this rate the first decile line arriv
 of progress lines at 90 min was reporting granularity, not a stall (thread sample confirmed 40 ForkJoin
 workers in `processBaseNode`/`gatherCandidates`, coordinator parked on the task, 1,164 s CPU).
 
+**C6 — The giant's real structure: 4 L0 sources, and Run F's win is entirely in sources 3–4.** One batch
+cycle = **123,940 batches × 128 ordinals = 15.86M = exactly one L0 source**, so a 63.58M giant is four
+cycles. Re-reading both runs through that lens:
+
+| | source 1+2 | sources 3+4 | stage total |
+|---|---|---|---|
+| **Run F giant #1** | 31.73M by 16:37 = **432 min** (~216 min/source) | remaining 31.85M in **~160 min** (~80 min/source) | 593.71 min |
+| **Run G giant #1** | source 1 at 85% after 209 min → **~246 min/source** | unknown | — |
+
+Run F's giants did **not** run uniformly fast: their first two sources cost ~216 min each — barely better
+than Run G's ~246 — and then sources 3–4 came in at ~80 min each, **2.7× cheaper**. That is the amortization
+signature itself: the token stream built while processing early sources makes later cross-source search
+cheap, which is precisely what `29f24feb`/`8aa6d329` were written to do.
+
+**This makes the experiment a clean binary.** Run G's source 1 is ~14% slower than Run F's — consistent with
+the null-region overhead everywhere else. The question is whether **Run G's sources 2–4 get cheaper at all**:
+- if they stay near 246 min each → stage ≈ 984 min vs 594, SPLAT wins ~1.65× at giant scale, and the win is
+  specifically *cross-source amortization*, not raw per-node speed;
+- if they drop toward 80 min each → there is no giant-scale SPLAT win and the case rests on C4 plus the tail.
+Source 1 completes ~17:20; source 2's rate answers it within a couple of hours.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -336,3 +357,19 @@ workers in `processBaseNode`/`gatherCandidates`, coordinator parked on the task,
   Cgroup anon 106.0G / file 36.9G.
 - Trend: the honest position is that the giant comparison is still open, and the interesting question has
   sharpened — not "is the control slower" but "does the control show Run F's late acceleration at all".
+
+### 16:42 UTC — t+11h55m — giant structure decoded (C6): the test is now cross-source amortization
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; G5 cost 0 / integrity 0 / max 0; G4 storm 235k r/s @ 6.8 KB, r_await **0.23 ms**.
+- **Giant: batches 105,320/123,940 (85.0%) but ordinals 13.48M/63.58M (21.2%)** — the apparent contradiction
+  decodes the structure: one batch cycle is exactly one 15.86M L0 source, so the giant is four cycles and it
+  is still inside **source 1**, 85% done after 209 min. Rate steady at 64.5k/min overall, 66.2k last hour;
+  zero batch resets so far, so source 2 begins ~17:20. C6 reframes the whole test around whether sources
+  2–4 amortize — Run F's did (216 → 80 min/source, 2.7×).
+- Phase: **still ingesting** — 10 rounds, latest returned 14:09:57. 108.0M rows.
+- Walls: none landed. The 4M from 10:56 is at **345 min (≥86.9 min/M)** — now within 6% of Run F's all-time
+  starvation record of 92.23, and it will pass it if it does not land in the next ~20 min.
+- Table 929 GB, sstables 41 → **45**; debt keeps stacking behind the monopoly. Cgroup anon 106.0G / file 36.8G.
+- Trend: the giant's per-source structure converts an ambiguous rate comparison into a decisive one, and the
+  answer arrives with source 2 rather than at stage end.
