@@ -630,3 +630,25 @@ merge-scale gap.
 - Table 931 → **959 GB**, sstables 32 → **23** (consolidation outpacing flushes again).
 - Trend: the run is moving fast between monopolies and slowly inside them, so the honest ingest estimate
   depends entirely on how many more giants land before part 10 finishes.
+
+### 04:41 UTC (09-01) — t+23h54m — 16.86M at 4.45 min/M; giant #2 tier ready but still unselected
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0. Device in a between-merge lull (44.5k r/s, 60% util), so
+  G4 defers to the next storm.
+- Walls: **16.86M landed at 75.0 min = 4.45 min/M**. Run F's only same-class merge ran **6.44** — but that
+  was inside its tail alongside a giant, so this is not a like-for-like win; the honest statement is that the
+  control's 16.86M ran with a free pool and posted a clean number. Also **4M at 6.53** (25.9 min) while the
+  16.86M finished — squarely inside Run F's starved band of 6.28–7.40, and the first Run G starvation figure
+  that is *not* worse than Run F's. Clean 4Ms either side at 1.24 / 0.91 / 1.22.
+- One pass at **306.5 µs/node** (5th reading >100); the neighbouring passes were 9.3 and 49.8, so the spread
+  remains pool-pressure driven per the 01:42 note, not a drift.
+- Phase: **still ingesting**, 156.4M rows (78.2%), **+7.1M this hour**. Remaining 43.6M at that rate → ingest
+  ends ~10:50.
+- **Giant #2 still has not been selected** despite its tier (24.6 / 23.2 / 23.2 / 23.2 GB) being complete for
+  over an hour; the largest pretouch since 04:00 is 3.97M. Run F's giant #2 started at t+27h17m and Run G is
+  at t+23h54m, so this is not yet late — but whether it lands before or after ingest completes decides
+  whether it counts as ingest cost or tail cost.
+- Table 959 → **996 GB**, sstables 23 → **26**.
+- Trend: the control keeps posting clean mid-class numbers between monopolies, and the run's shape now hinges
+  on the timing of giant #2 relative to the ingest boundary.
