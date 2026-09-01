@@ -737,3 +737,19 @@ merge-scale gap.
   sstables 39 → **43**.
 - Trend: a repeat of the first monopoly in every measurable respect, with the run now on course to finish
   ingest around mid-afternoon and enter a short, giant-truncated tail.
+
+### 09:42 UTC (09-01) — t+28h55m — second consecutive hour with zero landed walls; C8's stall behaviour repeating
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 247k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Giant #2:** source 1 is 66% at 169 min → **~256 min** (giant #1: 252). Overall 10.60M/64.4M (16.4%) at
+  **62.9k nodes/min**. The two giants remain within 2% of each other on every measure taken so far.
+- **No walls landed for the second hour running** — this is C8's stall signature, not a fault: under a
+  monopoly the control does not degrade its co-residents, it parks them, and they will all complete in a
+  burst once the giant releases. Run F under the same conditions kept producing (slow) landings throughout.
+- Phase: **still ingesting**, 179.5M rows (89.8%), **+3.0M this hour** (4.5 → 3.5 → 3.0 as the monopoly
+  deepens). Remaining 20.5M at that rate → ingest ends **~16:30**, converging with giant #2's projected
+  ~17:20 landing.
+- Table 1,317 → **1,353 GB**, sstables 43 → **46** (flush backlog accumulating behind the parked merges).
+- Trend: an uneventful hour by design — both the giant and the throttle are reproducing the first monopoly's
+  numbers, and the run is now converging on a mid-afternoon ingest boundary with the giant landing just after.
