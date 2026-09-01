@@ -951,3 +951,22 @@ builds absorbed two-to-three giant monopolies during load.
 - Pending 4, write amplification 3.33.
 - Trend: the run's last open measurement is underway; Run F's tail was giant-terminated at 20h51m, and Run G's
   will be decided by whether the strategy elects that final giant.
+
+### 19:42 UTC (09-01) — TAIL t+0h50m — draining 16M-class index builds; no giant elected yet
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 214k r/s @ 6.0 KB, r_await **0.25 ms**.
+- **Tail elapsed 50 min = 4.0% of Run F's 20h51m.** Nothing has landed yet: the phase opened with two
+  byte-complete 24.9 GB compactions parked at 100% awaiting index-build slots, and it is now working through
+  them — a 15.86M build started **19:22:05**, a second at 15%. On the control's own 16M history (~60–75 min
+  each) these should land within the hour.
+- **No giant elected.** Largest pretouch since the boundary is 15.86M. The tier to form one is present
+  (three 23.2 GB) but unselected.
+- **Shape unchanged at 25 sstables / 1,305 GB**: 94.2 / 92.9 / 23.2×3 / 8.7 / **5.8×11** / **1.4×6** / 0.9.
+  Against Run F's terminal **5** sstables, Run G has a materially larger backlog to consolidate — eleven
+  4M-class and six 1M-class outputs that Run F simply never accumulated, because its longer per-merge
+  monopolies had already folded them in. **This is the substantive difference in tail composition**: Run F's
+  tail was one giant plus four merges; Run G's is a broad queue of small and mid-class work with a possible
+  giant still to come.
+- Trend: too early for a tail verdict — the first hour has been pure index-build drain, and whether a giant
+  #3 is elected remains the largest single determinant of the final number.
