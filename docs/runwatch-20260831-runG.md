@@ -596,3 +596,20 @@ merge-scale gap.
   pre-giant pace. Table 823 → **930 GB**, sstables 20 → **29** as flushes resume; largest 92.9 GB.
 - Trend: the system is behaving exactly as a post-monopoly recovery should, and the run is now grinding
   toward the remaining ~67M rows before the tail — the measurement that decides the experiment.
+
+### 02:42 UTC (09-01) — t+21h55m — steady recovery; ingest now projects to finish ~2 h faster than Run F
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm confirmed at 263k r/s @ 5.3 KB, r_await **0.20 ms**.
+- Walls: the 00:29 16M landed at **73.7 min = 4.64 min/M**, matching last hour's projection exactly; a second
+  16M has been in flight 62 min since 01:39. Post-giant 4Ms remain 1.10–1.20 (C8 unchanged).
+- Phase: **still ingesting**, 138.4M rows (69.2%), **+5.6M this hour**. The 12.5 h without a
+  `load_increment_adaptive` boundary is structural, not a stall — partitions 0–9 are 10M each while
+  **part 10 alone is 100M**, so the run has been inside one long round since 14:09:57 while rows climb steadily.
+- **Ingest-completion projection:** 61.6M rows remain at ~5.6M/h → **~13:30 UTC today**, an ingest phase of
+  **≈32.7 h against Run F's 38.97 h** — roughly 2 h faster once the giant-monopoly stall is netted out. If it
+  holds, the control reaches the tail *earlier*, which makes the tail-length comparison the whole story:
+  Run F spent 20h51m there (34.9% of a 59h49m run).
+- Table 931 GB, sstables 29 → **32**, largest 92.9 GB. Cgroup anon 106.0G / file 36.4G.
+- Trend: nothing anomalous — the run is simply grinding out part 10, and the decisive tail is now roughly
+  eleven hours away.
