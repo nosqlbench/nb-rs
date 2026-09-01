@@ -699,3 +699,23 @@ merge-scale gap.
 - Table 1,154 → **1,231 GB**, sstables 27 → **33**.
 - Trend: the second monopoly has begun with ~32M rows still to load, so giant #2 will almost certainly
   straddle the ingest boundary and feed directly into the tail measurement.
+
+### 07:42 UTC (09-01) — t+26h55m — giant #2 tracking giant #1's profile; a tail-comparison confound emerges
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 247k r/s @ 6.9 KB, r_await **0.21 ms**.
+- **Giant #2 setup:** PRETOUCH 5.45 min, SIMILARITY_ORDINALS 22.6, CODE_PRE_ENCODE 14.5; **BASE_LAYER started
+  06:53:38**, now 49 min in at **4.9% (3.18M/64.4M), 65.5k nodes/min** — source 1 at 20%, projecting ~245 min
+  against giant #1's 252. The profile is tracking giant #1 closely, so on that curve (252/211/116/47) it
+  would complete ~17:20 and land its wall around 10.0–10.3 min/M.
+- **Confound to record before the tail lands.** Run F's final giant (#3) started **8h19m *after* ingest
+  ended**, so its entire 12h31m sat inside the tail — that is why Run F's tail was 20h51m. Run G's giant #2
+  is running **now, with ~27M rows still to load**, and at the current throttled rate ingest ends ~13:40
+  while the giant runs to ~17:20. If that holds, Run G's tail will look dramatically shorter — but largely
+  because the same work was scheduled *earlier relative to the boundary*, not because the control drains
+  faster. **The tail comparison must therefore be reported as tail length *and* as total time to completion,
+  with giant placement stated explicitly**; otherwise it will flatter whichever run happened to overlap more.
+- Phase: **still ingesting**, 173.0M rows (86.5%), **+4.5M this hour** (monopoly throttling, as in giant #1).
+- Table 1,231 → **1,281 GB**, sstables 33 → **39**. No walls landed; the 04:48 16M's 6.79 remains the latest.
+- Trend: the run is repeating its first-giant dynamics almost exactly, and the analytical work now is making
+  sure the tail metric is not read naively when it arrives.
