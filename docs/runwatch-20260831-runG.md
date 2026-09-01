@@ -970,3 +970,25 @@ builds absorbed two-to-three giant monopolies during load.
   giant still to come.
 - Trend: too early for a tail verdict — the first hour has been pure index-build drain, and whether a giant
   #3 is elected remains the largest single determinant of the final number.
+
+### 20:42 UTC (09-01) — TAIL t+1h50m — first tail landing: 16M at 7.22 min/M vs Run F's tail 16Ms at 18.2
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 218k r/s @ 6.2 KB, r_await **0.25 ms**.
+- **Tail elapsed 1h50m = 8.8% of Run F's 20h51m.**
+- **First tail merge landed, authoritatively:** `wall 6,872,774 ms` = **114.5 min for 15,864,369 ordinals =
+  7.22 min/M** (BASE_LAYER 99.6 min, ORDINALS 7.1, PRETOUCH 1.1, PQ 2.2, PRE_ENCODE 2.4, UPPER 2.2). Run F's
+  tail mid-class merges ran **18.28 and 18.20 min/M**, with a 16.86M at 6.44 — so the control's first tail
+  landing is **2.5× better than Run F's tail 16Ms** and comparable to its best. Two 16Ms were co-resident
+  here, so this is a co-scheduled number, not a solo one.
+- **Matcher artifact caught and discarded.** The wall extractor briefly reported a 16M at *0.23 min/M*: two
+  same-class merges were in flight with ordinal counts **261 apart** (15,864,108 vs 15,864,369), inside the
+  0.1% tolerance, so a pass was paired with the *other* merge's adopt/TERMS_DATA. Rule going forward for the
+  tail: **with multiple same-class merges concurrent, trust `Compaction stage times` / `wall N ms`, not the
+  pass→adopt matcher.** (Same failure family as the 08-42 drift correction, opposite direction.)
+- **No giant elected**; largest pretouch since the boundary remains 15.86M. A second 16M is mid-flight (its
+  ordinal pass alone took 59.3 min, reflecting the co-scheduling).
+- Shape improving: **25 → 21 sstables**, table 1,305 → **1,262 GB** — four 5.8 GB outputs folded in.
+  Remaining: 94.2 / 92.9 / 23.2×3 / 8.7 / 5.8×8 / 1.4×6 / 0.9.
+- Trend: the tail is draining real work at rates well inside Run F's tail band, and the open question is
+  still whether a giant #3 is elected before the queue empties.
