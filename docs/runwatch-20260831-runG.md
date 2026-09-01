@@ -928,3 +928,26 @@ and, on this evidence, not to raw merge speed.
   flagged since 10:42.
 - Trend: the merge-scale comparison is now closed at both stage and wall level, and the run is minutes away
   from the only measurement still outstanding.
+
+### 18:57 UTC (09-01) — t+38h09m — INGEST COMPLETE (pushed): 200M rows in 38h04m; THE TAIL BEGINS
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0.
+- **Boundary crossed.** Final `load_increment_adaptive` returned **18:51:58**; `flush` ran 18:56:04 → 18:56:46;
+  `settle_compactions` not yet started at the time of this check. **200,000,000 rows loaded.**
+
+| | Run G (control) | Run F (SPLAT) |
+|---|---|---|
+| ingest phase | **38 h 04 m** (04:47:27 08-31 → 18:51:58 09-01) | 38 h 58 m |
+| tail | **now beginning** | 20 h 51 m (34.9% of run) |
+| total | pending | 59 h 49 m |
+
+**Ingest came in 54 min (2.3%) faster than Run F** — effectively a tie, which is the right result given both
+builds absorbed two-to-three giant monopolies during load.
+- **The tail starts giant-free**, as projected since 10:42: giant #2 landed 18:25:52, and the current sstable
+  shape is **94.2 / 92.9 / 23.2 / 23.2 / 23.2 / 8.7 GB** — two giant-class outputs plus a **complete 16M
+  tier**, i.e. a giant #3 *can* form during the tail exactly as Run F's did. Whether it does is now the single
+  determinant of tail length, and the reason total-time is the honest headline (07:42, 10:42 notes).
+- Pending 4, write amplification 3.33.
+- Trend: the run's last open measurement is underway; Run F's tail was giant-terminated at 20h51m, and Run G's
+  will be decided by whether the strategy elects that final giant.
