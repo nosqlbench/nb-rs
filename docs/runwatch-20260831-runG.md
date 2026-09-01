@@ -841,3 +841,19 @@ merge-scale gap.
 - Table 1,499 → **1,531 GB**, sstables 59 → **60**.
 - Trend: the giant's total is landing almost exactly on its predecessor's, which strengthens the merge-scale
   conclusion; the open question remains entirely the tail.
+
+### 15:42 UTC (09-01) — t+34h55m — source 3 underway and accelerating; giant lands ~17:50, well before the boundary
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 235k r/s @ 6.9 KB, r_await **0.23 ms**.
+- **Giant #2:** source 2 finished at **200 min**; source 3 is 43% at 56 min → **~132 min** (giant #1: 116).
+  Per-source **272 / 200 / ~132 / ~53**, decay-model total **657 min → lands ~17:50** (giant #1: 626, so ~5%
+  longer). Overall 39.13M (**60.7%**) and the node rate has climbed to **74.0k/min**, its highest of the run —
+  the same late-source acceleration both builds show.
+- Phase: **still ingesting**, 191.8M rows (95.9%), **+1.4M this hour** — the servo is at its slowest of the
+  run. Remaining 8.2M → ingest ends **~21:35**, so the giant should clear nearly **4 h** before the boundary.
+- The 11:10 4M is now at **272 min (≥68.5 min/M)**, still unfinished — eighth hour parked, and it will
+  presumably land in the burst once the giant releases (C8's pattern).
+- Table 1,531 → **1,578 GB**, sstables 60 → **62**, pending 12.
+- Trend: everything is converging as expected — the giant is on its final third, the tail will begin around
+  21:35 with no giant in it, and the run's total time is now the number that carries the comparison.
