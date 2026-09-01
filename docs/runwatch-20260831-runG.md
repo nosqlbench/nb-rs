@@ -773,3 +773,20 @@ merge-scale gap.
 - Table 1,353 → **1,389 GB**, sstables 46 → **50**.
 - Trend: both clocks are converging on the same 20-minute window, which makes the shape of Run G's tail — and
   therefore how the headline is framed — turn on which of the two crosses first.
+
+### 11:42 UTC (09-01) — t+30h55m — giant #2 source 1 measured at 272 min; source 2 tracking 215
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 238k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Giant #2, measured:** source 1 = **272 min** (giant #1: 252, so +8%); source 2 is 8% in at 17 min →
+  **~215 min** (giant #1: 211). Overall 17.36M (26.9%) at **60.2k nodes/min**, drifting slightly below giant
+  #1's 62–67k. On giant #1's shape (272/215/118/48) the stage totals ~653 min and lands **~17:46**.
+- Phase: **still ingesting**, 184.4M rows (92.2%), **+2.4M this hour**. Remaining 15.6M → ingest ends
+  **~18:10**, now slipping *past* the giant's projected landing rather than before it. The two boundaries are
+  within ~25 min of each other, so which crosses first is still genuinely open — and per 10:42 that ordering
+  determines whether Run G's tail contains a giant at all.
+- A 4M has been in flight since 11:10 (32 min, ≥8 min/M floor) — the first merge to start during this
+  monopoly; consistent with C8, it will likely park until the giant releases.
+- Table 1,389 → **1,421 GB**, sstables 50 → **53**, pending **11**.
+- Trend: fourth hour of the monopoly, everything still tracking giant #1 within ~8%, and the ingest/giant
+  ordering remains the one variable that will shape how the final comparison reads.
