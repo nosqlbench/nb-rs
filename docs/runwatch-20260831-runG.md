@@ -132,6 +132,16 @@ pre-SPLAT ordinal pass, not an anomaly. Scale matters though: 73 min against a ~
 a giant's wall, so C4 is a real SPLAT win that cannot by itself decide the experiment. CODE_PRE_ENCODE was
 12.88 min vs Run F's 22.33 / 12.51 / 9.95 — no signal.
 
+  - *C4 REVISED (06:42) — the ordinal-plan claim does not survive a second sample.* Run G's **giant #2 took
+    22.6 min** on SIMILARITY_ORDINALS (64,448,215 units, 1,355,359 ms) against **giant #1's 73.0 min** — the
+    control's own two giants differ by **3.2×** on the identical stage, which is larger than the 3.1×
+    control-vs-SPLAT gap C4 attributed to `8eba8b9e`. Run F's three giants show the same spread on their side
+    (23.21 / 11.13 / 2.26). The stage is therefore **contention-dominated, not algorithm-dominated**, and
+    22.6 min sits essentially level with Run F giant #1's 23.21 min. C4's "SPLAT's ordinal plan is ~3×
+    cheaper" is **withdrawn as an algorithmic claim**; what remains is that the pass is expensive and highly
+    sensitive to pool pressure in both builds. This also removes the ~8%-of-wall advantage C4 contributed to
+    C7's end-to-end figure, pushing the giant-scale verdict closer still to parity.
+
 **C5 — WITHDRAWN AS STATED; the giant comparison cannot be projected from early rate (revised 15:42).**
 The 14:42 reading (Run G's giant at 9.5% after 90 min = 66.7k nodes/min, projecting 15.0 min/M against Run
 F's 9.34) compared **Run G's early-stage rate against Run F's whole-stage average**, which is invalid.
@@ -670,3 +680,22 @@ merge-scale gap.
 - Trend: the run is about to repeat its defining event, and this time the timing matters — if giant #2's
   index build straddles the ingest boundary it will convert directly into tail length, which is the metric
   under test.
+
+### 06:42 UTC (09-01) — t+25h55m — GIANT #2 STARTED (pushed); its ordinal pass revises C4
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0. Device 85k r/s @ 9.8 KB, r_await 0.19 ms (pretouch-shaped).
+- **Giant #2 is running: 64,448,215 ordinals** (vs giant #1's 63.58M; Run F's #3 was 68.41M). SOURCE_PRETOUCH
+  completed 06:01:40 in 5.45 min, **SIMILARITY_ORDINALS 06:39:05 in 22.6 min**, PQ_RETRAIN now at 50%. Pass
+  clock started 06:39, so its wall runs against Run F's 10.11 / 10.21 / 10.97.
+- **C4 revised downward** (see ledger): 22.6 min here vs 73.0 min for giant #1 — a 3.2× spread *within the
+  control* on the same stage, exceeding the control-vs-SPLAT gap C4 claimed. The stage tracks pool pressure,
+  not build. Two ledger items have now been walked back on the same failure mode (C5, C4): a single sample
+  under one contention regime cannot support an algorithmic attribution.
+- Walls: **16M at 6.79 min/M** (107.7 min, pass 04:48) — starved by giant #2's setup, slightly above Run F's
+  4.48/4.34/4.50 band and consistent with C2.
+- Phase: **still ingesting**, 168.5M rows (84.2%), **+4.7M this hour** — the servo is already throttling as
+  the second monopoly takes hold.
+- Table 1,154 → **1,231 GB**, sstables 27 → **33**.
+- Trend: the second monopoly has begun with ~32M rows still to load, so giant #2 will almost certainly
+  straddle the ingest boundary and feed directly into the tail measurement.
