@@ -578,3 +578,21 @@ merge-scale gap.
   A 16M started 00:29. Pending 5, write amplification 3.10.
 - Trend: with C7 showing only a 9% merge-scale gap, C8's latency asymmetry is now the run's most consequential
   finding — and the tail, still ahead of us, will show whether stalling or degrading drains faster overall.
+
+### 01:42 UTC (09-01) — t+20h55m — post-giant 16M at ~4.6 min/M; ingest recovering at ~6.9M rows/h
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0. Device caught in an inter-merge lull (7.1k r/s @ 78.8 KB,
+  r_await 0.44 ms, 34% util), so G4 defers to the next storm as before.
+- Walls: the 16M that started 00:29 completed **BASE_LAYER in 66.8 min** (4,007,509 ms) and adopted 01:41:53
+  — wall ≈73 min ≈ **4.6 min/M**, against the control's own earlier 16Ms at 3.65/3.84/3.82/3.93 and Run F's
+  4.48/4.34/4.50. It overlapped the giant's finish, so the modest slowdown is co-scheduling, not a shift.
+  Six post-giant 4Ms remain at 1.10–1.20 (C8).
+- **Ordinal-pass variance is now stark and contention-driven**: the 00:29 16M's pass took 2.78 min
+  (10.5 µs/node) with the pool free, while the 01:39 16M's took **40.6 min (153.8 µs/node)** — a 15× spread
+  on identical work, and the 4th reading past 100 µs/node. This is C4's mechanism showing its dependence on
+  pool pressure rather than a new effect.
+- Phase: **still ingesting**, 132.8M rows (66.4%), **+6.9M in the hour** — the servo is back near its
+  pre-giant pace. Table 823 → **930 GB**, sstables 20 → **29** as flushes resume; largest 92.9 GB.
+- Trend: the system is behaving exactly as a post-monopoly recovery should, and the run is now grinding
+  toward the remaining ~67M rows before the tail — the measurement that decides the experiment.
