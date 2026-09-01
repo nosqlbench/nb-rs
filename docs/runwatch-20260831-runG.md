@@ -652,3 +652,21 @@ merge-scale gap.
 - Table 959 → **996 GB**, sstables 23 → **26**.
 - Trend: the control keeps posting clean mid-class numbers between monopolies, and the run's shape now hinges
   on the timing of giant #2 relative to the ingest boundary.
+
+### 05:42 UTC (09-01) — t+24h55m — GIANT #2's data side is done and parked; second monopoly is imminent
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 294k r/s @ 6.3 KB, r_await **0.20 ms**.
+- **Giant #2 is staged.** `nodetool` shows a **101,144,180,458-byte compaction parked at 100.00%** — its data
+  side is complete (the new **94.2 GB** sstable, mtime 05:31) and only the vector index build remains, queued
+  behind the 15.86M currently at 38%. By size it should carry ~69M ordinals, i.e. Run F giant #3's class
+  (68.41M @ 10.97 min/M). Expect the second monopoly to begin within the hour, and with it the ingest stall.
+- Walls: clean 4Ms at **1.22 / 1.27**; the 04:48 16M is 53 min in. µs/node 9.3–49.8 after the 306.5 outlier.
+- Phase: **still ingesting**, 163.7M rows (81.9%), **+7.4M this hour**. Naïve projection is ~10:35, but the
+  imminent monopoly makes that meaningless — during giant #1 ingest fell to ~2M/h, which would push
+  completion into the afternoon.
+- Table 996 → **1,154 GB** (the 94.2 GB output landing), sstables **27**; shape now **94.2 / 92.9 / 24.6 /
+  23.2 / 23.2 / 23.2 GB** — two giant-class outputs plus a full 16M tier.
+- Trend: the run is about to repeat its defining event, and this time the timing matters — if giant #2's
+  index build straddles the ingest boundary it will convert directly into tail length, which is the metric
+  under test.
