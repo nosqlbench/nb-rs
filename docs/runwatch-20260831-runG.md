@@ -753,3 +753,23 @@ merge-scale gap.
 - Table 1,317 → **1,353 GB**, sstables 43 → **46** (flush backlog accumulating behind the parked merges).
 - Trend: an uneventful hour by design — both the giant and the throttle are reproducing the first monopoly's
   numbers, and the run is now converging on a mid-afternoon ingest boundary with the giant landing just after.
+
+### 10:42 UTC (09-01) — t+29h55m — giant #2 source 1 nearly done; the two clocks are converging on ~17:20–17:35
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 242k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Giant #2:** source 1 is 88% at 229 min → **~259 min** (giant #1: 252), overall 14.20M (22.0%) at
+  **62.1k nodes/min**. Still shadowing giant #1 to within 3%; on that curve it lands ~17:20.
+- **Third consecutive hour with no landed walls** — C8's parking behaviour, now sustained across the whole
+  monopoly. Pending has grown to **10**.
+- Phase: **still ingesting**, 182.1M rows (91.0%), **+2.6M this hour** (4.5 → 3.5 → 3.0 → 2.6). Remaining
+  17.9M at that rate → ingest ends **~17:35**.
+- **A consequence worth stating now:** if the giant lands ~17:20 and ingest ends ~17:35, **giant #2 is
+  absorbed entirely inside the ingest phase**, and Run G would enter its tail with no giant running and no
+  giant-class tier ready — unlike Run F, whose tail contained a full 68.41M giant occupying 12h31m of its
+  20h51m. Run G's tail could therefore be short simply because both its giants fell inside ingest. That
+  strengthens the 07:42 caveat: **the honest comparison is total time to completion**, with tail length
+  reported as a component and giant placement stated alongside it.
+- Table 1,353 → **1,389 GB**, sstables 46 → **50**.
+- Trend: both clocks are converging on the same 20-minute window, which makes the shape of Run G's tail — and
+  therefore how the headline is framed — turn on which of the two crosses first.
