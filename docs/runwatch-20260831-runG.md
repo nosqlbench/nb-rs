@@ -258,6 +258,23 @@ Total work is comparable; the latency distribution is not, and the control's tai
 worse. This is the sharpest practical difference the run has produced — considerably larger than C7's 9%
 merge-scale gap.
 
+**C9 — Giant-scale parity confirmed on a second sample; the two builds' ranges now overlap.** Giant #2's
+`Stage BASE_LAYER completed` fired **17:44:56 = 651.3 min = 10.11 min/M** for 64,448,215 ordinals
+(per-source **272 / 200 / 134 / 44**). Placing every giant-class BASE_LAYER measurement side by side:
+
+| build | BASE_LAYER min/M |
+|---|---|
+| Run F (SPLAT) | **9.34**, 9.61, **10.47** |
+| Run G (control) | **9.86**, **10.11** |
+
+Run G's two giants sit **inside** Run F's range, not above it. The control's mean (9.99) is 3.5% above Run
+F's (9.81) — well within the spread each build shows on its own (Run F's own giants vary by 12%, driven by
+co-scheduling). **At giant scale the two builds are indistinguishable given this sample size**, which
+independently corroborates C7's wall-level finding (10.18 vs 10.11/10.21) and confirms that the early
+1.6× claim was an artifact of extrapolating one partial source. SPLAT's staged machinery neither costs nor
+buys measurable throughput on a 64M-ordinal merge; its effects are confined to contention behaviour (C2/C8)
+and, on this evidence, not to raw merge speed.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -872,3 +889,20 @@ merge-scale gap.
 - Table 1,578 → **1,617 GB**, sstables 62 → **63**, pending steady at 12.
 - Trend: no deviation — the giant is entering its cheapest source, and the run stays on track for a ~17:54
   giant landing followed by a ~21:35 ingest boundary and a giant-free tail.
+
+### 17:45 UTC (09-01) — t+36h58m — GIANT #2 BASE_LAYER MEASURED: 651.3 min = 10.11 min/M (pushed); C9 confirms parity
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 247k r/s @ 6.3 KB, r_await **0.23 ms**.
+- **`Stage BASE_LAYER completed` 17:44:56 = 39,077,426 ms = 651.3 min = 10.11 min/M**, per-source
+  **272 / 200 / 134 / 44**. Against giant #1's 627.0 min (9.86), and Run F's 593.71 / 609.87 / 716.50
+  (9.34 / 9.61 / 10.47). **Run G's giants fall inside Run F's range** — see C9. The projection chain this
+  time was accurate (660 → 651), because it used the measured decay ratios rather than a flat rate.
+- **The 11:10 4M has passed the record**: 392 min at the last sample = **≥98.7 min/M**, beating Run F's
+  92.23 (E18) while still unfinished. Second time this run; it should land in the release burst now that the
+  giant is through BASE_LAYER.
+- Phase: **still ingesting**, 194.3M rows (97.1%), **+1.1M this hour**. Remaining 5.7M → ingest ends ~22:55
+  at the current crawl, though the giant's release should lift the servo well before that.
+- Table 1,617 → **1,707 GB**, sstables 63 → **64**, pending 12.
+- Trend: the merge-scale question is now closed on two independent giants per build — parity — leaving the
+  tail and total-time comparison as the only open item.
