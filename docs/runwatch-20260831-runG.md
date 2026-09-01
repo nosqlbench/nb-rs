@@ -275,6 +275,11 @@ independently corroborates C7's wall-level finding (10.18 vs 10.11/10.21) and co
 buys measurable throughput on a 64M-ordinal merge; its effects are confined to contention behaviour (C2/C8)
 and, on this evidence, not to raw merge speed.
 
+  - *C9 wall-level completion (18:42):* giant #2's TERMS_DATA landed **18:25:52**, wall from the 06:39:05
+    pass = **706.8 min = 10.97 min/M**. Full picture — **Run G: 10.18, 10.97 · Run F: 10.11, 10.21, 10.97.**
+    The control's larger giant matches Run F's larger giant to the second decimal, and its smaller giant sits
+    0.7% off Run F's pair. Parity holds at wall level as well as stage level.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -906,3 +911,20 @@ and, on this evidence, not to raw merge speed.
 - Table 1,617 → **1,707 GB**, sstables 63 → **64**, pending 12.
 - Trend: the merge-scale question is now closed on two independent giants per build — parity — leaving the
   tail and total-time comparison as the only open item.
+
+### 18:42 UTC (09-01) — t+37h55m — giant #2 wall = 10.97 min/M, matching Run F exactly; ingest ~99.3% and about to close
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0. Device in the post-giant lull (9.1k r/s @ 80.8 KB, 33%).
+- **Giant #2 complete:** UPPER_LAYERS 10.5 s, FINALIZE 37 ms, **TERMS_DATA 18:25:52**. Wall from the
+  06:39:05 pass = **706.8 min = 10.97 min/M** — identical to Run F's giant #3 (10.97 at 68.41M) and 0.7%
+  off its 63.5M pair. Run G's two giants: **10.18, 10.97**; Run F's three: **10.11, 10.21, 10.97**. C9 updated.
+- **Release burst, exactly as C8 predicts:** 4M walls **1.25 / 1.18 / 1.13** immediately in the solo band, no
+  degraded ramp. A 5.95M and a 15.86M are already in flight behind them.
+- **Consolidation:** table **1,707 → 1,324 GB**, sstables 64 → **37**, largest 94.2 / 92.9 / 23.2 / 23.2 GB —
+  ~380 GB of sources released at once.
+- Phase: **ingest at 198.5M rows (99.3%), +4.2M this hour** as the servo reopened. Remaining ~1.5M means the
+  **boundary should be crossed within the hour**, starting the tail with no giant in flight — the scenario
+  flagged since 10:42.
+- Trend: the merge-scale comparison is now closed at both stage and wall level, and the run is minutes away
+  from the only measurement still outstanding.
