@@ -613,3 +613,20 @@ merge-scale gap.
 - Table 931 GB, sstables 29 → **32**, largest 92.9 GB. Cgroup anon 106.0G / file 36.4G.
 - Trend: nothing anomalous — the run is simply grinding out part 10, and the decisive tail is now roughly
   eleven hours away.
+
+### 03:42 UTC (09-01) — t+22h55m — ingest accelerates to 10.9M/h; giant #2's tier has assembled
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 319k r/s @ 6.1 KB, r_await **0.19 ms**.
+- Walls: 4M cohort **3.00 / 1.56 / 1.25 / 1.24 / 0.91** — the 3.00 was co-scheduled, the rest solo-band; a
+  **16.86M started 03:19** and is 23 min in. µs/node 11.7–47.2, no new >100.
+- Phase: **still ingesting**, 149.3M rows (74.6%), **+10.9M this hour** — nearly double last hour's 5.6M/h
+  now that the giant's monopoly is fully released. On that rate the remaining 50.7M would finish ~08:20,
+  giving an ingest phase of ~27.6 h vs Run F's 38.97 h.
+- **But that projection is unstable, and deliberately flagged as such:** the tier has re-assembled —
+  **24.6 / 23.2 / 23.2 / 23.2 GB** — so giant #2's precondition is met and a second monopoly will likely
+  start before ingest completes, throttling the servo again exactly as the first one did. Run F ran three
+  giants across its run; the control has had one.
+- Table 931 → **959 GB**, sstables 32 → **23** (consolidation outpacing flushes again).
+- Trend: the run is moving fast between monopolies and slowly inside them, so the honest ingest estimate
+  depends entirely on how many more giants land before part 10 finishes.
