@@ -1031,3 +1031,22 @@ builds absorbed two-to-three giant monopolies during load.
 - Trend: the tail is draining fast and mid-class merges are running at half Run F's tail cost, but the
   rebuilt 23.2 GB tier means a final giant may yet be elected — which would add ~11 h and make Run G's tail
   resemble Run F's after all.
+
+### 23:42 UTC (09-01) — TAIL t+4h50m — third 16M at 91%, landing imminent; still no giant elected
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0. G4: 182k r/s @ 4.7 KB, r_await **0.28 ms** — just under the
+  190k mark, but this sample lands on an index build at 91% rather than a search storm, so it is not a
+  regression signal; next storm re-tests it.
+- **Tail elapsed 4h50m = 23.2% of Run F's 20h51m.** No new landings this hour; the tail's three completions
+  remain **7.22 / 14.88 / 10.28 min/M**.
+- **In flight:** the third 16M (started 22:08:26, 15,863,994 ordinals) is at **91.23%** after ~94 min, so it
+  should land near ~100 min ≈ **6.3 min/M** — which would be the tail's best mid-class figure and roughly 3×
+  better than Run F's tail 16Ms. Pending 2.
+- **Still no giant.** Four 23.2 GB sstables have been available for an hour without one being elected. Run F's
+  tail giant appeared 8h19m after its boundary; Run G is at 4h50m, so this remains genuinely open for
+  another ~3½ h by that yardstick.
+- Shape flat at **14 sstables**, table 1,263 → **1,317 GB** (the landed 16M's output). Remaining:
+  94.2 / 92.9 / 23.2×4 / 8.7 / 5.8×4 / 1.4×2 / 0.9.
+- Trend: quiet hour with one merge nearly done; the tail's total now depends almost entirely on whether the
+  four-way 23.2 GB tier triggers a final giant before the queue drains.
