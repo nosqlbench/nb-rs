@@ -810,3 +810,18 @@ merge-scale gap.
 - Table 1,421 → **1,463 GB**, sstables 53 → **56**, pending 11.
 - Trend: the giant is finishing its expensive half and should clear well before the ingest boundary, setting
   up exactly the short, giant-free tail that will need the total-time framing to be read correctly.
+
+### 13:42 UTC (09-01) — t+32h55m — giant #2 holding its projection; ingest boundary slips to ~19:25
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 239k r/s @ 6.8 KB, r_await **0.24 ms**.
+- **Giant #2:** source 2 is 71% at 137 min → **194 min**, unchanged from last hour's estimate; overall 27.48M
+  (42.6%) at **67.3k nodes/min**, its best rate yet. Decay-model total **615 min → lands ~17:09**, essentially
+  matching giant #1's 626 min. The two giants are converging on the same stage cost within 2%.
+- Phase: **still ingesting**, 188.5M rows (94.3%), **+2.0M this hour**. Remaining 11.5M → ingest ends
+  **~19:25**, so the giant should clear about **2¼ h before the boundary**.
+- The 11:10 4M remains parked at **152 min (≥38 min/M)** — sixth hour of the monopoly, still the only merge
+  attempted alongside the giant. Pending has grown to **12**.
+- Table 1,463 → **1,499 GB**, sstables 56 → **59**.
+- Trend: no new information beyond confirmation — the giant is tracking its predecessor almost exactly, and
+  the run remains on course for a giant-free tail beginning around 19:25.
