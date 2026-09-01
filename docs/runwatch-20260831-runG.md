@@ -719,3 +719,21 @@ merge-scale gap.
 - Table 1,231 → **1,281 GB**, sstables 33 → **39**. No walls landed; the 04:48 16M's 6.79 remains the latest.
 - Trend: the run is repeating its first-giant dynamics almost exactly, and the analytical work now is making
   sure the tail metric is not read naively when it arrives.
+
+### 08:42 UTC (09-01) — t+27h55m — giant #2 source 1 at 259 min projected; ingest throttling deepens
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 247k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Giant #2:** source 1 is 42% done after 109 min → **~259 min**, against giant #1's 252 — the two giants
+  are running the same profile within 3%. Overall 6.75M/64.4M (10.5%) at **62.2k nodes/min** (giant #1's
+  early rate was 66.7k). On giant #1's curve it completes ~17:20 with a wall near 10.0–10.3 min/M.
+- Phase: **still ingesting**, 176.5M rows (88.2%), **+3.5M this hour** — throttling deeper than last hour's
+  4.5M as the monopoly bites, matching the giant #1 pattern (11M/h → 2M/h at its worst).
+- **Revised boundary estimate:** 23.5M rows remain at ~3.5M/h → ingest ends **~15:25**, with giant #2 landing
+  **~17:20**. That would make the tail roughly 2 h plus whatever drains behind it, against Run F's 20h51m —
+  but per the 07:42 note this is dominated by *giant placement relative to the boundary*, not drain speed,
+  and must be reported alongside total time to completion.
+- No walls landed this hour — everything mid-class is queued behind the monopoly. Table 1,281 → **1,317 GB**,
+  sstables 39 → **43**.
+- Trend: a repeat of the first monopoly in every measurable respect, with the run now on course to finish
+  ingest around mid-afternoon and enter a short, giant-truncated tail.
