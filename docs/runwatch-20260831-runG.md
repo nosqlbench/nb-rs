@@ -790,3 +790,23 @@ merge-scale gap.
 - Table 1,389 → **1,421 GB**, sstables 50 → **53**, pending **11**.
 - Trend: fourth hour of the monopoly, everything still tracking giant #1 within ~8%, and the ingest/giant
   ordering remains the one variable that will shape how the final comparison reads.
+
+### 12:42 UTC (09-01) — t+31h55m — source 2 running *faster* than giant #1's; giant now likely lands before ingest ends
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 243k r/s @ 6.8 KB, r_await **0.22 ms**.
+- **Giant #2:** source 1 = 272 min (measured); source 2 is 40% at 77 min → **~194 min**, i.e. *faster* than
+  giant #1's 211. Overall 22.50M (34.9%) at **64.5k nodes/min**, recovering from last hour's 60.2k.
+- **Projection, corrected.** A flat extrapolation of source 2's rate across sources 3–4 gives 852 min
+  (landing 21:06) — that is the same error that produced the withdrawn C5 and the revised C4, since giant #1
+  demonstrated sources 3–4 are far cheaper (211 → 116 → 47, ratios 0.55 and 0.41). Applying those ratios:
+  **272 + 194 + 107 + 44 ≈ 617 min, landing ~17:11.** Recorded explicitly so the flat number in the tooling
+  is not mistaken for a forecast.
+- Phase: **still ingesting**, 186.6M rows (93.3%), **+2.1M this hour**. Remaining 13.4M → ingest ends
+  **~19:05**. So the ordering has resolved back the other way: **giant #2 should land ~2 h before ingest
+  completes**, which means Run G would enter its tail with no giant in flight — the scenario flagged at 10:42.
+- The 4M from 11:10 is still parked at **92 min (≥23 min/M)**, unfinished — C8's stall, fifth hour running
+  with only one merge even attempted.
+- Table 1,421 → **1,463 GB**, sstables 53 → **56**, pending 11.
+- Trend: the giant is finishing its expensive half and should clear well before the ingest boundary, setting
+  up exactly the short, giant-free tail that will need the total-time framing to be read correctly.
