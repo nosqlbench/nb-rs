@@ -1009,3 +1009,25 @@ builds absorbed two-to-three giant monopolies during load.
   94.2 / 92.9 / 23.2×3 / 8.7 / 5.8×8 / 1.4×6 / 0.9.
 - Trend: a slow hour with two mid-class merges monopolising the pool between them; the tail's shape still
   hinges on whether the strategy elects a final giant from the 23.2 GB tier.
+
+### 22:42 UTC (09-01) — TAIL t+3h50m — three landings; backlog halved to 14 sstables; giant tier rebuilt
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 214k r/s @ 6.2 KB, r_await **0.25 ms**.
+- **Tail elapsed 3h50m = 18.4% of Run F's 20h51m.** Three merges landed (all from `wall N ms`, per the
+  20:42 rule):
+
+  | landed | class | wall | min/M | Run F tail equivalent |
+  |---|---|---|---|---|
+  | 20:26:56 | 15.86M | 114 min | **7.22** | 18.20 / 18.28 |
+  | 22:05:49 | 3.97M | 59 min | **14.88** | 1.65 |
+  | 22:06:13 | 15.86M | 163 min | **10.28** | 18.20 / 18.28 |
+
+  The mid-class pair is **~2× better than Run F's tail 16Ms**; the 4M is far worse, having been starved
+  beneath both of them — C8's stall signature again, now inside the tail.
+- **Backlog halving:** 21 → **14 sstables**, table 1,305 → **1,263 GB**. Shape **94.2 / 92.9 / 23.2×4 / 8.7 /
+  5.8×4 / 1.4×2 / 0.9** — note **four** 23.2 GB outputs now, so **the giant precondition is met again**. A
+  third 16M started 22:08:26 and is at 18.6%; pending down to 2.
+- Trend: the tail is draining fast and mid-class merges are running at half Run F's tail cost, but the
+  rebuilt 23.2 GB tier means a final giant may yet be elected — which would add ~11 h and make Run G's tail
+  resemble Run F's after all.
