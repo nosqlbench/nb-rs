@@ -825,3 +825,19 @@ merge-scale gap.
 - Table 1,463 → **1,499 GB**, sstables 56 → **59**.
 - Trend: no new information beyond confirmation — the giant is tracking its predecessor almost exactly, and
   the run remains on course for a giant-free tail beginning around 19:25.
+
+### 14:42 UTC (09-01) — t+33h55m — giant #2 at the halfway mark, projecting 630 min vs giant #1's 626
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 241k r/s @ 6.8 KB, r_await **0.23 ms**.
+- **Giant #2:** source 2 is 97% at 197 min → **202 min** (giant #1: 211). Sources so far **272 / 202** against
+  **252 / 211**; overall 31.79M (**49.3%**, the halfway mark) at **67.9k nodes/min**. Decay-model total
+  **630 min → lands ~17:23**, against giant #1's measured 626. Two independent giants on the same build
+  agreeing to within 0.6% is a useful internal consistency check on C7's parity finding — the control's
+  giant-class cost is stable, not a one-off.
+- Phase: **still ingesting**, 190.4M rows (95.2%), **+1.8M this hour**. Remaining 9.6M → ingest ends
+  **~20:00**, keeping the giant ~2½ h ahead of the boundary.
+- The 11:10 4M is at **212 min (≥53 min/M)** and still unfinished — seventh hour parked. Pending steady at 12.
+- Table 1,499 → **1,531 GB**, sstables 59 → **60**.
+- Trend: the giant's total is landing almost exactly on its predecessor's, which strengthens the merge-scale
+  conclusion; the open question remains entirely the tail.
