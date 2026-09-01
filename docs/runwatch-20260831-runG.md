@@ -857,3 +857,18 @@ merge-scale gap.
 - Table 1,531 → **1,578 GB**, sstables 60 → **62**, pending 12.
 - Trend: everything is converging as expected — the giant is on its final third, the tail will begin around
   21:35 with no giant in it, and the run's total time is now the number that carries the comparison.
+
+### 16:42 UTC (09-01) — t+35h55m — source 3 finishing at ~134 min; giant on final source within the hour
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 233k r/s @ 6.9 KB, r_await **0.22 ms**.
+- **Giant #2:** source 3 is 87% at 116 min → **~134 min** (giant #1: 116). Per-source **272 / 200 / ~134 /
+  ~54** → total **~660 min**, landing **~17:54** against giant #1's 626 — about 5% longer, consistent all
+  the way down. Overall 46.17M (**71.6%**); source 4, the cheap one, starts within the hour.
+- Phase: **still ingesting**, 193.2M rows (96.6%), **+1.4M this hour**. Remaining 6.8M → ingest ends
+  **~21:35**, unchanged from last hour.
+- The 11:10 4M is at **332 min (≥83.6 min/M)** — ninth hour parked and once again approaching Run F's 92.23
+  record, which it will pass if the giant does not release it in the next ~35 min.
+- Table 1,578 → **1,617 GB**, sstables 62 → **63**, pending steady at 12.
+- Trend: no deviation — the giant is entering its cheapest source, and the run stays on track for a ~17:54
+  giant landing followed by a ~21:35 ingest boundary and a giant-free tail.
