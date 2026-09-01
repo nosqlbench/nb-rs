@@ -231,6 +231,23 @@ extrapolation suggested and not nothing either. The large remaining differences 
 control's starved merges run 2–3× worse, with an in-flight 4M past 700 min against Run F's 92.23 record) and
 the tail, which is still the deciding metric.
 
+**C8 — The contention difference is qualitative, not just quantitative: SPLAT degrades victims, the control
+stalls them.** Post-giant, Run G's 4M merges came in at **1.13 / 1.19 / 1.11 / 1.10 / 1.12** and a 4.96M at
+1.20 — straight into the solo band with **no degraded burst at all**, where Run F's post-giant recovery (E14)
+spent ~40 min working through 3.29 / 3.95 / 2.65 / 3.56 / 2.23 before reaching 1.17. That looks like a
+control win until the other side is counted: Run G's two starved 4Ms did not *finish slowly during* the
+giant, they **waited almost the entire giant out**, adopting only at 23:43:17 and 23:50:46 — minutes after
+BASE_LAYER completed at 23:39:58. Inferring the pairing from pass times (their own pass lines have rotated
+out), that is roughly **767 min ≈ 193 min/M** and **390 min ≈ 98 min/M** — the first being ~2.1× Run F's
+all-time record of 92.23.
+
+So the same monopoly produces two different failure modes. **SPLAT keeps co-resident merges moving, badly**
+(6.28–7.40 min/M, worst 92.23) and pays for it with a slow post-giant drain. **The control very nearly halts
+them** (~98 and ~193 min/M), then recovers instantly because there is no partially-done backlog to clear.
+Total work is comparable; the latency distribution is not, and the control's tail-latency behaviour is far
+worse. This is the sharpest practical difference the run has produced — considerably larger than C7's 9%
+merge-scale gap.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -546,3 +563,18 @@ the tail, which is still the deciding metric.
   1,254 GB, sstables **61**.
 - Trend: the giant is a near-tie, so the experiment now rests entirely on the tail and on the contention gap
   — exactly where the run started, but with the merge-scale question answered rather than assumed.
+
+### 00:42 UTC (09-01) — t+19h55m — post-giant: instant solo-band recovery, but the starved victims waited 12.8 h (C8)
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 321k r/s @ 6.1 KB, r_await **0.19 ms**.
+- **Recovery is immediate**: six post-giant merges at **1.13 / 1.19 / 1.11 / 1.10 / 1.12 / 1.20** min/M —
+  no degraded burst, unlike Run F's ~40 min ramp (E14). But the starved pair only adopted at 23:43:17 and
+  23:50:46, i.e. **after** the giant released the pool: ≈**193 min/M** and ≈**98 min/M** (C8). The control
+  stalls victims rather than degrading them.
+- **The giant's consolidation is visible**: table **1,254 → 823 GB**, sstables **61 → 20**, largest 92.9 GB —
+  ~430 GB of source sstables released at once.
+- Phase: **still ingesting**, 125.9M rows (63.0%), +5.7M in the last hour (~6.2M/h) as the servo reopened.
+  A 16M started 00:29. Pending 5, write amplification 3.10.
+- Trend: with C7 showing only a 9% merge-scale gap, C8's latency asymmetry is now the run's most consequential
+  finding — and the tail, still ahead of us, will show whether stalling or degrading drains faster overall.
