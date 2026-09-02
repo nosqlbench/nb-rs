@@ -1166,3 +1166,18 @@ builds absorbed two-to-three giant monopolies during load.
   projection holds at **~11:29**, tail ≈**16h47m vs Run F's 20h51m**.
 - Trend: the tail is showing the control at its best — faster backlog drain and an earlier giant election —
   while the giant itself stays within ~5% of SPLAT's, so the ~4 h tail advantage is scheduling, not merging.
+
+### 05:42 UTC (09-02) — TAIL t+10h50m — giant #3 source 1 = 294 min; source 2 opens on the control's own pattern
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 206k r/s @ 6.8 KB, r_await **0.26 ms**.
+- **Tail elapsed 10h50m = 52.0% of Run F's 20h51m** — past the halfway mark.
+- **Giant #3:** source 1 completed at **294 min**, the slowest source 1 of Run G's three (252 → 272 → 294),
+  though per-ordinal (4.63 min/M-source) it is still slightly better than Run F's giant #3 (328 min for
+  68.41M = 4.79). Source 2 is 16% in at 34 min → **~210 min**, squarely on the control's own source-2 values
+  (212 / 200) and ~12% above SPLAT's (181 / 188) — **C10's source-2 gap reproducing on a third giant**.
+- Overall 18.43M (**29.0%**) at 56.2k nodes/min, up from 54.4k as source 2 proceeds. Stage ≈**665 min →
+  lands ~11:19**; tail would be ≈**16h37m vs Run F's 20h51m**.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,398 → **1,417 GB**.
+- Trend: the third giant is reproducing the per-source signature the analysis identified — a dead-heat source
+  1, a ~12% deficit at source 2 — which is now the most repeatable SPLAT effect in the campaign.
