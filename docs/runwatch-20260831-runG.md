@@ -1194,3 +1194,15 @@ builds absorbed two-to-three giant monopolies during load.
 - Nothing else running; pending 2, sstables flat at **11**, table 1,417 → **1,438 GB**.
 - Trend: no new information — the giant is executing the expected per-source profile and the tail remains on
   track for ≈16h35m, roughly 4 h under Run F's.
+
+### 07:42 UTC (09-02) — TAIL t+12h50m — steady; giant #3 at 43.3%, projection unmoved for three checks
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 208k r/s @ 6.8 KB, r_await **0.25 ms**.
+- **Tail elapsed 12h50m = 61.6% of Run F's 20h51m.**
+- **Giant #3:** source 2 is 73% at 154 min → **210 min**, the third consecutive check at that figure.
+  Per-source **294 / ~210**; overall 27.49M (**43.3%**) at 61.4k nodes/min, still climbing as source 2
+  proceeds. Stage ≈**666 min → lands ~11:20**, unchanged.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,438 → **1,460 GB**.
+- Trend: a hold — the run is ~3½ h from the giant landing, after which settle should return within minutes
+  (Run F's returned 1m51s after its giant) and the final tail/total numbers become available.
