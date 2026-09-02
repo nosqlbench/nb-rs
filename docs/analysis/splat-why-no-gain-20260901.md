@@ -107,3 +107,38 @@ an hour rather than 2.5 days.
 - Three ledger claims in this campaign were withdrawn or revised after further sampling (C4, C5, and the
   1.6× early projection). Every number here comes from completed stage lines, not from extrapolating a
   partial stage.
+
+## Addendum (2026-09-02): per-source decomposition sharpens the mechanism
+
+All six giants across both runs now decompose per L0 source (minutes), which localises SPLAT's advantage
+precisely:
+
+| giant | src 1 | src 2 | src 3 | src 4 | total |
+|---|---|---|---|---|---|
+| Run F #1 63.58M | 254 | **181** | 116 | 43 | 594 |
+| Run F #2 63.46M | 259 | **188** | 118 | 46 | 611 |
+| Run F #3 68.41M | 328 | 212 | 126 | ~50 | 716 |
+| Run G #1 63.58M | 252 | **212** | 116 | 47 | 627 |
+| Run G #2 64.45M | 272 | **200** | 134 | 45 | 651 |
+| Run G #3 63.46M | ~291 (97% at 04:48) | — | — | — | running |
+
+Averaging the four same-class 63.5M giants:
+
+| source | SPLAT | control | control slower by |
+|---|---|---|---|
+| 1 | 256.5 | 262.0 | **+2.1%** |
+| **2** | **184.5** | **206.0** | **+11.7%** |
+| 3 | 117.0 | 125.0 | +6.8% |
+| 4 | 44.5 | 46.0 | +3.4% |
+| **total** | **9.49 min/M** | **9.98 min/M** | **+5.2%** |
+
+**SPLAT's entire giant-scale advantage is source 2.** Source 1 — where the token stream is being *built*
+rather than exploited — is a dead heat (2.1%), and by source 4 both builds converge again (3.4%). The
+mechanism is now specific: **the token stream front-loads amortization by roughly one source.** The control
+reaches the same steady state on its own, one source later, via page-cache warmth from similarity-ordinal
+ordering. SPLAT buys the head start, not a lower floor.
+
+That also corrects the headline figure. The earlier per-ordinal comparison (589.4 vs 599.1 s/M = 1.6%) pooled
+Run F's larger 68.41M giant, which is slower per ordinal and diluted the gap. **Restricted to same-class
+giants the difference is 5.2%** — still small, still consistent with "no material gain," but the honest
+number is three times the first estimate.

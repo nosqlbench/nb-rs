@@ -280,6 +280,25 @@ and, on this evidence, not to raw merge speed.
     The control's larger giant matches Run F's larger giant to the second decimal, and its smaller giant sits
     0.7% off Run F's pair. Parity holds at wall level as well as stage level.
 
+**C10 — In the tail the contention story REVERSES: the control clears its pre-giant backlog 29% faster.**
+Measuring boundary → final-giant BASE_LAYER start:
+
+| | span | ordinals cleared | rate | mid-class walls |
+|---|---|---|---|---|
+| Run F (SPLAT) | 499 min (8h19m) | 56.52M | 8.83 min/M | 18.28 / 18.20 / 6.44 |
+| Run G (control) | **322 min (5h22m)** | 51.55M | **6.26 min/M** | **7.22 / 10.28 / ~6.3** |
+
+The control cleared a comparable backlog **29% faster per ordinal**, with its co-scheduled mid-class merges
+running **~2× better than Run F's** (7.22/10.28 vs 18.20/18.28). This is the *opposite* of C2/C8, where under
+an ingest-era giant the control's victims were 2–3× worse and its record starvation reached ≈193 min/M.
+
+The distinguishing variable is **what the co-resident work is**. Under a giant monopoly the control parks its
+victims (C8) and they suffer; but with only mid-class merges competing — no giant present — the control
+schedules them better than SPLAT does. Run F's 18.2 min/M pair is its own two-wide penalty (E16) showing up
+again in the tail, and SPLAT does not mitigate it. So the fair summary is not "SPLAT handles contention
+better" but **"SPLAT handles *giant-vs-small* contention better; the control handles *mid-class-vs-mid-class*
+contention better."** Both effects are real and they point in opposite directions.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -1131,3 +1150,19 @@ builds absorbed two-to-three giant monopolies during load.
 - Nothing else running; pending 2, sstables flat at **11**, table 1,383 → **1,398 GB**.
 - Trend: unchanged — the tail is on course for ≈16.7 h, ~4 h under Run F's, with the gap attributable to
   earlier giant election rather than faster merging.
+
+### 04:48 UTC (09-02) — TAIL t+9h56m — comparative tail analysis: control 29% faster pre-giant, SPLAT's giant edge is source 2 only
+
+- Provenance unchanged; gates all green (G1 = 0, cost 0, integrity 0, max 0).
+- **Per-source decomposition of all six giants** (see analysis addendum): averaged over the four same-class
+  63.5M giants, source 1 is a dead heat (**+2.1%**), source 2 is where SPLAT wins (**+11.7%**), and sources 3–4
+  converge (+6.8%, +3.4%). Totals **9.49 vs 9.98 min/M = 5.2%**, which supersedes the earlier 1.6% figure
+  (that one pooled Run F's larger 68.41M giant and understated the gap).
+- **Pre-giant tail phase — C10:** Run G cleared **51.55M ordinals in 322 min (6.26 min/M)** against Run F's
+  **56.52M in 499 min (8.83 min/M)** — the control is **29% faster per ordinal**, with mid-class walls
+  **7.22 / 10.28** vs Run F's **18.28 / 18.20**. That is the reverse of C2/C8's ingest-era finding and is
+  logged as its own ledger item.
+- **Giant #3** is at 97% of source 1 (~291 min, vs 252/272 for its predecessors and 254/259 for Run F's);
+  projection holds at **~11:29**, tail ≈**16h47m vs Run F's 20h51m**.
+- Trend: the tail is showing the control at its best — faster backlog drain and an earlier giant election —
+  while the giant itself stays within ~5% of SPLAT's, so the ~4 h tail advantage is scheduling, not merging.
