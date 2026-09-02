@@ -1105,3 +1105,16 @@ builds absorbed two-to-three giant monopolies during load.
 - No other activity: pending 2, sstables flat at **11**, table 1,351 → **1,367 GB** as the giant writes.
 - Trend: a pure single-merge wait with a stable projection — nothing will move until the giant lands
   mid-morning.
+
+### 03:42 UTC (09-02) — TAIL t+8h50m — no change: giant #3 holding 54.4k/min, lands ~11:28
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 205k r/s @ 6.8 KB, r_await **0.26 ms**.
+- **Tail elapsed 8h50m = 42.4% of Run F's 20h51m.** For reference, Run F had only just *elected* its final
+  giant by this point (8h19m); Run G's has already been running 3½ h.
+- **Giant #3:** 11.29M (**17.8%**) in 208 min, rate pinned at **54.4k nodes/min** for the third consecutive
+  hour. Source 1 at 71% → **292 min**, stage ≈**674 min → lands ~11:28**. Projection has not moved in three
+  checks.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,367 → **1,383 GB**.
+- Trend: a quiet hold — the only number that will change before mid-morning is the giant's completion, and
+  the tail is tracking to ~16.7 h.
