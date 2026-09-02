@@ -1222,3 +1222,16 @@ builds absorbed two-to-three giant monopolies during load.
 - Nothing else running; pending 2, sstables flat at **11**, table 1,460 → **1,482 GB**.
 - Trend: the giant is halfway and behaving exactly as its two predecessors did, so the tail should close
   around 11:40 with the final comparison ≈16h50m vs Run F's 20h51m.
+
+### 09:42 UTC (09-02) — TAIL t+14h50m — source 3 tracking 127 min; giant lands ~11:37, settle right behind
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 216k r/s @ 6.7 KB, r_await **0.24 ms**.
+- **Tail elapsed 14h50m = 71.2% of Run F's 20h51m.**
+- **Giant #3:** source 3 is 49% at 62 min → **~127 min** (Run G's own: 116 / 134; Run F's: 116 / 118).
+  Per-source **294 / 212 / ~127 / ~51**, stage ≈**683 min → lands ~11:37**. Overall 39.53M (**62.3%**) with
+  the rate now **69.6k nodes/min**, the late-source acceleration both builds show.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,482 → **1,517 GB**.
+- Trend: on track — the giant should land shortly before 11:40 and, if Run F's pattern holds (settle returned
+  1m51s after its final giant), the tail closes almost immediately after at ≈**16h50m vs 20h51m**, with the
+  run total ≈**55h vs 59h49m**.
