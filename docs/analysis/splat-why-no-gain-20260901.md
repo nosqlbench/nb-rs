@@ -164,3 +164,55 @@ So the headline stands and is now measured end to end: **with the frontierPrefet
 builds, SPLAT buys ~5% on giant-class merges and costs nothing.** The run-level 8.2% in the control's favour
 is a scheduling artifact — when each strategy happened to elect its giants — not a merge-performance result.
 Anyone reading the totals alone would draw the opposite and wrong conclusion.
+
+## Read side and recall (added 2026-09-02): the safety gate, and two findings the compaction lens missed
+
+Both runs were mixed-mode: every load increment ran under a continuous ANN query stream
+(`concurrent_query`, paced ~1 op/s, zero failures in either run), recall was audited with a fixed
+deterministic set of 10,000 probes (recall@10, ground-truth depth r=100) after each of the first eleven
+increments, and the full 200M corpus was audited twice per run — immediately after ingest (fragmented
+index, tail compaction starting) and immediately after `settle_compactions` returned (final index,
+quiescent node). Repeat audits of the same index state return bit-identical recall in both runs, so
+cross-run deltas are index differences, not probe-sampling noise. Source: `keepsessions/*/metrics.db`
+(`sample_value` uses cumulative `count` + per-interval `sum/min/max/mean` in ns; earlier pooled numbers
+that summed cumulative counts were wrong and are superseded by this section).
+
+### Recall — no regression anywhere; SPLAT's settled index measurably better
+
+| checkpoint | Run F (SPLAT) | Run G (control) | Δ |
+|---|---|---|---|
+| growth increments 1–11 (recall_mean) | 0.9202 → 0.8354 | 0.9200 → 0.8366 | ≤0.012 at any point |
+| full corpus, fragmented (post-ingest) | 0.8345 | 0.8367 | −0.002 (noise) |
+| full corpus, settled (post-tail) | **0.8807** | **0.8696** | **+0.0111 SPLAT** |
+
+Two results:
+
+1. **Compaction is a recall event, not just a space event.** Settling lifted full-corpus recall +4.6 pt
+   (F) / +3.3 pt (G). The tail the runs spend 17–21 hours on buys measurable search quality.
+2. **The SPLAT-built final index recalls +1.1 pt higher** on the identical probe set. Probe-sampling
+   stderr is ~0.2 pt, so this is well clear of measurement noise — but it is one paired build;
+   construction variance across rebuilds is uncharacterized, and final segment layout differed (F's
+   final giant was 68.41M ordinals vs G's 63.46M), so layout could contribute alongside graph quality.
+
+### Probe latency on the settled index — SPLAT ~4% faster on a quiet node
+
+Post-settle audit rounds (identical probes, no compaction running): **F 310.3 / 314.5 ms vs
+G 324.0 / 327.2 ms** mean — the cleanest front-end comparison in the campaign, since only the index
+differs. Fragmented-index rounds ran under tail-compaction contention (F 342/499, G 492/497 ms) and are
+not comparable across runs. Settling also made probes ~35% faster than fragmented in both builds.
+
+### Concurrent query latency during ingest — SPLAT costs 4–6% while it works
+
+30-min-bucketed `concurrent_query` service time across ingest: median-of-bucket-means **513 (F) vs
+485 ms (G)**, p90 **714 vs 675 ms** — F consistently ~4–6% slower while merges run, consistent with
+SPLAT's extra DISTRIBUTE/TOKEN_STREAM passes competing for page cache. The worst single query belonged
+to the control (10.4 s vs 6.4 s). Ops: 138,496 (F) / 135,365 (G), both paced ~1/s throughout, zero
+failures; `validations_passed` 150,003 / 150,003, `validations_failed` 0 / 0.
+
+### What this changes
+
+The verdict's "costs nothing" clause needs a qualifier: SPLAT taxes the front end ~5% during ingest and
+hands back an index that is +1.1 pt better on recall and ~4% faster to search. Quality moves from "no
+harm" to "small positive"; the ingest-window latency cost is the same order as the merge-wall gain and
+smaller than the settle lift either build gets. The tail/total-time axis and the 2×2 (arm × SPLAT)
+remain the decisive open questions.
