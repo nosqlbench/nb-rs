@@ -1088,3 +1088,20 @@ builds absorbed two-to-three giant monopolies during load.
 - Trend: the run is now a single-merge wait, and the tail figure will come in around 17 h — roughly 4 h
   under Run F's, with the difference traceable to electing the final giant ~3 h sooner rather than to
   running it faster.
+
+### 02:42 UTC (09-02) — TAIL t+7h50m — giant #3 steady at 54.4k/min; projection unchanged at ~11:29
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 203k r/s @ 6.8 KB, r_await **0.26 ms**.
+- **Tail elapsed 7h50m = 37.6% of Run F's 20h51m.**
+- **Giant #3:** 8.03M (**12.7%**) in 148 min; overall **54.4k nodes/min**, trailing-45-min **54.2k** — flat, so
+  this is steady state rather than a decaying start. Source 1 at 51% → **292 min** (giants #1/#2: 252/272),
+  stage ≈**675 min → lands ~11:29**, unchanged from last hour. Tail would be **≈16.7 h**.
+- Notably this giant is running ~15% slower per node than its predecessors (54.4k vs 62–67k) even though it
+  has the pool entirely to itself, which is the opposite of the co-scheduling explanation — the more likely
+  cause is source composition: it is merging four 23.2 GB sstables built *from already-merged data*, so its
+  sources are denser and less cache-friendly than the earlier giants'. Flagged as an observation, not a
+  conclusion; the completed stage line will price it exactly.
+- No other activity: pending 2, sstables flat at **11**, table 1,351 → **1,367 GB** as the giant writes.
+- Trend: a pure single-merge wait with a stable projection — nothing will move until the giant lands
+  mid-morning.
