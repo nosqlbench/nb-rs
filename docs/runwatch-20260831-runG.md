@@ -299,6 +299,40 @@ again in the tail, and SPLAT does not mitigate it. So the fair summary is not "S
 better" but **"SPLAT handles *giant-vs-small* contention better; the control handles *mid-class-vs-mid-class*
 contention better."** Both effects are real and they point in opposite directions.
 
+**C11 — FINAL RESULT: Run G total 54h56m vs Run F 59h49m (8.2% faster), but the giants are identical once
+normalized.** Settle returned **2026-09-02 11:43:48**, 1.8 min after giant #3's TERMS_DATA (Run F: 1.85 min —
+both tails giant-terminated by the same mechanism).
+
+| phase | Run G (control) | Run F (SPLAT) | delta |
+|---|---|---|---|
+| ingest | **38 h 04 m** | 38 h 58 m | −54 m |
+| tail | **16 h 51 m** (30.7% of run) | 20 h 51 m (34.9%) | **−4 h 00 m** |
+| **total** | **54 h 56 m** | **59 h 49 m** | **−4 h 53 m (−8.2%)** |
+
+Decomposing the 4 h tail difference:
+
+| tail component | Run G | Run F | delta |
+|---|---|---|---|
+| pre-giant drain | **5 h 09 m** | 8 h 15 m | −3 h 06 m |
+| final giant (whole merge) | 11 h 42 m (63.46M) | 12 h 35 m (68.41M) | −53 m |
+| **per-ordinal giant cost** | **11.05 min/M** | **11.03 min/M** | **+0.2%** |
+
+**The giants are a dead heat.** The 53-minute difference is entirely the size difference (63.46M vs 68.41M);
+per ordinal they are within 0.2%. So **the entire 4-hour tail advantage comes from the pre-giant phase** —
+the control cleared its backlog 29% faster per ordinal (C10) and elected its final giant ~3 h sooner. Nothing
+in the tail result reflects SPLAT making merges faster or slower.
+
+Final BASE_LAYER series — **Run F 9.34 / 9.61 / 10.47, Run G 9.86 / 10.11 / 10.75 min/M**. Both builds
+degrade monotonically across successive giants (larger, more fragmented sources each time), and the control
+runs a consistent ~5% behind. Per-source for the two tail giants: **F 328/212/126/~50 (68.41M)** vs
+**G 294/212/128/49 (63.46M)** — normalized, SPLAT is ahead on sources 2–4 and behind on source 1, exactly the
+signature in the analysis addendum.
+
+**Verdict:** on this workload, with the frontierPrefetch arm on in both builds, **SPLAT costs nothing and
+buys ~5% on giant-class merge throughput** — plus a real difference in *how* contention is distributed
+(C2/C8/C10), which cuts both ways. The 8.2% total-time gap in the control's favour is a scheduling artifact
+of when giants were elected, not evidence that removing SPLAT is faster.
+
 ## Entries
 
 ### 07:37 UTC — t+2h50m — control is running clean and ahead of Run F at 4M and 16M
@@ -1251,3 +1285,17 @@ builds absorbed two-to-three giant monopolies during load.
 - Nothing else running; pending 2, sstables flat at **11**, table 1,517 → **1,552 GB**.
 - Trend: the run's last measurement is under an hour away; expect settle to return shortly after the giant
   and the tail to close near **16h50m** against Run F's 20h51m.
+
+### 11:44 UTC (09-02) — RUN COMPLETE (pushed): tail 16h51m, total 54h56m
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / 24 flags identical — unchanged for the entire 55-hour run.
+- Gates: **G1 = 0 SPLAT lines across the whole run**; cost 0, integrity 0, memory.events max 0. Perfect hygiene.
+- **Giant #3 landed 11:42:03**: BASE_LAYER **682.3 min = 10.75 min/M**, whole merge **701.5 min**, per-source
+  **294 / 212 / 128 / 49**. `settle_compactions` returned **11:43:48**, 1.8 min later.
+- **Final numbers — see C11.** Tail **16h51m** vs 20h51m; total **54h56m** vs 59h49m. The tail gap is
+  pre-giant drain (−3h06m) plus a smaller final giant (−53m); **per-ordinal the giants match within 0.2%**.
+- Terminal shape **11 sstables** (94.2 / 92.9 / 92.8 / 23.2×4 / 8.7 / 1.4×2 / 0.9), table 1,610 GB — versus
+  Run F's terminal **5**. The control ends less consolidated because it never elected the further giants that
+  Run F's longer monopolies produced; both runs stopped when they ran out of schedulable work, not when the
+  data was maximally merged.
+- Trend: the experiment is measured out; capture protocol and teardown follow.
