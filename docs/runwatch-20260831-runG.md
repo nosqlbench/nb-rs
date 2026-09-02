@@ -1181,3 +1181,16 @@ builds absorbed two-to-three giant monopolies during load.
 - Nothing else running; pending 2, sstables flat at **11**, table 1,398 → **1,417 GB**.
 - Trend: the third giant is reproducing the per-source signature the analysis identified — a dead-heat source
   1, a ~12% deficit at source 2 — which is now the most repeatable SPLAT effect in the campaign.
+
+### 06:42 UTC (09-02) — TAIL t+11h50m — source 2 holding at 210 min; projection stable at ~11:20
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 210k r/s @ 6.8 KB, r_await **0.25 ms**.
+- **Tail elapsed 11h50m = 56.8% of Run F's 20h51m.**
+- **Giant #3:** source 2 is 45% at 94 min → **210 min**, identical to last hour's estimate and matching the
+  control's own 212 / 200. Per-source so far **294 / ~210**, overall 22.96M (**36.2%**) at 59.2k nodes/min
+  (rising through source 2 as expected). Stage ≈**666 min → lands ~11:20**, versus Run F's giants at
+  594 / 611 / 716 min — Run G's third giant will land between its predecessors' 627/651 and Run F's largest.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,417 → **1,438 GB**.
+- Trend: no new information — the giant is executing the expected per-source profile and the tail remains on
+  track for ≈16h35m, roughly 4 h under Run F's.
