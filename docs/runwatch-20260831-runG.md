@@ -1206,3 +1206,19 @@ builds absorbed two-to-three giant monopolies during load.
 - Nothing else running; pending 2, sstables flat at **11**, table 1,438 → **1,460 GB**.
 - Trend: a hold — the run is ~3½ h from the giant landing, after which settle should return within minutes
   (Run F's returned 1m51s after its giant) and the final tail/total numbers become available.
+
+### 08:42 UTC (09-02) — TAIL t+13h50m — source 2 measured at 212 min: the source-2 gap holds on a third giant
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 211k r/s @ 6.7 KB, r_await **0.25 ms**.
+- **Tail elapsed 13h50m = 66.4% of Run F's 20h51m.**
+- **Giant #3 source 2 completed at 212 min** — the projection said 210, and it matches Run G giant #1's 212
+  exactly. The three-giant control series for source 2 is now **212 / 200 / 212 (mean 208)** against SPLAT's
+  **181 / 188 (mean 184.5)**: a **+13% control deficit**, reproduced a third time. That remains the single
+  most repeatable SPLAT effect measured in this campaign, and per the analysis addendum it is where
+  essentially all of SPLAT's giant-scale advantage lives.
+- Source 3 has just started (2%). Per-source **294 / 212 / … **; overall 32.01M (**50.4%**, halfway) at
+  63.0k nodes/min. On the control's own source-3/4 pattern the stage totals ~684 min → **lands ~11:38**.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,460 → **1,482 GB**.
+- Trend: the giant is halfway and behaving exactly as its two predecessors did, so the tail should close
+  around 11:40 with the final comparison ≈16h50m vs Run F's 20h51m.
