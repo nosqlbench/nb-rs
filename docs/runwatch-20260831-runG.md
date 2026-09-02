@@ -1235,3 +1235,19 @@ builds absorbed two-to-three giant monopolies during load.
 - Trend: on track — the giant should land shortly before 11:40 and, if Run F's pattern holds (settle returned
   1m51s after its final giant), the tail closes almost immediately after at ≈**16h50m vs 20h51m**, with the
   run total ≈**55h vs 59h49m**.
+
+### 10:42 UTC (09-02) — TAIL t+15h50m — source 3 closing at 127 min; final source starts within minutes
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 213k r/s @ 6.7 KB, r_await **0.25 ms**.
+- **Tail elapsed 15h50m = 75.9% of Run F's 20h51m.**
+- **Giant #3:** source 3 is 96% at 122 min → **127 min**, matching the projection exactly. Per-source
+  **294 / 212 / 127 / —**; overall 47.04M (**74.1%**). Source 4 — the cheap one, ~45–47 min on both prior
+  Run G giants — begins within minutes, so BASE_LAYER should complete around **11:35–11:40** and the wall a
+  few minutes later.
+- Full per-source comparison once this lands will be **294 / 212 / 127 / ~47** for the control versus Run F's
+  **254 / 181 / 116 / 43** and **259 / 188 / 118 / 46** — the same shape, uniformly ~10% slower, with the
+  source-2 gap the widest.
+- Nothing else running; pending 2, sstables flat at **11**, table 1,517 → **1,552 GB**.
+- Trend: the run's last measurement is under an hour away; expect settle to return shortly after the giant
+  and the tail to close near **16h50m** against Run F's 20h51m.
