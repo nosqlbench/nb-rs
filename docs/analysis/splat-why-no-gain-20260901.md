@@ -142,3 +142,25 @@ That also corrects the headline figure. The earlier per-ordinal comparison (589.
 Run F's larger 68.41M giant, which is slower per ordinal and diluted the gap. **Restricted to same-class
 giants the difference is 5.2%** — still small, still consistent with "no material gain," but the honest
 number is three times the first estimate.
+
+## Final result (Run G complete, 2026-09-02 11:49:15)
+
+| phase | Run G (control) | Run F (SPLAT) | delta |
+|---|---|---|---|
+| ingest | 38 h 04 m | 38 h 58 m | −54 m |
+| tail | 16 h 51 m | 20 h 51 m | −4 h 00 m |
+| **total** | **54 h 56 m** (55 h 01 m to all-phases) | **59 h 49 m** | **−8.2%** |
+
+The control finished the whole 200M workload **8.2% faster**, but none of that is SPLAT costing throughput:
+
+- **The final giants are a dead heat per ordinal** — 11.05 min/M (control, 63.46M) vs 11.03 (SPLAT, 68.41M).
+- The tail's 4-hour gap is **3 h 06 m of faster pre-giant drain** (C10) plus **53 m of size difference** in
+  the final giant.
+- Across all six giants, BASE_LAYER runs **Run F 9.34 / 9.61 / 10.47** vs **Run G 9.86 / 10.11 / 10.75
+  min/M** — the control a consistent ~5% behind, with both builds degrading monotonically across successive
+  giants as sources grow denser.
+
+So the headline stands and is now measured end to end: **with the frontierPrefetch arm enabled in both
+builds, SPLAT buys ~5% on giant-class merges and costs nothing.** The run-level 8.2% in the control's favour
+is a scheduling artifact — when each strategy happened to elect its giants — not a merge-performance result.
+Anyone reading the totals alone would draw the opposite and wrong conclusion.
