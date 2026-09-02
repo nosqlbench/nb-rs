@@ -1050,3 +1050,23 @@ builds absorbed two-to-three giant monopolies during load.
   94.2 / 92.9 / 23.2×4 / 8.7 / 5.8×4 / 1.4×2 / 0.9.
 - Trend: quiet hour with one merge nearly done; the tail's total now depends almost entirely on whether the
   four-way 23.2 GB tier triggers a final giant before the queue drains.
+
+### 00:42 UTC (09-02) — TAIL t+5h50m — FINAL GIANT ELECTED (pushed): the tail is giant-terminated after all
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 205k r/s @ 6.8 KB, r_await **0.26 ms** (back above
+  the 190k mark, clearing last hour's 182k sample as the index-build artefact it was).
+- **GIANT #3 IS RUNNING — 63,456,864 ordinals**, the same class as Run F's giants #1/#2 (63.58M / 63.46M).
+  SIMILARITY_ORDINALS completed 00:06:47 in **7.2 min**, CODE_PRE_ENCODE 00:14:26 in **7.6 min**, and
+  BASE_LAYER is now at **2.37%**. Its data side (99.6 GB → the new 92.8 GB sstable) is parked at 100% pending
+  the index build. On Run G's own giant curve (BASE_LAYER 627 and 651 min) it lands **~11:45–12:05 today**,
+  which would put the tail at **≈17 h against Run F's 20h51m**.
+- **This resolves the structural question raised at 07:42/10:42.** Run G's tail *is* giant-terminated, exactly
+  like Run F's — the earlier worry that a giant-free tail would flatter the control no longer applies, and the
+  two tails become directly comparable: each is (time to elect a final giant) + (that giant's wall). Run F
+  elected at **8h19m**; Run G elected at **~5h20m**, ~3 h sooner.
+- Interval: the third 16M landed and its output plus four 5.8 GB merged upward, taking the backlog from
+  **14 → 11 sstables** (94.2 / 92.9 / **92.8** / 23.2×4 / 8.7 / 1.4×2 / 0.9). Table 1,317 → **1,335 GB**;
+  the four 23.2 GB sources remain on disk until the giant's transaction commits.
+- Trend: the experiment's final number is now a ~11 h wait, and the comparison it produces is like-for-like
+  in structure rather than confounded by placement.
