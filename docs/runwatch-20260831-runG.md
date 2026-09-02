@@ -1070,3 +1070,21 @@ builds absorbed two-to-three giant monopolies during load.
   the four 23.2 GB sources remain on disk until the giant's transaction commits.
 - Trend: the experiment's final number is now a ~11 h wait, and the comparison it produces is like-for-like
   in structure rather than confounded by placement.
+
+### 01:42 UTC (09-02) — TAIL t+6h50m — giant #3 grinding at 54.4k/min; source 1 trending slower than its predecessors
+
+- Provenance: pid 1544653 / 6dcb0e4c / 0517567f / client 1546323 / 24 flags identical — unchanged.
+- Gates: **G1 = 0**; cost 0 / integrity 0 / max 0; G4 storm 205k r/s @ 6.9 KB, r_await **0.26 ms**.
+- **Tail elapsed 6h50m = 32.8% of Run F's 20h51m.**
+- **Giant #3:** 4.77M/63.46M (**7.5%**) in 88 min at **54.4k nodes/min** — source 1 at 30%, projecting
+  **~291 min** against giant #1's 252 and #2's 272. The control's three giants are trending monotonically
+  slower on source 1 (**252 → 272 → 291**), consistent with each running against a larger, more fragmented
+  table and a colder cache; worth noting but within the co-scheduling spread seen elsewhere. Decay-model
+  stage ≈**674 min → lands ~11:28**, which would put the tail at **≈16.7 h vs Run F's 20h51m**.
+- No other merges landed; pending 2, and the giant has the pool effectively to itself — the same monopoly
+  shape as its predecessors, now inside the tail exactly as Run F's giant #3 was.
+- Shape unchanged at **11 sstables** (94.2 / 92.9 / 92.8 / 23.2×4 / 8.7 / 1.4×2 / 0.9); table 1,335 →
+  **1,351 GB** as the giant writes. The four 23.2 GB sources still await the giant's commit.
+- Trend: the run is now a single-merge wait, and the tail figure will come in around 17 h — roughly 4 h
+  under Run F's, with the difference traceable to electing the final giant ~3 h sooner rather than to
+  running it faster.
