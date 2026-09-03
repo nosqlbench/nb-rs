@@ -216,3 +216,50 @@ hands back an index that is +1.1 pt better on recall and ~4% faster to search. Q
 harm" to "small positive"; the ingest-window latency cost is the same order as the merge-wall gain and
 smaller than the settle lift either build gets. The tail/total-time axis and the 2×2 (arm × SPLAT)
 remain the decisive open questions.
+
+## CPU-vs-stall probe (2026-09-03): base_layer is IO-bound; the arm helps but doesn't cure it
+
+Ran the discriminating experiment the artifact called for — profile base_layer for CPU-versus-stall
+under the control build with the prefetch arm on vs off, same idle host, cold cache. Method: a
+user-defined giant merge driven solo (no ingest/query load), profiled in three 15-min windows with a
+1 Hz /proc thread-state census (D-state = IO wait), PSI, diskstats, and async-profiler wall+itimer.
+Merges were stopped by JVM restart (rollback), so sources survived for the paired run.
+
+- **Leg 1** — control build 30cdfdaf, arm ON (frontierPrefetch=16), 5-source giant (72M ordinals).
+- **Leg 2** — same build, arm OFF (frontierPrefetch=0), 2-source giant (128M ordinals), the two ~100GB
+  sstables leg 1 never consumed.
+
+(A single-source re-compaction leg was tried first and discarded: 35/40 workers parked, device 19%
+util — a work-starved regime the arm can't affect, so it can't A/B the arm. Multi-source is required.)
+
+### Bulk base_layer, measured
+| | arm ON (leg 1) | arm OFF (leg 2) |
+|---|---|---|
+| effective IO-stall | 83–85% | 88–89% (3 windows, identical) |
+| effective compute | 14% | 11% |
+| worker D-state | 63–67% | 77–78% |
+| avg read size | 6.4–6.9 KB | 4.8 KB |
+| read throughput | 189–215k IOPS | 121k IOPS |
+| PSI io-full | 52–56% | 66% |
+
+### Three conclusions
+1. **base_layer is IO-bound, never compute-bound**, under either arm state (≥83% of worker wall-time is
+   IO wait; ≤14% is real graph compute). The "it's actually compute-bound" hypothesis is **refuted**.
+   On-CPU time itself is ~half IO-path (jbyte_disjoint_arraycopy out of packed-neighbor reads, plus
+   Copy::conjoint_swap); the dominant wall frame is FusedPQ$PackedNeighbors.readInto.
+2. **The arm is a real but partial mitigation.** Removing it regresses reads 6.4→4.8 KB (toward the
+   4 KB no-readahead floor), cuts throughput 36%, and raises IO-stall +6 pt. So "the arm helped" is
+   confirmed — but "the arm made reads free" is **refuted**: with the arm on, base_layer is still 83%
+   IO-stalled, and the arm's own posix_fadvise64 costs 16% of live wall.
+3. **Mechanistic explanation for the ~5% SPLAT result.** base_layer's binding constraint is
+   packed-neighbor read IO. The arm — enabled in both campaign runs — already claimed part of the read
+   win. SPLAT attacked the same IO wall with the remaining headroom, so its measurable gain was small.
+   Two mechanisms, one IO-bound wall, neither clears it. This is why BASE_LAYER came out statistically
+   identical between Runs F and G.
+
+### Limits
+Control build only (SPLAT×arm cells not run — the probe was scoped to explain the null, not re-run the
+2×2). Absolute build RATE is not compared across legs (different ordinal counts 72M vs 128M; the
+index-build counter is not verified equivalent) — the size-robust thread-state census is authoritative.
+The deep work-starved+memory-pressure tail regime leg 1 showed at depth was not reached by the slower
+arm-off leg, so that micro-regime is uncompared across arm states.
